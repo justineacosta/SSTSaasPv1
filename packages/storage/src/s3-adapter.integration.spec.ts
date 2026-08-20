@@ -98,6 +98,28 @@ describe('S3 storage adapter against MinIO', () => {
     expect(url).toContain('X-Amz-Expires=300');
   });
 
+  it('strips CR/LF and NUL from downloadFilename so the disposition stays a single line', async () => {
+    const objectKey = key();
+    await storage.put(BUCKET, objectKey, Buffer.from('x'));
+    // Attempts to break out of the filename attribute and start a second
+    // header. If CR/LF survived into the signed URL, a server that does not
+    // itself collapse them (unlike MinIO's Go HTTP stack) would see a second
+    // "X-Injected: 1" header rather than inert text inside the filename.
+    const url = await storage.presignGet(BUCKET, objectKey, {
+      ttlSeconds: 300,
+      downloadFilename: 'evil\r\nX-Injected: 1\r\n\x00',
+    });
+    const decoded = decodeURIComponent(url);
+
+    // No raw control character survives anywhere in the signed URL — proof
+    // the disposition value cannot span more than one line.
+    // eslint-disable-next-line no-control-regex -- deliberately matching control characters to assert none survive stripping.
+    expect(decoded).not.toMatch(/[\r\n\x00]/);
+    // The attempted header line becomes inert text folded into the one
+    // filename attribute, not a second header.
+    expect(decoded).toContain('attachment; filename="evilX-Injected: 1"');
+  });
+
   it('rethrows rather than returning null when the request is rejected (not absent)', async () => {
     // Deliberately wrong credentials against the same MinIO container. MinIO
     // rejects the signature before it ever looks up the key, so this is a 403

@@ -1,7 +1,8 @@
 # Storage architecture
 
-> **Status: Designed. Not Implemented.** Phase 1 (adapter), Phase 5 (evidence),
-> Phase 8 (reports). Decision record: [ADR-0007](../decisions/ADR-0007-evidence-storage.md).
+> **Status: Adapter Implemented (Phase 1).** Evidence (Phase 5) and reports (Phase 8) are not yet
+> built — nothing calls this adapter in application code. Decision record:
+> [ADR-0007](../decisions/ADR-0007-evidence-storage.md).
 
 S3-compatible object storage. MinIO locally, Cloudflare R2 or AWS S3 in production, behind
 one adapter interface so the provider is a configuration choice rather than a code
@@ -45,21 +46,36 @@ Full rules: [`../security/file-security.md`](../security/file-security.md).
 
 ## 4. Adapter
 
+Implemented in `packages/storage` (not `apps/api/src/infrastructure` — see
+[`../development/folder-structure.md`](../development/folder-structure.md) Rules: workers need
+it from Phase 5, and no app may import another app).
+
 ```ts
 interface StorageAdapter {
-  put(key, body, opts): Promise<{ etag, size }>
-  get(key): Promise<Readable>
-  head(key): Promise<Metadata | null>
-  delete(key): Promise<void>
-  presignGet(key, ttl, opts): Promise<string>
-  presignPut(key, ttl, opts): Promise<string>
-  list(prefix, cursor): Promise<Page<Key>>
+  put(bucket, key, body, opts?): Promise<{ etag, size, sha256 }>
+  get(bucket, key): Promise<Readable>
+  head(bucket, key): Promise<StoredObjectMetadata | null>
+  delete(bucket, key): Promise<void>
+  presignGet(bucket, key, opts): Promise<string>   // opts: { ttlSeconds, downloadFilename? }
+  presignPut(bucket, key, ttlSeconds): Promise<string>
+  list(bucket, prefix, cursor?): Promise<KeyPage>
 }
 ```
 
-Application code never imports an S3 SDK type. Tests run against MinIO in Testcontainers, not
-against mocks, because the failure modes that matter here — content type handling, presign
-semantics, multipart, eventual consistency — are exactly the ones a mock hides.
+Every method takes the bucket explicitly — the adapter is provider configuration, not a
+per-bucket client, so one adapter instance serves `evidence`, `reports`, `uploads`, and
+`exports`. `createS3StorageAdapter(options: S3StorageOptions)` is the only S3-backed
+implementation; `options` (`endpoint`, `region`, `accessKeyId`, `secretAccessKey`,
+`forcePathStyle`) are plain strings/booleans — no AWS SDK type crosses into `S3StorageOptions`
+or the `StorageAdapter` interface itself, so application code never imports an S3 SDK type.
+
+`tenantPrefix`, `evidenceKeyForFinding`, `evidenceKeyForScan`, and `reportKey` (also in
+`packages/storage`) are the only way to build a key: `tenantPrefix` throws rather than
+returning a prefix-less key for an empty organisation id, and every builder routes through it.
+
+Tests run against MinIO in Testcontainers, not against mocks, because the failure modes that
+matter here — content type handling, presign semantics, multipart, eventual consistency — are
+exactly the ones a mock hides.
 
 ## 5. Integrity and reconciliation
 

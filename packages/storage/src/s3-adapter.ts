@@ -106,7 +106,17 @@ export function createS3StorageAdapter(options: S3StorageOptions): StorageAdapte
     },
 
     async presignGet(bucket, key, presignOptions: PresignGetOptions) {
-      const filename = (presignOptions.downloadFilename ?? 'download').replaceAll('"', '');
+      // Strips quotes and every control character (CR/LF included) from a
+      // value we interpolate directly into a Content-Disposition header, so
+      // it cannot inject a second header or split the header across lines.
+      // MinIO's HTTP stack happens to collapse raw CR/LF before emitting the
+      // response, but that is the server's behaviour, not ours — a different
+      // S3-compatible provider is not guaranteed to do the same.
+      const filename = (presignOptions.downloadFilename ?? 'download').replace(
+        // eslint-disable-next-line no-control-regex -- matches control characters (CR/LF included) to strip them; it does not execute untrusted input.
+        /["\x00-\x1f\x7f]/g,
+        '',
+      );
       return getSignedUrl(
         client,
         new GetObjectCommand({
