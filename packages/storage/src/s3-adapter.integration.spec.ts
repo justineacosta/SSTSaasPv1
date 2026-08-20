@@ -13,6 +13,7 @@ const SECRET_KEY = 'test_secret_key';
 
 let container: StartedTestContainer;
 let storage: StorageAdapter;
+let endpoint: string;
 
 beforeAll(async () => {
   container = await new GenericContainer('minio/minio:latest')
@@ -21,7 +22,7 @@ beforeAll(async () => {
     .withExposedPorts(9000)
     .start();
 
-  const endpoint = `http://${container.getHost()}:${String(container.getMappedPort(9000))}`;
+  endpoint = `http://${container.getHost()}:${String(container.getMappedPort(9000))}`;
   const credentials = { accessKeyId: ACCESS_KEY, secretAccessKey: SECRET_KEY };
 
   await new S3Client({ endpoint, region: 'us-east-1', forcePathStyle: true, credentials }).send(
@@ -95,6 +96,26 @@ describe('S3 storage adapter against MinIO', () => {
     await storage.put(BUCKET, objectKey, Buffer.from('x'));
     const url = await storage.presignGet(BUCKET, objectKey, { ttlSeconds: 86_400 });
     expect(url).toContain('X-Amz-Expires=300');
+  });
+
+  it('rethrows rather than returning null when the request is rejected (not absent)', async () => {
+    // Deliberately wrong credentials against the same MinIO container. MinIO
+    // rejects the signature before it ever looks up the key, so this is a 403
+    // (SignatureDoesNotMatch / InvalidAccessKeyId) regardless of whether the
+    // object exists — exactly the "permissions problem, not a missing object"
+    // case head() must not swallow as null. See s3-adapter.ts's head().
+    const objectKey = key();
+    await storage.put(BUCKET, objectKey, Buffer.from('x'));
+
+    const rejectedStorage = createS3StorageAdapter({
+      endpoint,
+      region: 'us-east-1',
+      accessKeyId: ACCESS_KEY,
+      secretAccessKey: 'wrong_secret_key',
+      forcePathStyle: true,
+    });
+
+    await expect(rejectedStorage.head(BUCKET, objectKey)).rejects.toThrow();
   });
 
   it('lists by tenant prefix and does not cross organisations', async () => {

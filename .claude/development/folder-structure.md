@@ -22,7 +22,7 @@ SSTSaasPv1/
 │   ├── api/                     NestJS modular monolith
 │   │   └── src/
 │   │       ├── common/          guards, interceptors, filters, decorators, pipes
-│   │       ├── infrastructure/  prisma, redis, queue, storage, mail, stripe
+│   │       ├── infrastructure/  prisma, redis, queue, mail, stripe
 │   │       └── modules/         one folder per bounded module
 │   │           └── findings/    controller, service, repository, dto/, tests
 │   │
