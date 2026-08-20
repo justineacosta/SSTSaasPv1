@@ -14,11 +14,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
     "db:generate": "prisma generate",
-    "db:migrate": "node scripts/sync-env.mjs && prisma migrate dev",
-    "db:migrate:create": "node scripts/sync-env.mjs && prisma migrate dev --create-only",
-    "db:migrate:deploy": "node scripts/sync-env.mjs && prisma migrate deploy",
-    "db:reset": "node scripts/sync-env.mjs && prisma migrate reset --force",
-    "db:studio": "node scripts/sync-env.mjs && prisma studio",
+    "db:migrate": "prisma migrate dev",
+    "db:migrate:create": "prisma migrate dev --create-only",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:reset": "prisma migrate reset --force",
+    "db:studio": "prisma studio",
     "db:seed": "node --experimental-strip-types src/seed.ts"
   },
   "dependencies": {

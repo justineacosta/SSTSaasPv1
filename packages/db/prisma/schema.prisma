@@ -177,6 +177,16 @@ model Membership {
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   role         Role         @relation(fields: [roleId], references: [id], onDelete: Restrict)
 
+  // KNOWN ISSUE: this is a full unique index, but Membership soft-deletes via
+  // `deletedAt`. It should be a partial index — UNIQUE (organizationId,
+  // userId) WHERE "deletedAt" IS NULL — so a removed member can be re-added.
+  // As written, removing then re-inviting the same (org, user) pair raises a
+  // duplicate-key error on the second insert; verified live. Prisma's schema
+  // language cannot express a partial unique index, so the real fix needs a
+  // hand-written migration plus drift management against `prisma migrate
+  // dev`. Nothing in Phase 1 sets Membership.deletedAt, and Phase 2 owns
+  // membership management end to end, so the fix belongs there — tracked at
+  // Task 16. Do not let this be rediscovered as a bug; it is a known gap.
   @@unique([organizationId, userId])
   @@index([organizationId, status])
   @@index([userId])
@@ -202,8 +212,10 @@ model Invitation {
   @@index([organizationId, createdAt(sort: Desc)])
 }
 
-/// Append-only. UPDATE and DELETE are revoked from the application role by
-/// migration and blocked by a trigger. See security/audit.md §2.
+/// Intended to be append-only. As of this migration, `sentinel_app` still
+/// holds UPDATE and DELETE on this table — revoking them (and adding the
+/// blocking trigger) is Phase 3 work per security/audit.md §2, not yet done.
+/// Do not rely on database-level append-only enforcement before then.
 model AuditEvent {
   id             String    @id
   organizationId String

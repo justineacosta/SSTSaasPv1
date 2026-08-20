@@ -1,5 +1,3 @@
-name: sentinel
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -8,12 +6,17 @@ services:
       POSTGRES_USER: sentinel
       POSTGRES_PASSWORD: sentinel_local
       POSTGRES_DB: sentinel
-    ports: ['5432:5432']
+    ports: ['127.0.0.1:5432:5432']
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U sentinel -d sentinel']
+      # -h 127.0.0.1 forces a TCP check. Without it, pg_isready defaults to
+      # the unix socket, which the entrypoint's *temporary* init server also
+      # listens on — so the check reports healthy for several seconds before
+      # 01-app-role.sql has run and sentinel_app exists. TCP is refused until
+      # the real server is up, after init completes.
+      test: ['CMD-SHELL', 'pg_isready -U sentinel -d sentinel -h 127.0.0.1']
       interval: 5s
       timeout: 5s
       retries: 20
@@ -21,7 +24,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    ports: ['6379:6379']
+    ports: ['127.0.0.1:6379:6379']
     volumes: [redis-data:/data]
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
@@ -36,7 +39,7 @@ services:
     environment:
       MINIO_ROOT_USER: sentinel_local
       MINIO_ROOT_PASSWORD: sentinel_local_secret
-    ports: ['9000:9000', '9001:9001']
+    ports: ['127.0.0.1:9000:9000', '127.0.0.1:9001:9001']
     volumes: [minio-data:/data]
     healthcheck:
       test: ['CMD', 'mc', 'ready', 'local']
@@ -61,7 +64,7 @@ services:
   mailpit:
     image: axllent/mailpit:latest
     restart: unless-stopped
-    ports: ['1025:1025', '8025:8025']
+    ports: ['127.0.0.1:1025:1025', '127.0.0.1:8025:8025']
     healthcheck:
       test: ['CMD', 'wget', '-qO-', 'http://localhost:8025/readyz']
       interval: 5s
@@ -70,11 +73,13 @@ services:
 
   # Deliberately vulnerable target for engine tests. Local only, and safe to
   # scan because we own it. Started with: docker compose --profile testing up -d
+  # Bound to loopback only — this is a real, unpatched vulnerable app; on any
+  # interface other than localhost it is reachable by the whole LAN.
   vulnerable-target:
     image: bkimminich/juice-shop:latest
     profiles: [testing]
     restart: unless-stopped
-    ports: ['8080:3000']
+    ports: ['127.0.0.1:8080:3000']
 
 volumes:
   postgres-data:

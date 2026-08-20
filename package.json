@@ -8,6 +8,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "postinstall": "pnpm --filter @sentinel/db db:generate",
     "build": "turbo run build",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
@@ -15,15 +16,16 @@
     "test:integration": "vitest run --project integration --passWithNoTests",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "db:migrate": "pnpm --filter @sentinel/db db:migrate",
-    "db:migrate:create": "pnpm --filter @sentinel/db db:migrate:create",
-    "db:reset": "pnpm --filter @sentinel/db db:reset",
-    "db:studio": "pnpm --filter @sentinel/db db:studio",
+    "db:migrate": "dotenv -e .env -- pnpm --filter @sentinel/db exec prisma migrate dev",
+    "db:migrate:create": "dotenv -e .env -- pnpm --filter @sentinel/db exec prisma migrate dev --create-only",
+    "db:reset": "dotenv -e .env -- pnpm --filter @sentinel/db exec prisma migrate reset --force",
+    "db:studio": "dotenv -e .env -- pnpm --filter @sentinel/db exec prisma studio",
     "db:seed": "pnpm --filter @sentinel/db db:seed"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
     "@types/node": "^22.0.0",
+    "dotenv-cli": "^7.4.0",
     "eslint": "^9.0.0",
     "eslint-import-resolver-typescript": "^4.0.0",
     "eslint-plugin-import": "^2.31.0",

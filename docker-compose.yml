@@ -1,2 +1,4 @@
+name: sentinel
+
 include:
   - infra/docker/docker-compose.yml

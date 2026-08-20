@@ -19,6 +19,17 @@ describe('newId', () => {
     expect(first < second).toBe(true);
   });
 
+  // Two IDs 5ms apart differ in their timestamp bytes regardless of whether
+  // the base32 alphabet is even in the right order, so the test above can't
+  // catch an alphabet-ordering bug (e.g. two characters transposed). Most
+  // generations in a tight loop land in the same millisecond, where ordering
+  // depends entirely on encoding the trailing bits with a monotonically
+  // increasing alphabet — this is what actually exercises that.
+  it('sorts chronologically across many same-millisecond generations', () => {
+    const ids = Array.from({ length: 1000 }, () => newId('scn'));
+    expect([...ids].sort()).toEqual(ids);
+  });
+
   it('exposes a prefix for every entity type the API returns', () => {
     expect(ID_PREFIXES.org).toBe('org');
     expect(ID_PREFIXES.usr).toBe('usr');
@@ -31,6 +42,21 @@ describe('newId', () => {
 
   it('returns undefined for a string that is not one of our identifiers', () => {
     expect(parseIdPrefix('not-an-id')).toBeUndefined();
+    // Contains I/O/U, which Crockford base32 excludes — this rejects on the
+    // charset regex before ever reaching the registry check below, so on its
+    // own it does not prove the registry guard exists.
     expect(parseIdPrefix('xyz_01J8XK2P9V3QWERTYUIOPASDF')).toBeUndefined();
+  });
+
+  it('rejects a syntactically valid but unregistered prefix', () => {
+    // Same shape as a real ID — three lowercase letters, underscore, 26
+    // valid Crockford characters — but 'xyz' is not a key in ID_PREFIXES.
+    // Deleting the `candidate in ID_PREFIXES` guard would let this through.
+    const body = newId('org').slice(4);
+    expect(parseIdPrefix(`xyz_${body}`)).toBeUndefined();
+  });
+
+  it('rejects a well-formed identifier preceded by extra characters', () => {
+    expect(parseIdPrefix(`garbage-${newId('org')}`)).toBeUndefined();
   });
 });
