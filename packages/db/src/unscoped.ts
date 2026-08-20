@@ -8,10 +8,14 @@
  */
 import { PrismaClient, Prisma } from '../generated/client/index.js';
 
-// `Prisma` is exported as a value, not type-only: tenant-client.ts needs
-// `Prisma.PrismaClientKnownRequestError` at runtime (to raise Prisma's own
-// P2025 "not found" shape for a cross-tenant findUniqueOrThrow miss — see
-// its file comment), not just the namespace's types.
+// `Prisma` is exported as a value, not type-only: the integration tests need
+// `Prisma.PrismaClientKnownRequestError` at runtime (`instanceof` and shape
+// assertions on the error findUniqueOrThrow raises for a cross-tenant miss —
+// see tenant-client.integration.spec.ts and tenant-transaction.integration.spec.ts).
+// tenant-client.ts itself only needs `Prisma`'s types, via the `type PrismaClient`
+// import above; production code does not construct this error directly — it
+// re-runs the query so Prisma's own engine raises it (see that file's
+// `notFoundIsThrow` comment for why).
 export { PrismaClient, Prisma };
 
 export function createUnscopedPrismaClient(databaseUrl: string): PrismaClient {

@@ -6,15 +6,16 @@ import { decideScope } from './tenant-scope.js';
 export type TenantPrismaClient = PrismaClient;
 
 /**
- * A `where` value guaranteed to match nothing, for every tenant-owned model
- * and the tenant root — every one of them carries a plain `id String @id`,
- * so `{ id: NEVER_MATCHES_ID }` is always a structurally valid
- * `WhereUniqueInput`, regardless of what the caller's own `where` looked
- * like (a compound unique key included). Used to re-run `findUniqueOrThrow`
- * so Prisma's own engine raises its own not-found error — see the
- * `notFoundIsThrow` branch below for why that matters.
+ * An `id` value for building a `where` guaranteed to match nothing, for
+ * every tenant-owned model and the tenant root — every one of them carries
+ * a plain `id String @id`, so `{ id: NEVER_MATCHES_ID }` is always a
+ * structurally valid `WhereUniqueInput`, regardless of what the caller's own
+ * `where` looked like (a compound unique key included). Used to re-run
+ * `findUniqueOrThrow` so Prisma's own engine raises its own not-found error
+ * — see the `notFoundIsThrow` branch below for why that matters, and for why
+ * this constant alone is not used as the `where` directly.
  */
-const NEVER_MATCHES_ID = '00000000000000000000000000-tenant-scope-miss';
+export const NEVER_MATCHES_ID = '00000000000000000000000000-tenant-scope-miss';
 
 /**
  * Binds a Prisma client to one organisation.
@@ -107,7 +108,24 @@ export function createTenantClient(
                 // wording — see tenant-client.integration.spec.ts, which
                 // asserts message and meta against a genuine miss captured
                 // at test run time rather than a hardcoded string.
-                return query({ where: { id: NEVER_MATCHES_ID } });
+                //
+                // The where clause below is deliberately self-contradictory
+                // — `id` equals the sentinel AND NOT `id` equals the
+                // sentinel — rather than a plain `{ id: NEVER_MATCHES_ID }`
+                // equality lookup. A plain equality lookup can be defeated:
+                // found live in review, planting a row whose `id` literally
+                // IS the sentinel string (reachable only through the
+                // unscoped client — RLS and `newId()`'s Crockford format
+                // both independently prevent it in normal operation) made
+                // this query return THAT row's full, unrelated content
+                // instead of throwing. A self-contradictory where has no
+                // row that could ever satisfy it, regardless of what is in
+                // the table — logically impossible, not merely unreachable
+                // in practice — while still going through Prisma's own
+                // engine for the not-found error, same as above.
+                return query({
+                  where: { id: NEVER_MATCHES_ID, NOT: { id: NEVER_MATCHES_ID } },
+                });
               }
               return null;
             }

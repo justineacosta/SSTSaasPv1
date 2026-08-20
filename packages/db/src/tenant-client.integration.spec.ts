@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createUnscopedPrismaClient, Prisma, type PrismaClient } from './unscoped.js';
 import { startPostgresHarness, type PostgresHarness } from './testing/postgres-harness.js';
-import { createTenantClient } from './tenant-client.js';
+import { createTenantClient, NEVER_MATCHES_ID } from './tenant-client.js';
 import { MissingTenantContextError } from './errors.js';
 import { newId } from './id.js';
 
@@ -281,5 +281,26 @@ describe('findUniqueOrThrow is not an existence oracle across tenants (review ro
     expect(crossTenantError?.code).toBe(genuineMissError?.code);
     expect(crossTenantError?.message).toBe(genuineMissError?.message);
     expect(crossTenantError?.meta).toEqual(genuineMissError?.meta);
+  });
+
+  it('still throws not-found even when a row id literally collides with the fallback sentinel', async () => {
+    // Found live in review: the fallback query used to be a plain equality
+    // lookup (`{ id: NEVER_MATCHES_ID }`), which a row planted with that
+    // exact id — reachable only through the unscoped client, exactly the
+    // connection this test uses — could satisfy, returning that row's full,
+    // unrelated content instead of throwing. Only reachable on a connection
+    // that can insert arbitrary ids at all (RLS and newId()'s Crockford
+    // format both independently prevent it in normal operation), but this is
+    // precisely that connection, so it must still hold here.
+    const collisionUser = newId('usr');
+    await root.user.create({ data: { id: collisionUser, email: `${collisionUser}@example.test` } });
+    await root.membership.create({
+      data: { id: NEVER_MATCHES_ID, organizationId: orgB, userId: collisionUser, roleId },
+    });
+
+    const db = createTenantClient(root, { organizationId: orgA });
+    await expect(db.membership.findUniqueOrThrow({ where: { id: membershipB } })).rejects.toMatchObject({
+      code: 'P2025',
+    });
   });
 });
