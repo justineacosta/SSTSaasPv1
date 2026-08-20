@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createUnscopedPrismaClient, type PrismaClient } from './unscoped.js';
+import { createUnscopedPrismaClient, Prisma, type PrismaClient } from './unscoped.js';
 import { startPostgresHarness, type PostgresHarness } from './testing/postgres-harness.js';
 import { withTenantTransaction } from './tenant-transaction.js';
 import { MissingTenantContextError } from './errors.js';
@@ -146,6 +146,49 @@ describe('both layers composed: tenant-scoped client + sentinel_app + withTenant
   });
 });
 
+describe('select/omit and the findUniqueOrThrow oracle, over the real application role (review round 3)', () => {
+  it('a narrow select still returns an owned row, without the scope column, over sentinel_app', async () => {
+    await withTenantTransaction(app, orgA, async (tx) => {
+      const row = await tx.membership.findUnique({
+        where: { id: membershipSharedA },
+        select: { id: true, status: true },
+      });
+      expect(row).toEqual({ id: membershipSharedA, status: 'ACTIVE' });
+      expect(row).not.toHaveProperty('organizationId');
+    });
+  });
+
+  it('findUniqueOrThrow raises the same error on the sentinel_app connection too', async () => {
+    // Verification item 3: the oracle fix must hold on both connections —
+    // the superuser one (tenant-client.integration.spec.ts), where only
+    // layer 1's own check produces the error, and this one, where RLS would
+    // otherwise have made the two cases look identical for a different
+    // reason (the fetch returns nothing and Prisma's own P2025 fires first).
+    // Proving it here confirms layer 1's guarantee holds independently of
+    // whether RLS happens to be engaged.
+    await withTenantTransaction(app, orgA, async (tx) => {
+      let crossTenantError: unknown;
+      try {
+        await tx.membership.findUniqueOrThrow({ where: { id: membershipSharedB } });
+      } catch (error) {
+        crossTenantError = error;
+      }
+
+      let genuineMissError: unknown;
+      try {
+        await tx.membership.findUniqueOrThrow({ where: { id: newId('mbr') } });
+      } catch (error) {
+        genuineMissError = error;
+      }
+
+      expect(crossTenantError).toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
+      expect(genuineMissError).toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
+      expect((crossTenantError as Prisma.PrismaClientKnownRequestError).code).toBe('P2025');
+      expect((genuineMissError as Prisma.PrismaClientKnownRequestError).code).toBe('P2025');
+    });
+  });
+});
+
 describe('C3: the tenant root (Organization) is scoped, over both layers', () => {
   it('scopes Organization reads to the caller\'s own org', async () => {
     const rows = await withTenantTransaction(app, orgA, (tx) => tx.organization.findMany());
@@ -278,5 +321,40 @@ describe('C1/C2: relation traversal is invisible to layer 1, caught by layer 2 (
     expect(invitations.length).toBeGreaterThan(0);
     expect(invitations.every((invitation) => invitation.organizationId === orgA)).toBe(true);
     expect(invitations.some((invitation) => invitation.tokenHash === 'hash_org_b_secret')).toBe(false);
+  });
+});
+
+describe('referential-integrity cascades run below both layers', () => {
+  it('deleting a User does not destroy another tenant\'s Membership through the FK cascade', async () => {
+    // RI cascades execute inside Postgres's own constraint machinery, below
+    // RLS and entirely outside the tenant-scoped client's view (the top-level
+    // operation is `user.delete`, not `membership.delete` — decideScope never
+    // sees the cascaded deletes at all). A user who legitimately belongs to
+    // two organisations is exactly the shape that exposes this: deleting
+    // them from orgA's context must not be able to reach orgB's row.
+    const cascadeUser = newId('usr');
+    await owner.user.create({ data: { id: cascadeUser, email: `${cascadeUser}@example.test` } });
+    const cascadeMembershipA = newId('mbr');
+    const cascadeMembershipB = newId('mbr');
+    await owner.membership.createMany({
+      data: [
+        { id: cascadeMembershipA, organizationId: orgA, userId: cascadeUser, roleId },
+        { id: cascadeMembershipB, organizationId: orgB, userId: cascadeUser, roleId },
+      ],
+    });
+
+    // Restrict means Postgres itself refuses the delete while any Membership
+    // (in any organisation) still references this user — not just a refusal
+    // of the org-A row the caller can see, a refusal of the delete entirely.
+    await expect(
+      withTenantTransaction(app, orgA, (tx) => tx.user.delete({ where: { id: cascadeUser } })),
+    ).rejects.toThrow();
+
+    const [rowA, rowB] = await Promise.all([
+      owner.membership.findUnique({ where: { id: cascadeMembershipA } }),
+      owner.membership.findUnique({ where: { id: cascadeMembershipB } }),
+    ]);
+    expect(rowA?.id).toBe(cascadeMembershipA);
+    expect(rowB?.id).toBe(cascadeMembershipB);
   });
 });

@@ -71,10 +71,60 @@ export type ScopePlan =
       readonly checkField: string;
       readonly expected: string;
       readonly notFoundIsThrow: boolean;
+      /**
+       * True when `args` was widened (a `select` that didn't ask for
+       * `checkField`) or narrowed-back (an `omit` that excluded it) purely so
+       * the check below has a value to read. The caller must delete
+       * `checkField` from the result before returning it, or a narrow
+       * projection the caller legitimately used would come back with an
+       * extra field it never asked for.
+       */
+      readonly stripCheckField: boolean;
     };
 
 function hasOwnScopeContext(organizationId: string | null | undefined): organizationId is string {
   return organizationId !== null && organizationId !== undefined && organizationId !== '';
+}
+
+/**
+ * `findUnique`/`findUniqueOrThrow`'s "run unmodified, check the result"
+ * design (see `decideScope` below) reads `checkField` off whatever the query
+ * actually returned — which breaks the moment a caller projects the result
+ * with `select`/`omit` and the scope column isn't part of that projection:
+ * the field comes back `undefined`, never matches, and an owned row is
+ * discarded as if it belonged to another tenant. `select` and `omit` are
+ * exactly what CLAUDE.md's N+1 and DTO discipline pushes callers toward, so
+ * this had to be handled rather than documented as a limitation.
+ *
+ * Widens `select` to include `checkField` (if the caller didn't already ask
+ * for it) or drops `checkField` from `omit` (if the caller excluded it), so
+ * the row always carries what the check needs. `select` and `omit` are
+ * mutually exclusive at the same level in Prisma, so at most one branch below
+ * ever applies. The caller must then strip `checkField` back out of the
+ * result when `stripCheckField` is true, so the shape returned still matches
+ * exactly what was asked for.
+ */
+function adjustProjectionForCheck(
+  args: unknown,
+  keyField: string,
+): { args: unknown; stripCheckField: boolean } {
+  const typed = args as { select?: Record<string, unknown>; omit?: Record<string, unknown> };
+
+  if (typed.select !== undefined) {
+    if (typed.select[keyField]) return { args, stripCheckField: false };
+    return {
+      args: { ...typed, select: { ...typed.select, [keyField]: true } },
+      stripCheckField: true,
+    };
+  }
+
+  if (typed.omit !== undefined && typed.omit[keyField]) {
+    const nextOmit = { ...typed.omit };
+    delete nextOmit[keyField];
+    return { args: { ...typed, omit: nextOmit }, stripCheckField: true };
+  }
+
+  return { args, stripCheckField: false };
 }
 
 /**
@@ -179,12 +229,14 @@ export function decideScope(
   // original, unmodified query — which correctly stays on the calling
   // connection/transaction — and check the scope column on the way out.
   if (operation === 'findUnique' || operation === 'findUniqueOrThrow') {
+    const { args: checkedArgs, stripCheckField } = adjustProjectionForCheck(args, keyField);
     return {
       kind: 'run-and-check',
-      args,
+      args: checkedArgs,
       checkField: keyField,
       expected: organizationId,
       notFoundIsThrow: operation === 'findUniqueOrThrow',
+      stripCheckField,
     };
   }
 

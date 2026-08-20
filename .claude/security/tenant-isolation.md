@@ -56,15 +56,31 @@ below:
   method call, which cannot be guaranteed to land on the same database
   connection/transaction as the original call, silently breaking read-your-own-writes and
   RLS's per-transaction GUC together — then checks the scope column on the result before
-  deciding what the caller sees;
+  deciding what the caller sees. If the caller's `select` doesn't ask for the scope
+  column, or its `omit` excludes it, the projection is temporarily widened so the check
+  has something to read, and the extra column is stripped back out of the result — a
+  narrow projection cannot make an owned row look like it belongs to nobody, and cannot
+  become a second way to bypass the check the way the original where-injection design
+  could have;
+- for `findUniqueOrThrow`, a cross-tenant row raises Prisma's own `PrismaClientKnownRequestError`
+  (code `P2025`, "No `<Model>` found") rather than a distinguishable error — a caller
+  catching P2025 to mean "not found" must see the same failure whether the row genuinely
+  doesn't exist or simply belongs to another tenant, or the *shape of the error itself*
+  becomes an oracle confirming another tenant's row exists;
 - **throws** if no organisation is present in context.
 
 **Caveat, by design, not a bug**: this only scopes the *top-level* operation. Prisma's
 extension hook fires once per top-level call and has no visibility into the nested
 operations generated for relations — a nested `include`, or a nested write under
-`data.someRelation.create/update/updateMany/deleteMany`. There is no supported way to
-intercept those from a client extension. This is exactly the class of case layer 2 exists
-to catch — see below.
+`data.someRelation.create/update/updateMany/deleteMany` — **or into referential-integrity
+cascades**, which execute inside Postgres's own constraint machinery and are not SQL the
+client ever issues at all (a `User` deleted through `user.delete()` cascading into
+`Membership` rows the extension never sees `Membership.delete` for). There is no supported
+way to intercept either from a client extension. This is exactly the class of case layer 2
+exists to catch — see below. **Layer 2 does not run at all** for migrations, seeds, and the
+platform-admin module (they use the unscoped client outside `withTenantTransaction`, by
+design — see the ESLint exemption below): those code paths carry no defence-in-depth and
+must get isolation right on their own, reviewed accordingly.
 
 The unscoped client lives in one module. An ESLint rule forbids importing it outside
 `packages/db/migrations`, seeds, and the platform-admin module, and CI fails on violation.
@@ -86,11 +102,16 @@ theoretical one: it shipped once during Task 6, silently leaving every caller of
 `packages/db/src/tenant-transaction.integration.spec.ts`, and its `tenant-transaction.ts`
 file-level comment, for the fix and the regression test.
 
-This catches what layer 1 cannot, most importantly relation traversal (the caveat above):
-hand-written SQL, raw queries for optimised analytics, future ORM changes, and mistakes in
-the extension itself. Two independent mechanisms must both be wrong for a leak to occur —
-proven together, not just individually, by
-`tenant-transaction.integration.spec.ts`'s nested-read and nested-write cases.
+This catches what layer 1 cannot, most importantly relation traversal and
+referential-integrity cascades (the caveat above): hand-written SQL, raw queries for
+optimised analytics, future ORM changes, and mistakes in the extension itself. Two
+independent mechanisms must both be wrong for a leak to occur — proven together, not just
+individually, by `tenant-transaction.integration.spec.ts`'s nested-read and nested-write
+cases. RI cascades are a **third** category layer 2 cannot catch either — they run inside
+Postgres's constraint machinery, below RLS — which is why every FK into a tenant-owned
+table is `RESTRICT` rather than `CASCADE` (`Membership.userId` was the one exception,
+found live in review and fixed; see `packages/db/prisma/schema.prisma`'s relation
+comments for the reasoning per FK).
 
 ### Layer 3 — Response serialisation
 

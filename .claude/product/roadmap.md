@@ -13,7 +13,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 | Phase | Scope | Status |
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
-| 1 | Production foundation | **Not Implemented** |
+| 1 | Production foundation | **Partially Implemented** |
 | 2 | Identity | **Not Implemented** |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
@@ -26,9 +26,17 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 | 11 | Enterprise | **Not Implemented** |
 | 12 | Additional engines | **Not Implemented** |
 
-**No application code exists.** The repository contains a licence, this documentation tree,
-and nothing else. Nothing in this product runs, scans, stores, bills, or authenticates
-today.
+**Four Phase 1 packages exist and are verified working**, per the honesty rule in
+`CLAUDE.md` (run and verified, not just written): `packages/config` (validated env loading),
+`packages/observability` (structured logging with redaction), `packages/contracts` (error
+envelope, pagination, IDs, permission matrix), and `packages/db` (Prisma schema, migrations,
+the mandatory tenant-scoped client, and PostgreSQL row-level security — the two-layer tenant
+isolation control the whole roadmap depends on, covered by 40+ integration tests and 20+ unit
+tests against a real Postgres 16). There is no `apps/web` or `apps/api` yet, nothing is
+deployed, and no request ever reaches this code from outside a test — so Phase 1 is Partially
+Implemented, not Implemented: the foundation packages are real, but the application built on
+top of them is not. Nothing in this product runs, scans, stores, bills, or authenticates for
+an actual user today.
 
 ### Blocked items
 

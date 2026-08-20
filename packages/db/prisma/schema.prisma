@@ -174,8 +174,21 @@ model Membership {
   deletedAt      DateTime?        @db.Timestamptz(6)
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role         Role         @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  // Restrict, not Cascade: a User -> Membership cascade runs as referential
+  // integrity, below both RLS and the tenant-scoped client — deleting a user
+  // who belongs to several organisations would silently destroy every other
+  // tenant's Membership row for them in one statement, invisible to either
+  // isolation layer. Verified live (review round 3): over sentinel_app,
+  // inside withTenantTransaction(orgA), deleting a user shared with orgB
+  // destroyed orgB's membership too. Restrict means deleting a User fails
+  // while any Membership still references them — self-serve account
+  // deletion (Phase 2) must remove the user's memberships, one organisation
+  // at a time through the normal tenant-scoped path, before the User row
+  // itself can go. DELETE on User is deliberately still granted to
+  // sentinel_app; account deletion is a legitimate Phase 2 flow, not a
+  // platform-admin-only one.
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Restrict)
 
   // KNOWN ISSUE: this is a full unique index, but Membership soft-deletes via
   // `deletedAt`. It should be a partial index — UNIQUE (organizationId,

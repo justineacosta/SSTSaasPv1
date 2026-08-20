@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createUnscopedPrismaClient, type PrismaClient } from './unscoped.js';
+import { createUnscopedPrismaClient, Prisma, type PrismaClient } from './unscoped.js';
 import { startPostgresHarness, type PostgresHarness } from './testing/postgres-harness.js';
 import { createTenantClient } from './tenant-client.js';
 import { MissingTenantContextError } from './errors.js';
@@ -13,6 +13,7 @@ const orgB = newId('org');
 const userA = newId('usr');
 const userB = newId('usr');
 const roleId = newId('rol');
+let membershipA = '';
 let membershipB = '';
 
 beforeAll(async () => {
@@ -34,8 +35,9 @@ beforeAll(async () => {
       { id: userB, email: 'b@example.test' },
     ],
   });
+  membershipA = newId('mbr');
   await root.membership.create({
-    data: { id: newId('mbr'), organizationId: orgA, userId: userA, roleId },
+    data: { id: membershipA, organizationId: orgA, userId: userA, roleId },
   });
   membershipB = newId('mbr');
   await root.membership.create({
@@ -184,5 +186,83 @@ describe('cross-tenant harness over the resource registry', () => {
         expect((row as { organizationId: string }).organizationId).not.toBe(orgB);
       }
     }
+  });
+});
+
+describe('select/omit do not defeat the scope check (review round 3)', () => {
+  it('findUnique with a narrow select still returns an owned row, without the scope column', async () => {
+    const db = createTenantClient(root, { organizationId: orgA });
+    const row = await db.membership.findUnique({
+      where: { id: membershipA },
+      select: { id: true, status: true },
+    });
+    expect(row).toEqual({ id: membershipA, status: 'ACTIVE' });
+    expect(row).not.toHaveProperty('organizationId');
+  });
+
+  it('findUnique with omit excluding the scope column still returns an owned row, without it', async () => {
+    const db = createTenantClient(root, { organizationId: orgA });
+    const row = await db.membership.findUnique({
+      where: { id: membershipA },
+      omit: { organizationId: true },
+    });
+    expect(row?.id).toBe(membershipA);
+    expect(row).not.toHaveProperty('organizationId');
+  });
+
+  it('findUnique with a select that already asks for the scope column keeps it', async () => {
+    const db = createTenantClient(root, { organizationId: orgA });
+    const row = await db.membership.findUnique({
+      where: { id: membershipA },
+      select: { id: true, organizationId: true },
+    });
+    expect(row).toEqual({ id: membershipA, organizationId: orgA });
+  });
+
+  it('the tenant root: findUnique with select excluding id still returns the row, without id', async () => {
+    const db = createTenantClient(root, { organizationId: orgA });
+    const row = await db.organization.findUnique({
+      where: { id: orgA },
+      select: { name: true },
+    });
+    expect(row).toEqual({ name: 'Tenant A' });
+    expect(row).not.toHaveProperty('id');
+  });
+
+  it('a narrow select does not let a cross-tenant row through', async () => {
+    // The property under test isn't just "select works" — it's that
+    // narrowing the projection cannot become a second way to bypass the
+    // scope check the way the original design's where-injection could.
+    const db = createTenantClient(root, { organizationId: orgA });
+    const row = await db.membership.findUnique({
+      where: { id: membershipB },
+      select: { id: true, status: true },
+    });
+    expect(row).toBeNull();
+  });
+});
+
+describe('findUniqueOrThrow is not an existence oracle across tenants (review round 3)', () => {
+  it('raises the same error class and code for a cross-tenant row as for one that does not exist', async () => {
+    const db = createTenantClient(root, { organizationId: orgA });
+
+    let crossTenantError: unknown;
+    try {
+      await db.membership.findUniqueOrThrow({ where: { id: membershipB } });
+    } catch (error) {
+      crossTenantError = error;
+    }
+
+    let genuineMissError: unknown;
+    try {
+      await db.membership.findUniqueOrThrow({ where: { id: newId('mbr') } });
+    } catch (error) {
+      genuineMissError = error;
+    }
+
+    expect(crossTenantError).toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
+    expect(genuineMissError).toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
+    expect((crossTenantError as Prisma.PrismaClientKnownRequestError).code).toBe('P2025');
+    expect((genuineMissError as Prisma.PrismaClientKnownRequestError).code).toBe('P2025');
   });
 });

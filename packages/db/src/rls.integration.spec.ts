@@ -73,12 +73,15 @@ describe('row-level security', () => {
     expect(rows[0]?.rolsuper).toBe(false);
   });
 
-  it('enables and forces RLS on every registered tenant-owned table', async () => {
+  it('enables and forces RLS on every registered tenant-owned table and the tenant root', async () => {
+    // Organization (the tenant root) added in review round 3: its RLS flags
+    // were correct from the moment the migration landed, but untested —
+    // this only asserted the three TENANT_OWNED_MODELS.
     const rows = await owner.$queryRaw<{ relname: string; relrowsecurity: boolean; relforcerowsecurity: boolean }[]>`
       SELECT relname, relrowsecurity, relforcerowsecurity
       FROM pg_class
-      WHERE relname IN ('Membership', 'Invitation', 'AuditEvent')`;
-    expect(rows).toHaveLength(3);
+      WHERE relname IN ('Membership', 'Invitation', 'AuditEvent', 'Organization')`;
+    expect(rows).toHaveLength(4);
     for (const row of rows) {
       expect(row.relrowsecurity, `${row.relname} RLS enabled`).toBe(true);
       expect(row.relforcerowsecurity, `${row.relname} RLS forced`).toBe(true);

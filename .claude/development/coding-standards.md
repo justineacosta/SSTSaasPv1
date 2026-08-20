@@ -85,6 +85,16 @@ Always through the tenant-scoped client. Every repository method takes a `Tenant
 `select` and `include` are explicit — never fetch a whole model to read one column, and never
 rely on Prisma's default field set, which changes when the schema changes.
 
+**On tenant-owned models, write the scalar foreign key directly** — `organizationId: orgId`
+in a `create`/`upsert` payload — **never Prisma's relation-connect form**
+(`organization: { connect: { id: orgId } }`). The tenant-scoped client
+(`packages/db/src/tenant-client.ts`) forces the scalar column into `data` for exactly these
+operations; a `connect`-shaped payload has no `organizationId` key for it to force, and fails
+with "Unknown argument `organizationId`". This is a deliberate scope decision, not an
+oversight to file a bug about: teaching the extension to normalise `connect`/`connectOrCreate`
+shapes would add meaningfully more surface to a file that has already produced four Critical
+tenant-isolation review findings, and it stays small and auditable instead.
+
 Multi-write operations run in a transaction, with the audit event inside it and side effects
 (queue, email, webhook, realtime) **after commit**.
 

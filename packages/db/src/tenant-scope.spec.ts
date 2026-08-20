@@ -47,6 +47,7 @@ describe('decideScope', () => {
       checkField: 'organizationId',
       expected: 'org_a',
       notFoundIsThrow: false,
+      stripCheckField: false,
     });
   });
 
@@ -54,6 +55,94 @@ describe('decideScope', () => {
     const plan = decideScope('Membership', 'findUniqueOrThrow', { where: { id: 'mbr_x' } }, 'org_a');
     expect(plan.kind).toBe('run-and-check');
     expect(plan.kind === 'run-and-check' && plan.notFoundIsThrow).toBe(true);
+  });
+
+  it('widens a select that omits the scope column, and flags it for stripping', () => {
+    // Important (review round 3): reading the scope column off the result
+    // only works if the query actually fetched it. A caller's own `select`
+    // must not silently make an owned row look like it belongs to nobody.
+    const plan = decideScope(
+      'Membership',
+      'findUnique',
+      { where: { id: 'mbr_x' }, select: { id: true, status: true } },
+      'org_a',
+    );
+    expect(plan).toEqual({
+      kind: 'run-and-check',
+      args: { where: { id: 'mbr_x' }, select: { id: true, status: true, organizationId: true } },
+      checkField: 'organizationId',
+      expected: 'org_a',
+      notFoundIsThrow: false,
+      stripCheckField: true,
+    });
+  });
+
+  it('leaves a select that already asks for the scope column alone', () => {
+    const plan = decideScope(
+      'Membership',
+      'findUnique',
+      { where: { id: 'mbr_x' }, select: { id: true, organizationId: true } },
+      'org_a',
+    );
+    expect(plan).toEqual({
+      kind: 'run-and-check',
+      args: { where: { id: 'mbr_x' }, select: { id: true, organizationId: true } },
+      checkField: 'organizationId',
+      expected: 'org_a',
+      notFoundIsThrow: false,
+      stripCheckField: false,
+    });
+  });
+
+  it('drops the scope column from an omit that excludes it, and flags it for stripping', () => {
+    const plan = decideScope(
+      'Membership',
+      'findUnique',
+      { where: { id: 'mbr_x' }, omit: { organizationId: true, updatedAt: true } },
+      'org_a',
+    );
+    expect(plan).toEqual({
+      kind: 'run-and-check',
+      args: { where: { id: 'mbr_x' }, omit: { updatedAt: true } },
+      checkField: 'organizationId',
+      expected: 'org_a',
+      notFoundIsThrow: false,
+      stripCheckField: true,
+    });
+  });
+
+  it('leaves an omit that does not exclude the scope column alone', () => {
+    const plan = decideScope(
+      'Membership',
+      'findUnique',
+      { where: { id: 'mbr_x' }, omit: { updatedAt: true } },
+      'org_a',
+    );
+    expect(plan).toEqual({
+      kind: 'run-and-check',
+      args: { where: { id: 'mbr_x' }, omit: { updatedAt: true } },
+      checkField: 'organizationId',
+      expected: 'org_a',
+      notFoundIsThrow: false,
+      stripCheckField: false,
+    });
+  });
+
+  it('widens select by id for the tenant root too', () => {
+    const plan = decideScope(
+      'Organization',
+      'findUnique',
+      { where: { id: 'org_a' }, select: { name: true } },
+      'org_a',
+    );
+    expect(plan).toEqual({
+      kind: 'run-and-check',
+      args: { where: { id: 'org_a' }, select: { name: true, id: true } },
+      checkField: 'id',
+      expected: 'org_a',
+      notFoundIsThrow: false,
+      stripCheckField: true,
+    });
   });
 
   it('scopes the tenant root by id, not organizationId', () => {

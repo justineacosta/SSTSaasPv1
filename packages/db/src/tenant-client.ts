@@ -1,4 +1,4 @@
-import type { PrismaClient } from './unscoped.js';
+import { Prisma, type PrismaClient } from './unscoped.js';
 import { MissingTenantContextError } from './errors.js';
 import type { TenantContext } from './tenant-context.js';
 import { decideScope } from './tenant-scope.js';
@@ -28,6 +28,16 @@ export type TenantPrismaClient = PrismaClient;
  * activates it. See tenant-transaction.integration.spec.ts for the proof
  * that nested reads and nested writes are caught by RLS even though this
  * file cannot see them.
+ *
+ * HOUSE RULE, tenant-owned models: write the scalar foreign key directly
+ * (`organizationId: orgId`) in `create`/`upsert` payloads, never Prisma's
+ * relation-connect form (`organization: { connect: { id: orgId } }`). The
+ * scoping this file performs forces the scalar column into `data`, so a
+ * `connect`-shaped payload fails with "Unknown argument `organizationId`" —
+ * see development/coding-standards.md. Deliberately not taught to this
+ * extension: normalising `connect`/`connectOrCreate` shapes would add
+ * meaningfully more surface to a file that has already produced four
+ * Critical review findings, and this stays small and auditable instead.
  */
 export function createTenantClient(
   base: PrismaClient,
@@ -58,9 +68,30 @@ export function createTenantClient(
               const result = await query(plan.args as never);
               if (result === null || result === undefined) return result;
               const row = result as Record<string, unknown>;
-              if (row[plan.checkField] === plan.expected) return result;
+              if (row[plan.checkField] === plan.expected) {
+                // `select`/`omit` may have been widened purely so the check
+                // above had a value to read (tenant-scope.ts's
+                // adjustProjectionForCheck); strip it back out so the caller
+                // gets exactly the shape it asked for, not an extra field.
+                if (plan.stripCheckField) delete row[plan.checkField];
+                return row;
+              }
               if (plan.notFoundIsThrow) {
-                throw new MissingTenantContextError(model ?? '(unknown model)', operation);
+                // Raises Prisma's own not-found shape, not
+                // MissingTenantContextError: findUniqueOrThrow's contract is
+                // "throws P2025 when nothing matches", and a caller catching
+                // that specific error to distinguish "not found" from other
+                // failures must see the same class and code whether the row
+                // genuinely doesn't exist or simply belongs to another
+                // tenant. A different error here would make the *response*
+                // itself an existence oracle — confirming another tenant's
+                // row is there by the shape of the failure alone, even
+                // though its contents never leak.
+                throw new Prisma.PrismaClientKnownRequestError(`No ${model ?? 'record'} found`, {
+                  code: 'P2025',
+                  clientVersion: Prisma.prismaVersion.client,
+                  meta: { cause: `No ${model ?? 'record'} found` },
+                });
               }
               return null;
             }
