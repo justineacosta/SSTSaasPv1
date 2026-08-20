@@ -1,12 +1,9 @@
 import { Controller, Get, Inject, VERSION_NEUTRAL } from '@nestjs/common';
 import { ERROR_CODES } from '@sentinel/contracts';
 import { Public } from '../../common/decorators/access.decorator.js';
+import { RateLimitExempt } from '../../common/decorators/rate-limit.decorator.js';
 import { DomainError } from '../../common/errors/domain-error.js';
-import {
-  type DetailedReport,
-  HealthService,
-  type ReadinessReport,
-} from './health.service.js';
+import { type DetailedReport, HealthService, type ReadinessReport } from './health.service.js';
 
 /**
  * `VERSION_NEUTRAL`, and excluded from the global `api` prefix in `main.ts`, so
@@ -25,8 +22,15 @@ export class HealthController {
    * A liveness probe that checks Postgres restarts every application instance
    * simultaneously during a database blip, turning a hiccup into a full
    * outage. monitoring.md §5.
+   *
+   * `@RateLimitExempt()` is part of that guarantee, not an optimisation: the
+   * rate-limit guard reaches Redis, so a limited liveness route would depend on
+   * a backing service. The exemption is asserted by a test that watches for
+   * Redis traffic while probing, because the property previously held only
+   * because no scope of the default class happened to resolve.
    */
   @Public()
+  @RateLimitExempt()
   @Get('live')
   live(): { status: 'ok' } {
     return { status: 'ok' };

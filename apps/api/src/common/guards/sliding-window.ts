@@ -48,10 +48,14 @@ export function slidingWindowKey(
  *
  * `now` is supplied by the caller rather than read from Redis. That makes the
  * script deterministic and testable at arbitrary points in a window, at the
- * cost of depending on the API instances' clocks agreeing to within a fraction
- * of the window. For the shortest window in the table — 60 seconds — ordinary
- * NTP skew of a few milliseconds is immaterial. If a future window is short
- * enough for skew to matter, this should read Redis's own `TIME` instead.
+ * cost of depending on the API instances' clocks agreeing. Ordinary NTP skew of
+ * a few milliseconds is immaterial against the shortest window in the table (60
+ * seconds), but the failure mode at the other end is worth naming: an instance
+ * whose clock runs fast writes a future score, and that entry keeps a bucket
+ * closed for the duration of the skew, not of the window. `resetSeconds` is
+ * clamped to the window so the number reported to a client stays honest, but
+ * the lockout itself is real. If clock discipline cannot be relied on, this
+ * should read Redis's own `TIME` instead.
  */
 const CONSUME_SCRIPT = `
 local key = KEYS[1]
@@ -115,7 +119,15 @@ export async function consumeSlidingWindow(
   // invites an immediate retry that is certain to fail.
   const resetMs = oldestScore < 0 ? 0 : oldestScore + windowMs - now;
   const allowed = allowedFlag === 1;
-  const resetSeconds = Math.max(allowed ? 0 : 1, Math.ceil(Math.max(resetMs, 0) / 1000));
+  // Clamped to the window at the top end. An entry written by an instance whose
+  // clock runs fast carries a future score, and without the clamp a correct
+  // instance would advertise a Retry-After of `skew + window` — for an hour-fast
+  // clock, an hour-long lockout reported as if it were policy. Nothing can
+  // legitimately need to wait longer than the window itself.
+  const resetSeconds = Math.min(
+    window.windowSeconds,
+    Math.max(allowed ? 0 : 1, Math.ceil(Math.max(resetMs, 0) / 1000)),
+  );
 
   return {
     allowed,

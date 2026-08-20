@@ -18,10 +18,30 @@ export interface Window {
   readonly windowSeconds: number;
 }
 
+/**
+ * Where the `perPrincipal` scope's identifier comes from.
+ *
+ * The three per-*account* rows of §1 — login, password reset, email
+ * verification resend — are unauthenticated by definition: a failed login
+ * carries no authenticated principal, and "5 / 15 min per account" means the
+ * account being *attempted*, which lives in the request body. Reading
+ * `request.principalId` for those classes resolves nothing, and because their
+ * `perIp` scope does resolve, the miss would be skipped silently — a route that
+ * looks limited, advertises a limit in its headers, and does not apply the
+ * control that actually stops credential stuffing.
+ *
+ * `'authenticated'` is the session/API-key principal. `{ bodyField }` names the
+ * field to read instead; its value is hashed before it becomes part of a key,
+ * so an email address never lands in Redis or in a `KEYS` listing in plaintext.
+ */
+export type PrincipalSource = 'authenticated' | { readonly bodyField: string };
+
 export interface RateLimitClassConfig {
   readonly perIp?: Window;
   readonly perPrincipal?: Window;
   readonly perOrganization?: Window;
+  /** Required whenever `perPrincipal` is declared. */
+  readonly principalSource?: PrincipalSource;
   /**
    * What to do when the limiter cannot reach a decision — Redis is unavailable,
    * or no declared scope could be resolved.
@@ -38,16 +58,21 @@ export const RATE_LIMIT_CLASSES = {
   login: {
     perPrincipal: { limit: 5, windowSeconds: 900 },
     perIp: { limit: 20, windowSeconds: 900 },
+    principalSource: { bodyField: 'email' },
     failMode: 'closed',
   },
   registration: { perIp: { limit: 3, windowSeconds: 3600 }, failMode: 'closed' },
   passwordReset: {
     perPrincipal: { limit: 3, windowSeconds: 3600 },
     perIp: { limit: 10, windowSeconds: 3600 },
+    // §1 reads "3 / hour per address". The address is the one being reset, not
+    // a logged-in user — nobody is logged in on this endpoint.
+    principalSource: { bodyField: 'email' },
     failMode: 'closed',
   },
   emailVerificationResend: {
     perPrincipal: { limit: 3, windowSeconds: 3600 },
+    principalSource: { bodyField: 'email' },
     failMode: 'closed',
   },
   invitations: { perOrganization: { limit: 50, windowSeconds: 86_400 }, failMode: 'closed' },
@@ -57,8 +82,16 @@ export const RATE_LIMIT_CLASSES = {
   scanCreate: { perOrganization: { limit: 10, windowSeconds: 60 }, failMode: 'closed' },
   evidenceUpload: { perOrganization: { limit: 100, windowSeconds: 3600 }, failMode: 'closed' },
   reportGeneration: { perOrganization: { limit: 10, windowSeconds: 3600 }, failMode: 'closed' },
-  generalSession: { perPrincipal: { limit: 1000, windowSeconds: 60 }, failMode: 'open' },
-  generalApiKey: { perPrincipal: { limit: 600, windowSeconds: 60 }, failMode: 'open' },
+  generalSession: {
+    perPrincipal: { limit: 1000, windowSeconds: 60 },
+    principalSource: 'authenticated',
+    failMode: 'open',
+  },
+  generalApiKey: {
+    perPrincipal: { limit: 600, windowSeconds: 60 },
+    principalSource: 'authenticated',
+    failMode: 'open',
+  },
 } as const satisfies Record<string, RateLimitClassConfig>;
 
 export type RateLimitClass = keyof typeof RATE_LIMIT_CLASSES;

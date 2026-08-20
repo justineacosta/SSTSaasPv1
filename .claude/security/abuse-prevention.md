@@ -1,10 +1,14 @@
 # Abuse prevention and rate limiting
 
-> **Status: Rate limiting Implemented (Phase 1).** Quotas Phase 10; anomaly detection Phase 11;
+> **Status: Rate limiting Implemented (Phase 1), governing nothing yet.** Quotas Phase 10; anomaly detection Phase 11;
 > the enforcement ladder in §4 Phase 11. The limiter is a global Nest guard —
 > `apps/api/src/common/guards/rate-limit.guard.ts` — over a Redis sorted-set window in
 > `sliding-window.ts`, with the table below transcribed into `rate-limit.config.ts` and that
-> transcription asserted value by value.
+> transcription asserted value by value. It limits no endpoint today: every class is keyed by
+> an account, a principal or an organisation, none of which exist before Phase 2, and the only
+> routes that exist are the health probes. The control is correct ahead of the endpoints it
+> will govern — which is the point of building it now — but "Implemented" here means built and
+> tested, not currently in force.
 
 Ordinary SaaS limits abuse to protect its own capacity. We also limit it to protect people
 who are not our customers. See [`scope-controls.md`](scope-controls.md) for the controls
@@ -49,6 +53,19 @@ control is commonly built wrong:
   Putting a load balancer in front of this API therefore requires more than enabling
   `trust proxy`: the deployment must also guarantee the proxy **overwrites** the header rather
   than appending to it, or the bypass returns through the front door.
+- **The per-account rows are keyed off the request body, not an authenticated principal.**
+  Login, password reset and email verification resend are unauthenticated by definition — a
+  failed login carries no principal, and "5 / 15 min per account" means the account being
+  *attempted*. Reading a session principal there resolves nothing, and since those classes also
+  declare a per-IP scope that *does* resolve, the miss would be skipped in silence: a route
+  that refuses at the IP limit, advertises a limit in its headers, and never applies the
+  control that actually stops credential stuffing. The body value is hashed before it becomes
+  part of a key, so an email address never lands in Redis in plaintext.
+- **A refusal stops the evaluation.** Scopes are consumed in order and the first refusal ends
+  it. Otherwise a request already being rejected would still be charged against every remaining
+  window — so one address, *after* its own per-IP limit had closed, could go on burning the
+  per-account budget of every account it named and lock out arbitrarily many of them. Bounding
+  the damage a single address can do is the reason both scopes exist.
 - **An unresolvable scope is not a free pass.** `invitations` and `scanCreate` are keyed only
   per organisation, and there is no tenant context before Phase 2. If the guard simply skipped
   a scope it could not resolve, those fail-closed classes would carry no limit at all. When
@@ -119,6 +136,16 @@ is the timestamp; the window sliding; a reset derived from the oldest entry rath
 now; scope and class isolation; a forged `X-Forwarded-For` failing to mint a bucket; and both
 fail modes with Redis genuinely unreachable. Redis-outage tests point a second application at a
 dead port rather than stopping the shared container.
+
+Two further properties are asserted because each held only by accident before it was: that the
+liveness probe issues **no Redis command at all** (watched on a live `MONITOR` connection, not
+reasoned about — the rate limiter is a backing-service dependency, and `monitoring.md` §5
+defines liveness as depending on none), and that a request refused by one scope leaves the
+other scope's window unspent.
+
+Guards run after routing, so a request that matches no route is not rate limited — it is
+answered by the framework's 404 before any guard sees it. That is inherent to the mechanism and
+differs from the middleware in the same pipeline table, which covers every response.
 
 Not yet covered: per-plan overrides, concurrency, quotas, and everything in §4 — all of which
 belong to the phases that build them.

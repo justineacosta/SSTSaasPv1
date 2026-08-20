@@ -40,9 +40,17 @@ security-header and CSP middleware, the global error-envelope filter, the struct
 interceptor, the Zod validation pipe, the `@Public()`/`@RequirePermission()` access
 decorators, and a `health` module answering `/health/live`, `/health/ready` and
 `/health/detailed` against the live Postgres, Redis and MinIO stack. It has **no
-authentication, no authorization guard, no rate limiting, and no business endpoint**: the
-only routes are the health probes. The boot-time assertion that every route declares its
-access is not written yet, so the access decorators are metadata nothing reads.
+authentication, no authorization guard, and no business endpoint**: the only routes are the
+health probes. The boot-time assertion that every route declares its access is not written
+yet, so the access decorators are metadata nothing reads.
+
+Rate limiting is built and globally registered — a Redis sliding window over the table in
+`security/abuse-prevention.md` §1 — but it limits **nothing today**, and that distinction
+matters more than the checkmark. Every class in the table is keyed by an account, a principal
+or an organisation, and none of those exist before authentication ships in Phase 2; the only
+routes that exist are the probes, and liveness is deliberately exempt. What Phase 1 delivers
+is a control that is correct and tested in advance of the endpoints it will govern, not a
+control that is currently governing anything.
 
 There is no `apps/web`, nothing is deployed, and no request reaches this code from outside a
 test or a developer's own machine — so Phase 1 is Partially Implemented, not Implemented.

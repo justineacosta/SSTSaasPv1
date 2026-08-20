@@ -56,6 +56,14 @@ class FixtureController {
     return { ok: true };
   }
 
+  /** `emailVerificationResend`: body-keyed principal ONLY, no perIp scope. */
+  @Public()
+  @RateLimit('emailVerificationResend')
+  @Post('resend')
+  resend(): { ok: true } {
+    return { ok: true };
+  }
+
   /** `invitations`: per organisation only, fails CLOSED — the unresolvable-scope case. */
   @Public()
   @RateLimit('invitations')
@@ -110,11 +118,34 @@ afterAll(async () => {
   await app.close();
 });
 
+/** Only the classes this suite drives, so a developer's running app keeps its state. */
+const FIXTURE_CLASSES = [
+  'registration',
+  'login',
+  'generalSession',
+  'emailVerificationResend',
+  'invitations',
+] as const;
+
 beforeEach(async () => {
   // Every request in this suite arrives from the same loopback address, so the
-  // per-IP buckets would otherwise carry over between tests.
-  const keys = await redis.keys('ratelimit:*');
-  if (keys.length > 0) await redis.del(...keys);
+  // per-IP buckets would otherwise carry over between tests. Scanned rather
+  // than KEYS, and narrowed to this suite's own classes: the compose Redis is
+  // shared with the developer's session and with every other integration suite.
+  for (const className of FIXTURE_CLASSES) {
+    let cursor = '0';
+    do {
+      const [next, found] = await redis.scan(
+        cursor,
+        'MATCH',
+        `ratelimit:${className}:*`,
+        'COUNT',
+        500,
+      );
+      if (found.length > 0) await redis.del(...found);
+      cursor = next;
+    } while (cursor !== '0');
+  }
 });
 
 describe('rate limiting', () => {
@@ -153,24 +184,24 @@ describe('rate limiting', () => {
     expect(Number(headers['retry-after'])).toBeGreaterThanOrEqual(1);
   });
 
-  it('counts per IP and per principal independently', async () => {
-    // `login` is 5 per principal and 20 per IP. Exhausting one principal must
-    // not exhaust another's budget from the same address — otherwise the two
-    // scopes are one scope wearing two names.
+  it('counts per IP and per account independently', async () => {
+    // `login` is 5 per account and 20 per IP. Exhausting one account must not
+    // exhaust another's budget from the same address — otherwise the two scopes
+    // are one scope wearing two names.
     for (let i = 0; i < 5; i += 1) {
       await request(server)
         .post('/api/v1/fixture/login')
-        .set('x-test-principal', 'user_a')
+        .send({ email: 'user_a@example.com' })
         .expect(201);
     }
     await request(server)
       .post('/api/v1/fixture/login')
-      .set('x-test-principal', 'user_a')
+      .send({ email: 'user_a@example.com' })
       .expect(429);
 
     await request(server)
       .post('/api/v1/fixture/login')
-      .set('x-test-principal', 'user_b')
+      .send({ email: 'user_b@example.com' })
       .expect(201);
   });
 
@@ -181,7 +212,7 @@ describe('rate limiting', () => {
 
     await request(server)
       .post('/api/v1/fixture/login')
-      .set('x-test-principal', 'user_c')
+      .send({ email: 'user_c@example.com' })
       .expect(201);
   });
 
@@ -234,7 +265,7 @@ describe('rate limiting when Redis is unavailable', () => {
     await request(deadServer).post('/api/v1/fixture/registration').expect(429);
     await request(deadServer)
       .post('/api/v1/fixture/login')
-      .set('x-test-principal', 'user_d')
+      .send({ email: 'user_d@example.com' })
       .expect(429);
   });
 
@@ -244,5 +275,138 @@ describe('rate limiting when Redis is unavailable', () => {
       .get('/api/v1/fixture/general')
       .set('x-test-principal', 'user_e')
       .expect(200);
+  });
+});
+
+describe('rate limiting — the account-keyed classes', () => {
+  it('keys the per-account window off the body, not an authenticated principal', async () => {
+    // The three per-account rows of abuse-prevention.md §1 are unauthenticated
+    // by definition: a failed login carries no principal, and "5 / 15 min per
+    // account" means the account being attempted. Reading `principalId` here
+    // resolves nothing — and because `perIp` (20) does resolve, the miss would
+    // be skipped in silence, leaving a route that 429s at 20, advertises
+    // `limit: 20`, and does not apply the control that stops credential
+    // stuffing at all.
+    for (let i = 0; i < 5; i += 1) {
+      await request(server)
+        .post('/api/v1/fixture/login')
+        .send({ email: 'victim@example.com' })
+        .expect(201);
+    }
+
+    const { status, headers } = await request(server)
+      .post('/api/v1/fixture/login')
+      .send({ email: 'victim@example.com' });
+
+    // Refused at 5 by the account window, well before the per-IP window's 20.
+    expect(status).toBe(429);
+    expect(headers['ratelimit-limit']).toBe('5');
+  });
+
+  it('leaves a different account untouched when one is exhausted', async () => {
+    for (let i = 0; i < 5; i += 1) {
+      await request(server).post('/api/v1/fixture/login').send({ email: 'a@example.com' });
+    }
+    await request(server)
+      .post('/api/v1/fixture/login')
+      .send({ email: 'a@example.com' })
+      .expect(429);
+    await request(server)
+      .post('/api/v1/fixture/login')
+      .send({ email: 'b@example.com' })
+      .expect(201);
+  });
+
+  it('never puts the raw account identifier in a Redis key', async () => {
+    // The key would otherwise expose an email address to anything that can run
+    // KEYS, read a slow-log, or dump memory.
+    await request(server).post('/api/v1/fixture/login').send({ email: 'secret@example.com' });
+
+    const keys = await redis.keys('ratelimit:login:perPrincipal:*');
+    expect(keys.length).toBeGreaterThan(0);
+    for (const key of keys) {
+      expect(key).not.toContain('secret@example.com');
+      expect(key).not.toContain('secret');
+    }
+  });
+
+  it('normalises the account identifier so case and padding are one bucket', async () => {
+    for (let i = 0; i < 5; i += 1) {
+      await request(server).post('/api/v1/fixture/login').send({ email: 'Case@Example.com' });
+    }
+    await request(server)
+      .post('/api/v1/fixture/login')
+      .send({ email: '  case@example.COM  ' })
+      .expect(429);
+  });
+
+  it('applies the class fail mode when the body names no account at all', async () => {
+    // `emailVerificationResend` declares only the account scope and fails
+    // closed, so a request that names nothing must be refused rather than
+    // waved through on an unresolvable scope.
+    await request(server).post('/api/v1/fixture/resend').send({}).expect(429);
+  });
+});
+
+describe('rate limiting — a refusal must not spend another scope', () => {
+  it('does not charge the account window for a request the IP window refused', async () => {
+    // Exhaust the per-IP window (20) using 20 distinct accounts, then attack a
+    // 21st. Without the break, those refused attempts would still burn the
+    // victim's 5-per-15-minutes budget — so one address, *after* its own limit
+    // had closed, could lock out arbitrarily many accounts. The per-IP cap
+    // exists precisely to bound the damage one address can do.
+    for (let i = 0; i < 20; i += 1) {
+      await request(server)
+        .post('/api/v1/fixture/login')
+        .send({ email: `filler${i}@example.com` });
+    }
+
+    for (let i = 0; i < 6; i += 1) {
+      await request(server)
+        .post('/api/v1/fixture/login')
+        .send({ email: 'victim2@example.com' })
+        .expect(429);
+    }
+
+    const accountKeys = await redis.keys('ratelimit:login:perPrincipal:*');
+    let worst = 0;
+    for (const key of accountKeys) worst = Math.max(worst, await redis.zcard(key));
+    // Each filler account spent exactly one slot; the victim spent none, so no
+    // account window may hold more than one entry.
+    expect(worst).toBe(1);
+  });
+});
+
+describe('liveness is never rate limited', () => {
+  it('issues no Redis command at all while probing /health/live', async () => {
+    // monitoring.md §5: liveness checks the process and nothing else. The
+    // rate-limit guard reaches Redis, so a limited liveness route would acquire
+    // exactly the backing-service dependency the probe is defined not to have.
+    // Watched on a real connection rather than reasoned about, because before
+    // `@RateLimitExempt()` this property held only by accident — no scope of
+    // the default class happened to resolve.
+    const watcher = new Redis(process.env.REDIS_URL ?? 'redis://127.0.0.1:6379');
+    const monitor = await watcher.monitor();
+    const commands: string[] = [];
+    monitor.on('monitor', (_time: string, args: string[]) => {
+      commands.push(args.join(' '));
+    });
+
+    try {
+      for (let i = 0; i < 5; i += 1) await request(server).get('/health/live').expect(200);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    } finally {
+      monitor.disconnect();
+      watcher.disconnect();
+    }
+
+    expect(commands.filter((c) => c.toLowerCase().includes('ratelimit'))).toEqual([]);
+    expect(commands.filter((c) => c.toLowerCase().startsWith('eval'))).toEqual([]);
+  });
+
+  it('carries no RateLimit headers on the liveness probe', async () => {
+    const { headers } = await request(server).get('/health/live').expect(200);
+    expect(headers['ratelimit-limit']).toBeUndefined();
+    expect(headers['ratelimit-remaining']).toBeUndefined();
   });
 });
