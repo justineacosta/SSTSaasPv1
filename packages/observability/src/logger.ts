@@ -66,6 +66,14 @@ function redactInterpolationArg(value: unknown): unknown {
  * (including any custom one an application attached to the Error, which
  * could itself be secret-shaped) goes through the normal structural
  * `redact()` used everywhere else.
+ *
+ * Residual (not fixed — see the coverage list in task-3-report.md, item I5):
+ * this only runs because `serializers.err` is set to this function below. A
+ * caller who registers their *own* `err` serializer via `logger.child(...,
+ * { serializers: { err: ... } })` (or an equivalent pino API) overrides this
+ * one entirely — `formatters.log` still hands the raw, untouched `Error`
+ * downstream on the assumption that *some* `err` serializer will run, and if
+ * a caller's replaces this one, nothing redacts it.
  */
 function redactError(error: unknown): unknown {
   if (!(error instanceof Error)) return error;
@@ -118,6 +126,31 @@ function wrapChild(logger: Logger): Logger {
   return logger;
 }
 
+/**
+ * Builds a Pino JSON logger with structural redaction wired into every
+ * stage of the pipeline: the merged per-call object (`formatters.log`), the
+ * `msg` string (`hooks.logMethod`), the top-level `err` key's message and
+ * stack (`serializers.err`), and `.child()` bindings at any depth
+ * (`wrapChild`) — all verified under `pretty: true` too, since that routes
+ * through a separate worker-thread transport that only ever sees data that
+ * already passed through the stages above.
+ *
+ * Residual, by deliberate ruling rather than oversight: a secret passed as
+ * a trailing printf-style interpolation argument (`logger.info('token=%s',
+ * value)`) is covered only by the value-shape backstop —
+ * `redactInterpolationArg` runs `redactSecretsInText` (strings) or
+ * `redact()` (objects) on it before pino substitutes it into the formatted
+ * message — because that position carries no key name to match against
+ * `SECRET_KEY_FRAGMENTS`. A secret that isn't one of the five recognised
+ * shapes (bearer token, JWT, credentialed URL, Stripe-style key, PEM block)
+ * — a plain password, an opaque internal token — is indistinguishable from
+ * an ordinary interpolated value and is not redacted. Reimplementing pino's
+ * `%s`/`%d`/`%j`/`%o` formatting ourselves to close that fully was
+ * considered and rejected: maintaining a second copy of pino's
+ * interpolation semantics is a worse failure mode than the residual gap it
+ * would close. Full coverage list, including this and other residuals
+ * (I5, I6), lives in task-3-report.md.
+ */
 export function createLogger(options: CreateLoggerOptions): Logger {
   const base: LoggerOptions = {
     level: options.silent === true ? 'silent' : options.level,
@@ -159,7 +192,28 @@ export function createLogger(options: CreateLoggerOptions): Logger {
       bindings: (bindings) => redact(bindings) as Record<string, unknown>,
       log: (object) => {
         const context = getRequestContext();
-        const { [ERROR_KEY]: topLevelError, ...rest } = object;
+        // Built with the same guarded read `redact()` uses internally,
+        // rather than `const { [ERROR_KEY]: topLevelError, ...rest } =
+        // object`: rest-destructuring reads every own enumerable property
+        // up front, *before* redact() ever runs, which invokes a throwing
+        // getter outside any try/catch — the object-spread equivalent of
+        // the bug the try/catch below exists to prevent, at exactly the
+        // position most likely to be hit (the top-level merge object).
+        let topLevelError: unknown;
+        const rest: Record<string, unknown> = {};
+        for (const key of Object.keys(object)) {
+          let item: unknown;
+          try {
+            item = object[key];
+          } catch {
+            item = '[unreadable]';
+          }
+          if (key === ERROR_KEY) {
+            topLevelError = item;
+          } else {
+            rest[key] = item;
+          }
+        }
         const redactedRest = redact(rest) as Record<string, unknown>;
         const redacted: Record<string, unknown> =
           topLevelError === undefined
@@ -168,7 +222,13 @@ export function createLogger(options: CreateLoggerOptions): Logger {
                 ...redactedRest,
                 [ERROR_KEY]: topLevelError instanceof Error ? topLevelError : redact(topLevelError),
               };
-        return context === undefined ? redacted : { ...context, ...redacted };
+        // Context last: a log-call field with the same name as a
+        // correlation ID (`requestId`, `organizationId`, ...) must not be
+        // able to shadow it — those IDs are what makes a customer's report
+        // traceable to one request, and a caller-controlled override would
+        // silently break that traceability. Spreading `redacted` first and
+        // `context` last means context always wins on a key collision.
+        return context === undefined ? redacted : { ...redacted, ...context };
       },
     },
     serializers: {
@@ -182,31 +242,24 @@ export function createLogger(options: CreateLoggerOptions): Logger {
     // position holds a string: `logger.info(msg)` or `logger.info(obj, msg)`.
     // Substring redaction, not whole-value: a message is prose, not a
     // secret, and should stay readable around the part that had to go.
-    //
-    // Trailing printf-style interpolation arguments (`logger.info('token=%s',
-    // value)`) also pass through `redactInterpolationArg` before pino
-    // substitutes them into the formatted message. This is a narrower
-    // guarantee than the rest of this hook: those positions carry no key
-    // name to match against `SECRET_KEY_FRAGMENTS`, so only the value-shape
-    // backstop applies — a shape the backstop does not recognise (a plain
-    // password, an opaque internal ID) is not distinguishable from an
-    // ordinary interpolated value and is not redacted. Reimplementing pino's
-    // `%s`/`%d`/`%j`/`%o` formatting ourselves to close that fully was
-    // considered and rejected: it would mean maintaining a second copy of
-    // pino's interpolation semantics, which is a worse failure mode than the
-    // residual gap it would close.
+    // Trailing interpolation arguments are covered too, with the narrower
+    // value-shape-only guarantee documented on `createLogger` above.
     hooks: {
       logMethod(inputArgs, method) {
-        // A single-argument call — `logger.error(err)` or
-        // `logger.error({ err })` — is the common shape for logging a
-        // caught error, and it is also the one pino resolves specially:
-        // when no separate message argument is supplied, pino's own
-        // write() (lib/proto.js) derives `msg` straight from the raw
-        // `err.message` *after* this hook has already run, bypassing every
-        // redaction stage below. Preempt that fallback by supplying an
-        // explicit, already-redacted message ourselves, so pino's fallback
-        // never fires (it only derives `msg` when none was given).
-        if (inputArgs.length === 1) {
+        // `logger.error(err)` / `logger.error({ err })` — logging a caught
+        // error with no separate message string — is the common shape, and
+        // also the one pino resolves specially: when no message argument is
+        // *given*, pino's own write() (lib/proto.js) derives `msg` straight
+        // from the raw `err.message` *after* this hook has already run,
+        // bypassing every redaction stage below. Gated on whether a string
+        // message is present at all, not on argument count: an explicit
+        // `logger.error(err, undefined)` — e.g. `logger.error(err,
+        // exception.message)` when that message is absent — has length 2,
+        // but inputArgs[1] still isn't a string, so pino's fallback still
+        // fires unless this branch also catches it. Preempt that fallback by
+        // supplying an explicit, already-redacted message ourselves, so
+        // pino's fallback never has a reason to run.
+        if (typeof inputArgs[1] !== 'string') {
           const [first] = inputArgs;
           if (first instanceof Error) {
             method.call(this, { [ERROR_KEY]: first }, redactSecretsInText(first.message));

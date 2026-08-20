@@ -63,8 +63,17 @@ const GLOBAL_SECRET_VALUE_PATTERNS: RegExp[] = SECRET_VALUE_PATTERNS.map(
  * entirely — replacing the whole message would trade a credential leak for
  * an unreadable log, and an operator debugging a failure still needs the
  * rest of the sentence.
+ *
+ * Accepts `unknown`, not `string`: an `Error.message` is conventionally a
+ * string but is not guaranteed to be one (a plain assignment or a hostile
+ * getter can make it anything). A non-string here fails closed — returns
+ * `REDACTED` rather than crashing — because this runs on the error-logging
+ * path, and a logger that throws while reporting a failure hides the real
+ * one. Deliberately not `String(text)`: a hostile `toString`/`Symbol.toPrimitive`
+ * can itself throw, which would put us right back where we started.
  */
-export function redactSecretsInText(text: string): string {
+export function redactSecretsInText(text: unknown): string {
+  if (typeof text !== 'string') return REDACTED;
   let result = text;
   for (const pattern of GLOBAL_SECRET_VALUE_PATTERNS) {
     result = result.replace(pattern, REDACTED);
@@ -92,6 +101,13 @@ export function redact(value: unknown, depth = 0, seen = new WeakSet<object>()):
   if (seen.has(value)) return '[circular]';
   seen.add(value);
 
+  // Date has no own enumerable properties, so the generic object walk below
+  // would otherwise silently reduce every Date to `{}` — a real regression
+  // against stock pino, and dates are common in log payloads (timestamps,
+  // expiries). Preserved as the same ISO string `JSON.stringify` would have
+  // produced anyway; a Date can never itself be secret-shaped.
+  if (value instanceof Date) return value.toISOString();
+
   if (value instanceof Error) {
     // Stacks are dropped here; the logger attaches them separately at error
     // level, where they are wanted, rather than everywhere an Error is nested.
@@ -118,6 +134,16 @@ export function redact(value: unknown, depth = 0, seen = new WeakSet<object>()):
       output[key] = '[unreadable]';
       continue;
     }
+    // An own-enumerable function survives redaction unchanged (it isn't a
+    // string or a plain object), but if it happens to be named `toJSON`,
+    // JSON.stringify calls it during serialisation and uses whatever it
+    // returns *instead of* this already-redacted object — silently
+    // resurrecting the original, unredacted value at serialisation time,
+    // including under a key that matched the denylist. Dropped outright:
+    // a prototype-based `toJSON` (Date, URL, class methods) is untouched
+    // since `Object.keys` never sees it, and JSON serialisation already
+    // drops a top-level function property, so nothing legitimate is lost.
+    if (typeof item === 'function') continue;
     output[key] = keyIsSecret(key) ? REDACTED : redact(item, depth + 1, seen);
   }
   return output;

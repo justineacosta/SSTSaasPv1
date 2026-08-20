@@ -150,16 +150,6 @@ describe('createLogger', () => {
     expect(out.msg).toBe('scan scn_01J completed');
   });
 
-  it('leaves the existing top-level err message/stack redaction unchanged', () => {
-    const { logger, lines } = captureLogger();
-    const err = new Error('auth failed: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
-    logger.error(err, 'request failed');
-    const out = lines[0] as { err: { message: string; stack: string } };
-    expect(out.err.message).toBe(`auth failed: ${REDACTED}`);
-    expect(out.err.stack).toContain(REDACTED);
-    expect(out.err.stack).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
-  });
-
   it('redacts a secret in child logger bindings, and again on a second line from the same child', () => {
     const { logger, lines } = captureLogger();
     const child = logger.child({ apiKey: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def' });
@@ -202,5 +192,92 @@ describe('createLogger', () => {
     const out = lines[0] as { level: number; apiKey: string; msg: string };
     expect(out.msg).toBe('should appear');
     expect(out.apiKey).toBe(REDACTED);
+  });
+
+  // Crash-safety properties, tested here through createLogger rather than
+  // only against redact() directly: a guard proven safe in isolation but
+  // never exercised through the actual per-call pipeline is not proven safe
+  // in the position that matters (C2/I4 review finding).
+
+  it('does not crash on a throwing getter at the top level of the merge object', () => {
+    const { logger, lines } = captureLogger();
+    const hostile = {
+      get poison(): string {
+        throw new Error('getter exploded');
+      },
+      ok: 'value',
+    };
+    expect(() => logger.info(hostile, 'hostile object')).not.toThrow();
+    const out = lines[0] as { poison: string; ok: string };
+    expect(out.poison).toBe('[unreadable]');
+    expect(out.ok).toBe('value');
+  });
+
+  it('does not crash on a circular reference reaching the logger', () => {
+    const { logger, lines } = captureLogger();
+    const circular: Record<string, unknown> = { name: 'x' };
+    circular.self = circular;
+    const payload = { nested: circular };
+    expect(() => logger.info(payload, 'circular object')).not.toThrow();
+    const out = lines[0] as { nested: { name: string; self: string } };
+    expect(out.nested.name).toBe('x');
+    expect(out.nested.self).toBe('[circular]');
+  });
+
+  it('does not crash on a null-prototype object reaching the logger', () => {
+    const { logger, lines } = captureLogger();
+    const nullProto = Object.assign(Object.create(null), { scanId: 'scn_01J' }) as Record<
+      string,
+      unknown
+    >;
+    expect(() => logger.info(nullProto, 'null-proto object')).not.toThrow();
+    const out = lines[0] as { scanId: string };
+    expect(out.scanId).toBe('scn_01J');
+  });
+
+  it('does not crash on a non-string Error.message (C3)', () => {
+    const { logger, lines } = captureLogger();
+    const err = new Error('placeholder');
+    (err as unknown as { message: unknown }).message = 12345;
+    expect(() => logger.error(err)).not.toThrow();
+    const out = lines[0] as { msg: string; err: { message: string } };
+    expect(out.msg).toBe(REDACTED);
+    expect(out.err.message).toBe(REDACTED);
+  });
+
+  it('redacts Error.message when logged with an explicit undefined second argument (C1)', () => {
+    const { logger, lines } = captureLogger();
+    const err = new Error('auth failed: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
+    logger.error(err, undefined);
+    const out = lines[0] as { msg: string; err: { message: string } };
+    expect(out.msg).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
+    expect(out.msg).toBe(`auth failed: ${REDACTED}`);
+    expect(out.err.message).toBe(`auth failed: ${REDACTED}`);
+  });
+
+  it('drops an own-enumerable toJSON so it cannot resurrect an already-redacted subtree (C2)', () => {
+    const { logger, lines } = captureLogger();
+    const hostile = {
+      a: {
+        b: {
+          toJSON() {
+            return { token: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def' };
+          },
+        },
+      },
+    };
+    logger.info(hostile, 'hostile toJSON');
+    const out = lines[0] as { a: { b: Record<string, unknown> } };
+    expect(out.a.b).toEqual({});
+  });
+
+  it('does not let a log-call field shadow the ambient request context (M9)', () => {
+    const { logger, lines } = captureLogger();
+    runWithRequestContext({ requestId: 'req_real', organizationId: 'org_real' }, () => {
+      logger.info({ requestId: 'attacker-controlled' }, 'x');
+    });
+    const out = lines[0] as { requestId: string; organizationId: string };
+    expect(out.requestId).toBe('req_real');
+    expect(out.organizationId).toBe('org_real');
   });
 });
