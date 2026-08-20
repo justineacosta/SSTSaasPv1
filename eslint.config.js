@@ -93,6 +93,16 @@ export default tseslint.config(
     files: ['packages/config/src/**/*.ts'],
     rules: { 'no-restricted-properties': 'off' },
   },
+  // packages/db/src/seed.ts is a CLI script (`pnpm db:seed`), not a request
+  // handler — it reads DIRECT_DATABASE_URL/DATABASE_URL directly to build its
+  // own Prisma connection before any application code (including
+  // packages/config's loader) would otherwise run. One of the three
+  // documented exemptions in coding-standards.md §6/database.md §8 alongside
+  // migrations and platform admin.
+  {
+    files: ['packages/db/src/seed.ts'],
+    rules: { 'no-restricted-properties': 'off' },
+  },
   // seeds, migrations, and the tenant client itself may use the unscoped client.
   // tenant-transaction.ts only ever imports unscoped's `PrismaClient` as a
   // *type* (it needs it to type `base`/`tx`; it never calls

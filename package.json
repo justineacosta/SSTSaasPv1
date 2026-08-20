@@ -20,7 +20,7 @@
     "db:migrate:create": "dotenv -e .env -- pnpm --filter @sentinel/db exec prisma migrate dev --create-only",
     "db:reset": "dotenv -e .env -- pnpm --filter @sentinel/db exec prisma migrate reset --force",
     "db:studio": "dotenv -e .env -- pnpm --filter @sentinel/db exec prisma studio",
-    "db:seed": "pnpm --filter @sentinel/db db:seed"
+    "db:seed": "dotenv -e .env -- pnpm --filter @sentinel/db db:seed"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
