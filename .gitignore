@@ -62,3 +62,6 @@ scan-output/
 .terraform/
 *.tfvars
 !*.tfvars.example
+
+# Subagent-driven development scratch (ledger, briefs, review packages)
+.superpowers/
