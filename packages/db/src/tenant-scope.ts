@@ -103,6 +103,20 @@ function hasOwnScopeContext(organizationId: string | null | undefined): organiza
  * ever applies. The caller must then strip `checkField` back out of the
  * result when `stripCheckField` is true, so the shape returned still matches
  * exactly what was asked for.
+ *
+ * KNOWN GAP, deliberately not fixed (round 3 re-review): a client-level omit
+ * — `new PrismaClient({ omit: { membership: { organizationId: true } } })`,
+ * as opposed to a per-call `omit` in `args` — reaches this function with
+ * `args.omit` still `undefined`, because Prisma applies client-level omit
+ * after the extension pipeline, not before. The widening above never fires,
+ * so `checkField` comes back `undefined` from every affected `findUnique`,
+ * the check in tenant-client.ts's `run-and-check` case never matches, and
+ * every owned row is discarded as not found. This fails closed — no leak,
+ * just a false negative — and nothing in this codebase constructs a client
+ * this way. Not fixed here because a per-call `args.omit` and a client-level
+ * one are indistinguishable from inside `$allOperations`; there is no
+ * argument available to detect it from. Task 14 is carrying a guard against
+ * ever constructing a client with a global `omit` on a scope column.
  */
 function adjustProjectionForCheck(
   args: unknown,

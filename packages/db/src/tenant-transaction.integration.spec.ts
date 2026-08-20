@@ -158,33 +158,43 @@ describe('select/omit and the findUniqueOrThrow oracle, over the real applicatio
     });
   });
 
-  it('findUniqueOrThrow raises the same error on the sentinel_app connection too', async () => {
+  it('findUniqueOrThrow raises byte-identical message and meta on the sentinel_app connection too', async () => {
     // Verification item 3: the oracle fix must hold on both connections —
     // the superuser one (tenant-client.integration.spec.ts), where only
     // layer 1's own check produces the error, and this one, where RLS would
     // otherwise have made the two cases look identical for a different
     // reason (the fetch returns nothing and Prisma's own P2025 fires first).
     // Proving it here confirms layer 1's guarantee holds independently of
-    // whether RLS happens to be engaged.
+    // whether RLS happens to be engaged. Deep-equals message and meta
+    // against a genuine miss captured live in this same run, not a
+    // hardcoded string (round 3 re-review) — class and code matching alone
+    // was not sufficient, since the message text differed wherever RLS
+    // wasn't also masking the difference.
+    //
+    // Both attempts are routed through the SAME call site deliberately: see
+    // the equivalent test in tenant-client.integration.spec.ts for why —
+    // Prisma's "Invalid `...` invocation" message embeds the caller's own
+    // file/line/column, so two calls on two different lines would differ by
+    // that alone, which is not the leak this test is checking for.
     await withTenantTransaction(app, orgA, async (tx) => {
-      let crossTenantError: unknown;
-      try {
-        await tx.membership.findUniqueOrThrow({ where: { id: membershipSharedB } });
-      } catch (error) {
-        crossTenantError = error;
-      }
+      const attempt = async (id: string): Promise<Prisma.PrismaClientKnownRequestError | undefined> => {
+        try {
+          await tx.membership.findUniqueOrThrow({ where: { id } });
+          return undefined;
+        } catch (error) {
+          return error as Prisma.PrismaClientKnownRequestError;
+        }
+      };
 
-      let genuineMissError: unknown;
-      try {
-        await tx.membership.findUniqueOrThrow({ where: { id: newId('mbr') } });
-      } catch (error) {
-        genuineMissError = error;
-      }
+      const crossTenantError = await attempt(membershipSharedB);
+      const genuineMissError = await attempt(newId('mbr'));
 
       expect(crossTenantError).toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
       expect(genuineMissError).toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
-      expect((crossTenantError as Prisma.PrismaClientKnownRequestError).code).toBe('P2025');
-      expect((genuineMissError as Prisma.PrismaClientKnownRequestError).code).toBe('P2025');
+      expect(crossTenantError?.code).toBe('P2025');
+      expect(crossTenantError?.code).toBe(genuineMissError?.code);
+      expect(crossTenantError?.message).toBe(genuineMissError?.message);
+      expect(crossTenantError?.meta).toEqual(genuineMissError?.meta);
     });
   });
 });

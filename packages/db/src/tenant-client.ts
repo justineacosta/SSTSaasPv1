@@ -1,9 +1,20 @@
-import { Prisma, type PrismaClient } from './unscoped.js';
+import type { PrismaClient } from './unscoped.js';
 import { MissingTenantContextError } from './errors.js';
 import type { TenantContext } from './tenant-context.js';
 import { decideScope } from './tenant-scope.js';
 
 export type TenantPrismaClient = PrismaClient;
+
+/**
+ * A `where` value guaranteed to match nothing, for every tenant-owned model
+ * and the tenant root — every one of them carries a plain `id String @id`,
+ * so `{ id: NEVER_MATCHES_ID }` is always a structurally valid
+ * `WhereUniqueInput`, regardless of what the caller's own `where` looked
+ * like (a compound unique key included). Used to re-run `findUniqueOrThrow`
+ * so Prisma's own engine raises its own not-found error — see the
+ * `notFoundIsThrow` branch below for why that matters.
+ */
+const NEVER_MATCHES_ID = '00000000000000000000000000-tenant-scope-miss';
 
 /**
  * Binds a Prisma client to one organisation.
@@ -77,21 +88,26 @@ export function createTenantClient(
                 return row;
               }
               if (plan.notFoundIsThrow) {
-                // Raises Prisma's own not-found shape, not
-                // MissingTenantContextError: findUniqueOrThrow's contract is
-                // "throws P2025 when nothing matches", and a caller catching
+                // Re-runs the SAME operation (still via `query`, so still on
+                // the caller's own connection/transaction) with a where
+                // guaranteed to match nothing, so Prisma's own engine raises
+                // its own not-found error — byte-identical message and meta
+                // to a genuine miss, on every connection, including where
+                // RLS isn't engaged (migrations, seeds, the future
+                // platform-admin module). findUniqueOrThrow's contract is
+                // "throws P2025 when nothing matches"; a caller catching
                 // that specific error to distinguish "not found" from other
-                // failures must see the same class and code whether the row
+                // failures must see the exact same failure whether the row
                 // genuinely doesn't exist or simply belongs to another
-                // tenant. A different error here would make the *response*
-                // itself an existence oracle — confirming another tenant's
-                // row is there by the shape of the failure alone, even
-                // though its contents never leak.
-                throw new Prisma.PrismaClientKnownRequestError(`No ${model ?? 'record'} found`, {
-                  code: 'P2025',
-                  clientVersion: Prisma.prismaVersion.client,
-                  meta: { cause: `No ${model ?? 'record'} found` },
-                });
+                // tenant, or the *shape of the error itself* becomes an
+                // oracle confirming another tenant's row exists. A
+                // hand-constructed error would drift the moment Prisma's own
+                // wording changes across versions; this can't drift, because
+                // it comes from Prisma itself, not from a copy of its
+                // wording — see tenant-client.integration.spec.ts, which
+                // asserts message and meta against a genuine miss captured
+                // at test run time rather than a hardcoded string.
+                return query({ where: { id: NEVER_MATCHES_ID } });
               }
               return null;
             }

@@ -108,10 +108,15 @@ optimised analytics, future ORM changes, and mistakes in the extension itself. T
 independent mechanisms must both be wrong for a leak to occur — proven together, not just
 individually, by `tenant-transaction.integration.spec.ts`'s nested-read and nested-write
 cases. RI cascades are a **third** category layer 2 cannot catch either — they run inside
-Postgres's constraint machinery, below RLS — which is why every FK into a tenant-owned
-table is `RESTRICT` rather than `CASCADE` (`Membership.userId` was the one exception,
-found live in review and fixed; see `packages/db/prisma/schema.prisma`'s relation
-comments for the reasoning per FK).
+Postgres's constraint machinery, below RLS. The rule this drives, checked against
+`pg_constraint` directly rather than assumed: **no FK into a tenant-owned table from a
+non-tenant-scoped parent is `CASCADE`** (`Membership.userId` was the one violation, found
+live in review and fixed to `RESTRICT`). `Membership.organizationId` and
+`Invitation.organizationId` *are* `CASCADE` — that's fine, not an exception to track:
+both originate at `Organization`, the tenant root itself, so the cascade can only ever
+stay inside the one tenant being deleted, layer 1 already scopes `organization.delete` to
+the caller's own `id`, and `sentinel_app` holds no `DELETE` on `Organization` at all — see
+`packages/db/prisma/schema.prisma`'s relation comments for the reasoning per FK.
 
 ### Layer 3 — Response serialisation
 

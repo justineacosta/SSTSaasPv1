@@ -243,26 +243,43 @@ describe('select/omit do not defeat the scope check (review round 3)', () => {
 });
 
 describe('findUniqueOrThrow is not an existence oracle across tenants (review round 3)', () => {
-  it('raises the same error class and code for a cross-tenant row as for one that does not exist', async () => {
+  it('raises byte-identical message and meta for a cross-tenant row as for one that does not exist', async () => {
+    // Round-3 re-review: class and code matching is not enough. Where RLS is
+    // absent (the unscoped client, migrations, seeds, the future
+    // platform-admin module), a hand-constructed message/meta would still be
+    // distinguishable from Prisma's own. This deep-equals message and meta
+    // against a genuine miss captured live in this same test run, rather
+    // than a hardcoded string — so it also catches drift if Prisma's own
+    // wording ever changes, instead of silently rotting.
+    //
+    // Both attempts are routed through the SAME call site (this one
+    // function) deliberately: Prisma's "Invalid `...` invocation" message
+    // embeds the caller's own file/line/column, captured at the point
+    // `findUniqueOrThrow` was invoked — not anything about the target row.
+    // Two calls written on two different lines in this test would differ by
+    // that location text alone, which would be a false positive for "the
+    // oracle still leaks" (it wouldn't — a single real call site in
+    // application code always reports its own location, never the target
+    // row's tenant). Funnelling both through one function is what makes this
+    // a fair comparison of the same call site's two possible outcomes.
     const db = createTenantClient(root, { organizationId: orgA });
+    const attempt = async (id: string): Promise<Prisma.PrismaClientKnownRequestError | undefined> => {
+      try {
+        await db.membership.findUniqueOrThrow({ where: { id } });
+        return undefined;
+      } catch (error) {
+        return error as Prisma.PrismaClientKnownRequestError;
+      }
+    };
 
-    let crossTenantError: unknown;
-    try {
-      await db.membership.findUniqueOrThrow({ where: { id: membershipB } });
-    } catch (error) {
-      crossTenantError = error;
-    }
-
-    let genuineMissError: unknown;
-    try {
-      await db.membership.findUniqueOrThrow({ where: { id: newId('mbr') } });
-    } catch (error) {
-      genuineMissError = error;
-    }
+    const crossTenantError = await attempt(membershipB);
+    const genuineMissError = await attempt(newId('mbr'));
 
     expect(crossTenantError).toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
     expect(genuineMissError).toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
-    expect((crossTenantError as Prisma.PrismaClientKnownRequestError).code).toBe('P2025');
-    expect((genuineMissError as Prisma.PrismaClientKnownRequestError).code).toBe('P2025');
+    expect(crossTenantError?.code).toBe('P2025');
+    expect(crossTenantError?.code).toBe(genuineMissError?.code);
+    expect(crossTenantError?.message).toBe(genuineMissError?.message);
+    expect(crossTenantError?.meta).toEqual(genuineMissError?.meta);
   });
 });
