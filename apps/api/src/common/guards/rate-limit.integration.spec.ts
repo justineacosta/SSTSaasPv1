@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { config as loadDotenv } from 'dotenv';
-import { Controller, Get, type INestApplication, Module, Post } from '@nestjs/common';
+import { Controller, Get, type INestApplication, Module, Post, SetMetadata } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import type { NextFunction, Request, Response } from 'express';
@@ -19,6 +19,7 @@ import {
 import { HealthController } from '../../modules/health/health.controller.js';
 import { AppModule } from '../../app.module.js';
 import { configureApp } from '../../app-setup.js';
+import { LOGGER } from '../../infrastructure/tokens.js';
 
 loadDotenv({ path: fileURLToPath(new URL('../../../../../.env', import.meta.url)) });
 process.env.NODE_ENV = 'test';
@@ -61,7 +62,7 @@ class FixtureController {
     return { ok: true };
   }
 
-  /** `emailVerificationResend`: body-keyed principal ONLY, no perIp scope. */
+  /** `emailVerificationResend`: body-keyed account (3/hour) AND a 10/hour IP bound. */
   @Public()
   @RateLimit('emailVerificationResend')
   @Post('resend')
@@ -93,7 +94,27 @@ class FixtureController {
   }
 }
 
-@Module({ imports: [AppModule], controllers: [FixtureController] })
+/**
+ * The class-level bypass, attempted the only way it can still be written.
+ * `@RateLimitExempt()` is `MethodDecorator`, so this uses the raw key — which is
+ * exported from the same module and was, until this was closed, honoured by the
+ * guard. One line here disabled every limit beneath it.
+ */
+@SetMetadata(RATE_LIMIT_EXEMPT_KEY, true)
+@Controller({ path: 'bypass', version: '1' })
+class BypassAttemptController {
+  @Public()
+  @RateLimit('registration')
+  @Post('limited')
+  limited(): { ok: true } {
+    return { ok: true };
+  }
+}
+
+@Module({
+  imports: [AppModule],
+  controllers: [FixtureController, BypassAttemptController],
+})
 class FixtureModule {}
 
 /**
@@ -501,5 +522,91 @@ describe('liveness is never rate limited', () => {
     const { headers } = await request(server).get('/health/live').expect(200);
     expect(headers['ratelimit-limit']).toBeUndefined();
     expect(headers['ratelimit-remaining']).toBeUndefined();
+  });
+});
+
+describe('the exemption is a per-route decision and cannot be taken class-wide', () => {
+  it('ignores exempt metadata set on a controller, even on a fail-closed class', () => {
+    // Narrowing the decorator's TYPE stopped `@RateLimitExempt()` being written
+    // on a class; it did not stop the guard from honouring class-level metadata,
+    // and the key is exported. One `@SetMetadata` on a controller was still a
+    // kill switch for every limit beneath it — measured at 6/6 allowed on a
+    // fail-closed class during a Redis outage. `registration` is 3 per IP, so
+    // an honoured bypass shows up as the fourth request succeeding.
+    return (async () => {
+      for (let i = 0; i < 3; i += 1) {
+        await request(server).post('/api/v1/bypass/limited').expect(201);
+      }
+      await request(server).post('/api/v1/bypass/limited').expect(429);
+    })();
+  });
+});
+
+describe('headers describe the window closest to refusing', () => {
+  it('reports the account window when it is tighter than the IP window', async () => {
+    // `login` is 5 per account and 20 per IP. A client with 4 account slots left
+    // must be told 4, not 19 — the headers exist so a caller can pace itself
+    // before it is cut off, and the loosest window tells it the opposite of what
+    // it needs. Every other header assertion in this suite uses a single-scope
+    // class or the 429 path, so this is the only cover for the multi-scope
+    // allowed path.
+    const first = await request(server)
+      .post('/api/v1/fixture/login')
+      .send({ email: 'tightest@example.com' })
+      .expect(201);
+    expect(first.headers['ratelimit-limit']).toBe('5');
+    expect(first.headers['ratelimit-remaining']).toBe('4');
+
+    const second = await request(server)
+      .post('/api/v1/fixture/login')
+      .send({ email: 'tightest@example.com' })
+      .expect(201);
+    expect(second.headers['ratelimit-remaining']).toBe('3');
+  });
+});
+
+describe('an unresolvable declared scope is reported once, not once per request', () => {
+  it('does not let an ordinary client flood the channel it warns on', async () => {
+    // The condition cannot tell a wiring defect from a client that simply sent
+    // no `email`, and the latter is free to generate. Warning every time would
+    // bury the defect it exists to surface — the same anti-pattern the
+    // fail-open branch of this guard is written to avoid.
+    //
+    // Counted through an injected recorder, not by capturing stdout: the test
+    // environment's logger deliberately writes nowhere, so a stdout-based
+    // version of this test passes whether the guard warns once or every time.
+    const lines: string[] = [];
+    const recorder = {
+      warn: (_bindings: unknown, message?: string) => lines.push(message ?? ''),
+      debug: () => undefined,
+      info: () => undefined,
+      error: () => undefined,
+      fatal: () => undefined,
+      trace: () => undefined,
+      child: () => recorder,
+    };
+
+    const moduleRef = await Test.createTestingModule({ imports: [FixtureModule] })
+      .overrideProvider(LOGGER)
+      .useValue(recorder)
+      .compile();
+    const loggedApp = moduleRef.createNestApplication<NestExpressApplication>();
+    configureApp(loggedApp);
+    await loggedApp.init();
+
+    try {
+      for (let i = 0; i < 6; i += 1) {
+        await request(loggedApp.getHttpServer())
+          .post('/api/v1/fixture/login')
+          .send({ password: 'x' });
+      }
+    } finally {
+      await loggedApp.close();
+    }
+
+    const warnings = lines.filter((line) => line.includes('declared but not resolvable'));
+    // Exactly one: it must warn (the control being absent is worth knowing) and
+    // must not warn again (six requests is six lines an attacker chose).
+    expect(warnings.length).toBe(1);
   });
 });

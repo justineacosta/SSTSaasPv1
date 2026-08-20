@@ -12,13 +12,16 @@ describe('normaliseIp', () => {
     expect(normaliseIp('::FFFF:10.0.0.7')).toBe('10.0.0.7');
   });
 
-  it('leaves a genuine IPv6 address alone, lowercased', () => {
-    expect(normaliseIp('2001:DB8::1')).toBe('2001:db8::1');
-    expect(normaliseIp('::1')).toBe('::1');
+  it('reduces a genuine IPv6 address to its /64, case-insensitively', () => {
+    expect(normaliseIp('2001:DB8::1')).toBe(normaliseIp('2001:db8::1'));
+    expect(normaliseIp('2001:DB8::1')).toContain('/64');
   });
 
   it('does not mistake an address that merely contains the mapped prefix', () => {
-    expect(normaliseIp('2001:db8::ffff:1.2.3.4')).toBe('2001:db8::ffff:1.2.3.4');
+    // `::ffff:1.2.3.4` is a mapped IPv4 address; `2001:db8::ffff:1.2.3.4` is
+    // not, and must not collapse to the bare v4 bucket.
+    expect(normaliseIp('2001:db8::ffff:1.2.3.4')).not.toBe('1.2.3.4');
+    expect(normaliseIp('2001:db8::ffff:1.2.3.4')).toContain('/64');
   });
 });
 
@@ -128,5 +131,59 @@ describe('the account bucket digest', () => {
       RATE_LIMIT_CLASSES.login,
     );
     expect(bucket?.length).toBeGreaterThanOrEqual(22);
+  });
+});
+
+describe('normaliseIp — IPv6 is bucketed by /64', () => {
+  it('puts every address in one /64 into one bucket', () => {
+    // A host is routinely delegated a whole /64 — 1.8e19 addresses. Bucketing
+    // per address would make every per-IP figure in the table free to bypass
+    // for anyone with a v6 allocation, which is the bound the resend class now
+    // depends on.
+    const a = normaliseIp('2001:db8:abcd:1234::1');
+    const b = normaliseIp('2001:db8:abcd:1234::2');
+    const c = normaliseIp('2001:db8:abcd:1234:dead:beef:1:2');
+    expect(a).toBe(b);
+    expect(a).toBe(c);
+  });
+
+  it('keeps different /64s apart', () => {
+    expect(normaliseIp('2001:db8:abcd:1234::1')).not.toBe(normaliseIp('2001:db8:abcd:1235::1'));
+    expect(normaliseIp('2001:db8:abcd:1234::1')).not.toBe(normaliseIp('2001:db9:abcd:1234::1'));
+  });
+
+  it('expands :: correctly rather than truncating the wrong hextets', () => {
+    // `2001:db8::1` is 2001:0db8:0000:0000:...:0001, so its /64 must be
+    // 2001:db8:0:0 — not 2001:db8:1 read off the literal text.
+    expect(normaliseIp('2001:db8::1')).toBe(normaliseIp('2001:db8:0:0:ffff::9'));
+    expect(normaliseIp('2001:db8::1')).not.toBe(normaliseIp('2001:db8:1::1'));
+  });
+
+  it('still treats loopback and mapped IPv4 the way the rest of the suite expects', () => {
+    expect(normaliseIp('::ffff:127.0.0.1')).toBe('127.0.0.1');
+    expect(normaliseIp('127.0.0.1')).toBe('127.0.0.1');
+    expect(normaliseIp('::1')).toBe(normaliseIp('::1'));
+  });
+
+  it('ignores a zone index, which is local to the host and not part of identity', () => {
+    expect(normaliseIp('fe80::1%eth0')).toBe(normaliseIp('fe80::1%eth1'));
+  });
+});
+
+describe('normaliseAccountIdentifier — the form is pinned, not just its presence', () => {
+  it('applies NFKC, not merely NFC', () => {
+    // The docblock says this must stay identical to the Phase 2 account lookup.
+    // Which normalisation form it *is* was the one thing no test pinned, so
+    // switching NFKC to NFC changed behaviour silently. Fullwidth and ligature
+    // forms fold under NFKC and survive under NFC.
+    expect(normaliseAccountIdentifier('\uff41@example.com')).toBe('a@example.com');
+    expect(normaliseAccountIdentifier('\ufb01n@example.com')).toBe('fin@example.com');
+  });
+
+  it('does not merge characters that are genuinely distinct letters', () => {
+    // NFKC is aggressive; this is the boundary worth pinning, because an
+    // over-merge lets one account consume another's window.
+    expect(normaliseAccountIdentifier('\u0131@example.com')).not.toBe('i@example.com');
+    expect(normaliseAccountIdentifier('a\u200bb@example.com')).not.toBe('ab@example.com');
   });
 });

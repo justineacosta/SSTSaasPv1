@@ -4,12 +4,13 @@
 > the enforcement ladder in §4 Phase 11. The limiter is a global Nest guard —
 > `apps/api/src/common/guards/rate-limit.guard.ts` — over a Redis sorted-set window in
 > `sliding-window.ts`, with the table below transcribed into `rate-limit.config.ts` and that
-> transcription asserted value by value. It limits no endpoint today: every class is keyed by
-> no route carries any of these classes: the only routes that exist are the health probes, and
-> liveness is deliberately exempt. (Some scopes *would* resolve today — `registration` is keyed
-> per IP, and the per-IP halves of `login` and `passwordReset` need no authentication — so the
-> reason nothing is governed is the absence of endpoints, not the absence of identifiers.) The control is correct ahead of the endpoints it
-> will govern — which is the point of building it now — but "Implemented" here means built and
+> transcription asserted value by value. It limits no endpoint today, because no route carries
+> any of these classes: the only routes that exist are the health probes, and liveness is
+> deliberately exempt. (Some scopes *would* resolve today — `registration` is keyed per IP, and
+> the per-IP halves of `login` and `passwordReset` need no authentication — so the reason
+> nothing is governed is the absence of endpoints, not the absence of identifiers.) The control
+> is correct ahead of the endpoints it will govern — which is the point of building it now — but
+> "Implemented" here means built and
 > tested, not currently in force.
 
 Ordinary SaaS limits abuse to protect its own capacity. We also limit it to protect people

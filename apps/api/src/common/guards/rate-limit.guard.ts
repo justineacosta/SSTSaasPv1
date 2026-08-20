@@ -43,7 +43,36 @@ interface KeyableRequest {
  */
 export function normaliseIp(address: string): string {
   const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/iu.exec(address);
-  return mapped?.[1] ?? address.toLowerCase();
+  if (mapped?.[1] !== undefined) return mapped[1];
+
+  const lower = address.toLowerCase();
+  if (!lower.includes(':')) return lower;
+
+  // IPv6 is bucketed by /64, not by full address. A single host is routinely
+  // given a whole /64 — that is 1.8e19 addresses, so a per-address bucket is no
+  // bound at all, and every per-IP limit in the table would be bypassable at
+  // zero cost by anyone with a v6 allocation. The /64 is the smallest unit an
+  // operator is normally delegated, so it is the smallest unit that behaves
+  // like "one client". A shared /64 (some mobile carriers, some hosting) means
+  // neighbours share a bucket; that is the same trade IPv4 NAT already forces,
+  // and the wrong side of it is unbounded.
+  const zoneless = lower.split('%')[0] ?? lower;
+  return `${expandIpv6Prefix(zoneless)}::/64`;
+}
+
+/** The first four hextets of an IPv6 address, `::`-expansion included. */
+function expandIpv6Prefix(address: string): string {
+  const [head = '', tail = ''] = address.split('::', 2);
+  const headParts = head === '' ? [] : head.split(':');
+  const tailParts = tail === '' ? [] : tail.split(':');
+  const missing = Math.max(0, 8 - headParts.length - tailParts.length);
+  const full = address.includes('::')
+    ? [...headParts, ...Array<string>(missing).fill('0'), ...tailParts]
+    : headParts;
+  return full
+    .slice(0, 4)
+    .map((part) => (part === '' ? '0' : part.replace(/^0+(?=.)/u, '')))
+    .join(':');
 }
 
 /**
@@ -154,8 +183,25 @@ function tightest(decisions: readonly WindowDecision[]): WindowDecision | undefi
 
 @Injectable()
 export class RateLimitGuard implements CanActivate {
-  /** Whether the last attempt to reach Redis failed; drives state-change logging. */
+  /**
+   * The last **observed** state of the backend, driving state-change logging.
+   *
+   * "Observed" is load-bearing: it only changes when a command actually reached
+   * Redis, or actually failed to. A request that resolved no scope issues no
+   * command and therefore learns nothing, so it must not clear the flag — doing
+   * so produced alternating "unavailable"/"recovered" lines during a single
+   * ongoing outage, and a false all-clear closes incidents that are open.
+   *
+   * The cost of that correctness, stated because it is not obvious: a recovery
+   * no request observed is never logged, so an outage → unobserved recovery →
+   * second outage sequence emits one "unavailable" and no "recovered". The log
+   * describes what this process saw, not what happened. Today that is most of
+   * the traffic, because nothing resolves a scope before Phase 2.
+   */
   private backendDown = false;
+
+  /** Classes already warned about an unresolvable scope; see the warn below. */
+  private readonly unresolvedWarned = new Set<RateLimitClass>();
 
   constructor(
     @Inject(Reflector) private readonly reflector: Reflector,
@@ -168,10 +214,16 @@ export class RateLimitGuard implements CanActivate {
 
     // Checked before anything else, and before any Redis call: see
     // `RateLimitExempt`. Liveness must reach no backing service.
-    const exempt = this.reflector.getAllAndOverride<true>(RATE_LIMIT_EXEMPT_KEY, [
-      context.getHandler(),
-      context.getClass(),
-    ]);
+    //
+    // **The handler only, deliberately.** Narrowing the decorator's type stopped
+    // `@RateLimitExempt()` being written on a class, but it did not stop the
+    // guard from *honouring* class-level metadata — and `RATE_LIMIT_EXEMPT_KEY`
+    // is exported, so one `@SetMetadata(RATE_LIMIT_EXEMPT_KEY, true)` on a
+    // controller still disabled every limit beneath it, including a fail-closed
+    // class during a Redis outage. Since no supported decorator can set this at
+    // class level, reading the class was dead for legitimate use and live only
+    // for the bypass. An exemption is a per-route decision and nothing else.
+    const exempt = this.reflector.get<true>(RATE_LIMIT_EXEMPT_KEY, context.getHandler());
     if (exempt === true) return true;
 
     const className =
@@ -255,17 +307,28 @@ export class RateLimitGuard implements CanActivate {
 
     if (unresolved.length > 0 && decisions.length > 0 && config.failMode === 'closed') {
       // A declared scope that resolved to nothing, on a class whose failMode
-      // says it would rather refuse than guess. Silence here is precisely the
-      // defect that let the per-account limits go missing while the per-IP one
-      // kept answering: the route refused at the wrong limit, advertised that
-      // limit in its headers, and nothing said the other control was absent.
-      // Not a refusal — a sibling scope did apply, and refusing every login
-      // whose body shape the guard cannot read would be its own outage — but it
-      // must never again be invisible.
-      this.logger.warn(
-        { rateLimitClass: className, unresolvedScopes: unresolved },
-        'Rate limit scope declared but not resolvable; that limit is not being applied',
-      );
+      // says it would rather refuse than guess. Silence here is what let the
+      // per-account limits go missing while the per-IP one kept answering: the
+      // route refused at the wrong limit, advertised that limit in its headers,
+      // and nothing said the other control was absent.
+      //
+      // Once per class per process, not once per request. This condition cannot
+      // distinguish a **wiring defect** — a class keyed off something nothing
+      // ever populates, which is what it exists to catch and which is permanent
+      // — from a **client that sent a body without the field**, which is
+      // ordinary traffic anyone can generate at will. Warning on every
+      // occurrence would let any unauthenticated caller flood the channel and
+      // bury the wiring defect underneath, which is the same anti-pattern the
+      // fail-open branch below is written to avoid. The first occurrence
+      // carries the whole signal: the class and the scope are all an operator
+      // needs to find it.
+      if (!this.unresolvedWarned.has(className)) {
+        this.unresolvedWarned.add(className);
+        this.logger.warn(
+          { rateLimitClass: className, unresolvedScopes: unresolved },
+          'Rate limit scope declared but not resolvable; that limit is not being applied',
+        );
+      }
     }
 
     if (declared > 0 && decisions.length === 0) {

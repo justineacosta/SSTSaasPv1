@@ -62,6 +62,14 @@ describe('RATE_LIMIT_CLASSES', () => {
       limit: 3,
       windowSeconds: 3600,
     });
+    // Not transcribed from the table's per-class row — added from §1's opening
+    // rule that limits apply per IP AND per principal, because without it one
+    // caller naming a fresh address each time has no bound at all. Asserted
+    // here so the figure and the table row stay in step.
+    expect(RATE_LIMIT_CLASSES.emailVerificationResend.perIp).toEqual({
+      limit: 10,
+      windowSeconds: 3600,
+    });
     expect(RATE_LIMIT_CLASSES.invitations.perOrganization).toEqual({
       limit: 50,
       windowSeconds: 86_400,
