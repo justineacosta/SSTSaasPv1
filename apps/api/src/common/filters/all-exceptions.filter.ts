@@ -50,9 +50,16 @@ const STATUS_TO_CODE: Readonly<Record<number, ErrorCode>> = {
  * Revisit in Phase 2, when there are real endpoints to raise them.
  */
 function codeForStatus(status: number): ErrorCode {
+  // The range is checked at both ends deliberately. `status < 500` alone would
+  // also claim 1xx-3xx, and a 204 or a 302 arriving at an exception filter is
+  // not a client mistake — it is a bug on this side, which is what
+  // `INTERNAL_ERROR` is for. Nothing constructs a sub-400 `HttpException`
+  // today, so this costs nothing; it is here so the rule and the comment above
+  // stay the same statement.
+  const isClientClass = status >= 400 && status < 500;
   return (
     STATUS_TO_CODE[status] ??
-    (status < 500 ? ERROR_CODES.VALIDATION_ERROR : ERROR_CODES.INTERNAL_ERROR)
+    (isClientClass ? ERROR_CODES.VALIDATION_ERROR : ERROR_CODES.INTERNAL_ERROR)
   );
 }
 
@@ -79,13 +86,30 @@ interface HttpErrorLike {
  */
 function asHttpError(exception: unknown): HttpErrorLike | undefined {
   if (typeof exception !== 'object' || exception === null) return undefined;
-  const candidate = exception as { status?: unknown; statusCode?: unknown; expose?: unknown };
-  if (typeof candidate.expose !== 'boolean') return undefined;
-  const status = typeof candidate.status === 'number' ? candidate.status : candidate.statusCode;
+
+  // Every read is guarded, for the same reason `redact()` guards its own in
+  // packages/observability/src/logger.ts: these are properties of a value this
+  // filter did not construct, and a getter that throws would propagate out of
+  // `catch()` itself — replacing the error envelope with the framework's
+  // default handler output. A filter that throws while reporting a failure
+  // hides the original failure, which is the one thing it must never do.
+  // Unreadable is treated as absent, so the value simply is not trusted.
+  const read = (key: 'status' | 'statusCode' | 'expose'): unknown => {
+    try {
+      return (exception as Record<string, unknown>)[key];
+    } catch {
+      return undefined;
+    }
+  };
+
+  const expose = read('expose');
+  if (typeof expose !== 'boolean') return undefined;
+  const rawStatus = read('status');
+  const status = typeof rawStatus === 'number' ? rawStatus : read('statusCode');
   if (typeof status !== 'number' || !Number.isInteger(status) || status < 400 || status > 599) {
     return undefined;
   }
-  return { status, expose: candidate.expose };
+  return { status, expose };
 }
 
 /**

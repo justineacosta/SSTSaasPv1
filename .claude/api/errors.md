@@ -40,6 +40,14 @@ Field errors are returned per field so a client can attach them to inputs:
 `path` uses dotted/bracketed notation matching the request body, so the client can map errors
 without guessing.
 
+**`details.fields` is optional on this code, and a client must treat it that way.**
+`VALIDATION_ERROR` is also the fallback for a client-class status the code table does not name —
+405, 406, 413, 415 — where there is no field to point at and `details` is absent entirely. A
+client that reads `error.details.fields` unconditionally will find `undefined` on a 413. The
+alternative, a dedicated code per status, was considered and rejected: see the note on
+`codeForStatus` in `apps/api/src/common/filters/all-exceptions.filter.ts`. Revisit in Phase 2,
+when there are real endpoints to raise them.
+
 ## 3. Codes
 
 **Auth:** `UNAUTHENTICATED`, `INVALID_CREDENTIALS`, `SESSION_EXPIRED`, `MFA_REQUIRED`,
@@ -49,8 +57,8 @@ without guessing.
 **Access:** `PERMISSION_DENIED`, `NOT_A_MEMBER`, `ORGANIZATION_SUSPENDED`,
 `RESOURCE_NOT_FOUND` (also returned for cross-tenant access).
 
-**Validation:** `VALIDATION_ERROR`, `UNKNOWN_FIELD`, `INVALID_STATE_TRANSITION`,
-`VERSION_CONFLICT`, `DUPLICATE_RESOURCE`.
+**Validation:** `VALIDATION_ERROR` (also the fallback for an unmapped client-class status — see
+§2), `UNKNOWN_FIELD`, `INVALID_STATE_TRANSITION`, `VERSION_CONFLICT`, `DUPLICATE_RESOURCE`.
 
 **Domain — security-testing specific:** `SCOPE_VIOLATION`, `ASSET_NOT_VERIFIED`,
 `ASSET_VERIFICATION_EXPIRED`, `TARGET_DENIED_BY_POLICY` (global deny list),
@@ -97,7 +105,7 @@ exists. Whether an email address is registered (on login, registration, and rese
 Internal errors return `INTERNAL_ERROR`, a generic message, and the request ID. Everything else
 goes to the server log.
 
-Two implementation rules that are easy to get wrong, both covered by tests:
+Three implementation rules that are easy to get wrong, all covered by tests:
 
 - **Status decides, not exception class.** A framework `HttpException` at 5xx — including
   `new InternalServerErrorException(err.message)`, an ordinary Nest idiom — has its message

@@ -375,3 +375,41 @@ describe('AllExceptionsFilter — throwables from the http-errors library', () =
     expect(errorEnvelopeSchema.parse(body).error.message).not.toContain('hunter2');
   });
 });
+
+describe('AllExceptionsFilter — hostile throwables', () => {
+  it('answers a throwable whose property getter throws, instead of throwing itself', () => {
+    // A filter that throws while reporting a failure hides the original failure
+    // and hands the response to the framework's default handler, which does not
+    // produce the shared envelope. The reads in asHttpError are guarded for the
+    // same reason the logger guards its own; this is the assertion that keeps
+    // them guarded.
+    const booby = new Error('original failure');
+    Object.defineProperty(booby, 'expose', {
+      get(): never {
+        throw new Error('getter exploded');
+      },
+    });
+
+    let result: { status: number; body: unknown } | undefined;
+    expect(() => {
+      result = invoke(booby);
+    }).not.toThrow();
+
+    expect(result?.status).toBe(500);
+    const parsed = errorEnvelopeSchema.parse(result?.body);
+    expect(parsed.error.code).toBe('INTERNAL_ERROR');
+    expect(parsed.error.message).not.toContain('getter exploded');
+    expect(parsed.error.message).not.toContain('original failure');
+  });
+
+  it('treats a sub-400 status as a fault on this side, not a client mistake', () => {
+    // `status < 500` alone would label a 302 reaching the exception filter
+    // VALIDATION_ERROR — telling the caller they sent a bad request when what
+    // actually happened is a bug here. Nothing constructs one today; the
+    // assertion exists so the rule and its comment stay the same statement.
+    for (const status of [204, 302, 399]) {
+      const parsed = errorEnvelopeSchema.parse(invoke(new HttpException('odd', status)).body);
+      expect(parsed.error.code).toBe('INTERNAL_ERROR');
+    }
+  });
+});
