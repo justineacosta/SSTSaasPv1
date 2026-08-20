@@ -1,7 +1,10 @@
 # Abuse prevention and rate limiting
 
-> **Status: Designed. Not Implemented.** Rate limiting Phase 1; quotas Phase 10; anomaly
-> detection Phase 11.
+> **Status: Rate limiting Implemented (Phase 1).** Quotas Phase 10; anomaly detection Phase 11;
+> the enforcement ladder in §4 Phase 11. The limiter is a global Nest guard —
+> `apps/api/src/common/guards/rate-limit.guard.ts` — over a Redis sorted-set window in
+> `sliding-window.ts`, with the table below transcribed into `rate-limit.config.ts` and that
+> transcription asserted value by value.
 
 Ordinary SaaS limits abuse to protect its own capacity. We also limit it to protect people
 who are not our customers. See [`scope-controls.md`](scope-controls.md) for the controls
@@ -31,6 +34,31 @@ Responses carry `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`, and
 `Retry-After`. Limits fail **closed** for authentication endpoints and **open** for
 read-only endpoints if Redis is unavailable — an outage should not lock everyone out of
 reading their own data, but it must not become a window for credential stuffing either.
+
+Three properties of the shipped implementation are worth stating, because each is a way this
+control is commonly built wrong:
+
+- **A refused request is not charged against the window.** A limiter that records refusals
+  extends its own lockout — every knock on a closed door pushes the window forward, and a
+  client that keeps retrying never sees it open. The check and the write are therefore one
+  Lua script rather than a `MULTI`, because a transaction cannot branch on the count it just
+  read.
+- **`X-Forwarded-For` is not trusted.** The per-IP identifier is Express's `request.ip` with
+  `trust proxy` disabled, so it is the socket's peer address. If the header were trusted,
+  rotating it would mint a fresh bucket per request and per-IP limiting would be decorative.
+  Putting a load balancer in front of this API therefore requires more than enabling
+  `trust proxy`: the deployment must also guarantee the proxy **overwrites** the header rather
+  than appending to it, or the bypass returns through the front door.
+- **An unresolvable scope is not a free pass.** `invitations` and `scanCreate` are keyed only
+  per organisation, and there is no tenant context before Phase 2. If the guard simply skipped
+  a scope it could not resolve, those fail-closed classes would carry no limit at all. When
+  every declared scope is unresolvable the class's `failMode` applies, exactly as it does for a
+  Redis outage.
+
+One row above is **not** yet transcribed into configuration: webhook test delivery. Its scope
+is a webhook endpoint ID, which is neither an IP, a principal, nor an organisation, and nothing
+can resolve one until the webhooks module ships in Phase 9. Keying it against the wrong scope
+would be worse than omitting it, because it would look enforced.
 
 ## 2. Quotas and concurrency
 
@@ -81,3 +109,16 @@ Limits enforced per IP and per principal; correct headers and `Retry-After`; lim
 per-plan overrides apply; concurrency cap holds under parallel load; quota exhaustion
 returns 402 with a clear message; suspension blocks new scans and cancels running ones;
 suspension is reversible; every enforcement action writes an audit event.
+
+Covered in Phase 1 by `rate-limit.integration.spec.ts` and `sliding-window.integration.spec.ts`,
+against a real Redis: the boundary in both directions (exactly `limit` allowed, the next
+refused); `limit` admitted out of many *genuinely concurrent* requests, not sequential ones,
+since a read-then-write limiter passes the sequential version of that test and fails this one;
+two requests in the same millisecond counted as two, which they are not if the sorted-set member
+is the timestamp; the window sliding; a reset derived from the oldest entry rather than from
+now; scope and class isolation; a forged `X-Forwarded-For` failing to mint a bucket; and both
+fail modes with Redis genuinely unreachable. Redis-outage tests point a second application at a
+dead port rather than stopping the shared container.
+
+Not yet covered: per-plan overrides, concurrency, quotas, and everything in §4 — all of which
+belong to the phases that build them.

@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
+import { RateLimitGuard } from './common/guards/rate-limit.guard.js';
 import { ConfigModule } from './infrastructure/config/config.module.js';
 import { PrismaModule } from './infrastructure/prisma/prisma.module.js';
 import { RedisModule } from './infrastructure/redis/redis.module.js';
@@ -19,5 +21,13 @@ import { HealthModule } from './modules/health/health.module.js';
  */
 @Module({
   imports: [ConfigModule, PrismaModule, RedisModule, StorageModule, HealthModule],
+  providers: [
+    // Global, not opt-in. A limiter a route has to remember to ask for is a
+    // limiter that is missing from the route nobody thought about — and the
+    // table in abuse-prevention.md §1 has a default for the general API
+    // precisely so there is an answer for every endpoint. `@RateLimit()`
+    // narrows the class; its absence means `generalSession`, not "unlimited".
+    { provide: APP_GUARD, useClass: RateLimitGuard },
+  ],
 })
 export class AppModule {}

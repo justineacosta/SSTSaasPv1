@@ -60,7 +60,7 @@ and are unaffected; anything that must cover *every* response, routed or not, be
 |---|---|---|
 | Request ID + trace | Middleware; `x-request-id` propagated everywhere including into jobs | Implemented (`traceId` in Phase 4) |
 | Security headers | Middleware; [`../security/transport-and-headers.md`](../security/transport-and-headers.md) §2–§3 | Implemented |
-| Rate limit | Guard, Redis-backed, per IP then per principal | Not Implemented |
+| Rate limit | Guard, Redis-backed, every declared scope | Implemented (global `APP_GUARD`) |
 | Authenticate | Guard, session cookie or API key -> `Principal` | Not Implemented (Phase 2) |
 | Tenant resolve | Guard, membership + org state -> `TenantContext` | Not Implemented (Phase 2) |
 | CSRF | Guard, cookie-authenticated unsafe methods only | Not Implemented (Phase 2) |
