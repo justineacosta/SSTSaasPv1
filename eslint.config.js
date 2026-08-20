@@ -17,13 +17,29 @@ export default tseslint.config(
   ...tseslint.configs.recommendedTypeChecked,
   {
     languageOptions: {
-      parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
+      // Every package's tsconfig.json excludes *.spec.ts from the build project
+      // (so `tsc -p tsconfig.json` never emits test files into dist), which
+      // means typescript-eslint's project service can't find them via normal
+      // discovery. allowDefaultProject covers them with an isolated, single-file
+      // program instead. typescript-eslint forbids '**' in these globs, so this
+      // only reaches spec files directly under a package's src/ — a spec file
+      // nested in a subdirectory (e.g. src/modules/x/x.spec.ts) will need its
+      // own entry added here.
+      parserOptions: {
+        projectService: {
+          allowDefaultProject: ['packages/*/src/*.spec.ts', 'apps/*/src/*.spec.ts'],
+        },
+        tsconfigRootDir: import.meta.dirname,
+      },
     },
     plugins: { import: importPlugin },
     rules: {
       // coding-standards.md §1 — no `any` without written justification
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/no-non-null-assertion': 'error',
+      // Destructuring a key off an object purely to omit it from a `...rest`
+      // (a common way to build negative-case test fixtures) is not dead code.
+      '@typescript-eslint/no-unused-vars': ['error', { ignoreRestSiblings: true }],
       // §5 — no floating promises
       '@typescript-eslint/no-floating-promises': 'error',
       '@typescript-eslint/no-misused-promises': 'error',
