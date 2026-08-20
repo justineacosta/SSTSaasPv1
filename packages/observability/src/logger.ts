@@ -1,5 +1,10 @@
 import type { Writable } from 'node:stream';
-import pino, { type Logger, type LoggerOptions } from 'pino';
+import pino, {
+  type Bindings,
+  type ChildLoggerOptions,
+  type Logger,
+  type LoggerOptions,
+} from 'pino';
 import { getRequestContext } from './context.js';
 import { redact, redactSecretsInText } from './redaction.js';
 
@@ -73,6 +78,46 @@ function redactError(error: unknown): unknown {
   };
 }
 
+/**
+ * Pino resets a child's bindings formatter to an identity function before
+ * applying the bindings it was given — confirmed by reading
+ * `lib/proto.js`: both branches of `child()` assign
+ * `resetChildingsFormatter` before calling `asChindings(instance, bindings)`.
+ * A root-level `formatters.bindings` can never see child bindings, by
+ * construction, not by omission — there is no configuration-only way to
+ * close this. Intercepting `.child()` itself is the only place left.
+ *
+ * Pino builds children with `Object.create(this)`, so defining `child` as an
+ * own property on the root instance is inherited by every descendant through
+ * the prototype chain: no recursion is needed here, and `this` binds
+ * correctly at each level because the call below is `inheritedChild.call(this, ...)`
+ * rather than a captured reference to the root logger.
+ */
+function wrapChild(logger: Logger): Logger {
+  // `child` is generic over pino's custom-levels type parameter, which
+  // fights plain assignment and `.call()`'s `this` typing once pulled off
+  // the instance as a value. Routing through `unknown` narrows it to the
+  // concrete signature this package actually uses (no custom levels) — the
+  // underlying function is unchanged, only the static type is. Extracting
+  // the method as a value would normally risk losing its `this` binding
+  // (`@typescript-eslint/unbound-method`), which is exactly why it is only
+  // ever invoked below via `.call(this, ...)`, never called unbound.
+  // eslint-disable-next-line @typescript-eslint/unbound-method
+  const inheritedChild = logger.child as unknown as (
+    bindings: Bindings,
+    options?: ChildLoggerOptions,
+  ) => Logger;
+  Object.defineProperty(logger, 'child', {
+    configurable: true,
+    writable: true,
+    enumerable: false,
+    value(this: Logger, bindings: Bindings, options?: ChildLoggerOptions) {
+      return inheritedChild.call(this, redact(bindings) as Bindings, options);
+    },
+  });
+  return logger;
+}
+
 export function createLogger(options: CreateLoggerOptions): Logger {
   const base: LoggerOptions = {
     level: options.silent === true ? 'silent' : options.level,
@@ -99,23 +144,18 @@ export function createLogger(options: CreateLoggerOptions): Logger {
       // captured line from a child logger directly, which contains no
       // trace of the bindings object passed to `formatters.log`.
       //
-      // KNOWN LIMITATION, confirmed by reading pino's own `child()`
-      // (lib/proto.js): for the ordinary single-argument call —
-      // `logger.child({ apiKey: secret })`, the shape this codebase will
-      // actually use — pino's own performance fast path explicitly resets
-      // the child's bindings formatter to the identity function
-      // (`resetChildingsFormatter`) and does NOT reuse this one, so this
-      // hook never runs for that call at all. It only takes effect for (a)
-      // this root logger's own `base` bindings, which never carry a secret
-      // in this package's design, and (b) a child created with its own
-      // `formatters.bindings` explicitly re-supplied via a second argument
-      // to `.child()`, which nothing in this codebase does. This was
-      // proven by reading pino's source and by direct probes; it is not
-      // reasoned about. There is no `redact()`-only way to close this for
-      // the ordinary call — doing so needs either wrapping the returned
-      // `Logger`'s own `.child` method (a materially larger change than
-      // this one-line hook, not attempted here) or a convention/lint rule
-      // banning secrets in `.child()` bindings. See task-3-report.md.
+      // This formatter does NOT protect `.child()` bindings, despite the
+      // name — confirmed by reading pino's own `child()` (lib/proto.js):
+      // both branches assign `resetChildingsFormatter` (the identity
+      // function) before applying a child's bindings, discarding whatever
+      // this was configured to. A root-level `formatters.bindings` can
+      // never see child bindings, by construction, not by omission. What
+      // this formatter actually covers is narrow: this root logger's own
+      // `base` bindings only (`{ service }`, which never carries a secret
+      // in this package's design). Child bindings — the case that matters,
+      // since `.child()` is this codebase's expected way to attach
+      // `organizationId`/`requestId` per request — are instead redacted by
+      // wrapping `.child` itself; see `wrapChild` below.
       bindings: (bindings) => redact(bindings) as Record<string, unknown>,
       log: (object) => {
         const context = getRequestContext();
@@ -197,17 +237,19 @@ export function createLogger(options: CreateLoggerOptions): Logger {
     },
   };
 
-  if (options.stream !== undefined) return pino(base, options.stream);
+  if (options.stream !== undefined) return wrapChild(pino(base, options.stream));
 
   if (options.pretty) {
-    return pino({
-      ...base,
-      transport: {
-        target: 'pino-pretty',
-        options: { colorize: true, translateTime: 'HH:MM:ss.l' },
-      },
-    });
+    return wrapChild(
+      pino({
+        ...base,
+        transport: {
+          target: 'pino-pretty',
+          options: { colorize: true, translateTime: 'HH:MM:ss.l' },
+        },
+      }),
+    );
   }
 
-  return pino(base);
+  return wrapChild(pino(base));
 }

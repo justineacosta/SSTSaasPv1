@@ -159,4 +159,48 @@ describe('createLogger', () => {
     expect(out.err.stack).toContain(REDACTED);
     expect(out.err.stack).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
   });
+
+  it('redacts a secret in child logger bindings, and again on a second line from the same child', () => {
+    const { logger, lines } = captureLogger();
+    const child = logger.child({ apiKey: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def' });
+    child.info('first line');
+    child.info('second line');
+    expect(lines).toHaveLength(2);
+    expect((lines[0] as { apiKey: string }).apiKey).toBe(REDACTED);
+    expect((lines[1] as { apiKey: string }).apiKey).toBe(REDACTED);
+  });
+
+  it('redacts a secret in grandchild bindings, proving the override is inherited', () => {
+    const { logger, lines } = captureLogger();
+    const grandchild = logger
+      .child({ requestId: 'req_1' })
+      .child({ apiKey: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def' });
+    grandchild.info('grandchild line');
+    const out = lines[0] as { requestId: string; apiKey: string };
+    expect(out.requestId).toBe('req_1');
+    expect(out.apiKey).toBe(REDACTED);
+  });
+
+  it('leaves a non-secret child binding byte-identical', () => {
+    const { logger, lines } = captureLogger();
+    const child = logger.child({ organizationId: 'org_01J', requestId: 'req_01J' });
+    child.info('plain');
+    const out = lines[0] as { organizationId: string; requestId: string };
+    expect(out.organizationId).toBe('org_01J');
+    expect(out.requestId).toBe('req_01J');
+  });
+
+  it('still honours the two-argument child(bindings, options) form, including level', () => {
+    const { logger, lines } = captureLogger();
+    const child = logger.child(
+      { apiKey: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def' },
+      { level: 'warn' },
+    );
+    child.info('should be suppressed by level');
+    child.warn('should appear');
+    expect(lines).toHaveLength(1);
+    const out = lines[0] as { level: number; apiKey: string; msg: string };
+    expect(out.msg).toBe('should appear');
+    expect(out.apiKey).toBe(REDACTED);
+  });
 });
