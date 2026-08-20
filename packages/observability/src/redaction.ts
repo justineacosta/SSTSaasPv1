@@ -45,6 +45,33 @@ function valueLooksSecret(value: string): boolean {
   return SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(value));
 }
 
+// Global-flagged copies of the same patterns, for substring replacement
+// rather than whole-value matching. `String.prototype.replace` resets a
+// global regex's `lastIndex` to 0 on every call (ECMA-262 22.2.6.11 step 8),
+// so reusing these across calls is safe.
+const GLOBAL_SECRET_VALUE_PATTERNS: RegExp[] = SECRET_VALUE_PATTERNS.map(
+  (pattern) =>
+    new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`),
+);
+
+/**
+ * Substring redaction for free text — log messages and error text — where the
+ * value is prose that may *contain* a secret rather than being one outright.
+ * Unlike `redact()`'s whole-value backstop for structured fields, this
+ * replaces only the matched span, so `"exchanging token=Bearer xyz now"`
+ * becomes `"exchanging token=[redacted] now"` instead of disappearing
+ * entirely — replacing the whole message would trade a credential leak for
+ * an unreadable log, and an operator debugging a failure still needs the
+ * rest of the sentence.
+ */
+export function redactSecretsInText(text: string): string {
+  let result = text;
+  for (const pattern of GLOBAL_SECRET_VALUE_PATTERNS) {
+    result = result.replace(pattern, REDACTED);
+  }
+  return result;
+}
+
 const MAX_DEPTH = 12;
 
 /**

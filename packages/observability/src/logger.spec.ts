@@ -50,4 +50,45 @@ describe('createLogger', () => {
     logger.info('no context');
     expect(lines[0]).not.toHaveProperty('requestId');
   });
+
+  it('redacts a secret embedded in the msg string, leaving the rest readable', () => {
+    const { logger, lines } = captureLogger();
+    logger.info('exchanging token=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def now');
+    const out = lines[0] as { msg: string };
+    expect(out.msg).toBe(`exchanging token=${REDACTED} now`);
+  });
+
+  it('leaves a msg with no secret shape byte-identical', () => {
+    const { logger, lines } = captureLogger();
+    logger.info('Scan completed with 3 findings');
+    const out = lines[0] as { msg: string };
+    expect(out.msg).toBe('Scan completed with 3 findings');
+  });
+
+  it('redacts a secret inside Error.message when the error is the first argument', () => {
+    const { logger, lines } = captureLogger();
+    const err = new Error('auth failed: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
+    logger.error(err, 'request failed');
+    const out = lines[0] as { err: { message: string } };
+    expect(out.err.message).toBe(`auth failed: ${REDACTED}`);
+  });
+
+  it('redacts a secret inside Error.message when logged as { err }', () => {
+    const { logger, lines } = captureLogger();
+    const err = new Error('auth failed: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
+    logger.error({ err }, 'request failed');
+    const out = lines[0] as { err: { message: string } };
+    expect(out.err.message).toBe(`auth failed: ${REDACTED}`);
+  });
+
+  it('keeps the stack after serialization and redacts any secret inside it', () => {
+    const { logger, lines } = captureLogger();
+    const err = new Error('token leak: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
+    logger.error(err, 'boom');
+    const out = lines[0] as { err: { stack: string } };
+    expect(typeof out.err.stack).toBe('string');
+    expect(out.err.stack.length).toBeGreaterThan(0);
+    expect(out.err.stack).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
+    expect(out.err.stack).toContain(REDACTED);
+  });
 });

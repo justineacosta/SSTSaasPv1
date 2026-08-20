@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { REDACTED, redact } from './redaction.js';
+import { REDACTED, redact, redactSecretsInText } from './redaction.js';
 
 describe('redact', () => {
   it('redacts by key name at the top level', () => {
@@ -63,5 +63,32 @@ describe('redact', () => {
     const out = redact(new Error('boom')) as Record<string, unknown>;
     expect(out.message).toBe('boom');
     expect(out.stack).toBeUndefined();
+  });
+
+  it('replaces a property whose getter throws instead of crashing', () => {
+    const hostile = {
+      get poison(): string {
+        throw new Error('getter exploded');
+      },
+      ok: 'value',
+    };
+    expect(() => redact(hostile)).not.toThrow();
+    const out = redact(hostile) as Record<string, unknown>;
+    expect(out.poison).toBe('[unreadable]');
+    expect(out.ok).toBe('value');
+  });
+});
+
+describe('redactSecretsInText', () => {
+  it('redacts only the matched span, leaving the surrounding text intact', () => {
+    const out = redactSecretsInText(
+      'exchanging token=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def now',
+    );
+    expect(out).toBe(`exchanging token=${REDACTED} now`);
+  });
+
+  it('leaves text with no secret shape byte-identical', () => {
+    const text = 'scan scn_01J completed with 3 findings';
+    expect(redactSecretsInText(text)).toBe(text);
   });
 });

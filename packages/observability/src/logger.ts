@@ -1,7 +1,7 @@
 import type { Writable } from 'node:stream';
 import pino, { type Logger, type LoggerOptions } from 'pino';
 import { getRequestContext } from './context.js';
-import { redact } from './redaction.js';
+import { redact, redactSecretsInText } from './redaction.js';
 
 export type { Logger };
 
@@ -14,31 +14,91 @@ export interface CreateLoggerOptions {
   readonly stream?: Writable;
 }
 
+// Pino's default key for an Error passed as (or under) the first log
+// argument — see lib/proto.js `write()`: a bare Error becomes `{ err }`.
+const ERROR_KEY = 'err';
+
+/**
+ * Serializer for the `err` key. By the time this runs, pino has already
+ * called `formatters.log` (see below) and, for a real `Error` under
+ * `ERROR_KEY`, `formatters.log` deliberately left it untouched — this
+ * serializer is the only stage of the pipeline that still holds a genuine
+ * `Error` instance with a real `.stack`, so it is where that stack gets
+ * redacted instead of dropped outright.
+ *
+ * `pino.stdSerializers.err` is used as a base for its `type`/`message`/
+ * `stack`/cause-chain handling and its copy of any custom own properties on
+ * the error. Its non-enumerable `.raw` (the original Error) is never copied
+ * by object spread, so it never reaches the output. `message` and `stack`
+ * are then overwritten with a substring-redacted copy; every other property
+ * (including any custom one an application attached to the Error, which
+ * could itself be secret-shaped) goes through the normal structural
+ * `redact()` used everywhere else.
+ */
+function redactError(error: unknown): unknown {
+  if (!(error instanceof Error)) return error;
+  const serialized = pino.stdSerializers.err(error);
+  const { message, stack, ...extra } = serialized;
+  return {
+    ...(redact(extra) as Record<string, unknown>),
+    message: redactSecretsInText(message),
+    stack: redactSecretsInText(stack),
+  };
+}
+
 export function createLogger(options: CreateLoggerOptions): Logger {
   const base: LoggerOptions = {
     level: options.silent === true ? 'silent' : options.level,
     base: { service: options.service },
     timestamp: pino.stdTimeFunctions.isoTime,
     // The merged bindings object passes through structural redaction before
-    // it is serialised. Verified empirically: this also covers a bare Error
-    // (or `{ err }`) passed as the log call's first argument, and it survives
-    // `pretty: true`, because pino's `formatters.log` hook runs before the
-    // pino-pretty transport and before pino's own error serializer.
+    // it is serialised. Verified empirically: this covers a bare Error (or
+    // `{ err }`) passed as the log call's first argument — its message and
+    // stack are redacted by the `err` serializer below — and it survives
+    // `pretty: true`, because `formatters.log` runs before both the
+    // pino-pretty transport and pino's per-key serializers.
     //
-    // Known gap, not covered by this hook: pino handles the `msg` string
-    // through a separate path that never reaches `formatters.log`, and an
-    // Error's `.message` (kept verbatim by the `instanceof Error` branch in
-    // redact()) is not re-scanned for secret value shapes. A secret written
-    // directly into a message string — `logger.info(\`token=${t}\`)` or
-    // `new Error(\`auth failed: Bearer ${t}\`)` — is not redacted. Callers
-    // must put secret-shaped values in the object argument, never in message
-    // text. See task-3-report.md for the probes that established this.
+    // The error under ERROR_KEY is deliberately excluded from the generic
+    // redact() walk here and handed to redactError() untouched: redact()'s
+    // own `instanceof Error` branch (used for an Error nested anywhere else
+    // in the payload) drops the stack outright because there is no later
+    // stage that could redact-and-reattach it for those; ERROR_KEY is the
+    // one place that later stage exists.
     formatters: {
       level: (label) => ({ level: label }),
       log: (object) => {
         const context = getRequestContext();
-        const redacted = redact(object) as Record<string, unknown>;
+        const { [ERROR_KEY]: topLevelError, ...rest } = object;
+        const redactedRest = redact(rest) as Record<string, unknown>;
+        const redacted: Record<string, unknown> =
+          topLevelError === undefined
+            ? redactedRest
+            : {
+                ...redactedRest,
+                [ERROR_KEY]: topLevelError instanceof Error ? topLevelError : redact(topLevelError),
+              };
         return context === undefined ? redacted : { ...context, ...redacted };
+      },
+    },
+    serializers: {
+      err: redactError,
+    },
+    // Covers the other real gap: pino carries the `msg` string through a
+    // path that never reaches `formatters.log` (confirmed by reading
+    // lib/tools.js — `serializers[messageKey]` runs independently of the
+    // `log` formatter). This hook runs earliest of all, before pino has even
+    // decided which argument is the message, so it redacts whichever
+    // position holds a string: `logger.info(msg)` or `logger.info(obj, msg)`.
+    // Substring redaction, not whole-value: a message is prose, not a
+    // secret, and should stay readable around the part that had to go.
+    hooks: {
+      logMethod(inputArgs, method) {
+        if (typeof inputArgs[0] === 'string') {
+          inputArgs[0] = redactSecretsInText(inputArgs[0]);
+        } else if (inputArgs.length > 1 && typeof inputArgs[1] === 'string') {
+          inputArgs[1] = redactSecretsInText(inputArgs[1]);
+        }
+        method.apply(this, inputArgs);
       },
     },
   };
