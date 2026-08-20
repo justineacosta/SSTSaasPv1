@@ -29,8 +29,88 @@ const STATUS_TO_CODE: Readonly<Record<number, ErrorCode>> = {
   503: ERROR_CODES.SERVICE_UNAVAILABLE,
 };
 
-const GENERIC_MESSAGE =
+/**
+ * The code for a status the table above does not name.
+ *
+ * `INTERNAL_ERROR` for everything unmapped was wrong for the 4xx half: errors.md
+ * §3 files that code under **Server**, and §1 says clients branch on `code` and
+ * never on `message` — so a 405, 406, 413 or 415 labelled `INTERNAL_ERROR` tells
+ * a client to retry its own bad request as though the server were at fault.
+ * Any unmapped client-class status therefore falls back to `VALIDATION_ERROR`,
+ * which sits in the Validation group and honestly means "your request was not
+ * acceptable". Server-class statuses keep `INTERNAL_ERROR`.
+ *
+ * The trade, recorded deliberately: a 413 arrives as `VALIDATION_ERROR` with no
+ * `details.fields`, which is a weaker signal than a dedicated code would be.
+ * Adding `PAYLOAD_TOO_LARGE`/`UNSUPPORTED_MEDIA_TYPE` to `ERROR_CODES` was
+ * considered and rejected for now — Task 11 generates OpenAPI from that
+ * contract and errors.md §7 wants a test that produces every documented code,
+ * so a code with no endpoint behind it costs more than it pays. The property
+ * that matters here is client-class versus server-class, and this delivers it.
+ * Revisit in Phase 2, when there are real endpoints to raise them.
+ */
+function codeForStatus(status: number): ErrorCode {
+  return (
+    STATUS_TO_CODE[status] ??
+    (status < 500 ? ERROR_CODES.VALIDATION_ERROR : ERROR_CODES.INTERNAL_ERROR)
+  );
+}
+
+/** The two halves of the `http-errors` contract this filter is willing to trust. */
+interface HttpErrorLike {
+  readonly status: number;
+  readonly expose: boolean;
+}
+
+/**
+ * Recognises a throwable from the `http-errors` library, which is what
+ * `body-parser` raises and Express propagates: a payload over the size limit, an
+ * unsupported `Content-Encoding`, a bad `Content-Type`. None of these are Nest
+ * `HttpException`s, and Nest's own `mapExternalException` converts only
+ * `SyntaxError` and `URIError` — so left alone they reach the catch-all below
+ * and a 413 is served as a 500. That is dishonest to the client (errors.md §4)
+ * and lets any caller drive the 5xx rate that monitoring.md §6 alerts on.
+ *
+ * The check is deliberately narrow. A `status` alone is not enough: Prisma,
+ * AWS SDK and node-fetch errors all carry status-shaped properties, and
+ * trusting those would let a driver choose this API's HTTP status. Both halves
+ * of the `http-errors` contract must be present — an integer status in the
+ * 400–599 range **and** a boolean `expose` — before the value is honoured.
+ */
+function asHttpError(exception: unknown): HttpErrorLike | undefined {
+  if (typeof exception !== 'object' || exception === null) return undefined;
+  const candidate = exception as { status?: unknown; statusCode?: unknown; expose?: unknown };
+  if (typeof candidate.expose !== 'boolean') return undefined;
+  const status = typeof candidate.status === 'number' ? candidate.status : candidate.statusCode;
+  if (typeof status !== 'number' || !Number.isInteger(status) || status < 400 || status > 599) {
+    return undefined;
+  }
+  return { status, expose: candidate.expose };
+}
+
+/**
+ * Two generic messages, not one, and they must stay two.
+ *
+ * `SERVER_GENERIC_MESSAGE` is what replaces a 5xx whose text this codebase did
+ * not author. `CLIENT_GENERIC_MESSAGE` is what replaces a 4xx whose text is not
+ * safe to repeat — an `http-errors` throwable with `expose: false`. Collapsing
+ * them would tell a caller that their own bad request was the server's fault,
+ * which is the same confusion the client-class/server-class split in
+ * `codeForStatus` exists to remove (errors.md §1, §3) and exactly the sort of
+ * contradiction that turns into a support ticket (errors.md §4). The rule is
+ * written down in errors.md §5 so it survives a later tidy-up.
+ *
+ * Neither message speculates about the cause: for `expose: false` the whole
+ * point is that the underlying text is not trusted, so the client-class string
+ * says the request was not acceptable and stops there. The `code` and the
+ * status carry the machine-readable part; the request ID carries the rest, in
+ * the log.
+ */
+const SERVER_GENERIC_MESSAGE =
   'Something went wrong on our side. Quote the request ID if you contact support.';
+
+const CLIENT_GENERIC_MESSAGE =
+  'The request could not be accepted. Quote the request ID if you contact support.';
 
 interface RequestLike {
   id?: string;
@@ -124,15 +204,31 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
-      const code = STATUS_TO_CODE[status] ?? ERROR_CODES.INTERNAL_ERROR;
       return {
         status,
-        code,
-        message: status >= 500 ? GENERIC_MESSAGE : redactSecretsInText(exception.message),
+        code: codeForStatus(status),
+        message: status >= 500 ? SERVER_GENERIC_MESSAGE : redactSecretsInText(exception.message),
       };
     }
 
-    return { status: 500, code: ERROR_CODES.INTERNAL_ERROR, message: GENERIC_MESSAGE };
+    const httpError = asHttpError(exception);
+    if (httpError !== undefined) {
+      // `expose` is the library's own statement about whether its message is
+      // safe for a client; it is false for every 5xx it builds. Combining it
+      // with the status keeps property 1 of this file intact — no 5xx this
+      // codebase did not author carries a message — while letting a
+      // client-caused failure say what the client did wrong.
+      const usesOwnMessage =
+        httpError.expose && httpError.status < 500 && exception instanceof Error;
+      const withheld = httpError.status < 500 ? CLIENT_GENERIC_MESSAGE : SERVER_GENERIC_MESSAGE;
+      return {
+        status: httpError.status,
+        code: codeForStatus(httpError.status),
+        message: usesOwnMessage ? redactSecretsInText(exception.message) : withheld,
+      };
+    }
+
+    return { status: 500, code: ERROR_CODES.INTERNAL_ERROR, message: SERVER_GENERIC_MESSAGE };
   }
 
   private log(

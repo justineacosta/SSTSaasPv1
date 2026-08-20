@@ -1,10 +1,44 @@
 import { RequestMethod, VersioningType } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import type { NextFunction, Request, Response } from 'express';
 import type { Logger } from '@sentinel/observability';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter.js';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor.js';
+import { RequestIdMiddleware } from './common/middleware/request-id.middleware.js';
+import { SecurityHeadersMiddleware } from './common/middleware/security-headers.middleware.js';
 import { NestLoggerBridge } from './infrastructure/config/nest-logger.js';
-import { LOGGER } from './infrastructure/tokens.js';
+import { CSP_ENFORCE, LOGGER } from './infrastructure/tokens.js';
+
+/** What `app.use()` accepts: a bare Express handler. */
+export type MiddlewareHandler = (request: Request, response: Response, next: NextFunction) => void;
+
+/**
+ * The first two rows of architecture/backend.md §3, in order.
+ *
+ * The request ID is established before anything else so that every later stage
+ * — including a failure inside the security-headers middleware itself — has
+ * something to correlate by. Security headers come next so they are present on
+ * a response even when a later stage throws.
+ *
+ * These are built as instances rather than registered through
+ * `MiddlewareConsumer`, because a consumer registration is resolved relative to
+ * the global prefix and therefore covers only `/api/<seg>/**` — see the note in
+ * `app.module.ts`. `SecurityHeadersMiddleware`'s one dependency is read out of
+ * the DI container by its token, the same way the logger already is below, so
+ * `CSP_ENFORCE` stays the single place `APP_ENV` is turned into a policy mode.
+ */
+function crossCuttingMiddleware(app: NestExpressApplication): MiddlewareHandler[] {
+  const requestId = new RequestIdMiddleware();
+  const securityHeaders = new SecurityHeadersMiddleware(app.get<boolean>(CSP_ENFORCE));
+  return [
+    (request, response, next) => {
+      requestId.use(request, response, next);
+    },
+    (request, response, next) => {
+      securityHeaders.use(request, response, next);
+    },
+  ];
+}
 
 /**
  * Applies everything that is a property of the HTTP surface rather than of a
@@ -13,6 +47,18 @@ import { LOGGER } from './infrastructure/tokens.js';
  * is a bootstrap no test has ever seen.
  */
 export function configureApp(app: NestExpressApplication): NestExpressApplication {
+  // First, before anything else this function does and — because `configureApp`
+  // runs before `app.init()` — before Nest registers its body parser. That
+  // ordering is the point: a malformed request body is rejected by the parser
+  // without ever reaching a route, and a response that skipped this chain is a
+  // response with no security headers and no request ID.
+  // transport-and-headers.md §2 applies to *every* response, not to the routed
+  // ones. `app-setup.spec.ts` asserts the order; `app.integration.spec.ts`
+  // asserts the coverage, including off-prefix paths and the parser failure.
+  for (const middleware of crossCuttingMiddleware(app)) {
+    app.use(middleware);
+  }
+
   // Express advertises itself by default. Removed at the app level as well as
   // per-response, so it is gone even on a response that never reaches the
   // middleware chain. transport-and-headers.md §2.
@@ -29,15 +75,13 @@ export function configureApp(app: NestExpressApplication): NestExpressApplicatio
     // backend.md §8 both write the unprefixed paths, and a probe URL that moves
     // when the API version moves breaks a deployment on the day it changes.
     //
-    // `{*splat}` is path-to-regexp v8 syntax, matching the `*splat` used for
-    // middleware in app.module.ts. Measured on this stack (Nest 11.2 / Express
-    // 5.2 / path-to-regexp 8.4), the Express 4 form `health/(.*)` also works
-    // here — Nest evaluates prefix exclusions with its own matcher rather than
-    // through Express's router, so v8's stricter syntax does not reach it. The
-    // v8 form is used anyway so both wildcard sites read the same way. A bare
-    // `health` does NOT work: it excludes only the exact path, and
-    // /health/live goes back under the prefix. app.integration.spec.ts asserts
-    // both directions.
+    // `{*splat}` is path-to-regexp v8 syntax. Measured on this stack (Nest 11.2
+    // / Express 5.2 / path-to-regexp 8.4), the Express 4 form `health/(.*)`
+    // also works here — Nest evaluates prefix exclusions with its own matcher
+    // rather than through Express's router, so v8's stricter syntax does not
+    // reach it. The v8 form is used anyway. A bare `health` does NOT work: it
+    // excludes only the exact path, and /health/live goes back under the
+    // prefix. app.integration.spec.ts asserts both directions.
     exclude: [{ path: 'health/{*splat}', method: RequestMethod.ALL }],
   });
 

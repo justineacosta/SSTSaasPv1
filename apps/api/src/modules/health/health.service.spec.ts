@@ -49,10 +49,17 @@ describe('HealthService.checkDependencies', () => {
     // An operator needs to know *which* dependency failed. A single boolean
     // sends them to look at all three. monitoring.md §5.
     const report = await serviceWith(overrides).checkDependencies();
-    expect(report.status).toBe('degraded');
-    expect(report.dependencies[name as 'postgres']).toBe('error');
-    const stillOk = Object.entries(report.dependencies).filter(([key]) => key !== name);
-    expect(stillOk.every(([, value]) => value === 'ok')).toBe(true);
+    // Whole-object equality rather than a spot check: a probe that grew an extra
+    // field would otherwise pass, and the error branch is precisely where a
+    // driver's host, role, or version is tempting to attach.
+    expect(report).toEqual({
+      status: 'degraded',
+      dependencies: {
+        postgres: name === 'postgres' ? 'error' : 'ok',
+        redis: name === 'redis' ? 'error' : 'ok',
+        storage: name === 'storage' ? 'error' : 'ok',
+      },
+    });
   });
 
   it('checks every dependency even when the first one fails', async () => {
@@ -96,8 +103,9 @@ describe('HealthService.checkDependencies', () => {
     const head = vi.fn(() => Promise.resolve(null));
     const list = vi.fn();
     const put = vi.fn();
-    await serviceWith({ storage: { head, list, put } as unknown as StorageAdapter })
-      .checkDependencies();
+    await serviceWith({
+      storage: { head, list, put } as unknown as StorageAdapter,
+    }).checkDependencies();
     expect(head).toHaveBeenCalledTimes(1);
     expect(list).not.toHaveBeenCalled();
     expect(put).not.toHaveBeenCalled();
@@ -116,6 +124,27 @@ describe('HealthService.detailed', () => {
     }
   });
 
+  it('adds timings and nothing else on the degraded path too, not only the healthy one', async () => {
+    // The healthy report never executes the error branch of `probe()`, so a
+    // key-shape assertion that only ever runs against an all-ok report asserts
+    // nothing about the branch this endpoint exists to keep quiet. A forbidden-
+    // string sweep does not close the gap either: it catches only the strings
+    // someone thought of. This asserts the shape where the leak would be.
+    const report = await serviceWith({
+      database: { $queryRaw: rejecting('connect ECONNREFUSED db-primary.internal:5432') },
+      storage: { head: rejecting('minio.internal:9000 refused') } as unknown as StorageAdapter,
+    }).detailed();
+    expect(report.status).toBe('degraded');
+    expect(report.dependencies.postgres.status).toBe('error');
+    expect(report.dependencies.storage.status).toBe('error');
+    expect(Object.keys(report).sort()).toEqual(['checkedAt', 'dependencies', 'status']);
+    expect(Object.keys(report.dependencies).sort()).toEqual(['postgres', 'redis', 'storage']);
+    for (const entry of Object.values(report.dependencies)) {
+      expect(Object.keys(entry).sort()).toEqual(['latencyMs', 'status']);
+      expect(typeof entry.latencyMs).toBe('number');
+    }
+  });
+
   it('exposes no hostname, URL, version, driver, or error text', async () => {
     // monitoring.md §5 places /health/detailed behind authentication, which does
     // not exist until Phase 2. Until the guard exists, this endpoint may expose
@@ -123,10 +152,19 @@ describe('HealthService.detailed', () => {
     // so it is ready() plus timings, and no more.
     const report = await serviceWith({
       database: { $queryRaw: rejecting('connect ECONNREFUSED 10.0.0.5:5432') },
-      storage: { head: rejecting('https://minio.internal:9000 refused') } as unknown as StorageAdapter,
+      storage: {
+        head: rejecting('https://minio.internal:9000 refused'),
+      } as unknown as StorageAdapter,
     }).detailed();
     const serialised = JSON.stringify(report);
-    for (const forbidden of ['10.0.0.5', 'minio', '9000', 'ECONNREFUSED', 'evidence', 'postgresql']) {
+    for (const forbidden of [
+      '10.0.0.5',
+      'minio',
+      '9000',
+      'ECONNREFUSED',
+      'evidence',
+      'postgresql',
+    ]) {
       expect(serialised).not.toContain(forbidden);
     }
   });

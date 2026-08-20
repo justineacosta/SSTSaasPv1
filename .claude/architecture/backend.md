@@ -45,7 +45,16 @@ must be testable without a database. Where that becomes hard, the layering has s
 
 ## 3. Cross-cutting pipeline
 
-Order matters and is asserted by a test.
+Order matters and is asserted by a test —
+`apps/api/src/app-setup.spec.ts`, which asserts it on the registration path production
+actually takes.
+
+The first two stages are registered with `app.use()` in `configureApp`, not through
+`MiddlewareConsumer`. A consumer registration resolves its paths under the global prefix and
+runs after Nest's body parser, which left every off-prefix path and every body-parse failure
+with no request ID and no security headers. Guard stages from Phase 2 onward are Nest guards
+and are unaffected; anything that must cover *every* response, routed or not, belongs in
+`configureApp`.
 
 | Stage | Mechanism | Status |
 |---|---|---|

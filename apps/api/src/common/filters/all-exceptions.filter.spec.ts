@@ -236,3 +236,142 @@ describe('AllExceptionsFilter — what must reach the log', () => {
     expect(errorEnvelopeSchema.parse(body).error.code).toBe('INTERNAL_ERROR');
   });
 });
+
+describe('AllExceptionsFilter — throwables from the http-errors library', () => {
+  /**
+   * The shape `body-parser` actually raises. Reproduced rather than imported so
+   * the test states the contract it depends on: `status`, `statusCode`, and a
+   * boolean `expose`.
+   */
+  class PayloadTooLargeError extends Error {
+    readonly status = 413;
+    readonly statusCode = 413;
+    readonly expose = true;
+    readonly type = 'entity.too.large';
+    readonly limit = 102_400;
+  }
+
+  it('serves a body over the size limit as a 413, not a 500', () => {
+    // Before this branch existed, body-parser's error fell through to the
+    // catch-all and every oversized request answered 500 — a 5xx any caller
+    // could drive at will, against the alert in monitoring.md §6, and telling
+    // the client nothing it could act on (errors.md §4).
+    const { status, body } = invoke(new PayloadTooLargeError('request entity too large'));
+    expect(status).toBe(413);
+    const parsed = errorEnvelopeSchema.parse(body);
+    expect(parsed.error.message).toBe('request entity too large');
+  });
+
+  it('gives an unmapped 4xx a client-class code, never a Server-class one', () => {
+    // errors.md §3 files INTERNAL_ERROR under Server and §1 says clients branch
+    // on `code`. A 413 labelled INTERNAL_ERROR tells a client to retry its own
+    // bad request as a server fault.
+    const parsed = errorEnvelopeSchema.parse(invoke(new PayloadTooLargeError('too large')).body);
+    expect(parsed.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it.each([
+    [405, 'VALIDATION_ERROR'],
+    [406, 'VALIDATION_ERROR'],
+    [415, 'VALIDATION_ERROR'],
+    [418, 'VALIDATION_ERROR'],
+  ])('maps an unmapped %s HttpException to %s', (status, code) => {
+    const result = invoke(new HttpException('nope', status));
+    expect(result.status).toBe(status);
+    expect(errorEnvelopeSchema.parse(result.body).error.code).toBe(code);
+  });
+
+  it('leaves an unmapped 5xx on INTERNAL_ERROR', () => {
+    const result = invoke(new HttpException('upstream exploded', 502));
+    expect(result.status).toBe(502);
+    const parsed = errorEnvelopeSchema.parse(result.body);
+    expect(parsed.error.code).toBe('INTERNAL_ERROR');
+    expect(parsed.error.message).not.toContain('upstream exploded');
+  });
+
+  it('ignores a status on a throwable that is not an http-errors object', () => {
+    // The discrimination is the point. A Prisma, AWS-SDK or fetch error carrying
+    // a status-shaped property must not get to choose this API's HTTP status or
+    // to put its own message in front of a client.
+    class DriverError extends Error {
+      readonly status = 404;
+      readonly statusCode = 404;
+      readonly meta = { table: 'Finding' };
+    }
+    const { status, body } = invoke(new DriverError('relation "Finding" does not exist'));
+    expect(status).toBe(500);
+    const parsed = errorEnvelopeSchema.parse(body);
+    expect(parsed.error.code).toBe('INTERNAL_ERROR');
+    expect(parsed.error.message).not.toContain('Finding');
+  });
+
+  it('withholds the message of an http-error that says it is not safe to expose', () => {
+    class UnexposedError extends Error {
+      readonly status = 400;
+      readonly statusCode = 400;
+      readonly expose = false;
+      readonly connectionString = 'postgres://sentinel:hunter2@db-primary.internal:5432';
+    }
+    const { status, body } = invoke(new UnexposedError('db-primary.internal rejected the request'));
+    expect(status).toBe(400);
+    const parsed = errorEnvelopeSchema.parse(body);
+    // Three properties at once, because dropping any one of them is a
+    // regression someone would plausibly introduce while tidying:
+    const { code, message } = parsed.error;
+    // (a) the withheld text stays withheld,
+    expect(message).not.toContain('db-primary.internal');
+    expect(message).not.toContain('hunter2');
+    // (b) the code is client-class — errors.md §3 files INTERNAL_ERROR under
+    //     Server and §1 has clients branching on `code`,
+    expect(code).toBe('VALIDATION_ERROR');
+    // (c) and so is the *message*. A 4xx reading "something went wrong on our
+    //     side" tells the caller their own bad request was our fault, which
+    //     re-introduces one layer up exactly the confusion (b) removes, and
+    //     generates the support ticket errors.md §4 is written to avoid.
+    expect(message).toBe(
+      'The request could not be accepted. Quote the request ID if you contact support.',
+    );
+    expect(message).not.toContain('on our side');
+  });
+
+  it('still uses the server-side generic message for a 5xx, which is a different string', () => {
+    // The two must not be collapsed back into one. This pins both halves: the
+    // 5xx text is unchanged, and it is not the client-class text.
+    class UnexposedServerError extends Error {
+      readonly status = 502;
+      readonly statusCode = 502;
+      readonly expose = false;
+    }
+    const { status, body } = invoke(new UnexposedServerError('upstream pool exhausted'));
+    expect(status).toBe(502);
+    const { code, message } = errorEnvelopeSchema.parse(body).error;
+    expect(code).toBe('INTERNAL_ERROR');
+    expect(message).toBe(
+      'Something went wrong on our side. Quote the request ID if you contact support.',
+    );
+    expect(message).not.toContain('upstream pool exhausted');
+  });
+
+  it('withholds the message of a 5xx http-error even when it claims to be exposable', () => {
+    class ExposedServerError extends Error {
+      readonly status = 500;
+      readonly statusCode = 500;
+      readonly expose = true;
+    }
+    const { status, body } = invoke(new ExposedServerError('connect ECONNREFUSED 10.0.0.5:5432'));
+    expect(status).toBe(500);
+    const parsed = errorEnvelopeSchema.parse(body);
+    expect(parsed.error.code).toBe('INTERNAL_ERROR');
+    expect(parsed.error.message).not.toContain('10.0.0.5');
+  });
+
+  it('redacts a secret-shaped substring out of an exposable http-error message', () => {
+    class BadUrlError extends Error {
+      readonly status = 400;
+      readonly statusCode = 400;
+      readonly expose = true;
+    }
+    const { body } = invoke(new BadUrlError('rejected https://user:hunter2@example.com/callback'));
+    expect(errorEnvelopeSchema.parse(body).error.message).not.toContain('hunter2');
+  });
+});

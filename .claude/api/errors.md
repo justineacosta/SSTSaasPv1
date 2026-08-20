@@ -109,6 +109,15 @@ Two implementation rules that are easy to get wrong, both covered by tests:
   through its structural `redact()`. Authored 4xx messages quote user input — a rejected
   callback URL, a bad enum value — and a credentialed URL is exactly the shape that arrives
   that way.
+- **There are two generic messages, and they must stay two.** When a message is withheld,
+  the replacement matches the *class* of the failure: a 5xx gets "Something went wrong on our
+  side…", a 4xx gets "The request could not be accepted…". Collapsing them into one string
+  tells a caller that their own bad request was the server's fault — which re-introduces, in
+  the `message`, exactly the confusion the client-class/server-class split in `code` exists to
+  remove (§1, §3), and generates the support ticket §4 is written to avoid. Neither string
+  speculates about the cause: a message is withheld precisely because the underlying text is
+  not trusted. `apps/api/src/common/filters/all-exceptions.filter.ts` holds both, and its
+  spec pins each one against a collapse in either direction.
 
 ## 6. Logging
 

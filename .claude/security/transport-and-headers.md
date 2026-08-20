@@ -1,10 +1,21 @@
 # Transport security, headers, and frontend hardening
 
 > **Status: §2 and §3 Implemented for the API origin (Phase 1)** —
-> `apps/api/src/common/middleware/security-headers.middleware.ts`, asserted header by header in
+> `apps/api/src/common/middleware/security-headers.middleware.ts`, registered with `app.use()`
+> in `apps/api/src/app-setup.ts` and asserted header by header in
 > `apps/api/src/app.integration.spec.ts`. §1 (edge TLS), §4 (CORS), §5 (cookies) and §6
 > (frontend hardening) are Designed only: there is no edge, no authentication, and no
 > `apps/web` yet.
+>
+> The `app.use()` registration is load-bearing, not a style choice. Registering the same
+> middleware through Nest's `MiddlewareConsumer.forRoutes({ path: '*splat' })` resolves the
+> path *under the global prefix*, so it covered only `/api/<seg>/**` and `/health/<seg>/**`:
+> `/`, `/a/b`, `/healthz` and every other off-prefix path answered with no security headers and
+> no `x-request-id` at all. A consumer registration also runs *after* Nest's body parser, so a
+> malformed request body was rejected before the chain ran. Both are fixed, and the integration
+> suite now asserts the full header set on off-prefix paths and on a body-parse failure
+> specifically — the earlier assertions all picked paths inside the covered tree, which is why
+> the gap survived review.
 
 ## 1. Transport
 

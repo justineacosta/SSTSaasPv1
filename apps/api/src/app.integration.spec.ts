@@ -159,6 +159,88 @@ describe('API surface', () => {
     expect(headers['x-request-id']).toMatch(/^req_/);
   });
 
+  // The gap that let a whole class of unprotected responses ship: every header
+  // assertion above picks a path *inside* `/api` or `/health`, which is exactly
+  // the tree `MiddlewareConsumer.forRoutes({ path: '*splat' })` covered — it
+  // resolves relative to the global prefix. `/`, `/a/b` and `/healthz` answered
+  // with no security headers and no request ID at all. These paths are the
+  // control, and they must stay in the suite even when nothing is routed there:
+  // transport-and-headers.md §2 says "every application response", and an
+  // unrouted path still produces one.
+  it.each(['/', '/a', '/a/b', '/healthz', '/health', '/favicon.ico'])(
+    'sets the full header set on %s, outside both /api and /health',
+    async (path) => {
+      const { headers } = await request(server).get(path);
+      expect(headers['x-content-type-options']).toBe('nosniff');
+      expect(headers['x-frame-options']).toBe('DENY');
+      expect(headers['strict-transport-security']).toBe(
+        'max-age=31536000; includeSubDomains; preload',
+      );
+      expect(headers['referrer-policy']).toBe('strict-origin-when-cross-origin');
+      expect(headers['permissions-policy']).toBe(
+        'camera=(), microphone=(), geolocation=(), payment=()',
+      );
+      expect(headers['cross-origin-opener-policy']).toBe('same-origin');
+      expect(headers['cross-origin-resource-policy']).toBe('same-origin');
+      expect(headers['cross-origin-embedder-policy']).toBe('require-corp');
+      expect(headers['cache-control']).toBe('no-store');
+      expect(headers['content-security-policy']).toBeDefined();
+      expect(headers['x-powered-by']).toBeUndefined();
+      expect(headers['x-request-id']).toMatch(/^req_/);
+    },
+  );
+
+  it('covers a response Nest rejects before routing, such as a malformed body', async () => {
+    // Nest registers its body parser during `app.init()`. A chain registered
+    // through `MiddlewareConsumer` runs *after* the parser, so a parse failure
+    // answered with no headers and a request ID of `req_unknown` in both the
+    // envelope and the log — an error nobody could correlate. `configureApp`
+    // now registers the chain before init, which puts it ahead of the parser.
+    const response = await request(server)
+      .post('/api/v1/x')
+      .set('content-type', 'application/json')
+      .send('{"a":');
+    expect(response.status).toBe(400);
+    expect(response.headers['x-content-type-options']).toBe('nosniff');
+    expect(response.headers['x-frame-options']).toBe('DENY');
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.headers['content-security-policy']).toBeDefined();
+    const requestId = response.headers['x-request-id'] as string;
+    expect(requestId).toMatch(/^req_/);
+    // The envelope's request ID is the one on the wire, not the `req_unknown`
+    // placeholder the filter falls back to when nothing set one.
+    const parsed = errorEnvelopeSchema.parse(response.body);
+    expect(parsed.error.requestId).toBe(requestId);
+  });
+
+  it('honours a supplied request id even on a pre-routing failure', async () => {
+    const response = await request(server)
+      .post('/api/v1/x')
+      .set('content-type', 'application/json')
+      .set('x-request-id', 'req_from_edge')
+      .send('{"a":');
+    expect(response.headers['x-request-id']).toBe('req_from_edge');
+    expect(errorEnvelopeSchema.parse(response.body).error.requestId).toBe('req_from_edge');
+  });
+
+  it('answers an oversized body with a client-class 413, not a 500', async () => {
+    // body-parser raises an `http-errors` object, which is not a Nest
+    // HttpException. Left unrecognised it fell to the filter's catch-all and
+    // every oversized request became a 500 — a 5xx any caller could drive,
+    // against the alert in operations/monitoring.md §6.
+    const response = await request(server)
+      .post('/api/v1/x')
+      .set('content-type', 'application/json')
+      .send(JSON.stringify({ a: 'x'.repeat(200_000) }));
+    expect(response.status).toBe(413);
+    const parsed = errorEnvelopeSchema.parse(response.body);
+    // errors.md §3 files INTERNAL_ERROR under Server; a client must not read its
+    // own too-large request as a server fault.
+    expect(parsed.error.code).not.toBe('INTERNAL_ERROR');
+    expect(parsed.error.requestId).toMatch(/^req_/);
+    expect(response.headers['x-content-type-options']).toBe('nosniff');
+  });
+
   it('sets a nonce-based CSP with no unsafe-inline and no unsafe-eval', async () => {
     const { headers } = await request(server).get('/health/live').expect(200);
     const csp =
@@ -356,6 +438,16 @@ describe('A dependency outage', () => {
     expect(body.status).toBe('degraded');
     expect(body.dependencies.redis?.status).toBe('error');
     expect(body.dependencies.postgres?.status).toBe('ok');
+    // The same key-shape assertion the healthy case gets, applied to the branch
+    // that actually runs during an outage. A forbidden-string sweep below is a
+    // second line only: it catches the strings someone thought of, and a probe
+    // that started reporting `host` or `driver` is exactly the field nobody
+    // thought of.
+    expect(Object.keys(body).sort()).toEqual(['checkedAt', 'dependencies', 'status']);
+    expect(Object.keys(body.dependencies).sort()).toEqual(['postgres', 'redis', 'storage']);
+    for (const entry of Object.values(body.dependencies)) {
+      expect(Object.keys(entry).sort()).toEqual(['latencyMs', 'status']);
+    }
     const serialised = JSON.stringify(response.body);
     for (const forbidden of ['127.0.0.1', '6399', 'ECONNREFUSED', 'redis://']) {
       expect(serialised).not.toContain(forbidden);
