@@ -212,10 +212,11 @@ model Invitation {
   @@index([organizationId, createdAt(sort: Desc)])
 }
 
-/// Intended to be append-only. As of this migration, `sentinel_app` still
-/// holds UPDATE and DELETE on this table — revoking them (and adding the
-/// blocking trigger) is Phase 3 work per security/audit.md §2, not yet done.
-/// Do not rely on database-level append-only enforcement before then.
+/// Append-only. The row_level_security migration revokes UPDATE and DELETE on
+/// this table from `sentinel_app` and adds a BEFORE UPDATE/DELETE trigger that
+/// raises, per security/audit.md §2. Full audit architecture (event taxonomy,
+/// redaction, retention, query API) remains Phase 3 — this table currently
+/// carries only the tamper-resistance controls, not the rest of that design.
 model AuditEvent {
   id             String    @id
   organizationId String

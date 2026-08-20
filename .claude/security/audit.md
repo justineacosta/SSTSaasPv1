@@ -1,6 +1,11 @@
 # Audit architecture
 
-> **Status: Designed. Not Implemented.** Phase 3.
+> **Status: Partially Implemented.** The tamper-resistance controls in §2 — `UPDATE`/`DELETE`
+> revoked from `sentinel_app` on `AuditEvent`, plus the blocking trigger — landed in Phase 1
+> (Task 6's row-level security migration) and are proven by
+> `packages/db/src/rls.integration.spec.ts`. The rest of this document — event taxonomy (§4),
+> redaction (§5), the tenant-facing read API (§6), and retention (§7) — is Designed, Not
+> Implemented; still Phase 3.
 
 ## 1. Requirements
 

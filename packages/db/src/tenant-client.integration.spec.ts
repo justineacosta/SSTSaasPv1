@@ -1,0 +1,166 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createUnscopedPrismaClient, type PrismaClient } from './unscoped.js';
+import { startPostgresHarness, type PostgresHarness } from './testing/postgres-harness.js';
+import { createTenantClient } from './tenant-client.js';
+import { MissingTenantContextError } from './errors.js';
+import { newId } from './id.js';
+
+let harness: PostgresHarness;
+let root: PrismaClient;
+
+const orgA = newId('org');
+const orgB = newId('org');
+const userA = newId('usr');
+const userB = newId('usr');
+const roleId = newId('rol');
+let membershipB = '';
+
+beforeAll(async () => {
+  harness = await startPostgresHarness();
+  root = createUnscopedPrismaClient(harness.ownerUrl);
+
+  await root.role.create({
+    data: { id: roleId, key: 'OWNER', name: 'Owner', description: 'Owns the organisation.' },
+  });
+  await root.organization.createMany({
+    data: [
+      { id: orgA, slug: 'tenant-a', name: 'Tenant A' },
+      { id: orgB, slug: 'tenant-b', name: 'Tenant B' },
+    ],
+  });
+  await root.user.createMany({
+    data: [
+      { id: userA, email: 'a@example.test' },
+      { id: userB, email: 'b@example.test' },
+    ],
+  });
+  await root.membership.create({
+    data: { id: newId('mbr'), organizationId: orgA, userId: userA, roleId },
+  });
+  membershipB = newId('mbr');
+  await root.membership.create({
+    data: { id: membershipB, organizationId: orgB, userId: userB, roleId },
+  });
+}, 180_000);
+
+afterAll(async () => {
+  await root?.$disconnect();
+  await harness?.stop();
+});
+
+describe('tenant-scoped client', () => {
+  it('scopes findMany to the context organisation', async () => {
+    const db = createTenantClient(root, { organizationId: orgA });
+    const rows = await db.membership.findMany();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.organizationId).toBe(orgA);
+  });
+
+  it('rewrites findUnique into a tenant-scoped lookup — the single easiest mistake to make', async () => {
+    const db = createTenantClient(root, { organizationId: orgA });
+    // membershipB exists and its ID is correct; it simply belongs to Tenant B.
+    const row = await db.membership.findUnique({ where: { id: membershipB } });
+    expect(row).toBeNull();
+  });
+
+  it('returns the row through findUnique for the owning tenant', async () => {
+    const db = createTenantClient(root, { organizationId: orgB });
+    const row = await db.membership.findUnique({ where: { id: membershipB } });
+    expect(row?.id).toBe(membershipB);
+  });
+
+  it('scopes count', async () => {
+    const db = createTenantClient(root, { organizationId: orgA });
+    expect(await db.membership.count()).toBe(1);
+  });
+
+  it('injects organizationId on create', async () => {
+    const db = createTenantClient(root, { organizationId: orgA });
+    const created = await db.auditEvent.create({
+      data: {
+        id: newId('aud'),
+        actorType: 'SYSTEM',
+        action: 'TEST_EVENT',
+        resourceType: 'Test',
+      } as never,
+    });
+    expect(created.organizationId).toBe(orgA);
+  });
+
+  it('refuses to update another tenant row', async () => {
+    const db = createTenantClient(root, { organizationId: orgA });
+    const result = await db.membership.updateMany({
+      where: { id: membershipB },
+      data: { status: 'REMOVED' },
+    });
+    expect(result.count).toBe(0);
+  });
+
+  it('refuses to delete another tenant row', async () => {
+    const db = createTenantClient(root, { organizationId: orgA });
+    const result = await db.membership.deleteMany({ where: { id: membershipB } });
+    expect(result.count).toBe(0);
+  });
+
+  it('refuses to move a row to another tenant via update — data cannot override the injected predicate', async () => {
+    // Not in the brief: found while reviewing the extension that `where`
+    // scoping alone does not stop a caller from writing a different
+    // organizationId into `data`, which would re-parent a row the caller
+    // legitimately owns into another tenant. See tenant-client.ts's
+    // SCOPED_WHERE_AND_DATA_OPERATIONS and the upsert branch.
+    // A fresh user, distinct from userA/userB, so this membership doesn't
+    // collide with the (organizationId, userId) unique constraint the other
+    // fixtures already occupy.
+    const userC = newId('usr');
+    await root.user.create({ data: { id: userC, email: 'c@example.test' } });
+
+    const db = createTenantClient(root, { organizationId: orgA });
+    const ownRow = await db.membership.create({
+      data: { id: newId('mbr'), userId: userC, roleId } as never,
+    });
+    expect(ownRow.organizationId).toBe(orgA);
+
+    const updated = await db.membership.update({
+      where: { id: ownRow.id },
+      data: { status: 'REMOVED', organizationId: orgB } as never,
+    });
+    expect(updated.organizationId).toBe(orgA);
+
+    // Confirm at the root (unscoped) level too, not just what the tenant
+    // client itself echoes back.
+    const raw = await root.membership.findUnique({ where: { id: ownRow.id } });
+    expect(raw?.organizationId).toBe(orgA);
+  });
+
+  it('leaves global models unscoped — User is not tenant-owned', async () => {
+    const db = createTenantClient(root, { organizationId: orgA });
+    expect(await db.user.count()).toBeGreaterThanOrEqual(2);
+  });
+
+  it('throws when there is no organisation in context', async () => {
+    const db = createTenantClient(root, { organizationId: '' });
+    await expect(db.membership.findMany()).rejects.toThrow(MissingTenantContextError);
+  });
+});
+
+describe('cross-tenant harness over the resource registry', () => {
+  it('gives Tenant A nothing for every registered tenant-owned model', async () => {
+    const db = createTenantClient(root, { organizationId: orgA });
+    const rows = await Promise.all([
+      db.membership.findMany({ where: { organizationId: orgB } }),
+      db.invitation.findMany({ where: { organizationId: orgB } }),
+      db.auditEvent.findMany({ where: { organizationId: orgB } }),
+    ]);
+    // The injected predicate wins over the caller-supplied one: asking for
+    // Tenant B's rows never yields a row that actually belongs to Tenant B.
+    // (Membership and AuditEvent legitimately hold Tenant A's own rows by
+    // this point in the suite — from beforeAll and the "injects
+    // organizationId on create" test above — so the correct assertion is
+    // "no leaked row", not "empty result".)
+    for (const result of rows) {
+      for (const row of result) {
+        expect((row as { organizationId: string }).organizationId).not.toBe(orgB);
+      }
+    }
+  });
+});

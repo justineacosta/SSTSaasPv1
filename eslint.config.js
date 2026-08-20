@@ -97,8 +97,11 @@ export default tseslint.config(
   // tests may assert on console, use the unscoped client to set up fixtures, and
   // read process.env directly to build child-process environments for Prisma
   // migrations and Testcontainers — a test harness is not application code.
+  // packages/db/src/testing is the shared Testcontainers harness (Task 6):
+  // not itself a spec file, but reused by every integration spec for exactly
+  // this reason, so it gets the same exemption.
   {
-    files: ['**/*.spec.ts', '**/*.integration.spec.ts'],
+    files: ['**/*.spec.ts', '**/*.integration.spec.ts', 'packages/db/src/testing/**/*.ts'],
     rules: {
       'no-restricted-imports': 'off',
       '@typescript-eslint/no-non-null-assertion': 'off',

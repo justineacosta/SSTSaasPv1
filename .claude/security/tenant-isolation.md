@@ -1,6 +1,10 @@
 # Tenant isolation
 
-> **Status: Designed. Not Implemented.** Layer 1 in Phase 1, layers 2–3 in Phase 3.
+> **Status: Partially Implemented.** Layers 1 and 2 implemented in Phase 1 (Task 6), proven by
+> `packages/db/src/tenant-client.integration.spec.ts` and `rls.integration.spec.ts` against a
+> real Postgres 16. Layer 3 (response DTOs) is Not Implemented — there are no handlers yet to
+> serialise. §3 (isolation beyond the REST API) and §4 (the generated cross-resource test
+> matrix) remain Designed, Not Implemented until Phase 2+ adds the resources they cover.
 
 Tenant isolation is the control most likely to fail, because it fails silently. A missing
 `where` clause produces working code, passing tests, and a data breach. The design assumes
