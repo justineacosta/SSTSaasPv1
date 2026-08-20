@@ -1,6 +1,9 @@
 # Backend architecture
 
-> **Status: Designed. Not Implemented.** Phase 1 onward.
+> **Status: Partially Implemented (Phase 1).** The application bootstrap, the request-ID and
+> security-header middleware, the Zod validation pipe, the global exception filter, the logging
+> interceptor, and the `health` module are built and tested (`apps/api`). Every other module in
+> §1 and every stage in §3 marked *Not Implemented* below is still Designed only.
 
 NestJS modular monolith. One deployable, many bounded modules, explicit dependencies.
 
@@ -44,24 +47,29 @@ must be testable without a database. Where that becomes hard, the layering has s
 
 Order matters and is asserted by a test.
 
-| Stage | Mechanism |
-|---|---|
-| Request ID + trace | Middleware; `x-request-id` propagated everywhere including into jobs |
-| Rate limit | Guard, Redis-backed, per IP then per principal |
-| Authenticate | Guard, session cookie or API key -> `Principal` |
-| Tenant resolve | Guard, membership + org state -> `TenantContext` |
-| CSRF | Guard, cookie-authenticated unsafe methods only |
-| Validate | Zod pipe against `packages/contracts` schemas |
-| Authorize | Guard reading `@RequirePermission` |
-| Entitlement | Guard reading `@RequireEntitlement` |
-| Handle | Controller -> service |
-| Serialise | Interceptor, explicit DTO |
-| Errors | Global filter -> shared error envelope |
-| Audit | Service-level, in the mutation's transaction |
-| Logging | Interceptor, structured, redacted |
+| Stage | Mechanism | Status |
+|---|---|---|
+| Request ID + trace | Middleware; `x-request-id` propagated everywhere including into jobs | Implemented (`traceId` in Phase 4) |
+| Security headers | Middleware; [`../security/transport-and-headers.md`](../security/transport-and-headers.md) §2–§3 | Implemented |
+| Rate limit | Guard, Redis-backed, per IP then per principal | Not Implemented |
+| Authenticate | Guard, session cookie or API key -> `Principal` | Not Implemented (Phase 2) |
+| Tenant resolve | Guard, membership + org state -> `TenantContext` | Not Implemented (Phase 2) |
+| CSRF | Guard, cookie-authenticated unsafe methods only | Not Implemented (Phase 2) |
+| Validate | Zod pipe against `packages/contracts` schemas | Implemented; no consumer until Phase 2 |
+| Authorize | Guard reading `@RequirePermission` | Decorator implemented, guard Not Implemented |
+| Entitlement | Guard reading `@RequireEntitlement` | Not Implemented (Phase 10) |
+| Handle | Controller -> service | Implemented |
+| Serialise | Interceptor, explicit DTO | Not Implemented |
+| Errors | Global filter -> shared error envelope | Implemented |
+| Audit | Service-level, in the mutation's transaction | Not Implemented (Phase 3) |
+| Logging | Interceptor, structured, redacted | Implemented |
 
 A route without an explicit access declaration **fails a startup assertion**. Missing
-authorization is a boot crash, not a production discovery.
+authorization is a boot crash, not a production discovery. The declaration itself —
+`@Public()` and `@RequirePermission()`, both keyed on `ACCESS_METADATA_KEY` — lives in
+`apps/api/src/common/decorators/access.decorator.ts`. **The startup assertion that reads it
+does not exist yet**, so today an undeclared route is simply undeclared; the assertion is the
+next task's work.
 
 ## 4. Transactions
 
@@ -106,6 +114,16 @@ in review rather than by a customer.
 `/health/live` (process up), `/health/ready` (database, Redis, storage reachable),
 `/health/detailed` (authenticated: queue depth, worker heartbeats, migration state).
 Readiness gates deployment; liveness restarts a wedged process.
+
+**Status: Implemented, with `/health/detailed` deliberately reduced.** All three routes are
+excluded from the `/api` global prefix and are version-neutral, so a probe URL does not move
+when the API version does. `/health/ready` returns 503 carrying a per-dependency verdict in
+the shared error envelope, and never the driver's error text. `/health/detailed` currently
+returns readiness plus a per-probe latency and nothing else: the queue, worker-heartbeat and
+migration-state fields are authenticated-only per
+[`../operations/monitoring.md`](../operations/monitoring.md) §5, authentication does not exist
+until Phase 2, and shipping an operator payload behind a decorator that no guard reads would
+be an unauthenticated infrastructure map. Those fields arrive with the guard.
 
 ## 9. Performance
 

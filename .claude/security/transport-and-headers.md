@@ -1,6 +1,10 @@
 # Transport security, headers, and frontend hardening
 
-> **Status: Designed. Not Implemented.** Phase 1.
+> **Status: §2 and §3 Implemented for the API origin (Phase 1)** —
+> `apps/api/src/common/middleware/security-headers.middleware.ts`, asserted header by header in
+> `apps/api/src/app.integration.spec.ts`. §1 (edge TLS), §4 (CORS), §5 (cookies) and §6
+> (frontend hardening) are Designed only: there is no edge, no authentication, and no
+> `apps/web` yet.
 
 ## 1. Transport
 
@@ -47,6 +51,14 @@ report-uri /api/v1/csp-report
 Nonces are generated per request. `report-uri` is wired from day one and the reports are
 actually read — a CSP nobody monitors is decoration. The evidence-viewer origin gets its own,
 even tighter policy (`default-src 'none'; img-src 'self'; style-src 'nonce-…'`).
+
+As shipped on the API origin, `connect-src` is `'self'`: the example hosts above name the
+*web* origin's API and Sentry endpoints, and the API initiates no browser connections of its
+own. The `/api/v1/csp-report` collector named by `report-uri` **does not exist yet** — it
+arrives with `apps/web`, and until then a violation report gets a 404. `Cache-Control:
+no-store` is sent on every API response rather than only authenticated ones, and Express's
+default `ETag` is disabled: a revalidation token for a response the client was told not to
+store is a contradiction, and computing it means hashing tenant data on every request.
 
 ## 4. CORS
 

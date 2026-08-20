@@ -121,6 +121,16 @@ export default tseslint.config(
     ],
     rules: { 'no-restricted-imports': 'off' },
   },
+  // apps/api/src/infrastructure/prisma is the API's composition root for the
+  // database connection: it constructs the one base client the process owns, so
+  // that createTenantClient can wrap it per request and a handler can only ever
+  // receive a tenant-scoped client. Exempted at the directory level rather than
+  // by an inline directive so the exemption is visible in one place next to the
+  // others, and so it cannot silently spread to a sibling module.
+  {
+    files: ['apps/api/src/infrastructure/prisma/**/*.ts'],
+    rules: { 'no-restricted-imports': 'off' },
+  },
   // tests may assert on console, use the unscoped client to set up fixtures, and
   // read process.env directly to build child-process environments for Prisma
   // migrations and Testcontainers — a test harness is not application code.

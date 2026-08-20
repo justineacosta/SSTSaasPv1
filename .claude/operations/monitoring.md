@@ -1,7 +1,9 @@
 # Monitoring and observability
 
-> **Status: Designed. Not Implemented.** Logging in Phase 1; metrics and tracing in Phase 4;
-> full alerting in Phase 11.
+> **Status: Partially Implemented.** §2 (structured JSON logging with redaction) and §5 (health
+> checks) are built and tested — `packages/observability` and `apps/api`. §1's `traceId`, §3
+> (metrics), §4 (tracing), §6 (alerting), §7 (Sentry) and §8 (dashboards) are Designed only:
+> metrics and tracing in Phase 4, full alerting in Phase 11.
 
 ## 1. Three signals, one correlation ID
 
@@ -70,7 +72,15 @@ always sampled; successful requests are sampled at a rate.
 
 Liveness must not check dependencies. A liveness check that fails when Postgres is briefly
 unavailable restarts every application instance simultaneously, turning a database blip into a
-full outage.
+full outage. Verified rather than asserted: with the Redis container stopped, `/health/live`
+answers 200 while `/health/ready` answers 503 naming `redis`.
+
+**Implemented, with one deliberate gap.** `/health/detailed` is **not yet authenticated** —
+there is no authentication until Phase 2 — so it currently returns only what `/health/ready`
+does plus a per-probe latency, and names no host, port, bucket, driver, or version. Queue
+depth, worker heartbeats, and migration state land in the same change as the guard that
+protects them. No probe ever returns a driver's error text: that text is where the connection
+string, the internal host, and the database role live.
 
 ## 6. Alerting
 

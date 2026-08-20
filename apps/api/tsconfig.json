@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    // NestJS is decorator-driven. `emitDecoratorMetadata` is deliberately NOT
+    // enabled: esbuild — which Vitest uses to transform TypeScript — does not
+    // implement it, so any DI that relied on `design:paramtypes` would resolve
+    // under `tsc` and silently fail under test. Every injected constructor
+    // parameter therefore carries an explicit `@Inject(TOKEN)`, which needs no
+    // reflected type metadata and behaves identically in both toolchains.
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"]
+}

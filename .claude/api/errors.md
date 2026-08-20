@@ -1,6 +1,9 @@
 # API errors
 
-> **Status: Designed. Not Implemented.** Phase 1.
+> **Status: Partially Implemented (Phase 1).** §1, §2, §5 and §6 are enforced by
+> `AllExceptionsFilter` and `ZodValidationPipe` in `apps/api`. §3's codes exist in
+> `@sentinel/contracts`. §7's "every documented code has at least one test that produces it"
+> is **not** met: most codes have no endpoint that can raise them yet.
 
 ## 1. Envelope
 
@@ -93,6 +96,19 @@ exists. Whether an email address is registered (on login, registration, and rese
 
 Internal errors return `INTERNAL_ERROR`, a generic message, and the request ID. Everything else
 goes to the server log.
+
+Two implementation rules that are easy to get wrong, both covered by tests:
+
+- **Status decides, not exception class.** A framework `HttpException` at 5xx — including
+  `new InternalServerErrorException(err.message)`, an ordinary Nest idiom — has its message
+  replaced with the generic one. A `DomainError` is the one exception, because its text is
+  authored here: `DEPENDENCY_UNAVAILABLE` at 503 exists precisely so `/health/ready` can name
+  the dependency that is down. The duty that creates: never build a `DomainError` out of
+  driver output.
+- **Client-visible text passes through the logger's `redactSecretsInText`,** and `details`
+  through its structural `redact()`. Authored 4xx messages quote user input — a rejected
+  callback URL, a bad enum value — and a credentialed URL is exactly the shape that arrives
+  that way.
 
 ## 6. Logging
 

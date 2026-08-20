@@ -22,8 +22,9 @@ SSTSaasPv1/
 │   ├── api/                     NestJS modular monolith
 │   │   └── src/
 │   │       ├── common/          guards, interceptors, filters, decorators, pipes
-│   │       ├── infrastructure/  prisma, redis, queue, mail, stripe
+│   │       ├── infrastructure/  config+logger, prisma, redis, storage, queue, mail, stripe
 │   │       └── modules/         one folder per bounded module
+│   │           ├── health/      live / ready / detailed probes (Phase 1)
 │   │           └── findings/    controller, service, repository, dto/, tests
 │   │
 │   ├── worker-node/             BullMQ consumer + TypeScript engines
@@ -84,3 +85,15 @@ requires editing the worker, the queue, or the UI, the contract has leaked.
 **The storage adapter is a package, not API infrastructure.** Workers upload evidence from
 Phase 5 onward, and no app may import another app, so the adapter has to live where both
 can reach it.
+
+**`apps/api/src/infrastructure/prisma` is the only place in an app that may import the
+unscoped Prisma client.** It constructs the single base client the process owns, so that
+`createTenantClient` can wrap it per request and a handler can only ever receive a
+tenant-scoped one. The exemption is scoped to that directory in `eslint.config.js`; anywhere
+else the import fails the build.
+
+**`apps/api/src/app-setup.ts` holds `configureApp`, not `main.ts`.** Everything that shapes
+the HTTP surface — global prefix and its health exclusion, URI versioning, the global filter
+and interceptor, the Nest logger bridge — lives in a module the integration test can import
+without also running `bootstrap()` and binding a port. A bootstrap that only exists inside
+`bootstrap()` is a bootstrap no test has ever seen.

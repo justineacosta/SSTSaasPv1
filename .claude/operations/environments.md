@@ -51,6 +51,12 @@ defaults, log verbosity, whether the scanning deny list includes our own staging
 `.env.example` documents every variable with a safe placeholder and a comment saying what it is
 for. It is committed. `.env` is not, and never will be.
 
+**Implemented in `apps/api`:** `loadEnv(apiEnvSchema)` runs before anything binds a port, and
+the CSP mode in §4 below is derived from `APP_ENV` once, in `infrastructure/config`, so
+"enforcing everywhere but development" cannot drift per call site. `APP_ENV=test` enforces the
+policy deliberately: a policy that is only ever report-only where it is asserted is a policy
+no test has seen block anything.
+
 ## 4. Production configuration that differs from development
 
 Development defaults are not production defaults, and assuming otherwise is a common way to

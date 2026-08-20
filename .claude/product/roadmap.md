@@ -26,23 +26,33 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 | 11 | Enterprise | **Not Implemented** |
 | 12 | Additional engines | **Not Implemented** |
 
-**Four Phase 1 packages exist and are verified working**, per the honesty rule in
-`CLAUDE.md` (run and verified, not just written): `packages/config` (validated env loading),
-`packages/observability` (structured logging with redaction), `packages/contracts` (error
-envelope, pagination, IDs, permission matrix), and `packages/db` (Prisma schema, migrations,
-the mandatory tenant-scoped client, and PostgreSQL row-level security — the two-layer tenant
-isolation control the whole roadmap depends on, covered by 40+ integration tests and 20+ unit
-tests against a real Postgres 16). There is no `apps/web` or `apps/api` yet, nothing is
-deployed, and no request ever reaches this code from outside a test — so Phase 1 is Partially
-Implemented, not Implemented: the foundation packages are real, but the application built on
-top of them is not. Nothing in this product runs, scans, stores, bills, or authenticates for
-an actual user today.
+**Five Phase 1 packages and the API skeleton exist and are verified working**, per the
+honesty rule in `CLAUDE.md` (run and verified, not just written): `packages/config` (validated
+env loading), `packages/observability` (structured logging with redaction),
+`packages/contracts` (error envelope, pagination, IDs, permission matrix), `packages/storage`
+(S3-compatible adapter with mandatory tenant key prefixes), and `packages/db` (Prisma schema,
+migrations, the mandatory tenant-scoped client, and PostgreSQL row-level security — the
+two-layer tenant isolation control the whole roadmap depends on, covered by 40+ integration
+tests and 20+ unit tests against a real Postgres 16).
+
+**`apps/api` now boots.** A NestJS application with the request-ID middleware, the
+security-header and CSP middleware, the global error-envelope filter, the structured logging
+interceptor, the Zod validation pipe, the `@Public()`/`@RequirePermission()` access
+decorators, and a `health` module answering `/health/live`, `/health/ready` and
+`/health/detailed` against the live Postgres, Redis and MinIO stack. It has **no
+authentication, no authorization guard, no rate limiting, and no business endpoint**: the
+only routes are the health probes. The boot-time assertion that every route declares its
+access is not written yet, so the access decorators are metadata nothing reads.
+
+There is no `apps/web`, nothing is deployed, and no request reaches this code from outside a
+test or a developer's own machine — so Phase 1 is Partially Implemented, not Implemented.
+Nothing in this product runs, scans, stores, bills, or authenticates for an actual user
+today.
 
 ### Blocked items
 
 | Item | Blocker | Owner |
 |---|---|---|
-| Local stack verification (Postgres, Redis, MinIO) | **Docker daemon not running** on the dev host | Operator |
 | Go worker engines | **Go toolchain not installed**; deferred by [ADR-0010](../decisions/ADR-0010-engine-contract.md) | Operator, if Go is wanted |
 | Terraform IaC execution | **Terraform not installed**; Phase 11 anyway | Operator |
 
