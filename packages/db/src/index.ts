@@ -7,3 +7,5 @@ export type { TenantContext } from './tenant-context.js';
 export { withTenantTransaction } from './tenant-transaction.js';
 export { isTenantOwnedModel, TENANT_OWNED_MODELS } from './tenant-resources.js';
 export type { TenantOwnedModel } from './tenant-resources.js';
+export { isTenantRootModel, TENANT_ROOT_MODEL } from './tenant-resources.js';
+export type { TenantRootModel } from './tenant-resources.js';

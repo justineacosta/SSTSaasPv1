@@ -64,3 +64,19 @@ compromise is a total compromise; recorded as an accepted residual risk in
 **Neutral.** The non-REST surfaces — SSE, object storage, search, exports, webhooks, background
 jobs — need their own isolation reasoning, which is why they are enumerated explicitly in that
 document rather than assumed covered by "the API is scoped".
+
+## Implementation note (Task 6 review round)
+
+The `findUnique` handling above shipped, then changed, during implementation: rewriting to a
+scoped `findFirst` (as originally decided) turned out to invoke a *different* client method,
+which cannot be guaranteed to run on the same database connection/transaction as the original
+call. Inside `withTenantTransaction` specifically, that silently broke read-your-own-writes and
+put the rewritten query on a connection with no RLS GUC set. The shipped implementation instead
+runs `findUnique`/`findUniqueOrThrow` unmodified — which stays on the correct connection by
+construction — and checks the tenant column on the result before deciding what the caller sees.
+Same guarantee (a caller cannot read another tenant's row via `findUnique`), different mechanism.
+See `packages/db/src/tenant-scope.ts` and `tenant-transaction.integration.spec.ts`.
+
+The tenant root (`Organization`) was also missing from the original decision as written above:
+it is not tenant-owned (no `organizationId` column) but still needs both layers, scoped by `id`
+instead. See [`../security/tenant-isolation.md`](../security/tenant-isolation.md) §1.

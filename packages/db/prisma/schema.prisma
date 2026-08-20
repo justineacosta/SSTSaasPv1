@@ -217,6 +217,17 @@ model Invitation {
 /// raises, per security/audit.md §2. Full audit architecture (event taxonomy,
 /// redaction, retention, query API) remains Phase 3 — this table currently
 /// carries only the tamper-resistance controls, not the rest of that design.
+///
+/// The relation below is deliberately `onDelete: Restrict`, not `Cascade`.
+/// `Cascade` would let a foreign-key cascade silently destroy the audit trail
+/// the moment an organisation row is deleted — outside RLS and outside the
+/// append-only trigger, since RI cascades run at a lower level than either.
+/// `Restrict` makes organisation deletion fail while audit events still exist
+/// for it, forcing an explicit, auditable purge path rather than an implicit
+/// one. `sentinel_app` cannot delete `Organization` rows at all (see the
+/// row_level_security migration), so in practice this only binds a future
+/// platform-admin deletion path (Phase 11) — but the constraint is what makes
+/// that true by construction rather than by convention.
 model AuditEvent {
   id             String    @id
   organizationId String
@@ -231,7 +242,7 @@ model AuditEvent {
   requestId      String?
   createdAt      DateTime  @default(now()) @db.Timestamptz(6)
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
 
   @@index([organizationId, createdAt(sort: Desc)])
   @@index([organizationId, actorId, createdAt(sort: Desc)])

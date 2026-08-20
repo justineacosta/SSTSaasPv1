@@ -51,12 +51,20 @@ export default tseslint.config(
         { object: 'process', property: 'env', message: 'Read env only in packages/config.' },
       ],
       // §6 — no unscoped Prisma client outside migrations, seeds, platform admin
+      //
+      // M5 (Task 6 review): this codebase's imports are all ESM-relative
+      // with an explicit `.js` extension (`verbatimModuleSyntax` in
+      // tsconfig.base.json), so a bare `**/unscoped` glob never matches an
+      // actual import specifier here — every real import is `./unscoped.js`
+      // or similar. Verified empirically: a probe file importing from
+      // `../unscoped.js` outside the exemption list below produced zero
+      // lint errors under the old pattern. `**/unscoped.js` closes that gap.
       'no-restricted-imports': [
         'error',
         {
           patterns: [
             {
-              group: ['**/unscoped', '@sentinel/db/unscoped'],
+              group: ['**/unscoped', '**/unscoped.js', '@sentinel/db/unscoped'],
               message: 'Use the tenant-scoped client. See security/tenant-isolation.md.',
             },
           ],
@@ -85,12 +93,21 @@ export default tseslint.config(
     files: ['packages/config/src/**/*.ts'],
     rules: { 'no-restricted-properties': 'off' },
   },
-  // seeds, migrations, and the tenant client itself may use the unscoped client
+  // seeds, migrations, and the tenant client itself may use the unscoped client.
+  // tenant-transaction.ts only ever imports unscoped's `PrismaClient` as a
+  // *type* (it needs it to type `base`/`tx`; it never calls
+  // createUnscopedPrismaClient), but the base `no-restricted-imports` rule
+  // does not distinguish type-only imports from value ones, so it needs the
+  // same exemption. Chose the file-exemption route over a rule-level
+  // "allow type-only imports of unscoped" carve-out because only this one
+  // file needs it — a blanket type-import allowance would be a wider hole
+  // than the one problem it's fixing.
   {
     files: [
       'packages/db/src/unscoped.ts',
       'packages/db/src/seed.ts',
       'packages/db/src/tenant-client.ts',
+      'packages/db/src/tenant-transaction.ts',
     ],
     rules: { 'no-restricted-imports': 'off' },
   },

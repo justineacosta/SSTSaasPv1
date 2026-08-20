@@ -77,25 +77,34 @@ describe('migrations', () => {
   });
 
   it('sentinel_app can select, insert, update, and delete on a migrated table', async () => {
+    // Uses User rather than Organization deliberately: this probe checks the
+    // *raw* GRANT-level privileges from 01-app-role.sql, independent of any
+    // row-level security policy. Organization (the tenant root, since Task
+    // 6's review round) now carries an RLS policy requiring
+    // app.organization_id to be set, and sentinel_app additionally has
+    // DELETE revoked on it outright — so it can no longer serve as a
+    // generic "any migrated table" probe. User is global (not tenant-owned,
+    // not the tenant root) and carries no RLS, so it isolates what this
+    // test is actually about.
     const app = createUnscopedPrismaClient(sentinelAppUrl(container));
     try {
-      const id = newId('org');
-      const created = await app.organization.create({
-        data: { id, slug: `privilege-probe-${id}`, name: 'Privilege probe' },
+      const id = newId('usr');
+      const created = await app.user.create({
+        data: { id, email: `privilege-probe-${id}@example.test` },
       });
       expect(created.id).toBe(id);
 
-      const updated = await app.organization.update({
+      const updated = await app.user.update({
         where: { id },
         data: { name: 'Privilege probe (updated)' },
       });
       expect(updated.name).toBe('Privilege probe (updated)');
 
-      const found = await app.organization.findUnique({ where: { id } });
+      const found = await app.user.findUnique({ where: { id } });
       expect(found?.id).toBe(id);
 
-      await app.organization.delete({ where: { id } });
-      const afterDelete = await app.organization.findUnique({ where: { id } });
+      await app.user.delete({ where: { id } });
+      const afterDelete = await app.user.findUnique({ where: { id } });
       expect(afterDelete).toBeNull();
     } finally {
       await app.$disconnect();

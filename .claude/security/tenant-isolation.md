@@ -1,10 +1,16 @@
 # Tenant isolation
 
-> **Status: Partially Implemented.** Layers 1 and 2 implemented in Phase 1 (Task 6), proven by
-> `packages/db/src/tenant-client.integration.spec.ts` and `rls.integration.spec.ts` against a
-> real Postgres 16. Layer 3 (response DTOs) is Not Implemented — there are no handlers yet to
-> serialise. §3 (isolation beyond the REST API) and §4 (the generated cross-resource test
-> matrix) remain Designed, Not Implemented until Phase 2+ adds the resources they cover.
+> **Status: Partially Implemented.** Layer 1 (the mandatory scoped client) is implemented for
+> top-level operations only — it has no visibility into relations, by design; see
+> `packages/db/src/tenant-client.ts`'s file-level comment. Layer 2 (RLS) is implemented and,
+> as of Task 6's review round, verified to run *together* with layer 1 through
+> `withTenantTransaction` — `packages/db/src/tenant-transaction.integration.spec.ts` is the
+> proof, including that RLS alone (not layer 1) is what catches nested reads and nested writes
+> reaching a tenant-owned model through a relation. Not yet wired into a request pipeline —
+> that is Phase 2, once there are tenant-owned routes to wire it into. Layer 3 (response DTOs)
+> is Not Implemented — there are no handlers yet to serialise. §3 (isolation beyond the REST
+> API) and §4 (the generated cross-resource test matrix) remain Designed, Not Implemented until
+> Phase 2+ adds the resources they cover.
 
 Tenant isolation is the control most likely to fail, because it fails silently. A missing
 `where` clause produces working code, passing tests, and a data breach. The design assumes
@@ -16,33 +22,75 @@ The **Organization** is the tenant. Every tenant-owned row carries `organization
 directly — not through a join — so that isolation is a single predicate on every table.
 `User` is the one global entity; `Membership` binds a user into a tenant.
 
+`Organization` itself is the **tenant root**: it has no `organizationId` column (it *is*
+the tenant), so it is scoped by `id` instead, everywhere the resource registry scopes
+tenant-owned models by `organizationId` — both layers below, and the tenant resource
+registry (`packages/db/src/tenant-resources.ts`'s `TENANT_ROOT_MODEL`), treat it as a
+distinct concept from `TENANT_OWNED_MODELS` rather than folding it in. `Organization`
+also has `DELETE` revoked from the application role outright: deleting a tenant is a
+platform-admin operation (Phase 11), not something request-path code can do at all.
+
 ## 2. Three layers
 
 ### Layer 1 — Mandatory scoping in the data client (primary)
 
 Handlers never receive a raw Prisma client. They receive one bound to the request's
-organisation by a Prisma client extension that, for every tenant-owned model:
+organisation by a Prisma client extension (`packages/db/src/tenant-scope.ts`'s pure
+decision logic, wrapped by `packages/db/src/tenant-client.ts`) that, for every
+tenant-owned model and the tenant root, and only at the **top level** — see the caveat
+below:
 
-- injects `organizationId` into `where` for `findMany`, `findFirst`, `count`,
-  `aggregate`, `groupBy`, `update`, `updateMany`, `delete`, `deleteMany`;
-- injects `organizationId` into `data` for `create` and `createMany`;
-- rewrites `findUnique` into `findFirst` with the tenant predicate, since `findUnique` by
-  ID would otherwise bypass the filter entirely — this is the single easiest mistake to
-  make and the extension removes the possibility;
+- injects the scope predicate (`organizationId`, or `id` for the tenant root) into
+  `where` for `findMany`, `findFirst`, `count`, `aggregate`, `groupBy`, `deleteMany`,
+  `updateMany`;
+- injects it into `data` for `create`, `createMany`, and the `update`/`data` half of
+  `update`/`upsert`, so a caller cannot re-parent a row it owns to another tenant by
+  setting the scope column directly;
+- for `delete`, singular `update`, and `upsert` — which require a flat unique field, not
+  an arbitrary filter — forces the same predicate but **refuses outright** rather than
+  attempting an invalid query shape if the caller's own filter already names a different
+  tenant on that exact field (this is what stops "delete org B" from being silently
+  redirected into "delete my own org");
+- for `findUnique`/`findUniqueOrThrow`, runs the query **unmodified** — a rewrite to
+  `findFirst` was tried and rejected: `findFirst` runs through a *different* client
+  method call, which cannot be guaranteed to land on the same database
+  connection/transaction as the original call, silently breaking read-your-own-writes and
+  RLS's per-transaction GUC together — then checks the scope column on the result before
+  deciding what the caller sees;
 - **throws** if no organisation is present in context.
+
+**Caveat, by design, not a bug**: this only scopes the *top-level* operation. Prisma's
+extension hook fires once per top-level call and has no visibility into the nested
+operations generated for relations — a nested `include`, or a nested write under
+`data.someRelation.create/update/updateMany/deleteMany`. There is no supported way to
+intercept those from a client extension. This is exactly the class of case layer 2 exists
+to catch — see below.
 
 The unscoped client lives in one module. An ESLint rule forbids importing it outside
 `packages/db/migrations`, seeds, and the platform-admin module, and CI fails on violation.
 
 ### Layer 2 — PostgreSQL Row-Level Security (defence in depth)
 
-RLS is enabled on every tenant table with a policy on
-`current_setting('app.organization_id', true)`, set per transaction by the request
-pipeline. The application role is not `BYPASSRLS`.
+RLS is enabled and **forced** on every tenant table and on the tenant root, with a policy
+on `current_setting('app.organization_id', true)`, set per transaction by
+`withTenantTransaction` (`SET LOCAL`, not session-level `SET`, so a pooled connection
+cannot inherit one request's tenant into the next). The application role is not
+`BYPASSRLS`.
 
-This catches what layer 1 cannot: hand-written SQL, raw queries for optimised analytics,
-future ORM changes, and mistakes in the extension itself. Two independent mechanisms must
-both be wrong for a leak to occur.
+`withTenantTransaction` extends the client with layer 1 *before* opening the transaction,
+not after — Prisma's documented behaviour is that an interactive transaction started from
+an extended client yields extended `tx` clients, so both layers are live for every
+operation inside it. Getting this ordering backwards is a real failure mode, not a
+theoretical one: it shipped once during Task 6, silently leaving every caller of
+`withTenantTransaction` protected by layer 2 alone. See
+`packages/db/src/tenant-transaction.integration.spec.ts`, and its `tenant-transaction.ts`
+file-level comment, for the fix and the regression test.
+
+This catches what layer 1 cannot, most importantly relation traversal (the caveat above):
+hand-written SQL, raw queries for optimised analytics, future ORM changes, and mistakes in
+the extension itself. Two independent mechanisms must both be wrong for a leak to occur —
+proven together, not just individually, by
+`tenant-transaction.integration.spec.ts`'s nested-read and nested-write cases.
 
 ### Layer 3 — Response serialisation
 

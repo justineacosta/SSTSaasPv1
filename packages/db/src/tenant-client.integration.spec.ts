@@ -69,6 +69,28 @@ describe('tenant-scoped client', () => {
     expect(row?.id).toBe(membershipB);
   });
 
+  it('rewrites findUnique by a compound unique key, not just by id', async () => {
+    // M3 (review): Membership.@@unique([organizationId, userId]) is exactly
+    // the shape Phase 2's membership lookups will use — findUnique's `where`
+    // for it is `{ organizationId_userId: { organizationId, userId } }`, a
+    // nested compound object, not a flat `id`. The old findFirst-rewrite
+    // merged the scope predicate as a sibling of that nested object, which
+    // findFirst's WhereInput has no field for. The current design (run the
+    // original query unmodified, check the result) never touches `where` at
+    // all, so this shape was never at risk — this test is what proves that.
+    const asOrgA = createTenantClient(root, { organizationId: orgA });
+    const deniedToA = await asOrgA.membership.findUnique({
+      where: { organizationId_userId: { organizationId: orgB, userId: userB } },
+    });
+    expect(deniedToA).toBeNull();
+
+    const asOrgB = createTenantClient(root, { organizationId: orgB });
+    const grantedToB = await asOrgB.membership.findUnique({
+      where: { organizationId_userId: { organizationId: orgB, userId: userB } },
+    });
+    expect(grantedToB?.id).toBe(membershipB);
+  });
+
   it('scopes count', async () => {
     const db = createTenantClient(root, { organizationId: orgA });
     expect(await db.membership.count()).toBe(1);
