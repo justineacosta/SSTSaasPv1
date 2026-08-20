@@ -17,20 +17,13 @@ export default tseslint.config(
   ...tseslint.configs.recommendedTypeChecked,
   {
     languageOptions: {
-      // Every package's tsconfig.json excludes *.spec.ts from the build project
-      // (so `tsc -p tsconfig.json` never emits test files into dist), which
-      // means typescript-eslint's project service can't find them via normal
-      // discovery. allowDefaultProject covers them with an isolated, single-file
-      // program instead. typescript-eslint forbids '**' in these globs, so this
-      // only reaches spec files directly under a package's src/ — a spec file
-      // nested in a subdirectory (e.g. src/modules/x/x.spec.ts) will need its
-      // own entry added here.
-      parserOptions: {
-        projectService: {
-          allowDefaultProject: ['packages/*/src/*.spec.ts', 'apps/*/src/*.spec.ts'],
-        },
-        tsconfigRootDir: import.meta.dirname,
-      },
+      // Each package's tsconfig.json (the one this project service discovers)
+      // includes every src/**/*.ts, spec files included — so the project
+      // service always finds them, at any nesting depth. Emission is kept
+      // spec-free by a separate tsconfig.build.json instead of by excluding
+      // specs from the main tsconfig. See packages/config/tsconfig.json vs.
+      // packages/config/tsconfig.build.json for the split.
+      parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
     },
     plugins: { import: importPlugin },
     rules: {
