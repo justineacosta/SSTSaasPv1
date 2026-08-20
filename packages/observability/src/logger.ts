@@ -16,7 +16,18 @@ export interface CreateLoggerOptions {
 
 // Pino's default key for an Error passed as (or under) the first log
 // argument — see lib/proto.js `write()`: a bare Error becomes `{ err }`.
+//
+// Ideally this would read back whatever `errorKey` the logger was actually
+// constructed with, but pino stores it under a private Symbol
+// (`errorKeySym`) and does not expose it as a public property on the
+// `Logger` instance — confirmed by inspecting a constructed logger at
+// runtime, where `logger.errorKey` is `undefined`. Hardcoded, since this
+// package never configures `errorKey` to anything other than the default.
 const ERROR_KEY = 'err';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
 
 /**
  * Serializer for the `err` key. By the time this runs, pino has already
@@ -83,7 +94,7 @@ export function createLogger(options: CreateLoggerOptions): Logger {
     serializers: {
       err: redactError,
     },
-    // Covers the other real gap: pino carries the `msg` string through a
+    // Covers the other real gaps: pino carries the `msg` string through a
     // path that never reaches `formatters.log` (confirmed by reading
     // lib/tools.js — `serializers[messageKey]` runs independently of the
     // `log` formatter). This hook runs earliest of all, before pino has even
@@ -93,6 +104,30 @@ export function createLogger(options: CreateLoggerOptions): Logger {
     // secret, and should stay readable around the part that had to go.
     hooks: {
       logMethod(inputArgs, method) {
+        // A single-argument call — `logger.error(err)` or
+        // `logger.error({ err })` — is the common shape for logging a
+        // caught error, and it is also the one pino resolves specially:
+        // when no separate message argument is supplied, pino's own
+        // write() (lib/proto.js) derives `msg` straight from the raw
+        // `err.message` *after* this hook has already run, bypassing every
+        // redaction stage below. Preempt that fallback by supplying an
+        // explicit, already-redacted message ourselves, so pino's fallback
+        // never fires (it only derives `msg` when none was given).
+        if (inputArgs.length === 1) {
+          const [first] = inputArgs;
+          if (first instanceof Error) {
+            method.call(this, { [ERROR_KEY]: first }, redactSecretsInText(first.message));
+            return;
+          }
+          if (isRecord(first)) {
+            const err = first[ERROR_KEY];
+            if (err instanceof Error) {
+              method.call(this, first, redactSecretsInText(err.message));
+              return;
+            }
+          }
+        }
+
         if (typeof inputArgs[0] === 'string') {
           inputArgs[0] = redactSecretsInText(inputArgs[0]);
         } else if (inputArgs.length > 1 && typeof inputArgs[1] === 'string') {

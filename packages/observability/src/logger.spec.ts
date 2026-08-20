@@ -91,4 +91,48 @@ describe('createLogger', () => {
     expect(out.err.stack).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
     expect(out.err.stack).toContain(REDACTED);
   });
+
+  it('redacts a secret in both msg and the serialised error for a bare Error with no message argument', () => {
+    const { logger, lines } = captureLogger();
+    const err = new Error('auth failed: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
+    logger.error(err);
+    const out = lines[0] as { msg: string; err: { message: string } };
+    expect(out.msg).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
+    expect(out.err.message).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
+    expect(out.msg).toBe(`auth failed: ${REDACTED}`);
+    expect(out.err.message).toBe(`auth failed: ${REDACTED}`);
+  });
+
+  it('redacts a secret in both msg and the serialised error for { err } with no message argument', () => {
+    const { logger, lines } = captureLogger();
+    const err = new Error('auth failed: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
+    logger.error({ err });
+    const out = lines[0] as { msg: string; err: { message: string } };
+    expect(out.msg).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
+    expect(out.err.message).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
+    expect(out.msg).toBe(`auth failed: ${REDACTED}`);
+    expect(out.err.message).toBe(`auth failed: ${REDACTED}`);
+  });
+
+  it('uses the explicit message when one is given, redacted, without regressing error serialization', () => {
+    const { logger, lines } = captureLogger();
+    const err = new Error('inner detail: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
+    logger.error(
+      err,
+      'request failed for token=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def',
+    );
+    const out = lines[0] as { msg: string; err: { message: string; type: string } };
+    expect(out.msg).toBe(`request failed for token=${REDACTED}`);
+    expect(out.err.message).toBe(`inner detail: ${REDACTED}`);
+    expect(out.err.type).toBe('Error');
+  });
+
+  it('leaves msg byte-identical to a non-secret Error.message when logged alone', () => {
+    const { logger, lines } = captureLogger();
+    const err = new Error('connection reset by peer');
+    logger.error(err);
+    const out = lines[0] as { msg: string; err: { message: string } };
+    expect(out.msg).toBe('connection reset by peer');
+    expect(out.err.message).toBe('connection reset by peer');
+  });
 });
