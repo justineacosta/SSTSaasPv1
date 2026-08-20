@@ -149,4 +149,14 @@ describe('createLogger', () => {
     const out = lines[0] as { msg: string };
     expect(out.msg).toBe('scan scn_01J completed');
   });
+
+  it('leaves the existing top-level err message/stack redaction unchanged', () => {
+    const { logger, lines } = captureLogger();
+    const err = new Error('auth failed: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
+    logger.error(err, 'request failed');
+    const out = lines[0] as { err: { message: string; stack: string } };
+    expect(out.err.message).toBe(`auth failed: ${REDACTED}`);
+    expect(out.err.stack).toContain(REDACTED);
+    expect(out.err.stack).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
+  });
 });

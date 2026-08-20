@@ -65,6 +65,14 @@ describe('redact', () => {
     expect(out.stack).toBeUndefined();
   });
 
+  it('text-scans the message of an Error nested anywhere in a payload', () => {
+    const inner = new Error('leaked here: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
+    const out = redact({ context: { originalError: inner } }) as {
+      context: { originalError: { message: string } };
+    };
+    expect(out.context.originalError.message).toBe(`leaked here: ${REDACTED}`);
+  });
+
   it('replaces a property whose getter throws instead of crashing', () => {
     const hostile = {
       get poison(): string {

@@ -95,7 +95,10 @@ export function redact(value: unknown, depth = 0, seen = new WeakSet<object>()):
   if (value instanceof Error) {
     // Stacks are dropped here; the logger attaches them separately at error
     // level, where they are wanted, rather than everywhere an Error is nested.
-    return { name: value.name, message: value.message };
+    // The message is still text-scanned: an Error nested anywhere else in a
+    // payload (not under the top-level err key, which gets its own
+    // serializer in logger.ts) has no other stage that will ever see it.
+    return { name: value.name, message: redactSecretsInText(value.message) };
   }
 
   if (Array.isArray(value)) {

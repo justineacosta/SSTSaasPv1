@@ -93,6 +93,30 @@ export function createLogger(options: CreateLoggerOptions): Logger {
     // one place that later stage exists.
     formatters: {
       level: (label) => ({ level: label }),
+      // Bindings (the object passed to `.child()`) are a separate pipeline
+      // from the per-call `log` formatter below: `log` never sees them, so
+      // they cannot be double-redacted by both — confirmed by inspecting a
+      // captured line from a child logger directly, which contains no
+      // trace of the bindings object passed to `formatters.log`.
+      //
+      // KNOWN LIMITATION, confirmed by reading pino's own `child()`
+      // (lib/proto.js): for the ordinary single-argument call —
+      // `logger.child({ apiKey: secret })`, the shape this codebase will
+      // actually use — pino's own performance fast path explicitly resets
+      // the child's bindings formatter to the identity function
+      // (`resetChildingsFormatter`) and does NOT reuse this one, so this
+      // hook never runs for that call at all. It only takes effect for (a)
+      // this root logger's own `base` bindings, which never carry a secret
+      // in this package's design, and (b) a child created with its own
+      // `formatters.bindings` explicitly re-supplied via a second argument
+      // to `.child()`, which nothing in this codebase does. This was
+      // proven by reading pino's source and by direct probes; it is not
+      // reasoned about. There is no `redact()`-only way to close this for
+      // the ordinary call — doing so needs either wrapping the returned
+      // `Logger`'s own `.child` method (a materially larger change than
+      // this one-line hook, not attempted here) or a convention/lint rule
+      // banning secrets in `.child()` bindings. See task-3-report.md.
+      bindings: (bindings) => redact(bindings) as Record<string, unknown>,
       log: (object) => {
         const context = getRequestContext();
         const { [ERROR_KEY]: topLevelError, ...rest } = object;
