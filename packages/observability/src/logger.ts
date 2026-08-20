@@ -6,7 +6,7 @@ import pino, {
   type LoggerOptions,
 } from 'pino';
 import { getRequestContext } from './context.js';
-import { redact, redactSecretsInText } from './redaction.js';
+import { REDACTED, redact, redactSecretsInText } from './redaction.js';
 
 export type { Logger };
 
@@ -77,13 +77,37 @@ function redactInterpolationArg(value: unknown): unknown {
  */
 function redactError(error: unknown): unknown {
   if (!(error instanceof Error)) return error;
-  const serialized = pino.stdSerializers.err(error);
-  const { message, stack, ...extra } = serialized;
-  return {
-    ...(redact(extra) as Record<string, unknown>),
-    message: redactSecretsInText(message),
-    stack: redactSecretsInText(stack),
-  };
+
+  try {
+    const serialized = pino.stdSerializers.err(error);
+    const { message, stack, ...extra } = serialized;
+    return {
+      ...(redact(extra) as Record<string, unknown>),
+      message: redactSecretsInText(message),
+      stack: redactSecretsInText(stack),
+    };
+  } catch {
+    // Fails closed around the whole conversion, not just the
+    // `stdSerializers.err` call: a Symbol `message` or a `message` whose
+    // `toString` throws makes pino-std-serializers' own `isErrorLike` check
+    // (`typeof err.message === 'string'`) false, so `stdSerializers.err`
+    // *itself* does not throw — it short-circuits and hands back the raw,
+    // unmodified `error`, `.stack` still an unresolved lazy V8 accessor.
+    // The throw then happens one line later, in the destructuring above
+    // (`const { message, stack, ... } = serialized`), which reads that
+    // `.stack` for the first time — that access runs
+    // `Error.prepareStackTrace`, which calls `Error.prototype.toString()`,
+    // which does `ToString(this.message)`, which throws for a Symbol (per
+    // spec) or propagates a hostile `toString`. A narrower try/catch around
+    // only the `stdSerializers.err` call verified empirically not to catch
+    // this — confirmed by reproducing the crash with that narrower guard in
+    // place and reading the resulting stack trace, not by reasoning about
+    // pino-std-serializers' source alone. Wrapping the whole conversion
+    // catches this regardless of which specific step throws. Only literals
+    // are used in the fallback — `error.name` or `error.constructor.name`
+    // could themselves be hostile getters.
+    return { type: 'Error', message: REDACTED, stack: REDACTED };
+  }
 }
 
 /**

@@ -140,9 +140,16 @@ export function redact(value: unknown, depth = 0, seen = new WeakSet<object>()):
     // returns *instead of* this already-redacted object — silently
     // resurrecting the original, unredacted value at serialisation time,
     // including under a key that matched the denylist. Dropped outright:
-    // a prototype-based `toJSON` (Date, URL, class methods) is untouched
-    // since `Object.keys` never sees it, and JSON serialisation already
-    // drops a top-level function property, so nothing legitimate is lost.
+    // a *prototype*-based `toJSON` (a class instance method, not an own
+    // property) is untouched, since `Object.keys` never sees it, and JSON
+    // serialisation already drops a top-level function property regardless,
+    // so nothing legitimate is lost by dropping it here too. This does NOT
+    // mean every prototype-`toJSON` type round-trips cleanly through this
+    // walk: `Date` is special-cased above specifically because it does not;
+    // `URL` is not special-cased and still collapses to `{}` here for the
+    // same underlying reason `Date` used to — a pre-existing gap, unrelated
+    // to dropping functions, not fixed by this change (see the coverage
+    // list in task-3-report.md).
     if (typeof item === 'function') continue;
     output[key] = keyIsSecret(key) ? REDACTED : redact(item, depth + 1, seen);
   }

@@ -280,4 +280,67 @@ describe('createLogger', () => {
     expect(out.requestId).toBe('req_real');
     expect(out.organizationId).toBe('org_real');
   });
+
+  // C3, continued: a Symbol message, or a message whose `toString` throws,
+  // makes pino-std-serializers' own `isErrorLike` check false, so
+  // `stdSerializers.err` hands back the raw Error unchanged rather than
+  // throwing itself — the crash then happened one line later, in this
+  // package's own destructuring, reading `.stack` for the first time and
+  // triggering `Error.prototype.toString()` -> `ToString(message)`. A
+  // narrower try/catch around only the `stdSerializers.err` call did not
+  // catch this; these four tests are what proved that.
+
+  it('does not crash on a Symbol Error.message via a bare Error (C3)', () => {
+    const { logger, lines } = captureLogger();
+    const err = new Error('placeholder');
+    (err as unknown as { message: unknown }).message = Symbol('sekrit');
+    expect(() => logger.error(err)).not.toThrow();
+    const out = lines[0] as { err: { type: string; message: string; stack: string } };
+    expect(out.err.type).toBe('Error');
+    expect(out.err.message).toBe(REDACTED);
+    expect(out.err.stack).toBe(REDACTED);
+  });
+
+  it('does not crash on a Symbol Error.message via { err } (C3)', () => {
+    const { logger, lines } = captureLogger();
+    const err = new Error('placeholder');
+    (err as unknown as { message: unknown }).message = Symbol('sekrit');
+    expect(() => logger.error({ err }, 'context msg')).not.toThrow();
+    const out = lines[0] as { msg: string; err: { type: string; message: string; stack: string } };
+    expect(out.msg).toBe('context msg');
+    expect(out.err.type).toBe('Error');
+    expect(out.err.message).toBe(REDACTED);
+    expect(out.err.stack).toBe(REDACTED);
+  });
+
+  it('does not crash on a hostile-toString Error.message via a bare Error (C3)', () => {
+    const { logger, lines } = captureLogger();
+    const err = new Error('placeholder');
+    (err as unknown as { message: unknown }).message = {
+      toString() {
+        throw new Error('hostile toString');
+      },
+    };
+    expect(() => logger.error(err)).not.toThrow();
+    const out = lines[0] as { err: { type: string; message: string; stack: string } };
+    expect(out.err.type).toBe('Error');
+    expect(out.err.message).toBe(REDACTED);
+    expect(out.err.stack).toBe(REDACTED);
+  });
+
+  it('does not crash on a hostile-toString Error.message via { err } (C3)', () => {
+    const { logger, lines } = captureLogger();
+    const err = new Error('placeholder');
+    (err as unknown as { message: unknown }).message = {
+      toString() {
+        throw new Error('hostile toString');
+      },
+    };
+    expect(() => logger.error({ err }, 'context msg')).not.toThrow();
+    const out = lines[0] as { msg: string; err: { type: string; message: string; stack: string } };
+    expect(out.msg).toBe('context msg');
+    expect(out.err.type).toBe('Error');
+    expect(out.err.message).toBe(REDACTED);
+    expect(out.err.stack).toBe(REDACTED);
+  });
 });
