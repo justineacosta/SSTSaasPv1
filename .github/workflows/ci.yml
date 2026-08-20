@@ -37,8 +37,29 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
+      # The integration suites are the only gate that proves the tenant-isolation
+      # layer, the storage adapter and the API pipeline actually work against
+      # real services rather than mocks — so CI has to stand the same stack up
+      # that a developer runs. `.env.example` holds local-safe placeholders and
+      # is the same file the setup docs tell a developer to copy; using it here
+      # means drift between the two is caught by a red build rather than by the
+      # next person to clone the repo.
+      #
+      # `minio-init` is a one-shot that creates the buckets and exits, so it is
+      # excluded from `--wait` (which waits for services to stay up) and run to
+      # completion separately.
+      - name: Start the local stack
+        run: |
+          cp .env.example .env
+          docker compose up -d --wait postgres redis minio mailpit
+          docker compose run --rm minio-init
+
       - name: Integration tests
         run: pnpm test:integration
+
+      - name: Stack logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail=100
 
       - name: Build
         run: pnpm build
