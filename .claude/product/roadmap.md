@@ -46,9 +46,9 @@ yet, so the access decorators are metadata nothing reads.
 
 Rate limiting is built and globally registered — a Redis sliding window over the table in
 `security/abuse-prevention.md` §1 — but it limits **nothing today**, and that distinction
-matters more than the checkmark. Every class in the table is keyed by an account, a principal
-or an organisation, and none of those exist before authentication ships in Phase 2; the only
-routes that exist are the probes, and liveness is deliberately exempt. What Phase 1 delivers
+matters more than the checkmark. No route carries any limit class: the only routes that exist
+are the health probes, and liveness is deliberately exempt from the limiter so that it depends
+on no backing service. What Phase 1 delivers
 is a control that is correct and tested in advance of the endpoints it will govern, not a
 control that is currently governing anything.
 

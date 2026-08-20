@@ -93,4 +93,47 @@ describe('RATE_LIMIT_CLASSES', () => {
       expect(['open', 'closed'], name).toContain(config.failMode);
     }
   });
+
+  it('bounds every unauthenticated class by IP, not only by account', () => {
+    // An unauthenticated class keyed ONLY by an account identifier the caller
+    // supplies has no upper bound at all: the caller names a fresh account each
+    // time and every request is the first in its own window. For
+    // emailVerificationResend that is an outbound-email amplifier aimed at
+    // people who are not our customers, plus unbounded Redis keys. §1's opening
+    // sentence — per IP AND per principal — is the rule; the table's per-class
+    // rows are the figures.
+    for (const name of [
+      'login',
+      'registration',
+      'passwordReset',
+      'emailVerificationResend',
+    ] as const) {
+      expect(RATE_LIMIT_CLASSES[name].perIp, `${name} must declare a per-IP bound`).toBeDefined();
+    }
+  });
+
+  it('names a principal source for every class that limits per principal', () => {
+    // The type already makes this a compile error. Asserted at runtime too,
+    // because the type is the thing a future refactor might loosen, and this is
+    // the defect that shipped once already: a per-account class silently
+    // keyed off an authenticated principal that unauthenticated endpoints
+    // never have.
+    for (const [name, config] of Object.entries<RateLimitClassConfig>(RATE_LIMIT_CLASSES)) {
+      if (config.perPrincipal === undefined) continue;
+      expect(
+        config.principalSource,
+        `${name} must say where its principal comes from`,
+      ).toBeDefined();
+    }
+  });
+
+  it('keys the unauthenticated per-account classes off the request body', () => {
+    for (const name of ['login', 'passwordReset', 'emailVerificationResend'] as const) {
+      expect(RATE_LIMIT_CLASSES[name].principalSource, name).toEqual({ bodyField: 'email' });
+    }
+    // And the authenticated ones off the principal, which is the whole
+    // distinction.
+    expect(RATE_LIMIT_CLASSES.generalSession.principalSource).toBe('authenticated');
+    expect(RATE_LIMIT_CLASSES.generalApiKey.principalSource).toBe('authenticated');
+  });
 });

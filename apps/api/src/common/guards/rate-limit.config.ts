@@ -36,12 +36,9 @@ export interface Window {
  */
 export type PrincipalSource = 'authenticated' | { readonly bodyField: string };
 
-export interface RateLimitClassConfig {
+interface BaseRateLimitClassConfig {
   readonly perIp?: Window;
-  readonly perPrincipal?: Window;
   readonly perOrganization?: Window;
-  /** Required whenever `perPrincipal` is declared. */
-  readonly principalSource?: PrincipalSource;
   /**
    * What to do when the limiter cannot reach a decision — Redis is unavailable,
    * or no declared scope could be resolved.
@@ -53,6 +50,24 @@ export interface RateLimitClassConfig {
    */
   readonly failMode: 'open' | 'closed';
 }
+
+/**
+ * `principalSource` is **mandatory** whenever `perPrincipal` is declared, and
+ * that is enforced by the type rather than by a comment.
+ *
+ * A comment saying "required" is what allowed the original defect: a class
+ * declaring `perPrincipal` with no source silently defaulted to the
+ * authenticated principal, which resolves to nothing on an unauthenticated
+ * endpoint — and because such classes also declare `perIp`, the miss was
+ * skipped without a signal. MFA verification, magic links and phone OTP are all
+ * Phase 2 classes of exactly that shape, so this has to be a compile error
+ * before they are written, not a review finding afterwards.
+ */
+export type RateLimitClassConfig = BaseRateLimitClassConfig &
+  (
+    | { readonly perPrincipal: Window; readonly principalSource: PrincipalSource }
+    | { readonly perPrincipal?: undefined; readonly principalSource?: undefined }
+  );
 
 export const RATE_LIMIT_CLASSES = {
   login: {
@@ -72,6 +87,15 @@ export const RATE_LIMIT_CLASSES = {
   },
   emailVerificationResend: {
     perPrincipal: { limit: 3, windowSeconds: 3600 },
+    // §1's table names only the per-account figure, but §1's opening sentence
+    // says limits are applied per IP **and** per principal, and this class needs
+    // the IP half more than most: it is unauthenticated, it names a third-party
+    // address, and it makes us send mail. Without a per-IP bound one client can
+    // name unlimited fresh addresses — an outbound-email amplifier aimed at
+    // people who are not our customers, which is the case this document opens
+    // by saying we limit abuse to prevent. The figure matches password reset,
+    // the closest analogue in the table.
+    perIp: { limit: 10, windowSeconds: 3600 },
     principalSource: { bodyField: 'email' },
     failMode: 'closed',
   },

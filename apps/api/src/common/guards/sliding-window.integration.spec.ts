@@ -131,6 +131,25 @@ describe('consumeSlidingWindow', () => {
     expect(refused.resetSeconds).toBeGreaterThanOrEqual(1);
   });
 
+  it('never reports a reset longer than the window, even against a future entry', async () => {
+    // An instance whose clock runs fast writes a future score. Without the clamp
+    // a correct instance would advertise `skew + window` — for an hour-fast
+    // clock, an hour-long wait presented as if it were policy. The clamp bounds
+    // what is REPORTED; the lockout itself is real and lasts as long as the
+    // skew, which is why the docblock says so rather than calling skew
+    // immaterial.
+    const key = freshKey();
+    const window = { limit: 1, windowSeconds: 60 };
+    const now = Date.now();
+
+    await consumeSlidingWindow(redis, key, window, now + 3_600_000);
+    const refused = await consumeSlidingWindow(redis, key, window, now);
+
+    expect(refused.allowed).toBe(false);
+    expect(refused.resetSeconds).toBeLessThanOrEqual(window.windowSeconds);
+    expect(refused.resetSeconds).toBeGreaterThanOrEqual(1);
+  });
+
   it('expires the key so an idle bucket cannot leak memory forever', async () => {
     const key = freshKey();
     await consumeSlidingWindow(redis, key, { limit: 5, windowSeconds: 60 }, Date.now());

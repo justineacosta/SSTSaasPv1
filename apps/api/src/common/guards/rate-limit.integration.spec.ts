@@ -11,7 +11,12 @@ import type { NextFunction, Request, Response } from 'express';
 import { Redis } from 'ioredis';
 import { errorEnvelopeSchema } from '@sentinel/contracts';
 import { Public } from '../decorators/access.decorator.js';
-import { RateLimit } from '../decorators/rate-limit.decorator.js';
+import {
+  RATE_LIMIT_EXEMPT_KEY,
+  RateLimit,
+  RateLimitExempt,
+} from '../decorators/rate-limit.decorator.js';
+import { HealthController } from '../../modules/health/health.controller.js';
 import { AppModule } from '../../app.module.js';
 import { configureApp } from '../../app-setup.js';
 
@@ -61,6 +66,21 @@ class FixtureController {
   @RateLimit('emailVerificationResend')
   @Post('resend')
   resend(): { ok: true } {
+    return { ok: true };
+  }
+
+  /**
+   * Exempt at the HANDLER, on a class whose per-IP scope resolves. If the guard
+   * ever read only the controller's metadata and ignored the handler's, this
+   * route would start being limited and start creating keys — which the
+   * liveness tests cannot detect, because the default class resolves nothing
+   * on an unauthenticated request either way.
+   */
+  @Public()
+  @RateLimit('registration')
+  @RateLimitExempt()
+  @Post('exempt')
+  exempt(): { ok: true } {
     return { ok: true };
   }
 
@@ -118,7 +138,7 @@ afterAll(async () => {
   await app.close();
 });
 
-/** Only the classes this suite drives, so a developer's running app keeps its state. */
+/** Only the classes this suite drives, so it cannot clobber another suite's keys. */
 const FIXTURE_CLASSES = [
   'registration',
   'login',
@@ -131,7 +151,9 @@ beforeEach(async () => {
   // Every request in this suite arrives from the same loopback address, so the
   // per-IP buckets would otherwise carry over between tests. Scanned rather
   // than KEYS, and narrowed to this suite's own classes: the compose Redis is
-  // shared with the developer's session and with every other integration suite.
+  // shared with every other integration suite. Note this does NOT protect a
+  // developer's running app — these are exactly the classes it would populate —
+  // it protects other suites, and keeps the scan bounded.
   for (const className of FIXTURE_CLASSES) {
     let cursor = '0';
     do {
@@ -340,11 +362,31 @@ describe('rate limiting — the account-keyed classes', () => {
       .expect(429);
   });
 
-  it('applies the class fail mode when the body names no account at all', async () => {
-    // `emailVerificationResend` declares only the account scope and fails
-    // closed, so a request that names nothing must be refused rather than
-    // waved through on an unresolvable scope.
+  it('still bounds a request that names no account, by IP', async () => {
+    // Naming no account used to mean "no scope resolves", which the fail-closed
+    // rule refused outright. Now that the class carries a per-IP bound, an
+    // anonymous request is allowed but counted — and the IP bound is what stops
+    // a caller who names a fresh address every time from sending unlimited
+    // verification mail to third parties.
+    for (let i = 0; i < 10; i += 1) {
+      await request(server).post('/api/v1/fixture/resend').send({}).expect(201);
+    }
     await request(server).post('/api/v1/fixture/resend').send({}).expect(429);
+  });
+
+  it('caps a caller naming a fresh account every time, which the account window cannot', async () => {
+    // The amplifier case. Each address is the first in its own account window,
+    // so the per-account limit never triggers; only the per-IP bound does.
+    for (let i = 0; i < 10; i += 1) {
+      await request(server)
+        .post('/api/v1/fixture/resend')
+        .send({ email: `fresh${i}@example.com` })
+        .expect(201);
+    }
+    await request(server)
+      .post('/api/v1/fixture/resend')
+      .send({ email: 'fresh-one-more@example.com' })
+      .expect(429);
   });
 });
 
@@ -402,6 +444,57 @@ describe('liveness is never rate limited', () => {
 
     expect(commands.filter((c) => c.toLowerCase().includes('ratelimit'))).toEqual([]);
     expect(commands.filter((c) => c.toLowerCase().startsWith('eval'))).toEqual([]);
+  });
+
+  it('sees Redis traffic for a limited route, so the absence above means something', async () => {
+    // The positive control the previous version of this test lacked. Without
+    // it, a watcher that silently failed to attach — or a guard that never
+    // reaches Redis for any route — would satisfy the assertion above while
+    // proving nothing at all.
+    const watcher = new Redis(process.env.REDIS_URL ?? 'redis://127.0.0.1:6379');
+    const monitor = await watcher.monitor();
+    const commands: string[] = [];
+    monitor.on('monitor', (_time: string, args: string[]) => {
+      commands.push(args.join(' '));
+    });
+
+    try {
+      await request(server).post('/api/v1/fixture/registration');
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    } finally {
+      monitor.disconnect();
+      watcher.disconnect();
+    }
+
+    expect(commands.filter((c) => c.toLowerCase().startsWith('eval')).length).toBeGreaterThan(0);
+  });
+
+  it('honours an exemption declared on the handler of an otherwise-limited class', () => {
+    // `registration` is 3 per IP and its scope resolves, so without a
+    // handler-level exemption this route would refuse on the fourth request and
+    // leave a key behind.
+    return (async () => {
+      for (let i = 0; i < 8; i += 1) {
+        await request(server).post('/api/v1/fixture/exempt').expect(201);
+      }
+      expect(await redis.keys('ratelimit:registration:*')).toEqual([]);
+    })();
+  });
+
+  it('pins the exemption to the liveness handler itself', () => {
+    // The behavioural tests above pass with or without the decorator, because
+    // the default class happens to resolve no scope on an unauthenticated
+    // request — the very accident `@RateLimitExempt()` was added to replace.
+    // Deleting the decorator has to fail something, so it fails this.
+    // Read through a descriptor rather than `Controller.prototype.method`: the
+    // latter is an unbound method reference, which the lint rules reject.
+    const handler = (name: string): object =>
+      Object.getOwnPropertyDescriptor(HealthController.prototype, name)?.value as object;
+
+    expect(Reflect.getMetadata(RATE_LIMIT_EXEMPT_KEY, handler('live'))).toBe(true);
+    // And it must not have spread: readiness stays on the normal path.
+    expect(Reflect.getMetadata(RATE_LIMIT_EXEMPT_KEY, handler('ready'))).toBeUndefined();
+    expect(Reflect.getMetadata(RATE_LIMIT_EXEMPT_KEY, HealthController)).toBeUndefined();
   });
 
   it('carries no RateLimit headers on the liveness probe', async () => {

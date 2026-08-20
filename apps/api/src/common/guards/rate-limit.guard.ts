@@ -47,14 +47,40 @@ export function normaliseIp(address: string): string {
 }
 
 /**
- * Hashed, never raw. An email address is the identifier for the three
- * per-account classes, and a raw one would sit in a Redis key — visible to
- * anything that can run `KEYS`, and to anyone reading a slow-log or a memory
- * dump. The hash is truncated because a rate-limit bucket needs distinctness,
- * not preimage resistance at full width.
+ * Hashed, never raw. An email address is the identifier for the per-account
+ * classes, and a raw one would sit in a Redis key — visible to anything that
+ * can run `KEYS`, and to anyone reading a slow-log or a memory dump. Truncated
+ * because a rate-limit bucket needs distinctness, not preimage resistance.
+ *
+ * What this does **not** do, stated plainly so nobody over-reads it: an
+ * unsalted digest is a confirmation oracle. Someone who can list the keys and
+ * guesses an address can check the guess in one hash. It keeps addresses out of
+ * plaintext; it does not keep them secret from an attacker who already has a
+ * candidate list. An HMAC under a server secret would close that, at the cost
+ * of making every bucket unrecoverable across a secret rotation and requiring
+ * the secret in a code path that must not fail. Deliberately not taken for a
+ * rate-limit bucket; revisit if the key space ever holds something more
+ * sensitive than an address.
+ *
+ * The digest is deliberately *unsalted per process*: a per-instance salt would
+ * split one account's window across instances and multiply the effective limit
+ * by the instance count, which is a security defect rather than a hardening.
  */
+export function normaliseAccountIdentifier(value: string): string {
+  // NFKC before case folding, so the same address written in NFC and NFD is one
+  // bucket rather than two. **This must stay identical to whatever the Phase 2
+  // account lookup does.** If the lookup normalises more aggressively than the
+  // guard, two spellings the lookup treats as one account get two limit buckets
+  // and the per-account limit is halved — silently, which is this defect
+  // class's signature. One function, used by both, with a test.
+  return value.normalize('NFKC').trim().toLowerCase();
+}
+
 function hashIdentifier(value: string): string {
-  return createHash('sha256').update(value.trim().toLowerCase()).digest('base64url').slice(0, 22);
+  return createHash('sha256')
+    .update(normaliseAccountIdentifier(value))
+    .digest('base64url')
+    .slice(0, 22);
 }
 
 interface HeaderResponse {
@@ -75,7 +101,7 @@ interface HeaderResponse {
  * guarantee that the proxy *overwrites* rather than appends to the header, or
  * the same bypass returns through the front door. See abuse-prevention.md §1.
  */
-function resolveIdentifier(
+export function resolveIdentifier(
   scope: RateLimitScope,
   request: KeyableRequest,
   config: RateLimitClassConfig,
@@ -105,18 +131,23 @@ function resolveIdentifier(
 }
 
 /**
- * The window closest to refusing, which is the one whose numbers a client needs.
+ * The window whose numbers a client needs: the refusal if there is one,
+ * otherwise the one with the least room left.
  *
- * Among refusals the tie-break is the **longest** reset, not the first one
- * found: if two scopes have both closed, a client told to retry after the
- * shorter of them retries early and is refused again. Among allowed windows it
- * is the smallest remaining, which is the one it will hit first.
+ * There is at most one refusal to choose between, because evaluation stops at
+ * the first — so `Retry-After` describes **the scope that refused**, not
+ * necessarily the longest wait the request faces. A client refused by a nearly
+ * expired IP window can obey that header, arrive, and be refused again by an
+ * account window it never reached. Making the header describe the true worst
+ * case would mean evaluating every scope read-only and committing only if all
+ * allowed — a real design, and a different one, since it also changes what
+ * "charged" means. Recorded here rather than half-built: an unreachable
+ * tie-break branch pretending to solve it is worse than an honest limitation.
  */
 function tightest(decisions: readonly WindowDecision[]): WindowDecision | undefined {
   return decisions.reduce<WindowDecision | undefined>((worst, decision) => {
     if (worst === undefined) return decision;
     if (decision.allowed !== worst.allowed) return decision.allowed ? worst : decision;
-    if (!decision.allowed) return decision.resetSeconds > worst.resetSeconds ? decision : worst;
     return decision.remaining < worst.remaining ? decision : worst;
   }, undefined);
 }
@@ -161,6 +192,7 @@ export class RateLimitGuard implements CanActivate {
     const now = Date.now();
 
     const decisions: WindowDecision[] = [];
+    const unresolved: RateLimitScope[] = [];
     let declared = 0;
 
     try {
@@ -170,7 +202,10 @@ export class RateLimitGuard implements CanActivate {
         declared += 1;
 
         const identifier = resolveIdentifier(scope, request, config);
-        if (identifier === undefined) continue;
+        if (identifier === undefined) {
+          unresolved.push(scope);
+          continue;
+        }
 
         const decision = await consumeSlidingWindow(
           this.redis,
@@ -206,9 +241,31 @@ export class RateLimitGuard implements CanActivate {
       return this.applyFailMode(config.failMode, className);
     }
 
-    if (this.backendDown) {
+    // Cleared only when a command actually reached Redis. Resetting on any
+    // request that got this far would clear it on requests that issued no
+    // command at all — every unauthenticated request to a `generalSession`
+    // route, which is most traffic today — and produce a stream of "recovered"
+    // lines during an outage that is still ongoing. A false all-clear is worse
+    // than the per-request warn this replaced: it closes incidents that are
+    // open.
+    if (this.backendDown && decisions.length > 0) {
       this.backendDown = false;
       this.logger.warn({ rateLimitClass: className }, 'Rate limit backend recovered');
+    }
+
+    if (unresolved.length > 0 && decisions.length > 0 && config.failMode === 'closed') {
+      // A declared scope that resolved to nothing, on a class whose failMode
+      // says it would rather refuse than guess. Silence here is precisely the
+      // defect that let the per-account limits go missing while the per-IP one
+      // kept answering: the route refused at the wrong limit, advertised that
+      // limit in its headers, and nothing said the other control was absent.
+      // Not a refusal — a sibling scope did apply, and refusing every login
+      // whose body shape the guard cannot read would be its own outage — but it
+      // must never again be invisible.
+      this.logger.warn(
+        { rateLimitClass: className, unresolvedScopes: unresolved },
+        'Rate limit scope declared but not resolvable; that limit is not being applied',
+      );
     }
 
     if (declared > 0 && decisions.length === 0) {

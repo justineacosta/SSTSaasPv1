@@ -39,6 +39,14 @@ export const RATE_LIMIT_EXEMPT_KEY = 'sentinel:rate-limit-exempt';
  *
  * Do not reach for this to make a route cheaper. Every other route, including
  * readiness, stays on the normal path.
+ *
+ * **`MethodDecorator` only, deliberately.** As a class decorator this would be
+ * a one-line kill switch for the platform's only abuse control: the guard reads
+ * the handler and the class and takes the first *defined* value, and
+ * `SetMetadata` offers no way to say "not exempt", so a `@RateLimit()` on a
+ * handler underneath could not opt back in. One line at the top of a controller
+ * would silently disable every limit in it. Narrowing the type makes that a
+ * compile error.
  */
-export const RateLimitExempt = (): MethodDecorator & ClassDecorator =>
+export const RateLimitExempt = (): MethodDecorator =>
   SetMetadata<string, true>(RATE_LIMIT_EXEMPT_KEY, true);

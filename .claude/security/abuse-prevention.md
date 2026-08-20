@@ -5,8 +5,10 @@
 > `apps/api/src/common/guards/rate-limit.guard.ts` — over a Redis sorted-set window in
 > `sliding-window.ts`, with the table below transcribed into `rate-limit.config.ts` and that
 > transcription asserted value by value. It limits no endpoint today: every class is keyed by
-> an account, a principal or an organisation, none of which exist before Phase 2, and the only
-> routes that exist are the health probes. The control is correct ahead of the endpoints it
+> no route carries any of these classes: the only routes that exist are the health probes, and
+> liveness is deliberately exempt. (Some scopes *would* resolve today — `registration` is keyed
+> per IP, and the per-IP halves of `login` and `passwordReset` need no authentication — so the
+> reason nothing is governed is the absence of endpoints, not the absence of identifiers.) The control is correct ahead of the endpoints it
 > will govern — which is the point of building it now — but "Implemented" here means built and
 > tested, not currently in force.
 
@@ -25,7 +27,7 @@ configuration, not constants, and are overridable per plan.
 | Login | 5 / 15 min per account, 20 / 15 min per IP |
 | Registration | 3 / hour per IP |
 | Password reset | 3 / hour per address, 10 / hour per IP |
-| Email verification resend | 3 / hour per account |
+| Email verification resend | 3 / hour per account, 10 / hour per IP |
 | Invitations | 50 / day per organisation |
 | Scan creation | Per plan (`maxScansPerMonth`), plus 10 / min burst |
 | Evidence upload | 100 / hour per organisation |
@@ -39,7 +41,7 @@ Responses carry `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`, and
 read-only endpoints if Redis is unavailable — an outage should not lock everyone out of
 reading their own data, but it must not become a window for credential stuffing either.
 
-Three properties of the shipped implementation are worth stating, because each is a way this
+Five properties of the shipped implementation are worth stating, because each is a way this
 control is commonly built wrong:
 
 - **A refused request is not charged against the window.** A limiter that records refusals
@@ -56,10 +58,12 @@ control is commonly built wrong:
 - **The per-account rows are keyed off the request body, not an authenticated principal.**
   Login, password reset and email verification resend are unauthenticated by definition — a
   failed login carries no principal, and "5 / 15 min per account" means the account being
-  *attempted*. Reading a session principal there resolves nothing, and since those classes also
-  declare a per-IP scope that *does* resolve, the miss would be skipped in silence: a route
-  that refuses at the IP limit, advertises a limit in its headers, and never applies the
-  control that actually stops credential stuffing. The body value is hashed before it becomes
+  *attempted*. Reading a session principal there resolves nothing, and because those classes
+  also carry a per-IP scope that *does* resolve, the miss would be skipped in silence: a route
+  that refuses at the IP limit, advertises that limit in its headers, and never applies the
+  control that actually stops credential stuffing. A declared scope that resolves to nothing on
+  a fail-closed class now logs at `warn` naming the scope, so the next one is loud rather than
+  invisible. The body value is hashed before it becomes
   part of a key, so an email address never lands in Redis in plaintext.
 - **A refusal stops the evaluation.** Scopes are consumed in order and the first refusal ends
   it. Otherwise a request already being rejected would still be charged against every remaining
@@ -144,7 +148,9 @@ defines liveness as depending on none), and that a request refused by one scope 
 other scope's window unspent.
 
 Guards run after routing, so a request that matches no route is not rate limited — it is
-answered by the framework's 404 before any guard sees it. That is inherent to the mechanism and
+answered by the framework's 404 before any guard sees it. The same is true of a request whose
+body fails to parse: the parser answers 400 first. Both are cheap to serve and neither reaches
+a handler, but neither is metered either. That is inherent to the mechanism and
 differs from the middleware in the same pipeline table, which covers every response.
 
 Not yet covered: per-plan overrides, concurrency, quotas, and everything in §4 — all of which
