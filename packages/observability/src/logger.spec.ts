@@ -135,4 +135,18 @@ describe('createLogger', () => {
     expect(out.msg).toBe('connection reset by peer');
     expect(out.err.message).toBe('connection reset by peer');
   });
+
+  it('redacts a shape-recognisable secret passed as a trailing interpolation argument', () => {
+    const { logger, lines } = captureLogger();
+    logger.info('token=%s', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
+    const out = lines[0] as { msg: string };
+    expect(out.msg).toBe(`token=${REDACTED}`);
+  });
+
+  it('leaves a non-secret trailing interpolation argument unchanged', () => {
+    const { logger, lines } = captureLogger();
+    logger.info('scan %s completed', 'scn_01J');
+    const out = lines[0] as { msg: string };
+    expect(out.msg).toBe('scan scn_01J completed');
+  });
 });

@@ -30,6 +30,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Redaction for a trailing printf-style interpolation argument
+ * (`logger.info('token=%s', value)`). Unlike a field in the merged bindings
+ * object, this position carries no key name to match against
+ * `SECRET_KEY_FRAGMENTS` — an opaque high-entropy string here is
+ * indistinguishable from a scan ID. Only the value-shape backstop applies:
+ * substring redaction for a string, full structural `redact()` for an
+ * object (which does have field names to match once inside it). Numbers,
+ * booleans, and other primitives pass through unchanged.
+ */
+function redactInterpolationArg(value: unknown): unknown {
+  if (typeof value === 'string') return redactSecretsInText(value);
+  if (typeof value === 'object' && value !== null) return redact(value);
+  return value;
+}
+
+/**
  * Serializer for the `err` key. By the time this runs, pino has already
  * called `formatters.log` (see below) and, for a real `Error` under
  * `ERROR_KEY`, `formatters.log` deliberately left it untouched — this
@@ -102,6 +118,19 @@ export function createLogger(options: CreateLoggerOptions): Logger {
     // position holds a string: `logger.info(msg)` or `logger.info(obj, msg)`.
     // Substring redaction, not whole-value: a message is prose, not a
     // secret, and should stay readable around the part that had to go.
+    //
+    // Trailing printf-style interpolation arguments (`logger.info('token=%s',
+    // value)`) also pass through `redactInterpolationArg` before pino
+    // substitutes them into the formatted message. This is a narrower
+    // guarantee than the rest of this hook: those positions carry no key
+    // name to match against `SECRET_KEY_FRAGMENTS`, so only the value-shape
+    // backstop applies — a shape the backstop does not recognise (a plain
+    // password, an opaque internal ID) is not distinguishable from an
+    // ordinary interpolated value and is not redacted. Reimplementing pino's
+    // `%s`/`%d`/`%j`/`%o` formatting ourselves to close that fully was
+    // considered and rejected: it would mean maintaining a second copy of
+    // pino's interpolation semantics, which is a worse failure mode than the
+    // residual gap it would close.
     hooks: {
       logMethod(inputArgs, method) {
         // A single-argument call — `logger.error(err)` or
@@ -130,8 +159,14 @@ export function createLogger(options: CreateLoggerOptions): Logger {
 
         if (typeof inputArgs[0] === 'string') {
           inputArgs[0] = redactSecretsInText(inputArgs[0]);
+          for (let i = 1; i < inputArgs.length; i++) {
+            inputArgs[i] = redactInterpolationArg(inputArgs[i]);
+          }
         } else if (inputArgs.length > 1 && typeof inputArgs[1] === 'string') {
           inputArgs[1] = redactSecretsInText(inputArgs[1]);
+          for (let i = 2; i < inputArgs.length; i++) {
+            inputArgs[i] = redactInterpolationArg(inputArgs[i]);
+          }
         }
         method.apply(this, inputArgs);
       },
