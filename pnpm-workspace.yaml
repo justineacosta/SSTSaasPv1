@@ -1,0 +1,10 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+allowBuilds:
+  # esbuild ships a native binary fetched via postinstall; vitest depends on it
+  # to run at all. unrs-resolver ships native bindings used by
+  # eslint-import-resolver-typescript. Both are widely used, trusted build
+  # tools — approved so the toolchain functions.
+  esbuild: true
+  unrs-resolver: true
