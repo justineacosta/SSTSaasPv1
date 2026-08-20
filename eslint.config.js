@@ -1,6 +1,7 @@
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 import importPlugin from 'eslint-plugin-import';
+import globals from 'globals';
 
 export default tseslint.config(
   {
@@ -57,10 +58,17 @@ export default tseslint.config(
   // Root config files (eslint.config.js, vitest.workspace.ts, and any other
   // root *.config.js / *.config.mjs / *.config.ts) belong to no tsconfig
   // project — type-aware rules cannot run on them. Deliberately not added to
-  // a tsconfig; lint them type-unaware instead.
+  // a tsconfig; lint them type-unaware instead. Without an explicit tsconfig
+  // project, typescript-eslint never pulls in @types/node's ambient globals,
+  // so Node's ambient identifiers (process, console, __dirname, etc.) must be
+  // declared here or `no-undef` (from js.configs.recommended) misfires on
+  // legitimate references. This is why root config files like this one and
+  // a future apps/web/playwright.config.ts (Task 13) or a root-level config
+  // Task 12 may add need `globals.node`.
   {
     files: ['*.config.js', '*.config.mjs', '*.config.ts', 'vitest.workspace.ts'],
     extends: [tseslint.configs.disableTypeChecked],
+    languageOptions: { globals: globals.node },
     rules: js.configs.recommended.rules,
   },
   // packages/config is the one place allowed to touch process.env
