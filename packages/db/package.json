@@ -1,0 +1,34 @@
+{
+  "name": "@sentinel/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./unscoped": { "types": "./dist/unscoped.d.ts", "default": "./dist/unscoped.js" }
+  },
+  "scripts": {
+    "build": "prisma generate && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src",
+    "db:generate": "prisma generate",
+    "db:migrate": "node scripts/sync-env.mjs && prisma migrate dev",
+    "db:migrate:create": "node scripts/sync-env.mjs && prisma migrate dev --create-only",
+    "db:migrate:deploy": "node scripts/sync-env.mjs && prisma migrate deploy",
+    "db:reset": "node scripts/sync-env.mjs && prisma migrate reset --force",
+    "db:studio": "node scripts/sync-env.mjs && prisma studio",
+    "db:seed": "node --experimental-strip-types src/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.3.0",
+    "uuidv7": "^1.0.2"
+  },
+  "devDependencies": {
+    "@sentinel/config": "workspace:*",
+    "@testcontainers/postgresql": "^10.16.0",
+    "prisma": "^6.3.0",
+    "typescript": "^5.7.0"
+  }
+}

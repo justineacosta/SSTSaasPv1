@@ -34,6 +34,7 @@ blob-report/
 # Prisma
 packages/db/prisma/*.db
 packages/db/prisma/*.db-journal
+packages/db/generated/
 
 # Logs
 *.log

@@ -1,0 +1,226 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum OrganizationStatus {
+  ACTIVE
+  SUSPENDED
+  TERMINATED
+}
+
+enum UserStatus {
+  ACTIVE
+  LOCKED
+  DISABLED
+}
+
+enum MembershipStatus {
+  ACTIVE
+  INVITED
+  REMOVED
+}
+
+enum SystemRoleKey {
+  OWNER
+  ADMIN
+  SECURITY_LEAD
+  MEMBER
+  VIEWER
+  AUDITOR
+  GUEST
+}
+
+enum ActorType {
+  USER
+  API_KEY
+  SYSTEM
+  PLATFORM_ADMIN
+}
+
+// ---------------------------------------------------------------------------
+// Tenant root
+// ---------------------------------------------------------------------------
+
+model Organization {
+  id        String             @id
+  slug      String             @unique
+  name      String
+  status    OrganizationStatus @default(ACTIVE)
+  createdAt DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime           @updatedAt @db.Timestamptz(6)
+
+  memberships Membership[]
+  invitations Invitation[]
+  auditEvents AuditEvent[]
+
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Global identity. A User is one human with one login and many organisations;
+// Membership is what makes them a participant in a tenant. This is why
+// authorization is always (user, organization, permission), never
+// (user, permission). See architecture/database.md §2.
+// ---------------------------------------------------------------------------
+
+model User {
+  id              String     @id
+  email           String     @unique
+  emailVerifiedAt DateTime?  @db.Timestamptz(6)
+  name            String?
+  status          UserStatus @default(ACTIVE)
+  createdAt       DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime   @updatedAt @db.Timestamptz(6)
+
+  credential  Credential?
+  sessions    Session[]
+  memberships Membership[]
+  invitesSent Invitation[] @relation("InvitationInvitedBy")
+}
+
+model Credential {
+  id           String   @id
+  userId       String   @unique
+  passwordHash String
+  algorithm    String   @default("argon2id")
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Session {
+  id        String    @id
+  userId    String
+  tokenHash String    @unique
+  // The organisation the session is currently acting in. Nullable because a
+  // user may be signed in before choosing one. A Session is user-owned, not
+  // tenant-owned, so it is deliberately NOT in the tenant resource registry.
+  activeOrganizationId String?
+  ip        String?
+  userAgent String?
+  expiresAt DateTime  @db.Timestamptz(6)
+  revokedAt DateTime? @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+// ---------------------------------------------------------------------------
+// Roles are system-wide reference data in Phase 1. Custom per-organisation
+// roles arrive in Phase 11 and will add a nullable organizationId here.
+// ---------------------------------------------------------------------------
+
+model Role {
+  id          String        @id
+  key         SystemRoleKey @unique
+  name        String
+  description String
+  isSystem    Boolean       @default(true)
+  createdAt   DateTime      @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime      @updatedAt @db.Timestamptz(6)
+
+  permissions RolePermission[]
+  memberships Membership[]
+  invitations Invitation[]
+}
+
+model Permission {
+  id          String   @id
+  key         String   @unique
+  description String
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  roles RolePermission[]
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+}
+
+// ---------------------------------------------------------------------------
+// Tenant-owned. Every one of these carries organizationId DIRECTLY, with a
+// leading index, and must be registered in src/tenant-resources.ts.
+// ---------------------------------------------------------------------------
+
+model Membership {
+  id             String           @id
+  organizationId String
+  userId         String
+  roleId         String
+  status         MembershipStatus @default(ACTIVE)
+  createdAt      DateTime         @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime         @updatedAt @db.Timestamptz(6)
+  deletedAt      DateTime?        @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role         Role         @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@unique([organizationId, userId])
+  @@index([organizationId, status])
+  @@index([userId])
+}
+
+model Invitation {
+  id              String    @id
+  organizationId  String
+  email           String
+  roleId          String
+  tokenHash       String    @unique
+  invitedByUserId String
+  expiresAt       DateTime  @db.Timestamptz(6)
+  acceptedAt      DateTime? @db.Timestamptz(6)
+  revokedAt       DateTime? @db.Timestamptz(6)
+  createdAt       DateTime  @default(now()) @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  role         Role         @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  invitedBy    User         @relation("InvitationInvitedBy", fields: [invitedByUserId], references: [id], onDelete: Restrict)
+
+  @@unique([organizationId, email])
+  @@index([organizationId, createdAt(sort: Desc)])
+}
+
+/// Append-only. UPDATE and DELETE are revoked from the application role by
+/// migration and blocked by a trigger. See security/audit.md §2.
+model AuditEvent {
+  id             String    @id
+  organizationId String
+  actorType      ActorType
+  actorId        String?
+  action         String
+  resourceType   String
+  resourceId     String?
+  metadata       Json      @default("{}")
+  ip             String?
+  userAgent      String?
+  requestId      String?
+  createdAt      DateTime  @default(now()) @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@index([organizationId, actorId, createdAt(sort: Desc)])
+  @@index([organizationId, resourceType, resourceId])
+}

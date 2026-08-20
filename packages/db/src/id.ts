@@ -1,0 +1,65 @@
+import { uuidv7obj } from 'uuidv7';
+
+/**
+ * Entity prefixes. IDs are opaque to clients (api/conventions.md §1) but
+ * self-describing in a log line, which is worth a great deal when correlating
+ * an incident across the API, a queue payload, and a worker.
+ *
+ * `fnd` (finding) and `scn` (scan) are registered ahead of the models that
+ * will use them (Phase 2+) so downstream packages can reference the full
+ * entity vocabulary from Phase 1 without a breaking rename later.
+ */
+export const ID_PREFIXES = {
+  org: 'org',
+  usr: 'usr',
+  mbr: 'mbr',
+  ses: 'ses',
+  crd: 'crd',
+  rol: 'rol',
+  prm: 'prm',
+  inv: 'inv',
+  aud: 'aud',
+  req: 'req',
+  fnd: 'fnd',
+  scn: 'scn',
+} as const;
+
+export type IdPrefix = keyof typeof ID_PREFIXES;
+
+/** Crockford base32 — excludes I, L, O, and U to avoid transcription errors. */
+const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+const ID_BODY_LENGTH = 26;
+
+function encodeCrockford(bytes: Uint8Array): string {
+  let value = 0n;
+  for (const byte of bytes) value = (value << 8n) | BigInt(byte);
+
+  let out = '';
+  for (let index = 0; index < ID_BODY_LENGTH; index += 1) {
+    out = ALPHABET[Number(value & 31n)] + out;
+    value >>= 5n;
+  }
+  return out;
+}
+
+/**
+ * Generates a prefixed UUIDv7 identifier, e.g. `org_01J8XK2P9V3QWERTYUIOPASDF`.
+ *
+ * UUIDv7 is time-ordered, so index locality is good on the leading edge of
+ * every table — which matters because every hot query in this product sorts by
+ * recency. Base32 keeps it URL-safe and case-insensitive to read aloud.
+ *
+ * See ADR-0011.
+ */
+export function newId(prefix: IdPrefix): string {
+  return `${ID_PREFIXES[prefix]}_${encodeCrockford(uuidv7obj().bytes)}`;
+}
+
+const ID_PATTERN = new RegExp(`^([a-z]{3})_[${ALPHABET}]{${ID_BODY_LENGTH}}$`);
+
+export function parseIdPrefix(id: string): IdPrefix | undefined {
+  const match = ID_PATTERN.exec(id);
+  const candidate = match?.[1];
+  if (candidate === undefined) return undefined;
+  return candidate in ID_PREFIXES ? (candidate as IdPrefix) : undefined;
+}
