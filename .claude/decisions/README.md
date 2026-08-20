@@ -1,0 +1,58 @@
+# Architecture Decision Records
+
+A record of significant, hard-to-reverse decisions: what we chose, what we rejected, and what it
+costs us. The rejected alternatives are the most valuable part — they stop a decision being
+re-litigated every six months by someone who cannot see why the obvious option was not taken.
+
+## Index
+
+| ADR | Decision | Status |
+|---|---|---|
+| [0001](ADR-0001-overall-architecture.md) | Modular monolith with detached workers | Accepted |
+| [0002](ADR-0002-postgresql-and-prisma.md) | PostgreSQL and Prisma | Accepted |
+| [0003](ADR-0003-worker-isolation.md) | Engine isolation in ephemeral containers | Accepted |
+| [0004](ADR-0004-queue-architecture.md) | BullMQ on Redis, database-authoritative job state | Accepted |
+| [0005](ADR-0005-authentication-model.md) | Opaque server-side sessions, not JWTs | Accepted |
+| [0006](ADR-0006-multi-tenant-isolation.md) | Shared database, mandatory scoping, RLS second layer | Accepted |
+| [0007](ADR-0007-evidence-storage.md) | Evidence in object storage, metadata in Postgres | Accepted |
+| [0008](ADR-0008-billing-architecture.md) | Stripe as authority, entitlements as projection | Accepted |
+| [0009](ADR-0009-scope-enforcement.md) | Proof of ownership and double scope evaluation | Accepted |
+| [0010](ADR-0010-engine-contract.md) | Language-agnostic engine contract over stdio | Accepted |
+
+## When to write one
+
+Write an ADR when a decision is expensive to reverse, when it constrains future work, when a
+reasonable engineer would ask "why on earth is it like this?", or when you rejected an obvious
+option for a non-obvious reason.
+
+Do not write one for a decision that is easy to change later. That is just code.
+
+## Format
+
+```markdown
+# ADR-NNNN — Title stating the decision, not the topic
+
+**Status:** Proposed | Accepted | Superseded by ADR-NNNN · **Date:** YYYY-MM-DD
+
+## Context
+The forces at play. What makes this hard.
+
+## Decision
+What we are doing. Present tense, specific.
+
+## Alternatives considered
+Each option, and why it lost. Be fair to the ones you rejected.
+
+## Consequences
+Positive, negative, and neutral. Name the costs honestly —
+an ADR listing only benefits is marketing, not a record.
+```
+
+## Rules
+
+Numbers are sequential and never reused. An ADR is **immutable once accepted**: to change a
+decision, write a new ADR and mark the old one `Superseded by ADR-NNNN`. Editing history to
+match current opinion destroys the only thing this directory is for.
+
+The title states the decision (`Opaque server-side sessions, not JWTs`), not the topic
+(`Authentication`) — so the index is readable without opening anything.

@@ -1,0 +1,81 @@
+# Folder structure
+
+> **Status: Designed. Not Implemented.** Created in Phase 1.
+
+```
+SSTSaasPv1/
+├── apps/
+│   ├── web/                     Next.js — marketing + application
+│   │   ├── app/
+│   │   │   ├── (marketing)/     public site
+│   │   │   ├── (auth)/          login, register, reset, mfa, invitations
+│   │   │   ├── (onboarding)/    the wizard
+│   │   │   ├── (app)/           authenticated product, app shell layout
+│   │   │   └── api/             BFF only: session relay, csp-report, health
+│   │   ├── components/
+│   │   │   ├── ui/              design system primitives
+│   │   │   ├── patterns/        DataTable, PageHeader, EmptyState, ConfirmDialog
+│   │   │   └── domain/          FindingRow, SeverityIndicator, ScanProgress
+│   │   ├── hooks/  lib/  providers/  styles/
+│   │   └── e2e/                 Playwright specs
+│   │
+│   ├── api/                     NestJS modular monolith
+│   │   └── src/
+│   │       ├── common/          guards, interceptors, filters, decorators, pipes
+│   │       ├── infrastructure/  prisma, redis, queue, storage, mail, stripe
+│   │       └── modules/         one folder per bounded module
+│   │           └── findings/    controller, service, repository, dto/, tests
+│   │
+│   ├── worker-node/             BullMQ consumer + TypeScript engines
+│   ├── worker-python/           BullMQ consumer + Python engines
+│   └── scheduler/               leader-elected periodic jobs
+│
+├── packages/
+│   ├── db/                      Prisma schema, migrations, tenant client, seeds
+│   ├── contracts/               Zod schemas + inferred types (the spine)
+│   ├── engine-sdk/              TypeScript engine contract + guarded HTTP client
+│   ├── ui/                      shared design tokens and primitives
+│   ├── observability/           logger, tracing, metrics, redaction
+│   └── config/                  env schema, tsconfig/eslint presets
+│
+├── workers/python-sdk/          Python engine contract implementation
+│
+├── infra/
+│   ├── docker/                  Dockerfiles, compose stacks
+│   └── terraform/               IaC (Phase 11)
+│
+├── docs/                        public product and API documentation
+├── .claude/                     internal engineering documentation
+├── .github/workflows/           CI/CD
+├── CLAUDE.md  README.md  .env.example
+├── package.json  pnpm-workspace.yaml  turbo.json
+```
+
+## Rules
+
+**`packages/contracts` is the spine.** Request and response shapes, engine job payloads,
+finding shapes, permission strings, and event payloads are defined once as Zod schemas and
+imported by web, api, and workers. A shape change that breaks a consumer breaks the
+typecheck — which is the point, and the reason this package must never import from an app.
+
+**Dependency direction is one-way.** Apps depend on packages. Packages depend on other
+packages. **No package ever imports from an app**, and no app imports from another app. An
+import-boundary lint rule enforces this, because dependency cycles in a monorepo are easy to
+create by accident and painful to unpick later.
+
+**Modules are bounded.** Inside `apps/api/src/modules/`, a module owns its controller, service,
+repository, DTOs, and tests. Cross-module access goes through the other module's **service**,
+never its repository — the repository is the module's private data access, and reaching into
+it from outside couples two modules to one schema.
+
+**Feature-first, not type-first.** Everything about findings lives under `findings/`. A global
+`services/` or `controllers/` folder scatters one feature across four places and makes it
+impossible to see what a change touches.
+
+**Colocated tests.** `*.spec.ts` next to the code it tests, `*.integration.spec.ts` for
+database-backed tests, `e2e/` for Playwright. A test far from its subject is a test that gets
+forgotten when the subject moves.
+
+**Engines are plugins.** An engine lives entirely under its own folder and touches no platform
+code ([`../scanners/adding-engines.md`](../scanners/adding-engines.md)). If adding an engine
+requires editing the worker, the queue, or the UI, the contract has leaked.
