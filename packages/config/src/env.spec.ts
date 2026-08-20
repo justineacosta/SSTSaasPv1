@@ -71,10 +71,64 @@ describe('loadEnv', () => {
   });
 
   it('never includes a variable value in the error message', () => {
+    // Must actually fail validation — .startsWith('postgresql://') rejects this —
+    // otherwise the catch block below never runs and the assertion is vacuous.
+    const badUrl = 'mysql://user:hunter2@bad';
+    expect(() => loadEnv(apiEnvSchema, { ...validApi, DATABASE_URL: badUrl })).toThrow(
+      EnvValidationError,
+    );
     try {
-      loadEnv(apiEnvSchema, { ...validApi, DATABASE_URL: 'postgresql://user:hunter2@bad' });
+      loadEnv(apiEnvSchema, { ...validApi, DATABASE_URL: badUrl });
     } catch (error) {
       expect((error as Error).message).not.toContain('hunter2');
     }
+  });
+
+  it('rejects a secret-looking APP_ENV value, naming the variable and the allowed options but never the value', () => {
+    const secret = 'S3CR3T-SENTINEL-VALUE';
+    expect(() => loadEnv(sharedEnvSchema, { ...validShared, APP_ENV: secret })).toThrow(
+      EnvValidationError,
+    );
+    try {
+      loadEnv(sharedEnvSchema, { ...validShared, APP_ENV: secret });
+    } catch (error) {
+      const err = error as EnvValidationError;
+      expect(err.variables).toContain('APP_ENV');
+      expect(err.message).toContain('APP_ENV');
+      // The allowed options are safe to surface — they're schema-authored, not input.
+      expect(err.message).toContain('development');
+      expect(err.message).toContain('staging');
+      expect(err.message).not.toContain(secret);
+    }
+  });
+
+  it('never leaks a sentinel value into the error, for any field in the schema', () => {
+    // A property test, not an audit of specific fields: for every key apiEnvSchema
+    // knows about, swap in a value that looks exactly like a secret and confirm it
+    // never surfaces — whether or not that particular field's rule happens to reject
+    // it. This is what makes the guarantee scale to every schema future tasks add,
+    // instead of relying on someone remembering to test the next field by hand.
+    const sentinel = 'S3CR3T-SENTINEL-VALUE';
+    const keys = Object.keys(apiEnvSchema.shape);
+    const leaked: string[] = [];
+    let throwCount = 0;
+
+    for (const key of keys) {
+      const candidate: Record<string, string> = { ...validApi, [key]: sentinel };
+      try {
+        loadEnv(apiEnvSchema, candidate);
+      } catch (error) {
+        throwCount += 1;
+        const err = error as EnvValidationError;
+        if (err.message.includes(sentinel) || err.variables.some((v) => v.includes(sentinel))) {
+          leaked.push(key);
+        }
+      }
+    }
+
+    // If nothing ever throws, the assertions above never ran and this test would
+    // pass vacuously — the same defect this test replaces. Fail loudly instead.
+    expect(throwCount).toBeGreaterThan(0);
+    expect(leaked).toEqual([]);
   });
 });
