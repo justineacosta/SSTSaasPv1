@@ -88,6 +88,7 @@ packages/
   engine-sdk/       TypeScript implementation of the engine contract
   ui/               design system (shadcn primitives + product patterns)
   observability/    logger, tracing, metrics, redaction
+  storage/          S3-compatible adapter, tenant-prefixed key construction
   config/           env parsing/validation, tsconfig + eslint presets
 workers/
   python-sdk/       Python implementation of the engine contract

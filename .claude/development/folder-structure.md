@@ -36,6 +36,7 @@ SSTSaasPv1/
 │   ├── engine-sdk/              TypeScript engine contract + guarded HTTP client
 │   ├── ui/                      shared design tokens and primitives
 │   ├── observability/           logger, tracing, metrics, redaction
+│   ├── storage/                 S3-compatible adapter, tenant-prefixed keys
 │   └── config/                  env schema, tsconfig/eslint presets
 │
 ├── workers/python-sdk/          Python engine contract implementation
@@ -79,3 +80,7 @@ forgotten when the subject moves.
 **Engines are plugins.** An engine lives entirely under its own folder and touches no platform
 code ([`../scanners/adding-engines.md`](../scanners/adding-engines.md)). If adding an engine
 requires editing the worker, the queue, or the UI, the contract has leaked.
+
+**The storage adapter is a package, not API infrastructure.** Workers upload evidence from
+Phase 5 onward, and no app may import another app, so the adapter has to live where both
+can reach it.
