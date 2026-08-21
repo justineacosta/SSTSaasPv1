@@ -46,6 +46,12 @@ export default defineWorkspace([
     test: {
       name: 'ui',
       include: ['packages/*/src/**/*.spec.tsx', 'apps/*/src/**/*.spec.tsx'],
+      // Mirrors the 'unit' project's exclude above. Without it, a future
+      // *.integration.spec.tsx would match this project's include glob and
+      // run under jsdom with no 120s timeout and no fileParallelism: false —
+      // the unit pass's constraints, not the integration pass's — instead
+      // of running under `pnpm test:integration` where it belongs.
+      exclude: ['**/*.integration.spec.tsx'],
       environment: 'jsdom',
       setupFiles: ['./packages/ui/src/test-setup.ts'],
       passWithNoTests: true,

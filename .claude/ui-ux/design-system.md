@@ -187,11 +187,15 @@ The practical effect: Tailwind's built-in `text-sm` utility silently takes this 
 system's `13px` for its font-size (since it reads `var(--text-sm)`), but keeps *Tailwind's*
 line-height ratio, not this file's `--leading-sm: 20px` — the two were never paired, because
 `--leading-sm` and `--text-sm--line-height` are different variable names. Do not use the bare
-`text-sm`/`leading-sm` utilities on this design system's typography; every primitive in
-`packages/ui` instead pairs `text-[length:var(--text-sm)]` with `leading-[var(--leading-sm)]`
-explicitly, and any new component should do the same. No other token in this file collides
-with a Tailwind v4 theme variable — checked the full `--color-*`, `--text-*`, `--radius-*`,
-and `--ease-*` namespaces in `tailwindcss@4.3.3/theme.css` against every token name here.
+`text-sm` utility on this design system's typography. (There is no bare `leading-sm` utility to
+avoid in the first place — Tailwind's `--leading-*` theme namespace only has
+`tight`/`snug`/`normal`/`relaxed`/`loose`, no `sm`, so `leading-sm` generates no CSS at all.)
+Every primitive in `packages/ui` instead pairs `text-[length:var(--text-sm)]` with
+`leading-[var(--leading-sm)]` explicitly, and any new component should do the same. No other
+token in this file collides with a Tailwind v4 theme variable — checked all 48 token names
+here against tailwindcss@4.3.3's full theme namespace: `--color-*`, `--text-*`, `--leading-*`,
+`--radius-*`, `--ease-*`, and `--duration-*` (Tailwind v4 has no `--duration-*` namespace at
+all). `--row-height-*` isn't a Tailwind namespace either, so it can't collide.
 
 ## 8. Voice
 

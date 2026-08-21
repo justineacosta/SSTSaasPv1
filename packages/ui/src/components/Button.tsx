@@ -25,8 +25,11 @@ const variantClasses: Record<ButtonVariant, string> = {
 const sizeClasses: Record<ButtonSize, string> = {
   // --text-sm collides with a Tailwind v4 built-in theme variable of the
   // same name (see ui-ux/design-system.md §7) — reference it through this
-  // arbitrary-value pair, never through the bare `text-sm`/`leading-sm`
-  // utilities, which follow Tailwind's own 0.875rem/line-height default.
+  // arbitrary-value pair, never through the bare `text-sm` utility, which
+  // would silently take this file's 13px for font-size but keep Tailwind's
+  // own line-height ratio. `leading-sm` isn't a Tailwind utility at all —
+  // theme.css's --leading-* namespace only has tight/snug/normal/relaxed/
+  // loose, no `sm` — so it would generate no CSS and silently no-op.
   sm: 'h-[var(--row-height-dense)] px-3 text-[length:var(--text-sm)] leading-[var(--leading-sm)]',
   md: 'h-[var(--row-height-compact)] px-4 text-[length:var(--text-body)] leading-[var(--leading-body)]',
 };
