@@ -1,13 +1,6 @@
-import {
-  cloneElement,
-  forwardRef,
-  isValidElement,
-  useId,
-  type HTMLAttributes,
-  type ReactElement,
-} from 'react';
+import { cloneElement, forwardRef, useId, type HTMLAttributes, type ReactElement } from 'react';
 import { cn } from '../cn.js';
-import { Label } from './label.js';
+import { Label } from './Label.js';
 
 interface ControllableProps {
   id?: string | undefined;
@@ -35,15 +28,29 @@ export const Field = forwardRef<HTMLDivElement, FieldProps>(
     const controlId = children.props.id ?? generatedId;
     const descriptionId = description ? `${controlId}-description` : undefined;
     const errorId = error ? `${controlId}-error` : undefined;
-    const describedBy = [descriptionId, errorId].filter(Boolean).join(' ') || undefined;
 
-    const control = isValidElement<ControllableProps>(children)
-      ? cloneElement(children, {
-          id: controlId,
-          'aria-describedby': describedBy,
-          'aria-invalid': error ? true : undefined,
-        })
-      : children;
+    // Merge with whatever the child already declares. cloneElement replaces
+    // a prop outright rather than adding to it, so overwriting
+    // aria-describedby here would silently strip an association the caller
+    // already set up on their own control.
+    const describedBy =
+      [children.props['aria-describedby'], descriptionId, errorId].filter(Boolean).join(' ') ||
+      undefined;
+
+    const overrides: Partial<ControllableProps> = {
+      id: controlId,
+      'aria-describedby': describedBy,
+    };
+    // Only set aria-invalid when there's an error to report. cloneElement
+    // with an explicit `undefined` overwrites — it does not "leave alone" —
+    // whatever the child already had, so a control's own aria-invalid has to
+    // be left out of `overrides` entirely rather than cleared to undefined
+    // here.
+    if (error) {
+      overrides['aria-invalid'] = true;
+    }
+
+    const control = cloneElement(children, overrides);
 
     return (
       <div ref={ref} className={cn('flex flex-col gap-1.5', className)} {...rest}>
@@ -52,7 +59,7 @@ export const Field = forwardRef<HTMLDivElement, FieldProps>(
         {description ? (
           <p
             id={descriptionId}
-            className="text-[length:var(--text-caption)] text-[var(--color-text-muted)]"
+            className="text-[length:var(--text-caption)] leading-[var(--leading-caption)] text-[var(--color-text-muted)]"
           >
             {description}
           </p>
@@ -61,7 +68,7 @@ export const Field = forwardRef<HTMLDivElement, FieldProps>(
           <p
             id={errorId}
             role="alert"
-            className="text-[length:var(--text-caption)] text-[var(--color-danger)]"
+            className="text-[length:var(--text-caption)] leading-[var(--leading-caption)] text-[var(--color-danger)]"
           >
             {error}
           </p>

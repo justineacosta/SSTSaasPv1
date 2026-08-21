@@ -21,17 +21,31 @@ export default defineWorkspace([
       passWithNoTests: true,
     },
   },
-  // packages/ui's specs render React components and need a DOM (jsdom) plus
-  // jest-dom's matchers — neither belongs in the 'unit' project above, whose
-  // every other member is a plain Node package. A separate project keeps
+  // React specs render components and need a DOM (jsdom) plus jest-dom's
+  // matchers — neither belongs in the 'unit' project above, whose every
+  // other member is a plain Node package. A separate project keeps
   // `environment: 'node'` as the default for everything else instead of
-  // switching the whole 'unit' project to jsdom for one package's sake, and
-  // keeps the jest-dom setup file (and packages/ui's devDependency on it)
-  // from being loaded for packages that never installed it.
+  // switching the whole 'unit' project to jsdom.
+  //
+  // The glob covers packages/*/src and apps/*/src, not just packages/ui:
+  // the 'unit' project above only matches `*.spec.ts`, so a `.spec.tsx` file
+  // anywhere else (apps/web, once Task 13 lands it) would otherwise match no
+  // project at all, and root `pnpm test`'s `--passWithNoTests` would print
+  // green while silently executing zero of that package's tests — the exact
+  // failure this project exists to rule out for packages/ui (Task 12,
+  // Ruling 1). Verified this reaches apps/* too: a temporary
+  // apps/web/src/__probe__.spec.tsx matched this project and ran under
+  // jsdom with jest-dom's matcher available, resolved via this setupFiles
+  // path even though the spec's own directory (apps/web) had no
+  // @testing-library/jest-dom of its own — Node resolves the *setup file's*
+  // imports against packages/ui's node_modules, not the running spec's.
+  // A real apps/web spec that imports @testing-library/react directly will
+  // still need that package added as an apps/web devDependency; that's
+  // Task 13's to add when the app package exists.
   {
     test: {
       name: 'ui',
-      include: ['packages/ui/src/**/*.spec.tsx'],
+      include: ['packages/*/src/**/*.spec.tsx', 'apps/*/src/**/*.spec.tsx'],
       environment: 'jsdom',
       setupFiles: ['./packages/ui/src/test-setup.ts'],
       passWithNoTests: true,

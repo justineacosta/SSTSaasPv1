@@ -1,7 +1,10 @@
 # Design system
 
-> **Status: Direction defined. Not Implemented.** Tokens and primitives are built in
-> Phase 1; components land alongside the features that need them.
+> **Status: Partially Implemented.** Tokens (`packages/ui/src/tokens.css`) and eight base
+> primitives — Button, Input, Label, Field, Card, Alert, Badge, Skeleton — shipped in
+> `packages/ui` (Task 12). The full primitive/pattern/domain-component inventory in
+> [`components.md`](components.md) is Not Implemented; those land alongside the features
+> that need them.
 
 ## 1. Design thesis
 
@@ -160,14 +163,35 @@ a static determinate bar.
 
 ## 7. Tokens
 
-Tokens are CSS custom properties on `:root`, consumed through Tailwind theme extension. Light
-is defined on bare `:root`; dark is redefined under both `@media (prefers-color-scheme: dark)`
-guarded as `:root:not([data-theme="light"])` **and** `:root[data-theme="dark"]`, so the
-explicit toggle wins in both directions and the system default works without one.
+Tokens are CSS custom properties on `:root`, consumed through Tailwind **arbitrary-value**
+utilities that reference the custom property directly — `bg-[var(--color-surface)]`,
+`text-[length:var(--text-body)]`, `rounded-[var(--radius-control)]`. `packages/ui` ships no
+`@theme` block, so named utilities like `bg-surface` or `text-body` do not exist and will not
+resolve; a `:root` custom property alone does not generate one in Tailwind v4. Anyone building
+an `@theme` mapping later must generate it from this file, not maintain a second copy of the
+token list by hand. Light is defined on bare `:root`; dark is redefined under both
+`@media (prefers-color-scheme: dark)` guarded as `:root:not([data-theme="light"])` **and**
+`:root[data-theme="dark"]`, so the explicit toggle wins in both directions and the system
+default works without one.
 
-**No component may use a raw hex value.** A lint rule enforces it. A hardcoded colour is a
-colour that will be wrong in dark mode, and dark mode is not optional for a tool people use at
-2am during an incident.
+**No component may use a raw hex value.** A lint rule enforces it, scoped to `packages/ui` and
+`apps/web`. A hardcoded colour is a colour that will be wrong in dark mode, and dark mode is
+not optional for a tool people use at 2am during an incident.
+
+**`--text-sm` collides with a Tailwind v4 built-in theme variable of the same name.**
+Tailwind's own default theme defines `--text-sm: 0.875rem` plus `--text-sm--line-height`
+inside `@layer theme`. Because this file's `:root` block is unlayered CSS following
+`@import 'tailwindcss'`, it wins the cascade over anything inside `@layer theme` regardless of
+source order — confirmed by compiling this file with `tailwindcss@4.3.3`'s own compiler.
+The practical effect: Tailwind's built-in `text-sm` utility silently takes this design
+system's `13px` for its font-size (since it reads `var(--text-sm)`), but keeps *Tailwind's*
+line-height ratio, not this file's `--leading-sm: 20px` — the two were never paired, because
+`--leading-sm` and `--text-sm--line-height` are different variable names. Do not use the bare
+`text-sm`/`leading-sm` utilities on this design system's typography; every primitive in
+`packages/ui` instead pairs `text-[length:var(--text-sm)]` with `leading-[var(--leading-sm)]`
+explicitly, and any new component should do the same. No other token in this file collides
+with a Tailwind v4 theme variable — checked the full `--color-*`, `--text-*`, `--radius-*`,
+and `--ease-*` namespaces in `tailwindcss@4.3.3/theme.css` against every token name here.
 
 ## 8. Voice
 

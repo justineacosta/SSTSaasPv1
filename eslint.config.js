@@ -156,9 +156,12 @@ export default tseslint.config(
   // ui-ux/design-system.md §7 — "no component may use a raw hex value. A
   // lint rule enforces it." Scoped to packages/ui now and written to also
   // cover apps/web once Task 13 lands it, so a colour literal (in a class
-  // string, an inline style, anywhere) has to route through a design token
-  // instead — a hardcoded colour is a colour that's wrong in dark mode.
-  // tokens.css itself is exempt: it's the one file where hex is the point.
+  // string, an inline style, anywhere in .ts/.tsx) has to route through a
+  // design token instead — a hardcoded colour is a colour that's wrong in
+  // dark mode. This rule only ever sees TypeScript/TSX: the `files` glob is
+  // `*.{ts,tsx}`, and ESLint does not lint CSS at all — tokens.css's hex
+  // values (the token definitions themselves) are outside its reach
+  // entirely, not "exempted" by anything written here.
   {
     files: ['packages/ui/**/*.{ts,tsx}', 'apps/web/**/*.{ts,tsx}'],
     rules: {

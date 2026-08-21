@@ -5,11 +5,11 @@ export {
   type ButtonProps,
   type ButtonVariant,
   type ButtonSize,
-} from './components/button.js';
-export { Input, type InputProps } from './components/input.js';
-export { Label, type LabelProps } from './components/label.js';
-export { Field, type FieldProps } from './components/field.js';
-export { Card, type CardProps } from './components/card.js';
-export { Alert, type AlertProps, type AlertVariant } from './components/alert.js';
-export { Badge, type BadgeProps, type BadgeVariant } from './components/badge.js';
-export { Skeleton, type SkeletonProps } from './components/skeleton.js';
+} from './components/Button.js';
+export { Input, type InputProps } from './components/Input.js';
+export { Label, type LabelProps } from './components/Label.js';
+export { Field, type FieldProps } from './components/Field.js';
+export { Card, type CardProps } from './components/Card.js';
+export { Alert, type AlertProps, type AlertVariant } from './components/Alert.js';
+export { Badge, type BadgeProps, type BadgeVariant } from './components/Badge.js';
+export { Skeleton, type SkeletonProps } from './components/Skeleton.js';

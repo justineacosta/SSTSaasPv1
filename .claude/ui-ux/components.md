@@ -91,3 +91,10 @@ and because people need the numbers to paste into a report.
    accessibility and visual regression target.
 7. `alert()`, `confirm()`, and `prompt()` are banned. Product interactions use `ConfirmDialog`
    and `Toast`.
+8. **Every component file is `PascalCase.tsx`**, per
+   [`coding-standards.md`](../development/coding-standards.md). The shadcn CLI generates
+   lowercase filenames (`button.tsx`, `dropdown-menu.tsx`) — rename on generation, before the
+   file is ever committed. `packages/ui`'s eight primitives (Task 12) are the precedent: the
+   brief that specified them listed lowercase names, and they were renamed to match this rule
+   rather than left as the exception. A repo half in each convention is worse than either
+   convention on its own.

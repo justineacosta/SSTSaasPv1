@@ -7,8 +7,11 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(({ className, ...p
   <input
     ref={ref}
     className={cn(
-      'w-full rounded-[var(--radius-control)] border border-[var(--color-border-strong)]',
-      'bg-[var(--color-surface)] px-3 text-[length:var(--text-body)] text-[var(--color-text)]',
+      // h-[var(--row-height-compact)] matches Button's md size so an Input
+      // and a Button placed side by side (a search bar, a form row) line up.
+      'h-[var(--row-height-compact)] w-full rounded-[var(--radius-control)]',
+      'border border-[var(--color-border-strong)] bg-[var(--color-surface)] px-3',
+      'text-[length:var(--text-body)] leading-[var(--leading-body)] text-[var(--color-text)]',
       'placeholder:text-[var(--color-text-subtle)]',
       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]',
       'disabled:cursor-not-allowed disabled:opacity-50',

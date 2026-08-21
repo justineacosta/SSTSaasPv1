@@ -6,7 +6,7 @@ import { render, screen } from '@testing-library/react';
 // export is the same object and types correctly.
 import { userEvent } from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { Button } from './button.js';
+import { Button } from './Button.js';
 
 describe('Button', () => {
   it('renders its children as the accessible name', () => {
