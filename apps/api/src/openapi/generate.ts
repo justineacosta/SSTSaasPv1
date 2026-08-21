@@ -96,13 +96,6 @@ function operationFor(route: RegisteredRoute): OpenApiOperation {
 }
 
 /**
- * Builds the document from an already-collected route inventory.
- *
- * Split from `generateOpenApiDocument` so the shape of the document can be
- * asserted against hand-built routes — including routes this codebase cannot
- * have, such as one carrying a permission — without standing up an application.
- */
-/**
  * Refuses a document in which two operations share an `operationId`.
  *
  * One handler can legitimately produce several routes — `@Get(['a', 'b'])`, or
@@ -134,6 +127,13 @@ function assertUniqueOperationIds(operations: readonly OpenApiOperation[]): void
   );
 }
 
+/**
+ * Builds the document from an already-collected route inventory.
+ *
+ * Split from `generateOpenApiDocument` so the shape of the document can be
+ * asserted against hand-built routes — including routes this codebase cannot
+ * have, such as one carrying a permission — without standing up an application.
+ */
 export function buildOpenApiDocument(routes: readonly RegisteredRoute[]): OpenApiDocument {
   const paths: Record<string, Record<string, OpenApiOperation>> = {};
 

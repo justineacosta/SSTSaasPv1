@@ -16,13 +16,21 @@ import type { DetailedReport, ReadinessReport } from './health.service.js';
  *   returns the inferred `LivenessReport`, so the schema and the response
  *   cannot differ in either direction.
  * - `readinessReportSchema` and `detailedReportSchema` are annotated
- *   `z.ZodType<T>` against types `health.service.ts` already owns. That check is
- *   **one-directional**: adding a field to `ReadinessReport` and forgetting it
- *   here fails to compile, but adding a field *here* that the handler never
- *   returns stays assignable and would publish silently. Those two reports are
- *   assembled by the service from probe results rather than parsed from a
- *   schema, so type-first is the honest direction; the gap is real and is why
- *   the integration test asserts the served body's key shape separately.
+ *   `z.ZodType<T>` against types `health.service.ts` already owns. Those two
+ *   reports are assembled by the service from probe results rather than parsed
+ *   from a schema, so type-first is the honest direction. The annotation is
+ *   **one-directional**, though: adding a field to `ReadinessReport` and
+ *   forgetting it here fails to compile, but adding a field *here* that the
+ *   handler never returns stays assignable, and would publish a document
+ *   promising a field the API does not send.
+ *
+ *   That second direction is closed at runtime instead, not by the compiler:
+ *   `openapi/generate.integration.spec.ts` parses the live `/health/ready` and
+ *   `/health/detailed` responses with these schemas, so a key a schema requires
+ *   and the handler does not return is a failing test. It is the only check
+ *   that catches it — the committed-document tests go green again the moment
+ *   someone regenerates `openapi.json`, which is exactly what an author adding
+ *   a field would do.
  */
 const dependencyStatusSchema = z.enum(['ok', 'error']);
 

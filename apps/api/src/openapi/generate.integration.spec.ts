@@ -8,6 +8,7 @@ import {
   findRoutesWithoutAccessDeclaration,
 } from '../common/access-assertion.js';
 import { describeRoutes, registeredRouterRoutes } from '../common/route-inventory.js';
+import { detailedReportSchema, readinessReportSchema } from '../modules/health/health.contracts.js';
 import { buildApp } from '../testing/build-app.js';
 import { generateOpenApiDocument } from './generate.js';
 
@@ -104,5 +105,32 @@ describe('the OpenAPI document', () => {
       .expect((response: { body: unknown }) => {
         expect(response.body).toEqual(generateOpenApiDocument(app));
       });
+  });
+});
+
+describe('the published health schemas describe the bodies actually served', () => {
+  /**
+   * Closes the one direction `health.contracts.ts`'s `z.ZodType<T>` annotations
+   * cannot.
+   *
+   * That annotation catches a field added to `ReadinessReport` and forgotten in
+   * the schema — it stops compiling. It does **not** catch the reverse: a field
+   * added to the *schema* that the handler never returns stays assignable, and
+   * would publish an OpenAPI document promising a field the API does not send.
+   * Parsing the served body with the schema is what fails in that direction,
+   * because a required key the response lacks is a Zod error.
+   *
+   * Deliberately parsed against the schema rather than compared to a
+   * hand-written key list: a key list is a third copy of the shape, and would
+   * drift from both.
+   */
+  it('/health/ready returns exactly what readinessReportSchema requires', async () => {
+    const response = await request(app.getHttpServer()).get('/health/ready').expect(200);
+    expect(() => readinessReportSchema.parse(response.body as unknown)).not.toThrow();
+  });
+
+  it('/health/detailed returns exactly what detailedReportSchema requires', async () => {
+    const response = await request(app.getHttpServer()).get('/health/detailed').expect(200);
+    expect(() => detailedReportSchema.parse(response.body as unknown)).not.toThrow();
   });
 });
