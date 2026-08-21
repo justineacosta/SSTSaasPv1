@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { normaliseAccountIdentifier, normaliseIp, resolveIdentifier } from './rate-limit.guard.js';
+import {
+  normaliseAccountIdentifier,
+  normaliseIp,
+  RateLimitGuard,
+  resolveIdentifier,
+} from './rate-limit.guard.js';
 import { RATE_LIMIT_CLASSES } from './rate-limit.config.js';
 
 describe('normaliseIp', () => {
@@ -162,11 +167,20 @@ describe('normaliseIp — IPv6 is bucketed by /64', () => {
   it('still treats loopback and mapped IPv4 the way the rest of the suite expects', () => {
     expect(normaliseIp('::ffff:127.0.0.1')).toBe('127.0.0.1');
     expect(normaliseIp('127.0.0.1')).toBe('127.0.0.1');
-    expect(normaliseIp('::1')).toBe(normaliseIp('::1'));
+    // Not `toBe(normaliseIp('::1'))` — comparing a call to itself is a
+    // tautology that passes no matter what the function does. Pin the shape.
+    expect(normaliseIp('::1')).toBe('0:0:0:0::/64');
   });
 
-  it('ignores a zone index, which is local to the host and not part of identity', () => {
-    expect(normaliseIp('fe80::1%eth0')).toBe(normaliseIp('fe80::1%eth1'));
+  it('buckets a zone-bearing address with its zoneless twin', () => {
+    // A zone index is host-local and not part of identity. This holds because
+    // the zone attaches to the LAST hextet and the /64 keeps the first four —
+    // it is a property of the bucketing, not of a strip somewhere. The old
+    // version compared two zoned addresses to each other, which passed with
+    // the strip deleted; this compares against the zoneless form and against
+    // the key, so it constrains the outcome that matters.
+    expect(normaliseIp('fe80::1%eth0')).toBe(normaliseIp('fe80::1'));
+    expect(normaliseIp('fe80::1%eth0')).not.toContain('%');
   });
 });
 
@@ -185,5 +199,63 @@ describe('normaliseAccountIdentifier — the form is pinned, not just its presen
     // over-merge lets one account consume another's window.
     expect(normaliseAccountIdentifier('\u0131@example.com')).not.toBe('i@example.com');
     expect(normaliseAccountIdentifier('a\u200bb@example.com')).not.toBe('ab@example.com');
+  });
+});
+
+describe('the unresolvable-scope warning is suppressed per scope, not per class', () => {
+  /** Drives the guard directly: a real socket always has a peer address, so the
+   *  per-IP scope cannot be made unresolvable over HTTP — but a wiring defect
+   *  can, which is the case this warning exists for. */
+  function harness() {
+    const warned: string[][] = [];
+    const logger = {
+      warn: (bindings: { unresolvedScopes?: string[] }) => {
+        if (bindings.unresolvedScopes !== undefined) warned.push(bindings.unresolvedScopes);
+      },
+      debug: () => undefined,
+    };
+    const reflector = {
+      get: () => undefined,
+      getAllAndOverride: (key: string) => (key === 'sentinel:rate-limit' ? 'login' : undefined),
+    };
+    // One allowed decision, so the guard reaches the reporting branch.
+    const redis = { eval: () => Promise.resolve([1, 1, '-1']) };
+    const guard = new RateLimitGuard(reflector as never, redis as never, logger as never);
+
+    const run = (request: Record<string, unknown>): Promise<boolean> =>
+      guard.canActivate({
+        getType: () => 'http',
+        getHandler: () => () => undefined,
+        getClass: () => class {},
+        switchToHttp: () => ({
+          getRequest: () => request,
+          getResponse: () => ({ setHeader: () => undefined }),
+        }),
+      } as never);
+
+    return { run, warned };
+  }
+
+  it('reports a second scope even after the first has been reported', async () => {
+    // Keyed by class alone, the first miss burns the class's only warning — and
+    // on `login` that first miss is free for any unauthenticated caller to
+    // trigger by posting a body with no `email`, within seconds of boot. A
+    // genuine wiring defect on the other scope would then never be reported for
+    // the life of the process, which is the opposite of the point.
+    const { run, warned } = harness();
+
+    await run({ ip: '203.0.113.1', body: {} }); // perPrincipal unresolvable
+    await run({ body: { email: 'a@example.com' } }); // perIp unresolvable
+
+    expect(warned.flat()).toContain('perPrincipal');
+    expect(warned.flat()).toContain('perIp');
+  });
+
+  it('still does not repeat a scope it has already reported', async () => {
+    const { run, warned } = harness();
+
+    for (let i = 0; i < 5; i += 1) await run({ ip: '203.0.113.1', body: {} });
+
+    expect(warned.flat().filter((scope) => scope === 'perPrincipal')).toHaveLength(1);
   });
 });

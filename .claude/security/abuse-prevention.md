@@ -54,8 +54,17 @@ control is commonly built wrong:
   `trust proxy` disabled, so it is the socket's peer address. If the header were trusted,
   rotating it would mint a fresh bucket per request and per-IP limiting would be decorative.
   Putting a load balancer in front of this API therefore requires more than enabling
-  `trust proxy`: the deployment must also guarantee the proxy **overwrites** the header rather
-  than appending to it, or the bypass returns through the front door.
+  `trust proxy`. The deployment must also guarantee that the proxy **overwrites** the header
+  rather than appending to it, and that it writes a **bare canonical address with no port** — a
+  proxy that appends `:port`, as some do, gives every connection its own bucket and makes
+  per-IP limiting decorative again.
+- **The per-IP unit is an address for IPv4 and a /64 for IPv6.** A single host is routinely
+  delegated a whole /64 — 1.8×10^19 addresses — so bucketing per address would make every
+  per-IP figure in the table free to bypass for anyone with a v6 allocation, including the
+  resend bound above. The cost of the /64 is real and worth knowing before someone debugs it:
+  neighbours behind a **shared** /64, which some mobile carriers and some hosting providers hand
+  out, share a bucket and can exhaust each other's. That is the same trade IPv4 NAT already
+  forces, and the other side of it is no bound at all.
 - **The per-account rows are keyed off the request body, not an authenticated principal.**
   Login, password reset and email verification resend are unauthenticated by definition — a
   failed login carries no principal, and "5 / 15 min per account" means the account being
@@ -63,8 +72,10 @@ control is commonly built wrong:
   also carry a per-IP scope that *does* resolve, the miss would be skipped in silence: a route
   that refuses at the IP limit, advertises that limit in its headers, and never applies the
   control that actually stops credential stuffing. A declared scope that resolves to nothing on
-  a fail-closed class now logs at `warn` naming the scope, so the next one is loud rather than
-  invisible. The body value is hashed before it becomes
+  a fail-closed class logs at `warn` naming the scope — **once per class and scope per process**,
+  not on every occurrence, because a client sending a body without the field is ordinary traffic
+  anyone can generate, and a line per request would bury the wiring defect the warning exists to
+  surface. The body value is hashed before it becomes
   part of a key, so an email address never lands in Redis in plaintext.
 - **A refusal stops the evaluation.** Scopes are consumed in order and the first refusal ends
   it. Otherwise a request already being rejected would still be charged against every remaining

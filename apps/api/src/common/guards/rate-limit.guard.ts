@@ -56,8 +56,11 @@ export function normaliseIp(address: string): string {
   // like "one client". A shared /64 (some mobile carriers, some hosting) means
   // neighbours share a bucket; that is the same trade IPv4 NAT already forces,
   // and the wrong side of it is unbounded.
-  const zoneless = lower.split('%')[0] ?? lower;
-  return `${expandIpv6Prefix(zoneless)}::/64`;
+  // No zone-index strip. A zone (`%eth0`) is only ever attached to the last
+  // hextet, and the /64 slice below keeps the first four — so it can never
+  // reach the bucket key. The strip that used to be here was unreachable, and
+  // the test that claimed to cover it passed with the line deleted.
+  return `${expandIpv6Prefix(lower)}::/64`;
 }
 
 /** The first four hextets of an IPv6 address, `::`-expansion included. */
@@ -200,8 +203,21 @@ export class RateLimitGuard implements CanActivate {
    */
   private backendDown = false;
 
-  /** Classes already warned about an unresolvable scope; see the warn below. */
-  private readonly unresolvedWarned = new Set<RateLimitClass>();
+  /**
+   * `class:scope` pairs already warned about; see the warn below.
+   *
+   * Keyed by the pair, not by the class. Keying by class alone meant the first
+   * unresolvable scope burned the class's only warning — and on `login`,
+   * `passwordReset` and `emailVerificationResend` that first miss is free for
+   * any unauthenticated caller to trigger within seconds of boot, by posting a
+   * body with no `email`. A genuine wiring defect on the *other* scope of the
+   * same class would then never be reported for the life of the process, which
+   * is precisely the signal this warning exists to carry.
+   *
+   * Bounded by the class table times three scopes, and every component comes
+   * from route metadata, so nothing a caller controls can grow it.
+   */
+  private readonly unresolvedWarned = new Set<string>();
 
   constructor(
     @Inject(Reflector) private readonly reflector: Reflector,
@@ -319,13 +335,16 @@ export class RateLimitGuard implements CanActivate {
       // ordinary traffic anyone can generate at will. Warning on every
       // occurrence would let any unauthenticated caller flood the channel and
       // bury the wiring defect underneath, which is the same anti-pattern the
-      // fail-open branch below is written to avoid. The first occurrence
-      // carries the whole signal: the class and the scope are all an operator
-      // needs to find it.
-      if (!this.unresolvedWarned.has(className)) {
-        this.unresolvedWarned.add(className);
+      // fail-open branch below is written to avoid. The first occurrence of
+      // each class-and-scope pair carries the whole signal: which limit is not
+      // being applied, and on what, is all an operator needs to find it.
+      const unreported = unresolved.filter(
+        (scope) => !this.unresolvedWarned.has(`${className}:${scope}`),
+      );
+      if (unreported.length > 0) {
+        for (const scope of unreported) this.unresolvedWarned.add(`${className}:${scope}`);
         this.logger.warn(
-          { rateLimitClass: className, unresolvedScopes: unresolved },
+          { rateLimitClass: className, unresolvedScopes: unreported },
           'Rate limit scope declared but not resolvable; that limit is not being applied',
         );
       }
