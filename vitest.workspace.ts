@@ -13,7 +13,21 @@ export default defineWorkspace([
   {
     test: {
       name: 'integration',
-      include: ['packages/*/src/**/*.integration.spec.ts', 'apps/*/src/**/*.integration.spec.ts'],
+      // .tsx included alongside .ts so a *.integration.spec.tsx lands here
+      // rather than matching no project at all — round 2 gave the 'ui'
+      // project below a matching `exclude` for .tsx integration specs, which
+      // closed that leak only on the assumption this project already caught
+      // what 'ui' let go. It didn't; this is that fix. Still `environment:
+      // 'node'`, deliberately not changed to jsdom here: nothing under this
+      // project needs a DOM today, and guessing at jsdom now, before a real
+      // .tsx integration spec exists to prove what it needs, is exactly how
+      // the next wrong sentence gets written. A spec that does need one will
+      // fail loudly (no `document`) rather than silently not running at
+      // all — a real failure to fix beats an invisible gap to rediscover.
+      include: [
+        'packages/*/src/**/*.integration.spec.{ts,tsx}',
+        'apps/*/src/**/*.integration.spec.{ts,tsx}',
+      ],
       environment: 'node',
       testTimeout: 120_000,
       hookTimeout: 120_000,
