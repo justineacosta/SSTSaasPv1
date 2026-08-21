@@ -6,7 +6,7 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 /** `system` follows the OS; the other two override it in both directions. */
 export type ThemePreference = 'light' | 'dark' | 'system';
 
-/** design-system.md §4 — row height, padding and font size move together. */
+/** design-system.md §5 — row height, padding and font size move together. */
 export type Density = 'comfortable' | 'compact' | 'dense';
 
 export interface Appearance {

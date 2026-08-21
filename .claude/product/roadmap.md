@@ -137,7 +137,9 @@ Phase 1 is being executed as 16 tasks from
 `docs/superpowers/plans/2026-08-20-phase-1-foundation.md`, subagent-driven: a fresh implementer
 per task, then a separate adversarial reviewer, then scoped re-reviews per fix round.
 
-**Tasks 1–13 are complete** (13 pending its adversarial review). 1 workspace and CI · 2
+**Tasks 1–13 are complete.** Task 13 was implemented, independently reviewed (spec compliance
+pass, quality approved conditional on two corrections), and the fix round that corrected them
+has landed. 1 workspace and CI · 2
 `packages/config` · 3 `packages/observability` · 4 compose stack, schema, prefixed UUIDv7 IDs,
 first migration · 5 `packages/contracts` · 6 tenant-scoped Prisma client and RLS · 7 seed · 8
 `packages/storage` · 9 `apps/api` bootstrap · 10 rate limiting · 11 route-access assertion and
@@ -161,9 +163,23 @@ Known outstanding, none of it blocking Task 14:
   recorded in the ledger and assigned to Task 14 or Task 16. The missing root `dev` script now
   matters more than it did: `apps/web` has a `dev` script and `.claude/development/setup.md`
   still tells a developer to run `pnpm dev`, which does not exist.
-- **Task 13 left CI without an E2E stage.** `pnpm test:e2e` runs locally (5 Playwright tests,
-  all passing) but `.github/workflows/ci.yml` neither installs a browser nor invokes it, so
-  nothing in CI has ever rendered a page. Task 14's to add.
+- **Task 14 owes a CI end-to-end stage — a browser install and `pnpm test:e2e`.** Required, not
+  suggested. `.github/workflows/ci.yml` today runs lint, typecheck, `pnpm test`,
+  `pnpm test:integration` and `pnpm build`, and none of them renders a page. The Playwright
+  suite is the *only* thing asserting that the CSP nonce reaches the HTML, that the enforcing
+  policy does not break the page, and that the §2 header table survives on a real response —
+  the assertions that separate `apps/web` from the twelve tasks before it. It passes on exactly
+  one developer's Windows machine and nowhere else, so any of those can regress with CI still
+  green. Recorded here rather than only in the gitignored ledger because a fresh session would
+  otherwise not know it owes this.
+- **No `eslint-plugin-react` / `eslint-plugin-react-hooks` anywhere, now that React application
+  code exists.** `grep -n react eslint.config.js` returns nothing. `apps/web/app/providers.tsx`
+  has three hooks with dependency arrays and a lazy `useState` initialiser, and nothing in the
+  toolchain checks any of it; the review confirmed the dependencies are correct **today**, so
+  this is a missing guard rather than a present bug — arriving at exactly the moment the repo
+  acquired the code it guards, over the most common React defect class. Task 14 or 16 to add
+  the plugins. Deliberately not installed by Task 13: adding a workspace-wide lint plugin is a
+  tooling change beyond a feature task, and it would have landed unreviewed.
 - Task 13 forced every HTML route dynamic to keep the nonce-based CSP intact. That is written
   up in `architecture/frontend.md` §2 and is a real cost to revisit when marketing content
   exists.

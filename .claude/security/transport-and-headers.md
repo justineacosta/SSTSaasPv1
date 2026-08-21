@@ -82,12 +82,43 @@ As shipped on the API origin, `connect-src` is `'self'`: the example hosts above
 own. **The API's `/api/v1/csp-report` collector still does not exist**, so a violation report
 from the API origin gets a 404. What Task 13 added is the *web* origin's collector, at
 `/api/csp-report` (`apps/web/app/api/csp-report/route.ts`), and the web origin's `report-uri`
-points there rather than at the API: `report-uri` sends a cross-origin POST the API's CORS
-policy would not accept, so a report aimed across origins simply never arrives. The web
-collector validates the report with Zod, drops unknown keys rather than logging them, and
-writes one `warn` line through the redacting logger. Verified end to end against the running
-dev server:
-> `{"level":"warn","service":"web","cspReport":{...},"msg":"Content Security Policy violation"}`
+points there rather than at the API, for two reasons.
+
+The first is that the API's collector does not exist, so a report aimed at it would 404. The
+second is that a violation report carries `document-uri` and `referrer` — this origin's own
+URLs, which from Phase 2 onward identify tenants and name routes — and sending those to a
+different service is a disclosure decision, not a routing detail. Same-origin collection also
+happens to depend on nothing: no second service needs to be reachable for a report to land.
+
+**A cross-origin `report-uri` would have worked.** Saying so explicitly because an earlier
+version of this paragraph claimed the opposite — that CORS would have blocked it — and that
+was wrong twice over. CSP violation reports are not CORS-gated: the user agent sends a
+fire-and-forget POST and discards the response, with no preflight and no
+`Access-Control-Allow-Origin` check in the way, which is exactly how every hosted CSP
+reporting service works. And `apps/api` has no CORS configuration at all (§4 is still Designed
+only), so there was no policy there to refuse anything. The divergence is a deliberate choice
+between two options that both work, not a workaround for a control that does not exist.
+
+The web collector validates the report with Zod, drops unknown keys rather than logging them,
+reduces `document-uri` and `referrer` to an origin and a path before they reach the log (see
+§6), and writes one `warn` line through the redacting logger. Captured verbatim from the
+running dev server, which is where `apps/web/src/logger.ts` emits the pretty form rather than
+JSON (`pretty: APP_ENV === 'development'`):
+
+```
+[18:18:43.837] WARN: Content Security Policy violation
+    service: "web"
+    cspReport: {
+      "document-uri": "http://localhost:3000/invitations/:seg",
+      "referrer": "http://localhost:3000/reset-password",
+      "violated-directive": "script-src",
+      "blocked-uri": "inline"
+    }
+```
+
+The report that produced it named
+`/invitations/9f8b7c6d5e4f3a2b1c0d9e8f?token=live-secret` as its `document-uri` and
+`/reset-password?token=another` as its `referrer`. Neither token reached the log.
 
 The web origin's `connect-src` is also `'self'` today. `API_BASE_URL` is a different origin
 (`:3001`) in local development, so the first browser fetch to the API will need it added —
@@ -126,6 +157,16 @@ they are readable by any successful XSS, and the session cookie is not.
 - Errors surfaced to users are safe messages from the shared envelope; stack traces and
   internal identifiers never reach the browser.
 - Source maps are not published for production application bundles.
+- **A CSP violation report is redacted before it is logged.** `document-uri` and `referrer`
+  are URLs of *our own* pages, and `ui-ux/page-map.md` commits `(auth)` to
+  `/invitations/[token]`, `/reset-password` and `/verify-email`. Browsers strip the fragment
+  from `document-uri` but keep the path and the query, so an ordinary violation on an
+  invitation page would write a live token into the log — CLAUDE.md rule 6. The collector
+  (`apps/web/src/csp-report.ts`) therefore drops the query and fragment outright and masks any
+  path segment it cannot show is a route name, keeping the origin so a report stays
+  attributable. That masking is a shape heuristic, not a route table: a token that happened to
+  be short, lowercase and digit-free would survive it. **Whichever phase ships the first
+  token-bearing URL owes a real route-pattern mapping here** — this is a floor, not a solution.
 
 ## 7. Testing requirements
 

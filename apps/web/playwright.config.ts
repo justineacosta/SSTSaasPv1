@@ -1,4 +1,15 @@
+import { loadEnv, webEnvSchema } from '@sentinel/config';
 import { defineConfig, devices } from '@playwright/test';
+
+/**
+ * The port the app is actually served on, from the one place that owns it.
+ * `pnpm test:e2e` runs this config under `dotenv -e ../../.env`, so the same
+ * `WEB_PORT` the launcher binds (`scripts/next-on-web-port.ts`) is the one
+ * these tests navigate to. Hardcoding 3000 here is what let `WEB_PORT` be
+ * decorative in the first place.
+ */
+const { WEB_PORT } = loadEnv(webEnvSchema);
+const baseURL = `http://localhost:${String(WEB_PORT)}`;
 
 /**
  * Playwright runs against a **production build** (`next build` then
@@ -20,7 +31,7 @@ export default defineConfig({
   retries: process.env['CI'] !== undefined ? 2 : 0,
   reporter: process.env['CI'] !== undefined ? 'github' : 'list',
   use: {
-    baseURL: 'http://localhost:3000',
+    baseURL,
     trace: 'on-first-retry',
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
@@ -30,7 +41,7 @@ export default defineConfig({
     // that is only ever report-only wherever it is asserted is a policy no
     // test has watched block anything. operations/environments.md §4.
     command: 'pnpm build && pnpm start:e2e',
-    url: 'http://localhost:3000',
+    url: baseURL,
     reuseExistingServer: process.env['CI'] === undefined,
     timeout: 180_000,
   },

@@ -48,8 +48,17 @@ export function proxy(request: NextRequest): NextResponse {
   // it for a `next/script` tag. Next itself reads the CSP request header to
   // find the nonce it stamps onto its own bootstrap scripts, which is why the
   // policy is forwarded too and not just `x-nonce`.
+  //
+  // Both CSP header names are cleared before one is set. Setting only the name
+  // being sent would leave a client-supplied header under the *other* name
+  // intact for Next to read a nonce out of — in report-only mode, an inbound
+  // `Content-Security-Policy` request header would survive. Report-only is
+  // development-only so there is nothing to bypass today, but "today" is not a
+  // property worth depending on, and the fix is one line.
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set('x-nonce', nonce);
+  requestHeaders.delete('Content-Security-Policy');
+  requestHeaders.delete('Content-Security-Policy-Report-Only');
   if (policy !== undefined) requestHeaders.set(cspHeaderName, policy);
 
   const response = NextResponse.next({ request: { headers: requestHeaders } });

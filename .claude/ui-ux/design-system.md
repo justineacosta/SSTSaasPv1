@@ -15,7 +15,7 @@
 > are self-hosted under `/_next/static/media` with no request to any Google host, and the page
 > renders under both colour schemes with no console error and no horizontal overflow at 375px
 > (Playwright). **No human has looked at it.** Nothing here has been judged by eye for
-> hierarchy, spacing, weight or contrast, and the §4 density modes are wired to a context that
+> hierarchy, spacing, weight or contrast, and the §5 density modes are wired to a context that
 > nothing reads.
 
 ## 1. Design thesis

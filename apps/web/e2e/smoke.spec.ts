@@ -7,6 +7,11 @@ test('the marketing page renders with no console errors', async ({ page }) => {
   });
   await page.goto('/');
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+  // The h1 is visible at first paint, but the chunks that `'strict-dynamic'`
+  // has to allow are still arriving — and a CSP violation from one of those
+  // would land after the assertion, turning the strongest test in this suite
+  // into one that passes by being early. Wait for the network to settle first.
+  await page.waitForLoadState('networkidle');
   expect(errors).toEqual([]);
 });
 

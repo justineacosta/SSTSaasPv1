@@ -19,14 +19,25 @@ allowBuilds:
   cpu-features: true
   protobufjs: true
   ssh2: true
-minimumReleaseAgeExclude:
-  - '@next/env@16.3.2'
-  - '@next/swc-darwin-arm64@16.3.2'
-  - '@next/swc-darwin-x64@16.3.2'
-  - '@next/swc-linux-arm64-gnu@16.3.2'
-  - '@next/swc-linux-arm64-musl@16.3.2'
-  - '@next/swc-linux-x64-gnu@16.3.2'
-  - '@next/swc-linux-x64-musl@16.3.2'
-  - '@next/swc-win32-arm64-msvc@16.3.2'
-  - '@next/swc-win32-x64-msvc@16.3.2'
-  - next@16.3.2
+
+# minimumReleaseAgeExclude is deliberately absent.
+#
+# `pnpm install` wrote ten entries here during Task 13 — `next@16.3.2` and its
+# nine `@next/swc-*` platform binaries — exempting them from pnpm's minimum
+# release-age check. That check is a supply-chain control: it refuses freshly
+# published packages, because a compromised release is most dangerous in the
+# hours before anyone notices. `next@16.3.2` was published at
+# 2026-08-21T09:54:02Z and was roughly three hours old when it was installed,
+# which is squarely inside the window the control exists to cover.
+#
+# The entries were removed rather than justified. Verified that nothing needs
+# them: with the block deleted, `pnpm install`, `pnpm install --frozen-lockfile`
+# (what CI runs) and `pnpm install --lockfile-only` all succeed and produce no
+# change to pnpm-lock.yaml — the resolution is already pinned, so the cooldown
+# is not consulted again.
+#
+# If a future `pnpm install` offers to re-add exclusions, that is a resolution
+# happening against the registry for a package too new to have been vetted.
+# The answer is to wait out the cooldown or pin the previous release, not to
+# accept the exemption — and if one is ever genuinely accepted, it belongs here
+# with the same kind of comment every other block in this file carries.
