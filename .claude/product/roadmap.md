@@ -8,7 +8,7 @@ code was written.
 Status vocabulary (specification §79): **Implemented** / **Partially Implemented** /
 **Not Implemented** / **Blocked**.
 
-## Current state — 2026-08-20
+## Current state — 2026-08-21
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -42,6 +42,24 @@ decorators, and a `health` module answering `/health/live`, `/health/ready` and
 `/health/detailed` against the live Postgres, Redis and MinIO stack. It has **no
 authentication and no business endpoint**: the only routes are the health probes and the
 OpenAPI document.
+
+**`packages/ui` exists — tokens and eight primitives, and nothing renders them yet.** The full
+token set from `ui-ux/design-system.md` (the cool-ink neutral ramp, the five-step severity ramp,
+status and intent, the 1.2 type scale, the three density modes, the motion durations), with light
+on bare `:root` and dark redefined under both the `prefers-color-scheme` media query and
+`[data-theme="dark"]`, plus `Button`, `Input`, `Label`, `Field`, `Card`, `Alert`, `Badge` and
+`Skeleton`. A test asserts the two dark blocks declare identical token sets and that no token
+exists in only one theme. `Field` ties label, description and error to its control with
+`aria-describedby` and `aria-invalid`, merging rather than overwriting what the child already
+declares. The no-raw-hex lint rule that `design-system.md` §7 had claimed for months **now
+actually exists** and is proven to fire.
+
+Two things this deliberately does not do, because saying so is the point of this section:
+`packages/ui` **runs no Tailwind build** — tokens are referenced through arbitrary-value
+utilities (`bg-[var(--color-surface)]`), and named utilities like `bg-surface` do not resolve
+because no `@theme` block is shipped; and **no browser has rendered any of it.** The primitives
+are exercised only by jsdom unit tests. There is no application, no page, and no visual
+verification until Task 13 builds `apps/web`.
 
 The boot-time assertion that every route declares its access is now built: a route declaring
 neither `@Public()` nor `@RequirePermission()` refuses startup with an error naming every
@@ -94,28 +112,42 @@ Phase 1 is being executed as 16 tasks from
 `docs/superpowers/plans/2026-08-20-phase-1-foundation.md`, subagent-driven: a fresh implementer
 per task, then a separate adversarial reviewer, then scoped re-reviews per fix round.
 
-**Tasks 1–11 are complete.** 1 workspace and CI · 2 `packages/config` · 3
+**Tasks 1–12 are complete.** 1 workspace and CI · 2 `packages/config` · 3
 `packages/observability` · 4 compose stack, schema, prefixed UUIDv7 IDs, first migration · 5
 `packages/contracts` · 6 tenant-scoped Prisma client and RLS · 7 seed · 8 `packages/storage` ·
-9 `apps/api` bootstrap · 10 rate limiting · 11 route-access assertion and OpenAPI.
+9 `apps/api` bootstrap · 10 rate limiting · 11 route-access assertion and OpenAPI · 12
+`packages/ui` tokens and primitives.
 
-**Tasks 12–16 remain:** 12 `packages/ui` · 13 `apps/web` · 14 CI checks (OpenAPI diff,
-tenant-registry completeness) · 15 the two reusable skills · 16 ADRs, documentation, and the
-full exit-criteria verification pass.
+**Tasks 13–16 remain:** 13 `apps/web` · 14 CI checks (OpenAPI diff, tenant-registry
+completeness) · 15 the two reusable skills · 16 ADRs, documentation, and the full
+exit-criteria verification pass.
 
 The execution ledger — every ruling with its cost if wrong, every review finding, per-task
 briefs and reports, and the review diffs — lives in
 `.superpowers/sdd/2026-08-20-phase-1-foundation/`. **That directory is gitignored and exists
 only on the machine that built it.** `progress.md` is the file to read first; it ends with the
-current pause state and the carry-forward rulings for Tasks 11–16.
+current pause state and the carry-forward rulings for Tasks 13–16.
 
-Known outstanding, none of it blocking Task 12:
+Known outstanding, none of it blocking Task 13:
 
 - Task 10's fourth fix round has not itself been reviewed. Recommendation on file: fold it into
   the whole-branch review rather than spend a fifth round.
 - A short list of deferred residuals (Redis `EVALSHA`, `maxmemory-policy`, `pnpm format:check`
   not wired into CI, dead `packages/config/tsconfig/*` presets, a missing root `dev` script) is
   recorded in the ledger and assigned to Task 14 or Task 16.
+- **Task 14 owes a guard that every `*.spec.*` under `packages/*/src` and `apps/*/src` is
+  matched by exactly one Vitest project.** Task 12 hit three separate spellings of the same
+  trap — a spec filename matching no project, passing green under `--passWithNoTests` while
+  executing nothing. All three instances are closed; the class is not, and patching globs one
+  at a time is losing to it. This is recorded here and not only in the gitignored ledger
+  because it is the one carry-forward that a fresh session would otherwise not know it owes.
+- Task 13 must know four things about `packages/ui` before it wires Tailwind: import
+  `@sentinel/ui`'s `tokens.css` **instead of** declaring its own `@import 'tailwindcss'`, or
+  Tailwind is emitted twice; named utilities (`bg-surface`) do not resolve, only arbitrary-value
+  ones; `--text-sm` is 13px app-wide and overrides Tailwind's own, while `--text-sm--line-height`
+  keeps Tailwind's, so pair `text-[length:var(--text-sm)]` with `leading-[var(--leading-sm)]`
+  explicitly; and an `apps/web` spec importing `@testing-library/react` directly needs that
+  package as an `apps/web` devDependency.
 
 ### Phase 2 — Identity
 Registration, email verification, login/logout, Argon2id, sessions, CSRF, password reset,
