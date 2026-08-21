@@ -2,8 +2,9 @@
 
 > **Status: Partially Implemented (Phase 1).** The application bootstrap, the request-ID and
 > security-header middleware, the Zod validation pipe, the global exception filter, the logging
-> interceptor, and the `health` module are built and tested (`apps/api`). Every other module in
-> §1 and every stage in §3 marked *Not Implemented* below is still Designed only.
+> interceptor, the boot-time route access assertion (§3), the generated OpenAPI document (§7),
+> and the `health` module are built and tested (`apps/api`). Every other module in §1 and every
+> stage in §3 marked *Not Implemented* below is still Designed only.
 
 NestJS modular monolith. One deployable, many bounded modules, explicit dependencies.
 
@@ -65,7 +66,7 @@ and are unaffected; anything that must cover *every* response, routed or not, be
 | Tenant resolve | Guard, membership + org state -> `TenantContext` | Not Implemented (Phase 2) |
 | CSRF | Guard, cookie-authenticated unsafe methods only | Not Implemented (Phase 2) |
 | Validate | Zod pipe against `packages/contracts` schemas | Implemented; no consumer until Phase 2 |
-| Authorize | Guard reading `@RequirePermission` | Decorator implemented, guard Not Implemented |
+| Authorize | Guard reading `@RequirePermission` | Decorator implemented and asserted at boot; guard Not Implemented (Phase 2) |
 | Entitlement | Guard reading `@RequireEntitlement` | Not Implemented (Phase 10) |
 | Handle | Controller -> service | Implemented |
 | Serialise | Interceptor, explicit DTO | Not Implemented |
@@ -74,11 +75,30 @@ and are unaffected; anything that must cover *every* response, routed or not, be
 | Logging | Interceptor, structured, redacted | Implemented |
 
 A route without an explicit access declaration **fails a startup assertion**. Missing
-authorization is a boot crash, not a production discovery. The declaration itself —
-`@Public()` and `@RequirePermission()`, both keyed on `ACCESS_METADATA_KEY` — lives in
-`apps/api/src/common/decorators/access.decorator.ts`. **The startup assertion that reads it
-does not exist yet**, so today an undeclared route is simply undeclared; the assertion is the
-next task's work.
+authorization is a boot crash, not a production discovery.
+
+**Status: Implemented.** The declaration — `@Public()` and `@RequirePermission()`, both keyed
+on `ACCESS_METADATA_KEY` — lives in `apps/api/src/common/decorators/access.decorator.ts`. The
+assertion that reads it is `assertEveryRouteDeclaresAccess` in
+`apps/api/src/common/access-assertion.ts`, called from `main.ts`. It reports **every** offender
+in one message rather than the first, so one boot reveals the whole backlog.
+
+Two properties of it are load-bearing and are asserted by tests, because both failure modes are
+silent:
+
+- **It runs after an explicit `await app.init()`, not merely "before `listen`".** Nest registers
+  no route until `init()` runs, and `listen()` runs it implicitly — so an assertion placed
+  immediately before `listen` inspects an empty router and passes without checking anything. The
+  assertion therefore refuses to run at all against a router with no routes.
+- **It compares its own inventory against Express's router on every boot.** The inventory is
+  built from controller metadata (`apps/api/src/common/route-inventory.ts`, which borrows Nest's
+  own `RoutePathFactory` so the paths cannot disagree with the ones Nest registered). Metadata is
+  exactly what survives when routing breaks, so a route registered outside that metadata, or a
+  path assembled differently by a future Nest, is a boot failure rather than a route the check
+  quietly never looked at.
+
+The check lands in Phase 1 with one module on purpose. Added in Phase 2 with thirty routes
+already written, it would start life with a backlog of offenders and get switched off.
 
 ## 4. Transactions
 
@@ -117,6 +137,34 @@ validated: bodies, queries, params, headers, webhook payloads, and engine output
 Generated from the Zod contracts and decorators, published at `/api/v1/openapi.json`,
 committed to the repository, and **diffed in CI** so an unintended contract change is caught
 in review rather than by a customer.
+
+**Status: Implemented; the CI diff step itself is Not Implemented (next task).**
+
+- The **path list comes from the running application**, never from a table maintained beside it:
+  `generateOpenApiDocument` reads the same route inventory the access assertion checks, so the
+  document cannot describe a deleted route or miss a new one. An integration test compares the
+  document's paths against Express's own router.
+- The **schemas come from Zod**. `@ApiDoc()`
+  (`apps/api/src/common/decorators/openapi.decorator.ts`) carries the Zod schema itself, and
+  `zod-to-json-schema` converts it with the `openApi3` target. `errorEnvelopeSchema` from
+  `packages/contracts` is published once as `components.schemas.ErrorEnvelope` and referenced by
+  every route's `default` response, because §5's envelope is part of every route's contract
+  whether or not the route says so.
+- **`@nestjs/swagger` is deliberately not a dependency.** It does not read Zod, so every route
+  would declare its shape twice — once for validation, once for documentation — which is the
+  drift this document exists to prevent.
+- Each operation publishes its access declaration as `x-sentinel-access`. There is no
+  `securitySchemes` entry to point at until Phase 2, and inventing one would describe a control
+  that does not exist; publishing the declaration makes an authorization change visible in the
+  committed document's diff, which is the review step this section is asking for.
+- Regenerate with `pnpm --filter @sentinel/api openapi:generate`, which writes
+  `apps/api/openapi.json`. It builds the container but does **not** call `app.init()`, so
+  regeneration needs no Postgres, Redis or MinIO — only a valid environment. A test asserts the
+  committed file equals what the code generates.
+- `/api/v1/openapi.json` is served in **every** environment and is `@Public()`. That is a
+  deliberate call: the document describes a public API surface and names no host, no dependency
+  and no internal identifier, and a description available only where nobody looks at it goes
+  stale.
 
 ## 8. Health
 

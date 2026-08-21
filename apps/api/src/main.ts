@@ -5,6 +5,7 @@ import { type ApiEnv, apiEnvSchema, loadEnv } from '@sentinel/config';
 import { createLogger, type Logger } from '@sentinel/observability';
 import { AppModule } from './app.module.js';
 import { configureApp } from './app-setup.js';
+import { assertEveryRouteDeclaresAccess } from './common/access-assertion.js';
 import { ENV, LOGGER } from './infrastructure/tokens.js';
 
 async function bootstrap(): Promise<void> {
@@ -18,6 +19,24 @@ async function bootstrap(): Promise<void> {
 
   const env = app.get<ApiEnv>(ENV);
   const logger = app.get<Logger>(LOGGER);
+
+  // Explicitly, and before the assertion: Nest registers no route until
+  // `init()` runs. `listen()` runs it implicitly, so an assertion written
+  // "immediately before listen" would inspect an empty router and pass without
+  // checking anything. `listen()` below sees `isInitialized` and does not
+  // repeat the work.
+  await app.init();
+  try {
+    assertEveryRouteDeclaresAccess(app);
+  } catch (error: unknown) {
+    // `init()` has already opened the database pool, and an open pool keeps the
+    // event loop alive: without this the process would set a failing exit code
+    // and then sit there forever, which an orchestrator reads as "starting",
+    // not as "crashed". Closing turns the refusal into an actual exit.
+    await app.close();
+    throw error;
+  }
+
   await app.listen(env.API_PORT);
   logger.info({ port: env.API_PORT, appEnv: env.APP_ENV }, 'API listening');
 }

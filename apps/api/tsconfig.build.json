@@ -1,4 +1,6 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["src/**/*.spec.ts", "src/**/*.integration.spec.ts"]
+  // `src/testing` is harness, not product: it is imported only by specs, and
+  // emitting it would ship dotenv and the test bootstrap in the runtime image.
+  "exclude": ["src/**/*.spec.ts", "src/**/*.integration.spec.ts", "src/testing/**/*.ts"]
 }

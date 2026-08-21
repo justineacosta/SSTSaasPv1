@@ -1,8 +1,14 @@
 import { Controller, Get, Inject, VERSION_NEUTRAL } from '@nestjs/common';
 import { ERROR_CODES } from '@sentinel/contracts';
 import { Public } from '../../common/decorators/access.decorator.js';
+import { ApiDoc } from '../../common/decorators/openapi.decorator.js';
 import { RateLimitExempt } from '../../common/decorators/rate-limit.decorator.js';
 import { DomainError } from '../../common/errors/domain-error.js';
+import {
+  detailedReportSchema,
+  livenessReportSchema,
+  readinessReportSchema,
+} from './health.contracts.js';
 import { type DetailedReport, HealthService, type ReadinessReport } from './health.service.js';
 
 /**
@@ -31,6 +37,13 @@ export class HealthController {
    */
   @Public()
   @RateLimitExempt()
+  @ApiDoc({
+    summary: 'Liveness probe.',
+    description: 'Reports that the process is running. Touches no dependency.',
+    responses: [
+      { status: 200, description: 'The process is alive.', schema: livenessReportSchema },
+    ],
+  })
   @Get('live')
   live(): { status: 'ok' } {
     return { status: 'ok' };
@@ -42,6 +55,22 @@ export class HealthController {
    * serves an operator reading it by hand and a client parsing it.
    */
   @Public()
+  @ApiDoc({
+    summary: 'Readiness probe.',
+    description: 'Reports whether every backing dependency is reachable.',
+    responses: [
+      {
+        status: 200,
+        description: 'Every dependency is reachable.',
+        schema: readinessReportSchema,
+      },
+      {
+        status: 503,
+        description:
+          'At least one dependency is unavailable. The envelope names which, and nothing else.',
+      },
+    ],
+  })
   @Get('ready')
   async ready(): Promise<ReadinessReport> {
     const report = await this.health.checkDependencies();
@@ -70,6 +99,13 @@ export class HealthController {
    * same change as the guard that protects them, not before.
    */
   @Public()
+  @ApiDoc({
+    summary: 'Operator detail.',
+    description: 'Readiness plus a per-dependency probe latency.',
+    responses: [
+      { status: 200, description: 'Readiness with timings.', schema: detailedReportSchema },
+    ],
+  })
   @Get('detailed')
   detailed(): Promise<DetailedReport> {
     return this.health.detailed();

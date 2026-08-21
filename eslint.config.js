@@ -136,9 +136,16 @@ export default tseslint.config(
   // migrations and Testcontainers — a test harness is not application code.
   // packages/db/src/testing is the shared Testcontainers harness (Task 6):
   // not itself a spec file, but reused by every integration spec for exactly
-  // this reason, so it gets the same exemption.
+  // this reason, so it gets the same exemption. apps/api/src/testing is the
+  // same thing for the API: it builds the real application for a spec, which
+  // means loading `.env` and pinning NODE_ENV/APP_ENV to `test`.
   {
-    files: ['**/*.spec.ts', '**/*.integration.spec.ts', 'packages/db/src/testing/**/*.ts'],
+    files: [
+      '**/*.spec.ts',
+      '**/*.integration.spec.ts',
+      'packages/db/src/testing/**/*.ts',
+      'apps/api/src/testing/**/*.ts',
+    ],
     rules: {
       'no-restricted-imports': 'off',
       '@typescript-eslint/no-non-null-assertion': 'off',

@@ -41,6 +41,36 @@ function crossCuttingMiddleware(app: NestExpressApplication): MiddlewareHandler[
 }
 
 /**
+ * Where every route in this application lives.
+ *
+ * Separated from `configureApp` because `configureApp` also needs the DI
+ * container (it reads the logger and the CSP mode out of it), while routing is
+ * pure configuration. A test that only cares about paths — the route-inventory
+ * and access-assertion specs — can therefore apply the *real* prefix and
+ * versioning to a two-controller application without standing up the whole
+ * graph, instead of hard-coding a second copy of these values that would
+ * quietly stop matching production.
+ */
+export function applyRouting(app: NestExpressApplication): void {
+  app.setGlobalPrefix('api', {
+    // Health probes are deliberately outside `/api/v1`: monitoring.md §5 and
+    // backend.md §8 both write the unprefixed paths, and a probe URL that moves
+    // when the API version moves breaks a deployment on the day it changes.
+    //
+    // `{*splat}` is path-to-regexp v8 syntax. Measured on this stack (Nest 11.2
+    // / Express 5.2 / path-to-regexp 8.4), the Express 4 form `health/(.*)`
+    // also works here — Nest evaluates prefix exclusions with its own matcher
+    // rather than through Express's router, so v8's stricter syntax does not
+    // reach it. The v8 form is used anyway. A bare `health` does NOT work: it
+    // excludes only the exact path, and /health/live goes back under the
+    // prefix. app.integration.spec.ts asserts both directions.
+    exclude: [{ path: 'health/{*splat}', method: RequestMethod.ALL }],
+  });
+
+  app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });
+}
+
+/**
  * Applies everything that is a property of the HTTP surface rather than of a
  * module, so the integration test can build the same application the process
  * does and assert against it. A bootstrap that only exists inside `bootstrap()`
@@ -70,22 +100,7 @@ export function configureApp(app: NestExpressApplication): NestExpressApplicatio
   // every request for no benefit. transport-and-headers.md §2.
   app.set('etag', false);
 
-  app.setGlobalPrefix('api', {
-    // Health probes are deliberately outside `/api/v1`: monitoring.md §5 and
-    // backend.md §8 both write the unprefixed paths, and a probe URL that moves
-    // when the API version moves breaks a deployment on the day it changes.
-    //
-    // `{*splat}` is path-to-regexp v8 syntax. Measured on this stack (Nest 11.2
-    // / Express 5.2 / path-to-regexp 8.4), the Express 4 form `health/(.*)`
-    // also works here — Nest evaluates prefix exclusions with its own matcher
-    // rather than through Express's router, so v8's stricter syntax does not
-    // reach it. The v8 form is used anyway. A bare `health` does NOT work: it
-    // excludes only the exact path, and /health/live goes back under the
-    // prefix. app.integration.spec.ts asserts both directions.
-    exclude: [{ path: 'health/{*splat}', method: RequestMethod.ALL }],
-  });
-
-  app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });
+  applyRouting(app);
 
   const logger = app.get<Logger>(LOGGER);
   // Nest's own bootstrap and ExceptionsHandler output is human-formatted, which

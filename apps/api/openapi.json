@@ -1,0 +1,375 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Sentinel API",
+    "version": "1",
+    "description": "Multi-tenant security testing, penetration-test management, and vulnerability management."
+  },
+  "paths": {
+    "/api/v1/openapi.json": {
+      "get": {
+        "operationId": "OpenApiController_read",
+        "tags": [
+          "OpenApi"
+        ],
+        "summary": "The OpenAPI description of this API.",
+        "responses": {
+          "200": {
+            "description": "The OpenAPI 3.0 document."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "public"
+        }
+      }
+    },
+    "/health/detailed": {
+      "get": {
+        "operationId": "HealthController_detailed",
+        "tags": [
+          "Health"
+        ],
+        "summary": "Operator detail.",
+        "description": "Readiness plus a per-dependency probe latency.",
+        "responses": {
+          "200": {
+            "description": "Readiness with timings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok",
+                        "degraded"
+                      ]
+                    },
+                    "checkedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "dependencies": {
+                      "type": "object",
+                      "properties": {
+                        "postgres": {
+                          "type": "object",
+                          "properties": {
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "ok",
+                                "error"
+                              ]
+                            },
+                            "latencyMs": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          },
+                          "required": [
+                            "status",
+                            "latencyMs"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "redis": {
+                          "type": "object",
+                          "properties": {
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "ok",
+                                "error"
+                              ]
+                            },
+                            "latencyMs": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          },
+                          "required": [
+                            "status",
+                            "latencyMs"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "storage": {
+                          "type": "object",
+                          "properties": {
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "ok",
+                                "error"
+                              ]
+                            },
+                            "latencyMs": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          },
+                          "required": [
+                            "status",
+                            "latencyMs"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "postgres",
+                        "redis",
+                        "storage"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "checkedAt",
+                    "dependencies"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "public"
+        }
+      }
+    },
+    "/health/live": {
+      "get": {
+        "operationId": "HealthController_live",
+        "tags": [
+          "Health"
+        ],
+        "summary": "Liveness probe.",
+        "description": "Reports that the process is running. Touches no dependency.",
+        "responses": {
+          "200": {
+            "description": "The process is alive.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "public"
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "operationId": "HealthController_ready",
+        "tags": [
+          "Health"
+        ],
+        "summary": "Readiness probe.",
+        "description": "Reports whether every backing dependency is reachable.",
+        "responses": {
+          "200": {
+            "description": "Every dependency is reachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok",
+                        "degraded"
+                      ]
+                    },
+                    "dependencies": {
+                      "type": "object",
+                      "properties": {
+                        "postgres": {
+                          "type": "string",
+                          "enum": [
+                            "ok",
+                            "error"
+                          ]
+                        },
+                        "redis": {
+                          "type": "string",
+                          "enum": [
+                            "ok",
+                            "error"
+                          ]
+                        },
+                        "storage": {
+                          "type": "string",
+                          "enum": [
+                            "ok",
+                            "error"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "postgres",
+                        "redis",
+                        "storage"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "dependencies"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "At least one dependency is unavailable. The envelope names which, and nothing else."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "public"
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ErrorEnvelope": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "UNAUTHENTICATED",
+                  "INVALID_CREDENTIALS",
+                  "SESSION_EXPIRED",
+                  "MFA_REQUIRED",
+                  "MFA_INVALID",
+                  "EMAIL_NOT_VERIFIED",
+                  "ACCOUNT_LOCKED",
+                  "INVALID_API_KEY",
+                  "API_KEY_EXPIRED",
+                  "CSRF_TOKEN_INVALID",
+                  "PERMISSION_DENIED",
+                  "NOT_A_MEMBER",
+                  "ORGANIZATION_SUSPENDED",
+                  "RESOURCE_NOT_FOUND",
+                  "VALIDATION_ERROR",
+                  "UNKNOWN_FIELD",
+                  "INVALID_STATE_TRANSITION",
+                  "VERSION_CONFLICT",
+                  "DUPLICATE_RESOURCE",
+                  "SCOPE_VIOLATION",
+                  "ASSET_NOT_VERIFIED",
+                  "ASSET_VERIFICATION_EXPIRED",
+                  "TARGET_DENIED_BY_POLICY",
+                  "PROFILE_NOT_PERMITTED",
+                  "ENGINE_NOT_AVAILABLE",
+                  "SCAN_ALREADY_RUNNING",
+                  "SCAN_NOT_CANCELLABLE",
+                  "QUOTA_EXCEEDED",
+                  "PLAN_LIMIT_REACHED",
+                  "FEATURE_NOT_AVAILABLE",
+                  "PAYMENT_REQUIRED",
+                  "SUBSCRIPTION_INACTIVE",
+                  "RATE_LIMITED",
+                  "INTERNAL_ERROR",
+                  "SERVICE_UNAVAILABLE",
+                  "DEPENDENCY_UNAVAILABLE"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              "requestId": {
+                "type": "string"
+              },
+              "documentation": {
+                "type": "string",
+                "format": "uri"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "requestId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

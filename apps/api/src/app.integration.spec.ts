@@ -1,27 +1,12 @@
 import 'reflect-metadata';
 import type { Server } from 'node:http';
-import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
-import { config as loadDotenv } from 'dotenv';
 import { Controller, Get, type INestApplication } from '@nestjs/common';
-import { Test } from '@nestjs/testing';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { errorEnvelopeSchema } from '@sentinel/contracts';
 import { Public } from './common/decorators/access.decorator.js';
-import { AppModule } from './app.module.js';
-import { configureApp } from './app-setup.js';
-
-// The live compose stack is the system under test. `.env` is the same file the
-// developer's own `pnpm dev` reads, so drift between the two is caught here
-// rather than in production.
-loadDotenv({ path: fileURLToPath(new URL('../../../.env', import.meta.url)) });
-// environments.md §1: the test environment logs nothing unless a test asks for
-// it, and enforces CSP rather than merely reporting it — a policy that is only
-// ever report-only where it is asserted is a policy no test has seen block
-// anything.
-process.env.NODE_ENV = 'test';
-process.env.APP_ENV = 'test';
+import { buildApp as buildRealApp } from './testing/build-app.js';
 
 /**
  * A handler that fails the way real code fails, so the 500 path is exercised
@@ -57,17 +42,7 @@ class BoomController {
   }
 }
 
-async function buildApp(): Promise<NestExpressApplication> {
-  const moduleRef = await Test.createTestingModule({
-    imports: [AppModule],
-    controllers: [BoomController],
-  }).compile();
-
-  const app = moduleRef.createNestApplication<NestExpressApplication>();
-  configureApp(app);
-  await app.init();
-  return app;
-}
+const buildApp = (): Promise<NestExpressApplication> => buildRealApp([BoomController]);
 
 const serverOf = (app: INestApplication): Server => app.getHttpServer() as Server;
 
