@@ -16,15 +16,20 @@ import { buildSecurityHeaders } from './src/security-headers';
  *     instead.
  *
  * — observed in this app's own build output before the rename, not inferred.
- * Next detects both files, errors if both exist, and will remove
- * `middleware.ts` in a future major. Two things follow from the rename beyond
- * the filename: the exported function must be named `proxy`, and **proxy
- * always runs on the Node.js runtime** (Next enforces this — declaring a
- * route-segment `runtime` in a proxy file is a build error, message: "Proxy
- * always runs on Node.js runtime"). That second point is load-bearing here:
- * on Node, `process.env` is an ordinary fully-populated object, so
- * `@sentinel/config`'s `loadEnv` works exactly as it does in `apps/api`, with
- * none of the build-time-inlining caveats that applied to Edge middleware.
+ * Next detects both files and errors if both exist. Two things follow from
+ * the rename beyond the filename: the exported function must be named
+ * `proxy`, and **proxy always runs on the Node.js runtime** (Next enforces
+ * this — declaring a route-segment `runtime` in a proxy file is a build
+ * error, message: "Proxy always runs on Node.js runtime").
+ *
+ * That second point is load-bearing here. On Node, `process.env` is an
+ * ordinary fully-populated object, so `@sentinel/config`'s `loadEnv` works
+ * exactly as it does in `apps/api`, with none of the build-time-inlining
+ * caveats that would have applied to Edge middleware. Confirmed by observing
+ * the flag it derives actually change: `APP_ENV=development` produced
+ * `Content-Security-Policy-Report-Only` on a live response and
+ * `APP_ENV=test` produced `Content-Security-Policy`, which is only possible
+ * if `loadEnv` read the real environment from inside this file's bundle.
  */
 export function proxy(request: NextRequest): NextResponse {
   // A nonce reused across responses is one an attacker can read from one page
