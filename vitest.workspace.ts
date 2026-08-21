@@ -21,4 +21,20 @@ export default defineWorkspace([
       passWithNoTests: true,
     },
   },
+  // packages/ui's specs render React components and need a DOM (jsdom) plus
+  // jest-dom's matchers — neither belongs in the 'unit' project above, whose
+  // every other member is a plain Node package. A separate project keeps
+  // `environment: 'node'` as the default for everything else instead of
+  // switching the whole 'unit' project to jsdom for one package's sake, and
+  // keeps the jest-dom setup file (and packages/ui's devDependency on it)
+  // from being loaded for packages that never installed it.
+  {
+    test: {
+      name: 'ui',
+      include: ['packages/ui/src/**/*.spec.tsx'],
+      environment: 'jsdom',
+      setupFiles: ['./packages/ui/src/test-setup.ts'],
+      passWithNoTests: true,
+    },
+  },
 ]);

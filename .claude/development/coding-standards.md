@@ -73,7 +73,8 @@ These have ESLint rules, not just good intentions:
 - No `process.env` outside `packages/config`.
 - No import of the unscoped Prisma client outside migrations, seeds, and platform admin.
 - No `dangerouslySetInnerHTML` outside the reviewed markdown renderer.
-- No raw hex colours or arbitrary spacing values in components — tokens only.
+- No raw hex colours in `packages/ui` or `apps/web` components — reference a design token
+  custom property instead (Task 12). Arbitrary spacing values are not yet lint-enforced.
 - No `alert()`, `confirm()`, or `prompt()`.
 - No string concatenation into a SQL template.
 - No `console.log` — use the structured logger.

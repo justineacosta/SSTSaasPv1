@@ -8,3 +8,7 @@ packages/db/generated
 # asserted equal to that output by a test. Reformatting it would break the gate.
 apps/api/openapi.json
 **/*.md
+# Transcribed verbatim from ui-ux/design-system.md §2-3, §5-6 (Task 12 brief,
+# Ruling 3). Prettier would expand the paired type-scale declarations onto
+# separate lines, which is a real diff from what the brief specifies.
+packages/ui/src/tokens.css

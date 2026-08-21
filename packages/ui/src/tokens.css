@@ -1,0 +1,141 @@
+@import 'tailwindcss';
+
+:root {
+  /* Neutrals — cool ink, not grey. Blue-shifted so the warm severity colours
+     sit forward off the surface instead of merging into it. */
+  --color-bg: #fbfcfd;
+  --color-surface: #ffffff;
+  --color-surface-raised: #f5f7f9;
+  --color-border: #e3e8ee;
+  --color-border-strong: #cbd3dd;
+  --color-text: #0e1620;
+  --color-text-muted: #5a6774;
+  --color-text-subtle: #8494a3;
+
+  /* Severity — the one place this product spends its colour budget.
+     Critical is magenta-red, not pure red: pure red is spoken for by
+     destructive actions, and a magenta-shifted critical stays distinguishable
+     from high-orange under the common forms of colour vision deficiency,
+     where red and orange collapse toward each other. */
+  --color-severity-critical: #b4126b;
+  --color-severity-critical-surface: #fdf0f6;
+  --color-severity-high: #c2410c;
+  --color-severity-high-surface: #fef3ec;
+  --color-severity-medium: #a16207;
+  --color-severity-medium-surface: #fdf7e7;
+  --color-severity-low: #3d6e9e;
+  --color-severity-low-surface: #eff5fa;
+  --color-severity-info: #5a6774;
+  --color-severity-info-surface: #f3f5f7;
+
+  /* Status and intent. `accent` is deliberately the least interesting colour
+     in the system: primary actions need to be findable, not loud. */
+  --color-success: #0f7b4f;
+  --color-warning: #a16207;
+  --color-danger: #c0173a;
+  --color-running: #3d6e9e;
+  --color-accent: #1f4e7a;
+
+  /* Type — a 1.2 ratio, tight, because density is the point. */
+  --text-display: 30px;  --leading-display: 36px;
+  --text-title: 24px;    --leading-title: 32px;
+  --text-heading: 18px;  --leading-heading: 26px;
+  --text-subhead: 15px;  --leading-subhead: 22px;
+  --text-body: 14px;     --leading-body: 22px;
+  --text-sm: 13px;       --leading-sm: 20px;
+  --text-caption: 12px;  --leading-caption: 16px;
+  --text-micro: 11px;    --leading-micro: 14px;
+
+  /* Density. Row height, padding and font size move together; a dense table
+     with body-size text is harder to scan, not easier. */
+  --row-height-comfortable: 44px;
+  --row-height-compact: 36px;
+  --row-height-dense: 28px;
+
+  /* Restrained radius; elevation carried by borders and background steps. */
+  --radius-control: 4px;
+  --radius-card: 6px;
+
+  --duration-hover: 120ms;
+  --duration-popover: 180ms;
+  --duration-drawer: 240ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --color-bg: #0b0f14;
+    --color-surface: #121820;
+    --color-surface-raised: #1a222c;
+    --color-border: #232d39;
+    --color-border-strong: #33404f;
+    --color-text: #e8edf3;
+    --color-text-muted: #94a2b2;
+    --color-text-subtle: #6b7987;
+
+    --color-severity-critical: #f2569f;
+    --color-severity-critical-surface: #2a0e1e;
+    --color-severity-high: #fb923c;
+    --color-severity-high-surface: #2a1408;
+    --color-severity-medium: #e9b949;
+    --color-severity-medium-surface: #251c06;
+    --color-severity-low: #7daed6;
+    --color-severity-low-surface: #0f1c27;
+    --color-severity-info: #94a2b2;
+    --color-severity-info-surface: #161c24;
+
+    --color-success: #3fbe86;
+    --color-warning: #e9b949;
+    --color-danger: #f26b85;
+    --color-running: #7daed6;
+    --color-accent: #6fa3ce;
+  }
+}
+
+/* Repeated verbatim so an explicit toggle wins over the system preference in
+   both directions. CSS offers no way to alias one declaration block to two
+   selectors, and a preprocessor is not worth adding for one duplication. */
+:root[data-theme='dark'] {
+  --color-bg: #0b0f14;
+  --color-surface: #121820;
+  --color-surface-raised: #1a222c;
+  --color-border: #232d39;
+  --color-border-strong: #33404f;
+  --color-text: #e8edf3;
+  --color-text-muted: #94a2b2;
+  --color-text-subtle: #6b7987;
+
+  --color-severity-critical: #f2569f;
+  --color-severity-critical-surface: #2a0e1e;
+  --color-severity-high: #fb923c;
+  --color-severity-high-surface: #2a1408;
+  --color-severity-medium: #e9b949;
+  --color-severity-medium-surface: #251c06;
+  --color-severity-low: #7daed6;
+  --color-severity-low-surface: #0f1c27;
+  --color-severity-info: #94a2b2;
+  --color-severity-info-surface: #161c24;
+
+  --color-success: #3fbe86;
+  --color-warning: #e9b949;
+  --color-danger: #f26b85;
+  --color-running: #7daed6;
+  --color-accent: #6fa3ce;
+}
+
+/* Tabular numerals everywhere: columns of scores, counts, durations and
+   timestamps must align, or scanning down a column stops working. */
+html { font-variant-numeric: tabular-nums; }
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

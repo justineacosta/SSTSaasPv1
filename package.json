@@ -12,7 +12,7 @@
     "build": "turbo run build",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
-    "test": "vitest run --project unit --passWithNoTests",
+    "test": "vitest run --project unit --project ui --passWithNoTests",
     "test:integration": "vitest run --project integration --passWithNoTests",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

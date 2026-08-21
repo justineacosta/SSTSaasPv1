@@ -142,6 +142,7 @@ export default tseslint.config(
   {
     files: [
       '**/*.spec.ts',
+      '**/*.spec.tsx',
       '**/*.integration.spec.ts',
       'packages/db/src/testing/**/*.ts',
       'apps/api/src/testing/**/*.ts',
@@ -150,6 +151,30 @@ export default tseslint.config(
       'no-restricted-imports': 'off',
       '@typescript-eslint/no-non-null-assertion': 'off',
       'no-restricted-properties': 'off',
+    },
+  },
+  // ui-ux/design-system.md §7 — "no component may use a raw hex value. A
+  // lint rule enforces it." Scoped to packages/ui now and written to also
+  // cover apps/web once Task 13 lands it, so a colour literal (in a class
+  // string, an inline style, anywhere) has to route through a design token
+  // instead — a hardcoded colour is a colour that's wrong in dark mode.
+  // tokens.css itself is exempt: it's the one file where hex is the point.
+  {
+    files: ['packages/ui/**/*.{ts,tsx}', 'apps/web/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'Literal[value=/#[0-9a-fA-F]{3,8}\\b/]',
+          message:
+            'No raw hex colours — reference a design token custom property instead (e.g. bg-[var(--color-surface)]). See ui-ux/design-system.md §7.',
+        },
+        {
+          selector: 'TemplateElement[value.raw=/#[0-9a-fA-F]{3,8}\\b/]',
+          message:
+            'No raw hex colours — reference a design token custom property instead (e.g. bg-[var(--color-surface)]). See ui-ux/design-system.md §7.',
+        },
+      ],
     },
   },
 );
