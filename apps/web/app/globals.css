@@ -1,0 +1,69 @@
+/* The design system's tokens, and Tailwind itself.
+ *
+ * `packages/ui/src/tokens.css` line 1 is already `@import 'tailwindcss';`, so
+ * this file must NOT declare it again — a second declaration emits the whole
+ * of Tailwind twice. This one import brings in both.
+ *
+ * Reminder for anyone adding utilities in this app: `packages/ui` ships no
+ * `@theme` block, so named utilities like `bg-surface` or `text-body` do not
+ * exist and resolve to nothing. Tokens are consumed through arbitrary-value
+ * utilities — `bg-[var(--color-surface)]`, `text-[length:var(--text-body)]`.
+ * See ui-ux/design-system.md §7. */
+@import '@sentinel/ui/tokens.css';
+
+/* Where Tailwind looks for class names.
+ *
+ * Measured, not assumed. Building once with all three of these deleted and
+ * grepping the emitted stylesheet:
+ *
+ *   text-[length:var(--text-display)]   (app/(marketing)/page.tsx)   present
+ *   sm:grid-cols-2                      (app/(marketing)/page.tsx)   present
+ *   rounded-[var(--radius-card)]        (packages/ui .../Card.tsx)  MISSING
+ *
+ * So v4's automatic source detection does reach this app — it roots at the
+ * build's working directory, which is apps/web — and does not reach outside
+ * it, which matters here because `packages/ui` runs no Tailwind build of its
+ * own and this app is the first thing that has ever rendered its primitives.
+ * The third line below is therefore load-bearing; the first two are written
+ * out so the emitted CSS does not depend on where the build was invoked
+ * from. */
+@source '../app';
+@source '../src';
+@source '../../../packages/ui/src';
+
+/* next/font hands back a class (applied to <html> in app/layout.tsx) that
+ * defines these three custom properties, each already carrying the fallback
+ * stack from ui-ux/design-system.md §2. Naming them here is documentation
+ * only — the values come from app/fonts.ts. */
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+}
+
+/* design-system.md §2: the condensed cut is the display face — page titles,
+ * table headers, metric labels, nav sections. It is applied deliberately per
+ * element rather than globally to headings, because a card heading inside
+ * prose should not switch faces. */
+.font-display {
+  font-family: var(--font-condensed);
+  font-weight: 600;
+}
+
+code,
+kbd,
+pre,
+samp {
+  font-family: var(--font-mono);
+}
+
+/* Deliberately no global `:focus-visible` rule here.
+ *
+ * One was written and removed. It claimed Tailwind's preflight strips outlines
+ * from interactive elements; grepping the emitted stylesheet says otherwise —
+ * the only outline preflight touches is `:-moz-focusring:where(:not(iframe))
+ * { outline: auto }`, a Firefox normalisation. Worse, the rule was ordered
+ * after `packages/ui`, whose primitives pair `focus-visible:outline-none` with
+ * a token ring, so it put an outline *and* a ring on every focused Button and
+ * Input. Focus styling belongs to the primitives; plain elements keep the
+ * browser default, which is visible in both themes. */

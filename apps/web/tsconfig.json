@@ -1,0 +1,40 @@
+{
+  // Extends the workspace base so `strict` and the five extra strictness flags
+  // (noUncheckedIndexedAccess, noImplicitOverride, exactOptionalPropertyTypes,
+  // noFallthroughCasesInSwitch, noUnused*) apply here exactly as they do
+  // everywhere else. Only what Next.js genuinely requires is overridden below.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Next compiles this app with a bundler (Turbopack), not with `tsc`, and
+    // resolves `next/*` subpath exports and `.tsx` through bundler rules. The
+    // base's `nodenext` pair is right for the publishable packages and wrong
+    // here: under nodenext, `import ... from 'next/font/google'` and JSX in
+    // `.tsx` do not resolve the way the bundler will actually resolve them.
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    // Next transforms JSX itself (its SWC pipeline), so tsc must hand it
+    // through untouched rather than lowering it to `jsx()` calls.
+    "jsx": "preserve",
+    // `tsc -p tsconfig.json --noEmit` is this package's typecheck; `next build`
+    // is its build. Nothing here is emitted by tsc, so the base's declaration
+    // and sourcemap emit options are switched off rather than left dangling.
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "allowJs": true,
+    "incremental": true,
+    "resolveJsonModule": true,
+    "types": ["node"],
+    // The Next TypeScript plugin — editor-only diagnostics for App Router
+    // conventions (server/client boundary mistakes, bad route exports).
+    "plugins": [{ "name": "next" }]
+  },
+  // `**/*.ts` deliberately reaches next.config.ts, playwright.config.ts,
+  // proxy.ts and e2e/**: every one of them is then inside a tsconfig project,
+  // which is what lets ESLint's `projectService` run type-aware rules on them
+  // instead of falling back to the root config-file block in eslint.config.js.
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules", ".next"]
+}

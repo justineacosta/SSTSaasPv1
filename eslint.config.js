@@ -72,18 +72,42 @@ export default tseslint.config(
       ],
     },
   },
-  // Root config files (eslint.config.js, vitest.workspace.ts, and any other
-  // root *.config.js / *.config.mjs / *.config.ts) belong to no tsconfig
-  // project — type-aware rules cannot run on them. Deliberately not added to
-  // a tsconfig; lint them type-unaware instead. Without an explicit tsconfig
-  // project, typescript-eslint never pulls in @types/node's ambient globals,
-  // so Node's ambient identifiers (process, console, __dirname, etc.) must be
-  // declared here or `no-undef` (from js.configs.recommended) misfires on
-  // legitimate references. This is why root config files like this one and
-  // a future apps/web/playwright.config.ts (Task 13) or a root-level config
-  // Task 12 may add need `globals.node`.
+  // Config files that belong to no tsconfig project — type-aware rules cannot
+  // run on them. Deliberately not added to a tsconfig; lint them type-unaware
+  // instead. Without an explicit tsconfig project, typescript-eslint never
+  // pulls in @types/node's ambient globals, so Node's ambient identifiers
+  // (process, console, __dirname, etc.) must be declared here or `no-undef`
+  // (from js.configs.recommended) misfires on legitimate references. That is
+  // what `globals.node` is for.
+  //
+  // **These globs are root-only, and that is not a typo.** An earlier version
+  // of this comment claimed the block would also cover "a future
+  // apps/web/playwright.config.ts (Task 13)". It does not: under ESLint flat
+  // config a pattern with no `/` is resolved against the config's base path
+  // and matches only that one directory level, so `*.config.ts` matches
+  // `./next.config.ts`-style root files and never `apps/web/*.config.ts`.
+  // Verified with `eslint --print-config apps/web/playwright.config.ts` once
+  // that file existed: the printed config had `no-undef` off (from
+  // typescript-eslint's eslint-recommended, not from this block), no `process`
+  // in `languageOptions.globals`, and `@typescript-eslint/no-floating-promises`
+  // still at `error` — i.e. this block did not apply and type-aware linting
+  // did.
+  //
+  // Nothing needed fixing for apps/web's TypeScript config files, because
+  // apps/web/tsconfig.json includes `**/*.ts` — next.config.ts,
+  // playwright.config.ts, proxy.ts and e2e/** are all inside a real project,
+  // so `projectService` type-checks them like any other source file, which is
+  // strictly better than the fallback this block provides. `postcss.config.mjs`
+  // is the one exception: it is not TypeScript, no tsconfig can include it,
+  // and without an entry here the project service refuses to parse it at all.
   {
-    files: ['*.config.js', '*.config.mjs', '*.config.ts', 'vitest.workspace.ts'],
+    files: [
+      '*.config.js',
+      '*.config.mjs',
+      '*.config.ts',
+      'vitest.workspace.ts',
+      'apps/*/postcss.config.mjs',
+    ],
     extends: [tseslint.configs.disableTypeChecked],
     languageOptions: { globals: globals.node },
     rules: js.configs.recommended.rules,
@@ -146,6 +170,12 @@ export default tseslint.config(
       '**/*.integration.spec.ts',
       'packages/db/src/testing/**/*.ts',
       'apps/api/src/testing/**/*.ts',
+      // Playwright's own config is harness too: it reads `CI` to decide
+      // retries, reporter, and whether an already-running dev server may be
+      // reused. That is a property of the machine running the tests, not
+      // application configuration, and it is read before any Sentinel code
+      // loads — `packages/config`'s schema has no business describing it.
+      'apps/*/playwright.config.ts',
     ],
     rules: {
       'no-restricted-imports': 'off',

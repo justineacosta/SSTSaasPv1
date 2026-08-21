@@ -43,7 +43,7 @@ decorators, and a `health` module answering `/health/live`, `/health/ready` and
 authentication and no business endpoint**: the only routes are the health probes and the
 OpenAPI document.
 
-**`packages/ui` exists — tokens and eight primitives, and nothing renders them yet.** The full
+**`packages/ui` exists — tokens and eight primitives.** The full
 token set from `ui-ux/design-system.md` (the cool-ink neutral ramp, the five-step severity ramp,
 status and intent, the 1.2 type scale, the three density modes, the motion durations), with light
 on bare `:root` and dark redefined under both the `prefers-color-scheme` media query and
@@ -55,11 +55,15 @@ declares. The no-raw-hex lint rule that `design-system.md` §7 had claimed for m
 actually exists** and is proven to fire.
 
 Two things this deliberately does not do, because saying so is the point of this section:
-`packages/ui` **runs no Tailwind build** — tokens are referenced through arbitrary-value
-utilities (`bg-[var(--color-surface)]`), and named utilities like `bg-surface` do not resolve
-because no `@theme` block is shipped; and **no browser has rendered any of it.** The primitives
-are exercised only by jsdom unit tests. There is no application, no page, and no visual
-verification until Task 13 builds `apps/web`.
+`packages/ui` **runs no Tailwind build of its own** — tokens are referenced through
+arbitrary-value utilities (`bg-[var(--color-surface)]`), and named utilities like `bg-surface`
+do not resolve because no `@theme` block is shipped. Task 13's `apps/web` is what runs the
+Tailwind build that emits those utilities, and it needs an explicit
+`@source '../../../packages/ui/src'` to do it: measured, with that line removed the emitted
+stylesheet was missing every utility that appears only inside `packages/ui`. **A browser has
+now rendered three of the eight primitives** (Card, Alert, Badge) on the marketing page.
+Button, Input, Label, Field and Skeleton are still exercised only by jsdom unit tests, and no
+human has judged any of it by eye.
 
 The boot-time assertion that every route declares its access is now built: a route declaring
 neither `@Public()` nor `@RequirePermission()` refuses startup with an error naming every
@@ -80,10 +84,31 @@ on no backing service. What Phase 1 delivers
 is a control that is correct and tested in advance of the endpoints it will govern, not a
 control that is currently governing anything.
 
-There is no `apps/web`, nothing is deployed, and no request reaches this code from outside a
-test or a developer's own machine — so Phase 1 is Partially Implemented, not Implemented.
-Nothing in this product runs, scans, stores, bills, or authenticates for an actual user
-today.
+**`apps/web` now renders in a browser — two pages, neither of them a product.** A Next.js
+16 App Router shell with the three route groups from `architecture/frontend.md` §1:
+`(marketing)` serving `/`, `(app)` serving a `/dashboard` placeholder that states the product
+is not built and names the phase, and `(auth)` holding a layout with no routes under it at
+all. IBM Plex Sans, Sans Condensed and Mono are self-hosted through `next/font` (verified: the
+built CSS references `/_next/static/media/*.woff2` and contains zero references to any Google
+font host, which is what makes `font-src 'self'` true rather than aspirational). Every
+response leaves `proxy.ts` carrying the `security/transport-and-headers.md` §2 header table
+and a fresh per-request CSP nonce, with `/api/csp-report` collecting violations into the
+redacting logger from day one. TanStack Query and an appearance (theme/density) context are
+wired; nothing queries anything, because there is no API call to make.
+
+Three things this deliberately does not do. **There is no mock product UI** — no fake metric
+tiles, no seeded findings table. **Nothing has been looked at by a human**: the pages are
+verified by Playwright (renders in both colour schemes, no console errors, no horizontal
+overflow at 375px) and by asserting on returned HTML and headers, which says nothing about
+whether the typography and spacing are any good. And **every HTML route is `force-dynamic`**,
+including marketing, which contradicts `architecture/frontend.md` §2 — a deliberate trade
+explained in a new subsection there: Next can only nonce its inline bootstrap scripts for a
+page rendered against a real request, so a prerendered page under this CSP ships as dead
+HTML.
+
+Nothing is deployed, and no request reaches this code from outside a test or a developer's own
+machine — so Phase 1 is Partially Implemented, not Implemented. Nothing in this product runs,
+scans, stores, bills, or authenticates for an actual user today.
 
 ### Blocked items
 
@@ -112,15 +137,14 @@ Phase 1 is being executed as 16 tasks from
 `docs/superpowers/plans/2026-08-20-phase-1-foundation.md`, subagent-driven: a fresh implementer
 per task, then a separate adversarial reviewer, then scoped re-reviews per fix round.
 
-**Tasks 1–12 are complete.** 1 workspace and CI · 2 `packages/config` · 3
-`packages/observability` · 4 compose stack, schema, prefixed UUIDv7 IDs, first migration · 5
-`packages/contracts` · 6 tenant-scoped Prisma client and RLS · 7 seed · 8 `packages/storage` ·
-9 `apps/api` bootstrap · 10 rate limiting · 11 route-access assertion and OpenAPI · 12
-`packages/ui` tokens and primitives.
+**Tasks 1–13 are complete** (13 pending its adversarial review). 1 workspace and CI · 2
+`packages/config` · 3 `packages/observability` · 4 compose stack, schema, prefixed UUIDv7 IDs,
+first migration · 5 `packages/contracts` · 6 tenant-scoped Prisma client and RLS · 7 seed · 8
+`packages/storage` · 9 `apps/api` bootstrap · 10 rate limiting · 11 route-access assertion and
+OpenAPI · 12 `packages/ui` tokens and primitives · 13 `apps/web` Next.js shell.
 
-**Tasks 13–16 remain:** 13 `apps/web` · 14 CI checks (OpenAPI diff, tenant-registry
-completeness) · 15 the two reusable skills · 16 ADRs, documentation, and the full
-exit-criteria verification pass.
+**Tasks 14–16 remain:** 14 CI checks (OpenAPI diff, tenant-registry completeness) · 15 the two
+reusable skills · 16 ADRs, documentation, and the full exit-criteria verification pass.
 
 The execution ledger — every ruling with its cost if wrong, every review finding, per-task
 briefs and reports, and the review diffs — lives in
@@ -128,13 +152,21 @@ briefs and reports, and the review diffs — lives in
 only on the machine that built it.** `progress.md` is the file to read first; it ends with the
 current pause state and the carry-forward rulings for Tasks 13–16.
 
-Known outstanding, none of it blocking Task 13:
+Known outstanding, none of it blocking Task 14:
 
 - Task 10's fourth fix round has not itself been reviewed. Recommendation on file: fold it into
   the whole-branch review rather than spend a fifth round.
 - A short list of deferred residuals (Redis `EVALSHA`, `maxmemory-policy`, `pnpm format:check`
   not wired into CI, dead `packages/config/tsconfig/*` presets, a missing root `dev` script) is
-  recorded in the ledger and assigned to Task 14 or Task 16.
+  recorded in the ledger and assigned to Task 14 or Task 16. The missing root `dev` script now
+  matters more than it did: `apps/web` has a `dev` script and `.claude/development/setup.md`
+  still tells a developer to run `pnpm dev`, which does not exist.
+- **Task 13 left CI without an E2E stage.** `pnpm test:e2e` runs locally (5 Playwright tests,
+  all passing) but `.github/workflows/ci.yml` neither installs a browser nor invokes it, so
+  nothing in CI has ever rendered a page. Task 14's to add.
+- Task 13 forced every HTML route dynamic to keep the nonce-based CSP intact. That is written
+  up in `architecture/frontend.md` §2 and is a real cost to revisit when marketing content
+  exists.
 - **Task 14 owes a guard that every `*.spec.*` under `packages/*/src` and `apps/*/src` is
   matched by exactly one Vitest project.** Task 12 hit three separate spellings of the same
   trap — a spec filename matching no project, passing green under `--passWithNoTests` while

@@ -1,11 +1,25 @@
 # Transport security, headers, and frontend hardening
 
-> **Status: §2 and §3 Implemented for the API origin (Phase 1)** —
-> `apps/api/src/common/middleware/security-headers.middleware.ts`, registered with `app.use()`
-> in `apps/api/src/app-setup.ts` and asserted header by header in
-> `apps/api/src/app.integration.spec.ts`. §1 (edge TLS), §4 (CORS), §5 (cookies) and §6
-> (frontend hardening) are Designed only: there is no edge, no authentication, and no
-> `apps/web` yet.
+> **Status: §2 and §3 Implemented on both origins (Phase 1).**
+>
+> API origin — `apps/api/src/common/middleware/security-headers.middleware.ts`, registered
+> with `app.use()` in `apps/api/src/app-setup.ts` and asserted header by header in
+> `apps/api/src/app.integration.spec.ts`.
+>
+> Web origin (Task 13) — `apps/web/src/security-headers.ts`, a pure function applied by
+> `apps/web/proxy.ts` to every response, unit-asserted in
+> `apps/web/src/security-headers.spec.ts` and asserted again against a real HTTP response
+> from a real production server in `apps/web/e2e/smoke.spec.ts`. Its three deliberate
+> divergences from the API's table — no blanket `Cache-Control: no-store`, `report-uri`
+> pointing at this origin's own collector, and no `Cross-Origin-Embedder-Policy` — are
+> documented in that file and each has a test.
+>
+> §1 (edge TLS), §4 (CORS) and §5 (cookies) are Designed only: there is no edge and no
+> authentication. §6 (frontend hardening) is Designed only in substance — there is no
+> user-supplied content, no markdown and no evidence to render yet — though
+> `productionBrowserSourceMaps: false` is set in `apps/web/next.config.ts` and React's default
+> escaping applies. There is no lint rule banning `dangerouslySetInnerHTML` yet; §6 claims one
+> and that claim is still ahead of the code.
 >
 > The `app.use()` registration is load-bearing, not a style choice. Registering the same
 > middleware through Nest's `MiddlewareConsumer.forRoutes({ path: '*splat' })` resolves the
@@ -65,8 +79,19 @@ even tighter policy (`default-src 'none'; img-src 'self'; style-src 'nonce-…'`
 
 As shipped on the API origin, `connect-src` is `'self'`: the example hosts above name the
 *web* origin's API and Sentry endpoints, and the API initiates no browser connections of its
-own. The `/api/v1/csp-report` collector named by `report-uri` **does not exist yet** — it
-arrives with `apps/web`, and until then a violation report gets a 404. `Cache-Control:
+own. **The API's `/api/v1/csp-report` collector still does not exist**, so a violation report
+from the API origin gets a 404. What Task 13 added is the *web* origin's collector, at
+`/api/csp-report` (`apps/web/app/api/csp-report/route.ts`), and the web origin's `report-uri`
+points there rather than at the API: `report-uri` sends a cross-origin POST the API's CORS
+policy would not accept, so a report aimed across origins simply never arrives. The web
+collector validates the report with Zod, drops unknown keys rather than logging them, and
+writes one `warn` line through the redacting logger. Verified end to end against the running
+dev server:
+> `{"level":"warn","service":"web","cspReport":{...},"msg":"Content Security Policy violation"}`
+
+The web origin's `connect-src` is also `'self'` today. `API_BASE_URL` is a different origin
+(`:3001`) in local development, so the first browser fetch to the API will need it added —
+Phase 2's problem, noted here so it is not a surprise. `Cache-Control:
 no-store` is sent on every API response rather than only authenticated ones, and Express's
 default `ETag` is disabled: a revalidation token for a response the client was told not to
 store is a contradiction, and computing it means hashing tenant data on every request.

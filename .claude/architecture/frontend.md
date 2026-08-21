@@ -1,6 +1,15 @@
 # Frontend architecture
 
-> **Status: Designed. Not Implemented.** Phase 1 onward.
+> **Status: Partially Implemented.** `apps/web` exists (Task 13): a Next.js 16 App Router
+> shell with the three route groups from §1, self-hosted IBM Plex through `next/font`, the
+> design system's tokens, TanStack Query and an appearance context (§3 partially — the
+> provider is wired, no query is issued because there is no API to call), and the security
+> header table with a per-request CSP nonce. §4 (forms), §5 (permissions), §6 (the six
+> required states), §7 (performance budgets) and §8 (the component tree) are **Not
+> Implemented** — they arrive with the features that need them. The only pages are a
+> marketing landing page and an `(app)` placeholder that says the product is not built.
+>
+> **§2 is not yet honoured, deliberately — see the note at the end of §2.**
 
 Next.js App Router, TypeScript strict, Tailwind, shadcn/ui, TanStack Query, React Hook Form
 with Zod.
@@ -32,6 +41,24 @@ loading and error boundaries. Full inventory: [`../ui-ux/page-map.md`](../ui-ux/
 
 Never cached: any response containing tenant data. `Cache-Control: no-store` on authenticated
 responses.
+
+### Where the table is not true today (Phase 1)
+
+**Every HTML route is currently `force-dynamic`**, marketing included — set once in
+`apps/web/app/layout.tsx`. This is a conflict with `security/transport-and-headers.md` §3, not
+an oversight, and it is structural rather than a misconfiguration: Next stamps the CSP nonce
+onto its own inline bootstrap scripts by reading the CSP header off the **request**, and a
+page prerendered at build time was never rendered for a request. Measured, not assumed —
+built without `force-dynamic`, `/` compiled as `○ (Static)` and its prerendered HTML held
+nine inline `<script>` tags carrying zero `nonce=` attributes. Because `script-src` includes
+`'strict-dynamic'`, an enforcing policy blocks those scripts and everything they would have
+loaded, so the page ships as dead HTML.
+
+The choice is between a strict CSP and a prerendered marketing page, and Phase 1 takes the
+CSP; `'unsafe-inline'` is the only other way to make prerendering work and it is banned. The
+cost is real: no ISR, no CDN-cached HTML, a server render per request. Revisit when marketing
+content actually exists and there is something for ISR to cache. The shape of the fix is a
+CDN-level policy for the prerendered public routes — not a weaker policy everywhere.
 
 ## 3. Server state
 

@@ -1,0 +1,34 @@
+{
+  "name": "@sentinel/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "dotenv -e ../../.env -v NODE_ENV=development -- next dev",
+    "build": "dotenv -e ../../.env -v NODE_ENV=production -- next build",
+    "start": "dotenv -e ../../.env -v NODE_ENV=production -- next start",
+    "start:e2e": "dotenv -e ../../.env -v NODE_ENV=production -v APP_ENV=test -- next start",
+    "test:e2e": "playwright test",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@sentinel/config": "workspace:*",
+    "@sentinel/observability": "workspace:*",
+    "@sentinel/ui": "workspace:*",
+    "@tanstack/react-query": "^5.101.0",
+    "next": "^16.3.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.0",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "dotenv-cli": "^7.4.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3"
+  }
+}

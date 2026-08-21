@@ -1,9 +1,16 @@
 # Page map
 
-Complete route inventory. **Every route listed is Not Implemented as of 2026-08-20**; the
+Complete route inventory. **Every route listed is Not Implemented as of 2026-08-21**; the
 Phase column is the commitment. A route ships only when it has all six required states
 ([`../architecture/frontend.md`](../architecture/frontend.md) §6) — a route that renders but
 has no empty or error state is not done.
+
+Two URLs now answer, and neither counts as a shipped route. `/` renders a marketing landing
+page that describes the product and says outright that nothing on it is a demo. `/dashboard`
+renders a placeholder that says the product is not built and names the current phase — it is
+not the `/dashboard` in the `(app)` table below, which is a live-metrics view committed to
+Phase 5, and it deliberately shows no mock product UI. `(auth)` has a layout and no routes at
+all. See [`../product/roadmap.md`](../product/roadmap.md).
 
 ## Marketing — `(marketing)`
 

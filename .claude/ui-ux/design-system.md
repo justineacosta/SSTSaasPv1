@@ -5,6 +5,18 @@
 > `packages/ui` (Task 12). The full primitive/pattern/domain-component inventory in
 > [`components.md`](components.md) is Not Implemented; those land alongside the features
 > that need them.
+>
+> **A browser now renders some of this (Task 13).** `apps/web` imports
+> `@sentinel/ui/tokens.css`, runs the Tailwind build that emits the utilities the primitives
+> reference, loads the §2 typeface system through `next/font`, and puts `Card`, `Alert` and
+> `Badge` on a real page. What that verifies and what it does not: the tokens resolve, the
+> arbitrary-value utilities are emitted (checked by grepping the built stylesheet, including
+> for a utility that appears only inside `packages/ui`), IBM Plex Sans / Sans Condensed / Mono
+> are self-hosted under `/_next/static/media` with no request to any Google host, and the page
+> renders under both colour schemes with no console error and no horizontal overflow at 375px
+> (Playwright). **No human has looked at it.** Nothing here has been judged by eye for
+> hierarchy, spacing, weight or contrast, and the §4 density modes are wired to a context that
+> nothing reads.
 
 ## 1. Design thesis
 
@@ -176,7 +188,11 @@ default works without one.
 
 **No component may use a raw hex value.** A lint rule enforces it, scoped to `packages/ui` and
 `apps/web`. A hardcoded colour is a colour that will be wrong in dark mode, and dark mode is
-not optional for a tool people use at 2am during an incident.
+not optional for a tool people use at 2am during an incident. The `apps/web` half of that
+scope was written before `apps/web` existed; it was checked once the app landed (Task 13) by
+linting a throwaway `apps/web/src/*.tsx` containing both an inline `style={{ color: '#ff0000' }}`
+and a template-literal class holding `#00ff00`, which produced two `no-restricted-syntax`
+errors.
 
 **`--text-sm` collides with a Tailwind v4 built-in theme variable of the same name.**
 Tailwind's own default theme defines `--text-sm: 0.875rem` plus `--text-sm--line-height`
