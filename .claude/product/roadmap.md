@@ -94,14 +94,14 @@ Phase 1 is being executed as 16 tasks from
 `docs/superpowers/plans/2026-08-20-phase-1-foundation.md`, subagent-driven: a fresh implementer
 per task, then a separate adversarial reviewer, then scoped re-reviews per fix round.
 
-**Tasks 1–10 are complete.** 1 workspace and CI · 2 `packages/config` · 3
+**Tasks 1–11 are complete.** 1 workspace and CI · 2 `packages/config` · 3
 `packages/observability` · 4 compose stack, schema, prefixed UUIDv7 IDs, first migration · 5
 `packages/contracts` · 6 tenant-scoped Prisma client and RLS · 7 seed · 8 `packages/storage` ·
-9 `apps/api` bootstrap · 10 rate limiting.
+9 `apps/api` bootstrap · 10 rate limiting · 11 route-access assertion and OpenAPI.
 
-**Tasks 11–16 remain:** 11 route-access assertion and OpenAPI · 12 `packages/ui` · 13
-`apps/web` · 14 CI checks (OpenAPI diff, tenant-registry completeness) · 15 the two reusable
-skills · 16 ADRs, documentation, and the full exit-criteria verification pass.
+**Tasks 12–16 remain:** 12 `packages/ui` · 13 `apps/web` · 14 CI checks (OpenAPI diff,
+tenant-registry completeness) · 15 the two reusable skills · 16 ADRs, documentation, and the
+full exit-criteria verification pass.
 
 The execution ledger — every ruling with its cost if wrong, every review finding, per-task
 briefs and reports, and the review diffs — lives in
@@ -109,7 +109,7 @@ briefs and reports, and the review diffs — lives in
 only on the machine that built it.** `progress.md` is the file to read first; it ends with the
 current pause state and the carry-forward rulings for Tasks 11–16.
 
-Known outstanding at the pause, none of them blocking Task 11:
+Known outstanding, none of it blocking Task 12:
 
 - Task 10's fourth fix round has not itself been reviewed. Recommendation on file: fold it into
   the whole-branch review rather than spend a fifth round.
