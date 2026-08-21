@@ -40,9 +40,19 @@ security-header and CSP middleware, the global error-envelope filter, the struct
 interceptor, the Zod validation pipe, the `@Public()`/`@RequirePermission()` access
 decorators, and a `health` module answering `/health/live`, `/health/ready` and
 `/health/detailed` against the live Postgres, Redis and MinIO stack. It has **no
-authentication, no authorization guard, and no business endpoint**: the only routes are the
-health probes. The boot-time assertion that every route declares its access is not written
-yet, so the access decorators are metadata nothing reads.
+authentication and no business endpoint**: the only routes are the health probes and the
+OpenAPI document.
+
+The boot-time assertion that every route declares its access is now built: a route declaring
+neither `@Public()` nor `@RequirePermission()` refuses startup with an error naming every
+offender, and the inventory it checks is cross-checked against Express's own router on each
+boot so it cannot pass by inspecting nothing. `@Public()` is therefore load-bearing today.
+**`@RequirePermission()` is still metadata no guard reads** — the authorization guard is
+Phase 2 — so declaring a permission records an intention, it does not enforce one.
+
+The OpenAPI document is generated from the route inventory and the Zod contracts, served at
+`/api/v1/openapi.json`, and committed as `apps/api/openapi.json`; a test asserts the committed
+file is byte-identical to what the code generates. The CI diff of that file arrives in Task 14.
 
 Rate limiting is built and globally registered — a Redis sliding window over the table in
 `security/abuse-prevention.md` §1 — but it limits **nothing today**, and that distinction

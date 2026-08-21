@@ -47,6 +47,21 @@ class FindingsController {
   }
 }
 
+/**
+ * Legacy path syntax, which Express 5 does not accept and the adapter's
+ * `normalizePath` rewrites on the way into the router. Nothing in the product
+ * uses it today — which is exactly why the inventory could skip that step and
+ * stay green.
+ */
+@Controller('legacy')
+class LegacyPathController {
+  @Public()
+  @Get('*')
+  wildcard(): string {
+    return 'ok';
+  }
+}
+
 const withApp = async (
   body: (app: NestExpressApplication) => void | Promise<void>,
 ): Promise<void> => {
@@ -128,6 +143,24 @@ describe('describeRoutes', () => {
   });
 });
 
+describe('describeRoutes and legacy path syntax', () => {
+  it('reports the path the router holds, not the one the factory built', async () => {
+    // `RoutePathFactory` produces `/api/v1/legacy/*`; Express holds
+    // `/api/v1/legacy/{*path}` because the adapter's `normalizePath` converted
+    // it. An inventory that skipped that step would make a legal route
+    // unbootable, with an error blaming the checker rather than the cause.
+    const app = await buildRoutingApp([LegacyPathController]);
+    await app.init();
+    try {
+      const described = describeRoutes(app).map((route) => `${route.method} ${route.path}`);
+      expect(described).toEqual(registeredRouterRoutes(app));
+      expect(described).toEqual(['GET /api/v1/legacy/{*path}']);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe('registeredRouterRoutes', () => {
   it('is empty before init, which is what makes the boot-order guard necessary', async () => {
     const app = await buildRoutingApp([ProbeController]);
@@ -135,6 +168,27 @@ describe('registeredRouterRoutes', () => {
       expect(registeredRouterRoutes(app)).toEqual([]);
       await app.init();
       expect(registeredRouterRoutes(app)).toEqual(['GET /health/live']);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('counts a path it cannot describe rather than ignoring it', async () => {
+    // Express accepts a RegExp; Nest never emits one, so a regex path can only
+    // come from registration that bypassed controller metadata — the exact case
+    // the cross-check exists to catch. Filtering it out would put the blind spot
+    // in the last line of defence.
+    const app = await buildRoutingApp([ProbeController]);
+    await app.init();
+    const express = app.getHttpAdapter().getInstance() as unknown as {
+      get: (path: RegExp, handler: () => void) => void;
+    };
+    express.get(/rogue/, () => {});
+    try {
+      expect(registeredRouterRoutes(app)).toEqual([
+        'GET /health/live',
+        'GET <unrecognised path: rogue>',
+      ]);
     } finally {
       await app.close();
     }

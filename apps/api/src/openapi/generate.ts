@@ -102,6 +102,38 @@ function operationFor(route: RegisteredRoute): OpenApiOperation {
  * asserted against hand-built routes — including routes this codebase cannot
  * have, such as one carrying a permission — without standing up an application.
  */
+/**
+ * Refuses a document in which two operations share an `operationId`.
+ *
+ * One handler can legitimately produce several routes — `@Get(['a', 'b'])`, or
+ * `@Version(['1', '2'])` — and every one of them would be named
+ * `Controller_handler`. Duplicate `operationId`s make the document invalid, and
+ * the tools that consume it report that badly or not at all: a client generator
+ * silently emits one method and drops the other. Failing here means the
+ * regeneration script and the committed-document test both refuse before it can
+ * be merged.
+ */
+function assertUniqueOperationIds(operations: readonly OpenApiOperation[]): void {
+  const seen = new Map<string, number>();
+  for (const operation of operations) {
+    seen.set(operation.operationId, (seen.get(operation.operationId) ?? 0) + 1);
+  }
+  const duplicates = [...seen].filter(([, count]) => count > 1).map(([id]) => id);
+  if (duplicates.length === 0) return;
+
+  throw new Error(
+    [
+      `OpenAPI generation refused: ${duplicates.length} duplicate operationId(s).`,
+      '',
+      ...duplicates.map((id) => `  ${id}`),
+      '',
+      'An operationId must be unique. One handler serving several paths or',
+      'several versions produces one operation per path, all named after that',
+      'handler — give each its own handler.',
+    ].join('\n'),
+  );
+}
+
 export function buildOpenApiDocument(routes: readonly RegisteredRoute[]): OpenApiDocument {
   const paths: Record<string, Record<string, OpenApiOperation>> = {};
 
@@ -112,10 +144,14 @@ export function buildOpenApiDocument(routes: readonly RegisteredRoute[]): OpenAp
     return a.method < b.method ? -1 : a.method > b.method ? 1 : 0;
   });
 
+  const operations: OpenApiOperation[] = [];
   for (const route of sorted) {
+    const operation = operationFor(route);
+    operations.push(operation);
     const item = (paths[route.path] ??= {});
-    item[route.method.toLowerCase()] = operationFor(route);
+    item[route.method.toLowerCase()] = operation;
   }
+  assertUniqueOperationIds(operations);
 
   return {
     openapi: OPENAPI_VERSION,

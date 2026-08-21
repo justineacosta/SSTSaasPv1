@@ -61,20 +61,23 @@ describe('buildOpenApiDocument', () => {
     // module import order would produce a diff on every regeneration, and a
     // diff gate that always fires is a diff gate nobody reads.
     const forwards = buildOpenApiDocument([
-      route({ path: '/a' }),
-      route({ path: '/b' }),
+      route({ handler: 'a', path: '/a' }),
+      route({ handler: 'b', path: '/b' }),
       route({ handler: 'create', method: 'POST', path: '/a' }),
     ]);
     const backwards = buildOpenApiDocument([
       route({ handler: 'create', method: 'POST', path: '/a' }),
-      route({ path: '/b' }),
-      route({ path: '/a' }),
+      route({ handler: 'b', path: '/b' }),
+      route({ handler: 'a', path: '/a' }),
     ]);
     expect(JSON.stringify(forwards)).toBe(JSON.stringify(backwards));
   });
 
   it('documents the shared error envelope once and points every route at it', () => {
-    const document = buildOpenApiDocument([route({}), route({ path: '/health/ready' })]);
+    const document = buildOpenApiDocument([
+      route({}),
+      route({ handler: 'ready', path: '/health/ready' }),
+    ]);
 
     const envelope = document.components.schemas['ErrorEnvelope'];
     expect(envelope).toMatchObject({
@@ -156,5 +159,25 @@ describe('buildOpenApiDocument', () => {
     const operation = document.paths['/health/live']?.['get'];
     expect(operation?.summary).toBeUndefined();
     expect(Object.keys(operation?.responses ?? {})).toEqual(['default']);
+  });
+
+  it('refuses a document in which two operations share an operationId', () => {
+    // One handler can legitimately serve several paths — `@Get(['a', 'b'])` or
+    // `@Version(['1', '2'])` — and every route it produces is named after that
+    // handler. Duplicate operationIds make the document invalid, and a client
+    // generator handed one silently emits a single method.
+    expect(() => buildOpenApiDocument([route({ path: '/a' }), route({ path: '/b' })])).toThrowError(
+      /duplicate operationId\(s\)[\s\S]*HealthController_live/,
+    );
+  });
+
+  it('accepts the same handler name on two different controllers', () => {
+    // Only the pair is a collision; the controller name is part of the id.
+    expect(() =>
+      buildOpenApiDocument([
+        route({ path: '/a' }),
+        route({ controller: 'ScansController', path: '/b' }),
+      ]),
+    ).not.toThrow();
   });
 });

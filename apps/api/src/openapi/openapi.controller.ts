@@ -1,8 +1,8 @@
 import { Controller, Get, Inject } from '@nestjs/common';
-import { ApplicationConfig, DiscoveryService } from '@nestjs/core';
+import { ApplicationConfig, DiscoveryService, HttpAdapterHost } from '@nestjs/core';
 import { Public } from '../common/decorators/access.decorator.js';
 import { ApiDoc } from '../common/decorators/openapi.decorator.js';
-import { describeRoutesFrom } from '../common/route-inventory.js';
+import { adapterPathNormaliser, describeRoutesFrom } from '../common/route-inventory.js';
 import { buildOpenApiDocument, type OpenApiDocument } from './generate.js';
 
 /**
@@ -26,6 +26,9 @@ export class OpenApiController {
   constructor(
     @Inject(DiscoveryService) private readonly discovery: DiscoveryService,
     @Inject(ApplicationConfig) private readonly config: ApplicationConfig,
+    // The document must describe the paths the router holds, which means
+    // applying the adapter's own `normalizePath` exactly as the router does.
+    @Inject(HttpAdapterHost) private readonly adapterHost: HttpAdapterHost,
   ) {}
 
   /**
@@ -42,6 +45,12 @@ export class OpenApiController {
   read(): OpenApiDocument {
     // Cached after the first request: the route inventory is a full walk of
     // every controller's metadata, and it cannot change while the process runs.
-    return (this.cached ??= buildOpenApiDocument(describeRoutesFrom(this.discovery, this.config)));
+    return (this.cached ??= buildOpenApiDocument(
+      describeRoutesFrom(
+        this.discovery,
+        this.config,
+        adapterPathNormaliser(this.adapterHost.httpAdapter),
+      ),
+    ));
   }
 }

@@ -99,6 +99,9 @@ importers:
       dotenv:
         specifier: ^16.6.1
         version: 16.6.1
+      dotenv-cli:
+        specifier: ^7.4.0
+        version: 7.4.4
       supertest:
         specifier: ^7.2.2
         version: 7.2.2

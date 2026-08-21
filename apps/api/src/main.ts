@@ -33,7 +33,13 @@ async function bootstrap(): Promise<void> {
     // event loop alive: without this the process would set a failing exit code
     // and then sit there forever, which an orchestrator reads as "starting",
     // not as "crashed". Closing turns the refusal into an actual exit.
-    await app.close();
+    try {
+      await app.close();
+    } catch {
+      // Whatever went wrong shutting down, the refusal is the error the
+      // operator needs — it names the undeclared routes. Swallowing the close
+      // failure keeps it from replacing that message.
+    }
     throw error;
   }
 

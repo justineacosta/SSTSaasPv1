@@ -6,6 +6,7 @@ import { RateLimitExempt } from '../../common/decorators/rate-limit.decorator.js
 import { DomainError } from '../../common/errors/domain-error.js';
 import {
   detailedReportSchema,
+  type LivenessReport,
   livenessReportSchema,
   readinessReportSchema,
 } from './health.contracts.js';
@@ -45,7 +46,7 @@ export class HealthController {
     ],
   })
   @Get('live')
-  live(): { status: 'ok' } {
+  live(): LivenessReport {
     return { status: 'ok' };
   }
 

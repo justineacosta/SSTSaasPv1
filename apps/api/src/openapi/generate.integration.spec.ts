@@ -68,6 +68,18 @@ describe('the OpenAPI document', () => {
     expect(generated).toEqual(committed);
   });
 
+  it('matches it byte for byte, not merely in structure', () => {
+    // `toEqual` above is blind to key order and to formatting, so a
+    // regeneration that only reordered keys would satisfy it and still produce
+    // a diff in the CI gate that Task 14 adds. This test and that gate have to
+    // agree about what "matches" means, so this compares the exact bytes
+    // `cli.ts` writes. `.gitattributes` pins checkouts to LF, so the newline is
+    // stable across platforms.
+    const serialised = `${JSON.stringify(generateOpenApiDocument(app), null, 2)}
+`;
+    expect(readFileSync(new URL('../../openapi.json', import.meta.url), 'utf8')).toBe(serialised);
+  });
+
   it('documents every registered route', () => {
     const document = generateOpenApiDocument(app);
     expect(Object.keys(document.paths)).toEqual(

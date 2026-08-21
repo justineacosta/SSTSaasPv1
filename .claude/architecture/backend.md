@@ -91,11 +91,15 @@ silent:
   immediately before `listen` inspects an empty router and passes without checking anything. The
   assertion therefore refuses to run at all against a router with no routes.
 - **It compares its own inventory against Express's router on every boot.** The inventory is
-  built from controller metadata (`apps/api/src/common/route-inventory.ts`, which borrows Nest's
-  own `RoutePathFactory` so the paths cannot disagree with the ones Nest registered). Metadata is
-  exactly what survives when routing breaks, so a route registered outside that metadata, or a
-  path assembled differently by a future Nest, is a boot failure rather than a route the check
-  quietly never looked at.
+  built from controller metadata (`apps/api/src/common/route-inventory.ts`), reusing *both*
+  halves of what Nest does to a path: its own `RoutePathFactory` for assembly, then the HTTP
+  adapter's `normalizePath` — the step that rewrites legacy syntax such as `*` into `{*path}`,
+  and whose omission would make a legal `@Get('*')` refuse to boot. Metadata is exactly what
+  survives when routing breaks, so a route registered outside that metadata — including one
+  registered directly on Express with a non-string path — or a path assembled differently by a
+  future Nest, is a boot failure rather than a route the check quietly never looked at. The
+  comparison is what makes that guarantee real: nothing here relies on the reproduction being
+  correct, only on the two agreeing.
 
 The check lands in Phase 1 with one module on purpose. Added in Phase 2 with thirty routes
 already written, it would start life with a backlog of offenders and get switched off.

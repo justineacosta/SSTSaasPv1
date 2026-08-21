@@ -168,4 +168,26 @@ describe('assertEveryRouteDeclaresAccess', () => {
       await app.close();
     }
   });
+
+  it('refuses a rogue route even when its path is not a string', async () => {
+    // The same scenario as above with a RegExp instead of a string. Express
+    // accepts one; the inventory can never produce one; so filtering it out
+    // would have left the cross-check — the last line of defence — with a blind
+    // spot exactly where out-of-band registration lives.
+    const app = await buildRoutingApp([DeclaredController]);
+    await app.init();
+    const express = app.getHttpAdapter().getInstance() as unknown as {
+      get: (path: RegExp, handler: () => void) => void;
+    };
+    express.get(/rogue/, () => {});
+    try {
+      const message = messageOf(() => {
+        assertEveryRouteDeclaresAccess(app);
+      });
+      expect(message).toContain('does not match the routes Nest registered');
+      expect(message).toContain('<unrecognised path: rogue>');
+    } finally {
+      await app.close();
+    }
+  });
 });
