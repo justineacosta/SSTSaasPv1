@@ -8,16 +8,19 @@
 
 ## Prerequisites
 
-| Tool | Version | This host (2026-08-20) |
+| Tool | Version | This host (verified 2026-08-22) |
 |---|---|---|
-| Node.js | ≥ 22 LTS | **v26.2.0** — OK |
+| Node.js | ≥ 22 LTS | **v26.7.0** — OK. Pinned to 26 by `.nvmrc` ([ADR-0012](../decisions/ADR-0012-node-26-runtime-pin.md)) |
 | pnpm | ≥ 9 | **11.5.0** — OK |
-| Docker Desktop | Recent | Installed (29.7.2), **daemon not running** |
+| Docker Desktop | Recent | **Running** — server 29.7.2, `docker compose` v5.4.0 |
 | Python | ≥ 3.11 | **3.14.5** — OK |
-| Go | ≥ 1.22 | **Not installed** — only needed for Go engines, deferred ([ADR-0010](../decisions/ADR-0010-engine-contract.md)) |
+| Go | ≥ 1.22 | **go1.27.0 — installed and working** (`go mod init` + `go run .` verified). Go engines remain **deferred by decision**, not by a missing toolchain: [ADR-0010](../decisions/ADR-0010-engine-contract.md) makes the engine contract language-agnostic, and no Go code exists here. |
+| Terraform | — | **Not installed.** Blocks IaC *execution* only; Phase 11 owns it. |
 
 **Start Docker Desktop before anything else.** Postgres, Redis, MinIO, and Mailpit all run in
-containers; nothing involving the database, queue, or storage works without the daemon.
+containers; nothing involving the database, queue, or storage works without the daemon. It was
+not running when the Phase 0 audit was taken; it is running now
+([`../architecture/repository-audit.md`](../architecture/repository-audit.md) §7).
 
 ## First run
 
@@ -63,9 +66,10 @@ pnpm format              # prettier --write
 pnpm format:check        # prettier --check — gated in CI
 pnpm typecheck           # tsc --noEmit (packages via turbo, plus root scripts/)
 
+pnpm build:packages      # build packages/* only, via turbo (no Next build)
 pnpm test                # vitest unit + ui
 pnpm test:integration    # integration (needs Docker — uses Testcontainers)
-pnpm test:e2e            # playwright
+pnpm test:e2e            # playwright — one smoke spec, 5 tests, chromium only
 
 pnpm check:specs         # every *.spec.* is claimed by exactly one Vitest project
 pnpm check:openapi       # committed openapi.json matches what the contracts generate
@@ -77,6 +81,24 @@ pnpm db:reset            # DESTRUCTIVE — drop, recreate, migrate, seed
 pnpm db:studio
 pnpm db:seed
 ```
+
+**`pnpm test`, `pnpm test:integration`, `check:openapi` and `check:registry` build the workspace
+packages first**, via `pnpm build:packages` (`turbo run build --filter=./packages/*`). They have
+to: several specs and both check scripts import `@sentinel/contracts`, `@sentinel/observability`,
+`@sentinel/storage` and `@sentinel/db` **by package name**, which resolves to each package's
+`dist/` — and `dist/` does not exist after a fresh `pnpm install`, because the root `postinstall`
+runs only `prisma generate`. Before this was wired in, `pnpm test` failed on 10 spec files from a
+clean clone while passing on any developer's warm tree; CI survived only because `pnpm lint` and
+`pnpm typecheck` are turbo tasks with `dependsOn: ["^build"]` and happened to run earlier in the
+job. Turbo caches, so on a warm tree the extra step is a cache hit measured in milliseconds; the
+filter excludes `apps/*`, so this does not drag the slow Next build into `pnpm test`.
+`pnpm check:specs` needs no build — it reads `vitest.workspace.ts` and the filesystem, nothing
+else.
+
+**`pnpm test:e2e` is real but small.** One spec file (`apps/web/e2e/smoke.spec.ts`), 5 tests,
+`chromium` only — console errors, both colour schemes, no horizontal overflow at a narrow
+viewport, the security-header table with a fresh CSP nonce, and the CSP report collector. It runs
+in CI. It is not a journey suite; there are no journeys yet (Phase 2).
 
 **Not yet real.** These are named in the phase plans and will arrive with the code they run:
 
@@ -132,5 +154,11 @@ pnpm build && pnpm check:openapi && pnpm check:registry
 pnpm test:e2e
 ```
 
-`check:openapi` and `check:registry` read built output, so they go after `pnpm build`.
+The order above mirrors CI's, and CI's order is what makes the timings sensible — it is no longer
+what makes the commands *correct*. `check:openapi` and `check:registry` read built output, and
+each now builds the packages it needs itself rather than relying on an earlier `pnpm build`
+having happened. Verified 2026-08-22 from a cold tree (every `dist/` and every turbo cache
+removed): `pnpm test`, `pnpm test:integration`, `pnpm check:openapi` and `pnpm check:registry`
+each exit 0 when run on their own. `pnpm test:e2e` was **not** re-verified cold.
+
 See [`pull-request-rules.md`](pull-request-rules.md) and [`testing.md`](testing.md) §6.

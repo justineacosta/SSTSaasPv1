@@ -13,7 +13,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 | Phase | Scope | Status |
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
-| 1 | Production foundation | **Partially Implemented** |
+| 1 | Production foundation | **Partially Implemented** — three of four exit criteria proven 2026-08-22; CI-green unproven on the current tree |
 | 2 | Identity | **Not Implemented** |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
@@ -62,8 +62,8 @@ Tailwind build that emits those utilities, and it needs an explicit
 `@source '../../../packages/ui/src'` to do it: measured, with that line removed the emitted
 stylesheet was missing every utility that appears only inside `packages/ui`. **A browser has
 now rendered three of the eight primitives** (Card, Alert, Badge) on the marketing page.
-Button, Input, Label, Field and Skeleton are still exercised only by jsdom unit tests, and no
-human has judged any of it by eye.
+Button, Input, Label, Field and Skeleton are still exercised only by jsdom unit tests — no
+browser has ever painted them.
 
 The boot-time assertion that every route declares its access is now built: a route declaring
 neither `@Public()` nor `@RequirePermission()` refuses startup with an error naming every
@@ -98,10 +98,12 @@ redacting logger from day one. TanStack Query and an appearance (theme/density) 
 wired; nothing queries anything, because there is no API call to make.
 
 Three things this deliberately does not do. **There is no mock product UI** — no fake metric
-tiles, no seeded findings table. **Nothing has been looked at by a human**: the pages are
-verified by Playwright (renders in both colour schemes, no console errors, no horizontal
-overflow at 375px) and by asserting on returned HTML and headers, which says nothing about
-whether the typography and spacing are any good. And **every HTML route is `force-dynamic`**,
+tiles, no seeded findings table. **Nothing has been design-reviewed**: a human has now loaded
+both pages in a browser (see the last bullet under Known outstanding) and called them acceptable
+but too early to judge, which is not a sign-off. The mechanical coverage is Playwright (renders
+in both colour schemes, no console errors, no horizontal overflow at 375px) plus assertions on
+returned HTML and headers, and none of that says whether the typography and spacing are any
+good. And **every HTML route is `force-dynamic`**,
 including marketing, which contradicts `architecture/frontend.md` §2 — a deliberate trade
 explained in a new subsection there: Next can only nonce its inline bootstrap scripts for a
 page rendered against a real request, so a prerendered page under this CSP ships as dead
@@ -153,16 +155,62 @@ wrong path, a missing opt-in or bad frontmatter would have failed in **both** se
 quote is what closes it — a name resolving proves registration, a line from deep in the body
 proves the body loaded.
 
+**Task 16 closed the two defects the previous tasks had deferred, and both were the same defect
+in different clothes: a gate whose correctness depended on ambient machine state.**
+
+The first was Phase 1's own exit criterion. `pnpm test` failed from a clean clone — root `test`
+was a bare `vitest run`, not a turbo task, so nothing built the workspace packages that specs
+import by name. `lint` and `typecheck` survived only because they *are* turbo tasks with
+`dependsOn: ["^build"]` and happened to run earlier in CI. Fixed by a `build:packages` script
+(`turbo run build --filter=./packages/*`) that `test`, `test:integration`, `check:openapi` and
+`check:registry` now run first. Measured, not assumed: from a cold tree the old scripts failed
+**10** spec files — not the 7 this file previously recorded, which came from moving only
+`packages/contracts/dist` aside — and the new ones pass 32 files / 403 tests in 8.8s cold, 25ms
+warm on a full turbo cache. `check:specs` was audited and deliberately left alone: it reads
+`vitest.workspace.ts` and the filesystem only, and already passed cold.
+
+The second was the supply-chain cooldown. `minimumReleaseAge` is now **declared explicitly at
+1440 minutes** in `pnpm-workspace.yaml` and recorded in
+[ADR-0013](../decisions/ADR-0013-dependency-release-age-cooldown.md), where before it was pnpm's
+default that nobody had chosen. The value changes no behaviour today; writing it down is the
+change. The old comment in that file claimed the removal of `minimumReleaseAgeExclude` had been
+"verified" because three install commands succeeded locally — that verification was worthless and
+the file now says so, because a warm `node_modules` makes pnpm print "Already up to date" in
+277ms without ever running the release-age check. Also corrected: **four** CI runs died on this,
+not three — commits `21746c5` and `2dad5bb` each fired a run on `main` *and* on the feature
+branch, so two of the failing runs are in `main`'s own history.
+
+Three ADRs were written for decisions that had been made in code and never recorded: **0011**
+prefixed UUIDv7 identifiers, **0012** the Node 26 pin with an explicit revisit trigger, **0013**
+the cooldown. `repository-audit.md` gained a dated **addendum rather than an edit** — §1–§6 still
+say what was true on 2026-08-20, which is the only thing an audit is for.
+
 Nothing is deployed, and no request reaches this code from outside a test or a developer's own
-machine — so Phase 1 is Partially Implemented, not Implemented. Nothing in this product runs,
-scans, stores, bills, or authenticates for an actual user today.
+machine. Nothing in this product runs, scans, stores, bills, or authenticates for an actual user
+today. Phase 1 stays **Partially Implemented** for one specific, closeable reason, stated
+precisely because "nearly done" is not a status: **three of its four exit criteria are proven and
+the fourth is not.** "CI is green" was last true for commit `486fc34`; Task 16 bumped four
+GitHub Actions majors (`checkout@v7`, `setup-node@v7`, `upload-artifact@v7`,
+`pnpm/action-setup@v6`) off the deprecated Node 20 runtime, and **no CI run has executed those
+pins.** The first push after this commit is what decides it. Until that run is green, the claim
+is unproven — and a pin verified only by reading `action.yml` is exactly the class of claim this
+file exists to refuse.
 
 ### Blocked items
 
 | Item | Blocker | Owner |
 |---|---|---|
-| Go worker engines | **Go toolchain not installed**; deferred by [ADR-0010](../decisions/ADR-0010-engine-contract.md) | Operator, if Go is wanted |
 | Terraform IaC execution | **Terraform not installed**; Phase 11 anyway | Operator |
+
+**Go worker engines left this table on 2026-08-22 — they are deferred, not blocked, and the
+difference is the point.** The row read "Go toolchain not installed" from Phase 0 until Task 16
+checked instead of assuming: `go version` reports **go1.27.0 windows/amd64** from
+`/c/Program Files/Go/bin/go`, confirmed by compiling and running a program rather than by the
+version string alone. The obstacle is gone. The deferral stands anyway, because
+[ADR-0010](../decisions/ADR-0010-engine-contract.md) makes engine language a per-engine choice
+over a JSON-on-stdio contract and the first-party engines are naturally TypeScript. Nothing has
+moved in Phase 4 or Phase 12: `git ls-files '*.go'` returns nothing and there is no `go.mod`. An
+installed toolchain is not a Go worker.
 
 ## Phase detail and exit criteria
 
@@ -178,22 +226,59 @@ install → lint → typecheck → test → build; `.env.example`.
 *Exit:* `pnpm install && pnpm build && pnpm test` passes from a clean clone; the compose
 stack starts; a migration applies; CI is green.
 
+*Verified 2026-08-22 (Task 16).* Every row below is a command that was run, with its real exit
+code. **Criterion 1 was satisfied as written — from a genuine clean clone**, not a warm tree:
+`git clone` into a scratch directory with no `node_modules`, no `dist` and no `.turbo`, with this
+commit's changes applied.
+
+| Command | Exit | Tree | What it proves — and no more |
+|---|---|---|---|
+| `pnpm install --frozen-lockfile` | 0 | clean clone | The lockfile resolves from cold in 1m32s under the new 1440-minute cooldown. |
+| `pnpm build` | 0 | clean clone | 8 packages build from cold, 0 cached, 13.1s. |
+| `pnpm test` | 0 | clean clone | 32 files / 403 tests. **Exit criterion 1 met.** |
+| `pnpm test` | 0 | clean clone, `dist` + `.turbo` deleted again | The topology fix is real: no prior `build` step, still green. |
+| `pnpm format:check` | 0 | warm | Prettier clean across the tree. |
+| `pnpm lint` | 0 | warm | ESLint clean, 14 tasks. |
+| `pnpm typecheck` | 0 | warm | Types compile. Says nothing about behaviour. |
+| `pnpm check:specs` | 0 | warm | 42 spec files, each claimed by exactly one project; no banned `.test.*`. |
+| `pnpm check:openapi` | 0 | warm | `apps/api/openapi.json` is byte-identical to what the contracts generate. |
+| `pnpm check:registry` | 0 | warm | 10 models: 3 tenant-owned, 1 tenant root, 6 deliberately global, DMMF checked against `schema.prisma`. |
+| `pnpm test:integration` | 0 | warm + stack | 10 files / 139 tests against real Postgres, Redis and MinIO. |
+| `pnpm test:e2e` | 0 | warm | 5 passed against a Playwright-owned production build. |
+| `docker compose ps` | 0 | — | postgres, redis, minio, mailpit all `Up (healthy)`. **Exit criterion 2 met.** |
+| `prisma migrate deploy` | 0 | **empty database** | All 4 migrations apply to a freshly created database, producing 10 tables. **Exit criterion 3 met.** |
+| `pnpm db:seed` ×2 | 0, 0 | warm | Byte-identical output twice — 7 roles, 49 permissions, 190 grants, no tenant data. Idempotent. |
+
+**Exit criterion 4 — "CI is green" — is not met on this tree** and is the only thing standing
+between Phase 1 and **Implemented**. See the paragraph above: four action majors were bumped and
+have never run on a runner.
+
+*Deliberately deferred, with the phase that picks it up:* workers, scheduler and engine SDKs
+(Phase 4); production Dockerfiles and container scanning (Phase 11); the full E2E journey suite
+(Phase 2, when journeys exist — 5 smoke specs run today); authentication, authorization
+enforcement and entitlements (Phase 2 — the pipeline slots and the boot-time route-access
+assertion exist and are empty); CWE, OWASP, plan and engine seed data (the phases that create
+those tables).
+
 #### Where Phase 1 stopped — read this before resuming
 
 Phase 1 is being executed as 16 tasks from
 `docs/superpowers/plans/2026-08-20-phase-1-foundation.md`, subagent-driven: a fresh implementer
 per task, then a separate adversarial reviewer, then scoped re-reviews per fix round.
 
-**Tasks 1–15 are complete.** Task 15 was implemented, independently reviewed (0 Critical, 3
-Important, 6 Minor), and the fix round that corrected all three Importants has been re-reviewed
-clean. 1 workspace and CI · 2
+**All 16 tasks are complete.** Task 16 was implemented, and its every factual claim re-verified
+by the orchestrator against the repository rather than taken from the implementer's report — the
+Go finding below is what that caught. 1 workspace and CI · 2
 `packages/config` · 3 `packages/observability` · 4 compose stack, schema, prefixed UUIDv7 IDs,
 first migration · 5 `packages/contracts` · 6 tenant-scoped Prisma client and RLS · 7 seed · 8
 `packages/storage` · 9 `apps/api` bootstrap · 10 rate limiting · 11 route-access assertion and
 OpenAPI · 12 `packages/ui` tokens and primitives · 13 `apps/web` Next.js shell · 14 CI checks ·
 15 the two project skills.
 
-**Task 16 remains:** ADRs, documentation, and the full exit-criteria verification pass.
+**Task 16 delivered:** ADRs 0011–0013, the audit addendum, the `setup.md` correction, the
+clean-clone `pnpm test` fix, the explicit release-age cooldown, the CI action-major bump, and the
+full exit-criteria verification pass recorded above. **Phase 1's build work is done.** What is
+left is not a task — it is one green CI run.
 
 The execution ledger — every ruling with its cost if wrong, every review finding, per-task
 briefs and reports, and the review diffs — lives in
@@ -201,18 +286,46 @@ briefs and reports, and the review diffs — lives in
 only on the machine that built it.** `progress.md` is the file to read first; it ends with the
 current pause state and the carry-forward rulings for Tasks 15–16.
 
-Known outstanding, none of it blocking Task 16:
+Known outstanding. The one item that blocks Phase 1 reaching **Implemented** is the first:
 
-- **`pnpm test` fails from a clean clone.** This is one of Phase 1's own exit criteria, so it is
-  the most important item on this list. Four `apps/api` unit specs (and now one under `scripts/`)
-  import workspace packages by name, root `postinstall` runs only `prisma generate` and never a
-  build, so the `dist` those imports resolve to does not exist yet. Proved by moving
-  `packages/contracts/dist` aside: 7 files fail. CI survives **only** as a side effect — `pnpm lint`
-  and `pnpm typecheck` are turbo tasks with `dependsOn: ["^build"]` and happen to run first. The fix
-  is roughly one line (a `pretest` that builds, or routing root `test` through turbo), but it is a
-  workspace-topology change and deserves its own review rather than riding into a CI-checks task.
-  **Owed to Task 16, not suggested.** The failure mode — a gate whose correctness rests on an
-  earlier step's task graph — is exactly the rot Task 14 exists to stop.
+- **The four bumped GitHub Actions majors have never run on a runner.** `checkout@v4→v7`,
+  `setup-node@v4→v7`, `upload-artifact@v4→v7`, `pnpm/action-setup@v4→v6`, bumped because run
+  `32565519240` warned that the old majors declare the deprecated `node20` runtime and were being
+  forced onto Node 24 — a warning that becomes a failure when the runner stops carrying Node 20.
+  The majors were read from each repository's latest release rather than guessed, and each new
+  `action.yml` was checked to declare `node24` and still accept the inputs used here
+  (`node-version-file`, `cache`, `version`, `retention-days`, `if-no-files-found`). **That is
+  reading, not running.** The next push settles it, and nothing else is owed for Phase 1.
+- ~~`pnpm test` fails from a clean clone.~~ **Closed 2026-08-22 by Task 16.** Root `test` now runs
+  `build:packages` first; proven green from a genuine clean clone with no prior build (see the
+  verification table above). Two corrections to what this bullet used to say: the cold-tree
+  failure was **10** spec files, not 7 — the old number came from moving only
+  `packages/contracts/dist` aside, so it measured one package's blast radius rather than the
+  defect — and `test:integration`, `check:openapi` and `check:registry` had the same latent
+  dependency and were fixed with it. The old text's diagnosis was right: a gate whose correctness
+  rested on an earlier step's task graph.
+- **A local `pnpm test:e2e` silently tests whatever server is already on `WEB_PORT`.** Found
+  while running Task 16's verification, and it cost a real detour. `playwright.config.ts` sets
+  `reuseExistingServer: process.env['CI'] === undefined`, so locally Playwright attaches to any
+  listening server instead of building its own. A `next dev` server left over from the browser
+  session earlier that day was still on port 3000 running `APP_ENV=development`, which makes the
+  CSP **report-only** — and Chromium logs `The Content Security Policy directive
+  'upgrade-insecure-requests' is ignored when delivered in a report-only policy`, which the smoke
+  spec correctly counts as a console error. 1 failed, 4 passed. Re-run with the server Playwright
+  owns (`APP_ENV=test`, enforcing CSP): 5 passed. **No code was wrong.** But a suite that tests a
+  different application depending on what a developer left running is the same failure class as
+  the warm-tree blindness above, and it presents as a code defect. Worth either dropping
+  `reuseExistingServer` or making the mismatch loud. Also latent underneath it: both
+  `apps/web/src/security-headers.ts` and `apps/api/.../security-headers.middleware.ts` emit
+  `upgrade-insecure-requests` in report-only mode, where the spec says it is ignored — harmless,
+  but it guarantees a console error in every local dev session.
+- **`packages/db/src/id.ts`'s own docstring example is not a valid ID.**
+  `org_01J8XK2P9V3QWERTYUIOPASDF` has a 25-character body where a real one has 26, and contains
+  `U`, `I` and `O` — all excluded from the Crockford alphabet the file itself defines — so
+  `parseIdPrefix()` returns `undefined` for it. The same invalid string appears in the Phase 1
+  plan. Found by Task 16 while writing ADR-0011, which records it as a consequence and uses a
+  generated ID instead. Left unfixed deliberately: it is a code change, and ADR-0011 is now
+  accepted and immutable, so the two want doing together and thinking about once.
 - **CI's supply-chain policy will red the build again, and time was the only fix last time.**
   Between commits `daf7fd7` and `486fc34` every run died in 30 seconds at
   `pnpm install --frozen-lockfile` with
@@ -239,6 +352,22 @@ Known outstanding, none of it blocking Task 16:
   comment still stands in `pnpm-workspace.yaml`. **Owed to Task 16**, which should correct that
   comment and decide the policy deliberately — pin, adopt cooldown-waiting as policy, or set
   `minimumReleaseAge` explicitly rather than inheriting a default nobody chose.
+
+  **Decided and closed 2026-08-22 by Task 16**, the operator choosing explicit declaration over
+  the alternatives. `minimumReleaseAge: 1440` now sits in `pnpm-workspace.yaml` with
+  [ADR-0013](../decisions/ADR-0013-dependency-release-age-cooldown.md) behind it, and the
+  worthless verification comment has been rewritten to say why it was worthless. **The behaviour
+  is unchanged and the trap is not removed** — 1440 is pnpm's own default, so a dependency added
+  within 24 hours of its publication still reds CI until it ages out. That is the control working.
+  The response is to wait or pin the previous release, never to accept a
+  `minimumReleaseAgeExclude`. Two corrections to the text above: it was **four** red runs, not
+  three (commits `21746c5` and `2dad5bb` each fired on `main` and on the feature branch — runs
+  `32546337142`, `32546354121`, `32561019222`, `32561020627`), and two of those ran on `main`, so
+  commits that failed CI are in `main`'s history. The margin on the green run was **55 seconds**.
+  Separately: two sources disagree on `next@16.3.2`'s publish minute — pnpm's CI-side lockfile
+  verification says `09:38:38Z`, `npm view` says `09:54:02Z`. Both are recorded in
+  `pnpm-workspace.yaml`; nothing depends on which is right, and the load-bearing figure above is
+  the pnpm one.
 - ~~The CI workflow has never run.~~ **Closed 2026-08-22 — the full pipeline is green on a Linux
   runner** (run `32565519240`, commit `486fc34`, `ubuntu-latest`, **4m22s**). Every stage Task 14
   added executed for the first time and passed: the `format:check` gate, `check:specs`,
@@ -253,6 +382,15 @@ Known outstanding, none of it blocking Task 16:
   nothing failed, so the artefact-upload path remains unexercised; and the runner warns that
   `actions/checkout@v4`, `actions/setup-node@v4` and `pnpm/action-setup@v4` target the deprecated
   Node 20 and are being forced onto Node 24. Harmless today, a pin worth bumping in Task 16.
+  **Bumped 2026-08-22; not yet run — see the first bullet in this list.**
+- **CI reports; it does not gate — and it cannot on this plan.** Discovered by Task 16 while
+  checking whether audit §4's risk 4 could be closed. It cannot: `gh api
+  repos/…/branches/main/protection` and `…/rulesets` both return **HTTP 403, "Upgrade to GitHub
+  Pro or make this repository public to enable this feature."** So there is no required status
+  check and none can be configured, which is why two commits that failed CI are already in
+  `main`'s history. The original risk — *"nothing currently prevents a broken commit reaching
+  `main`"* — **still stands in full**, and "CI exists now" does not close it. Closing it needs a
+  plan change or a visibility change, not a code change. Operator's call.
 
   Also corrected here: this bullet previously read "the CI workflow has never run … nothing has
   run on a Linux runner", which was false when written — `ci.yml` has existed since `12831ef` and

@@ -18,6 +18,9 @@ re-litigated every six months by someone who cannot see why the obvious option w
 | [0008](ADR-0008-billing-architecture.md) | Stripe as authority, entitlements as projection | Accepted |
 | [0009](ADR-0009-scope-enforcement.md) | Proof of ownership and double scope evaluation | Accepted |
 | [0010](ADR-0010-engine-contract.md) | Language-agnostic engine contract over stdio | Accepted |
+| [0011](ADR-0011-prefixed-uuidv7-identifiers.md) | Prefixed UUIDv7 identifiers, generated in application code | Accepted |
+| [0012](ADR-0012-node-26-runtime-pin.md) | Node 26 pinned for development and CI, engines >= 22 | Accepted |
+| [0013](ADR-0013-dependency-release-age-cooldown.md) | A 24-hour release-age cooldown on every dependency, declared explicitly | Accepted |
 
 ## When to write one
 

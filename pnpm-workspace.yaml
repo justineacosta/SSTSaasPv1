@@ -20,21 +20,43 @@ allowBuilds:
   protobufjs: true
   ssh2: true
 
+# A package must be at least 24 hours old before this workspace will install it.
+#
+# 1440 minutes is also pnpm 11's own default, so this line changes no behaviour
+# today. It is here because an inherited default is a policy nobody chose, and
+# this one has already reddened CI three times — see
+# `.claude/decisions/ADR-0013-dependency-release-age-cooldown.md`. Written down,
+# it is a supply-chain control with an owner and a stated cost; unwritten, it
+# was an unexplained 30-second install failure. If pnpm changes its default, the
+# control here does not move with it.
+minimumReleaseAge: 1440
+
 # minimumReleaseAgeExclude is deliberately absent.
 #
 # `pnpm install` wrote ten entries here during Task 13 — `next@16.3.2` and its
-# nine `@next/swc-*` platform binaries — exempting them from pnpm's minimum
-# release-age check. That check is a supply-chain control: it refuses freshly
-# published packages, because a compromised release is most dangerous in the
-# hours before anyone notices. `next@16.3.2` was published at
-# 2026-08-21T09:54:02Z and was roughly three hours old when it was installed,
-# which is squarely inside the window the control exists to cover.
+# nine `@next/swc-*` platform binaries — exempting them from the check above.
+# That check is a supply-chain control: it refuses freshly published packages,
+# because a compromised release is most dangerous in the hours before anyone
+# notices. `next@16.3.2` was published on 2026-08-21 and was roughly three hours
+# old when it was installed, which is squarely inside the window the control
+# exists to cover. (Two sources disagree on the minute, and both are recorded
+# rather than one being picked: pnpm's own lockfile verification in CI reported
+# `2026-08-21T09:38:38.000Z`, while `npm view next@16.3.2 time` returns
+# `2026-08-21T09:54:02.099Z`. Nothing here depends on which is right.)
 #
-# The entries were removed rather than justified. Verified that nothing needs
-# them: with the block deleted, `pnpm install`, `pnpm install --frozen-lockfile`
-# (what CI runs) and `pnpm install --lockfile-only` all succeed and produce no
-# change to pnpm-lock.yaml — the resolution is already pinned, so the cooldown
-# is not consulted again.
+# The entries were removed rather than justified. **The verification originally
+# recorded here was worthless, and saying so is the point of this paragraph.**
+# It claimed nothing needed the exclusions because `pnpm install`,
+# `pnpm install --frozen-lockfile` and `pnpm install --lockfile-only` all
+# succeeded locally. They do — and they prove nothing. With `node_modules`
+# already in sync pnpm prints "Already up to date" and exits (measured
+# 2026-08-22: `Done in 277ms`), never running the release-age check at all. CI
+# starts from an empty `node_modules` and performs the full verification pass,
+# which is why four runs (commits 21746c5 and 2dad5bb, each firing on `main` and
+# on the feature branch) died at `pnpm install --frozen-lockfile` with
+# `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION` while a warm tree stayed green.
+# **A warm tree cannot observe this failure class.** The only thing that made CI
+# pass was the passage of 24 hours; no change was made.
 #
 # If a future `pnpm install` offers to re-add exclusions, that is a resolution
 # happening against the registry for a package too new to have been vetted.
