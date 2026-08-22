@@ -330,14 +330,29 @@ export function runChecks(
 }
 
 /**
- * `@sentinel/db` is imported dynamically, inside `main()`, on purpose.
+ * `@sentinel/db` is imported dynamically, inside `main()`.
  *
- * The package resolves to `packages/db/dist`, which only exists after
- * `pnpm build`. A static import would make `check-tenant-registry.spec.ts` —
- * which needs none of it, the functions above being pure — fail to even load in
- * the unit lane, which CI runs before the build. Measured: with
- * `packages/db/dist` moved aside, the spec still passes and this script still
- * fails with a resolution error, which is the split this shape buys.
+ * What that buys, precisely — an earlier version of this comment claimed more
+ * than was true, so here is what was actually measured. With
+ * `packages/db/dist` moved aside:
+ *
+ * - this script fails with `ERR_MODULE_NOT_FOUND` for
+ *   `node_modules/@sentinel/db/dist/index.js`, as it should;
+ * - `check-tenant-registry.spec.ts` **also** fails, with Vite's "Failed to
+ *   resolve entry for package @sentinel/db". Vite resolves a dynamic import's
+ *   specifier at transform time, so deferring the import does **not** decouple
+ *   the spec from the built package.
+ *
+ * So the dynamic form does not make the unit lane independent of `pnpm build`,
+ * and nothing here should be read as claiming it does. That coupling is not new
+ * and not this file's: four `apps/api` unit specs already import workspace
+ * packages by name, so the unit lane has always needed their `dist`. In CI it
+ * happens to hold because `pnpm lint` and `pnpm typecheck` run first and both
+ * are turbo tasks with `dependsOn: ["^build"]`.
+ *
+ * What it does buy is narrower and still worth it: the pure functions above can
+ * be imported — by the spec, or by anything else — without loading Prisma's
+ * generated client and its query engine into the process.
  */
 async function main(): Promise<void> {
   const {
