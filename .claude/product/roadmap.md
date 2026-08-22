@@ -405,14 +405,39 @@ phase or to the operator:
   `actions/checkout@v4`, `actions/setup-node@v4` and `pnpm/action-setup@v4` target the deprecated
   Node 20 and are being forced onto Node 24. Harmless today, a pin worth bumping in Task 16.
   **Bumped 2026-08-22; not yet run — see the first bullet in this list.**
-- **CI reports; it does not gate — and it cannot on this plan.** Discovered by Task 16 while
-  checking whether audit §4's risk 4 could be closed. It cannot: `gh api
-  repos/…/branches/main/protection` and `…/rulesets` both return **HTTP 403, "Upgrade to GitHub
-  Pro or make this repository public to enable this feature."** So there is no required status
-  check and none can be configured, which is why two commits that failed CI are already in
-  `main`'s history. The original risk — *"nothing currently prevents a broken commit reaching
-  `main`"* — **still stands in full**, and "CI exists now" does not close it. Closing it needs a
-  plan change or a visibility change, not a code change. Operator's call.
+- **CI now gates `main` — but only while the repository is public, and that is the catch.**
+  Task 16 found that audit §4's risk 4 could not be closed: `gh api
+  repos/…/branches/main/protection` and `…/rulesets` both returned **HTTP 403, "Upgrade to GitHub
+  Pro or make this repository public to enable this feature."** On 2026-08-23 the operator made
+  the repository public and protection was configured on `main`:
+
+  | Setting | Value |
+  |---|---|
+  | Required status check | `verify` (the CI job) |
+  | Require branch up to date before merging | yes |
+  | **Include administrators** | **yes** |
+  | Force pushes / deletions | blocked |
+  | Linear history / conversation resolution | required |
+
+  **`enforce_admins` is the setting that matters here and it was initially set wrong.** It was
+  first configured `false` to leave the owner an escape hatch — which, in a repository where the
+  owner is the only person who pushes, would have made the whole control decorative against the
+  exact risk it was meant to address. Corrected to `true` the same session. The escape hatch is
+  still there: the owner can disable protection deliberately, which is a logged act rather than
+  an accident, and that difference is the entire point.
+
+  **Two things are not proven and are not claimed.** `git push --dry-run` does *not* evaluate
+  server-side branch protection — it reports what the client would send — so it cannot be used as
+  evidence either way, and a reading of it briefly was. What is established is the authoritative
+  API state above plus `branches/main` reporting `protected: true`. Watching a red commit be
+  *rejected* has not happened; the first PR into `main` is what demonstrates it end to end.
+
+  **And the load-bearing caveat: this protection dies if the repository goes back to private.**
+  The 403 above is the evidence — on this plan, private repositories cannot carry branch
+  protection. Flipping visibility back **silently removes the gate**, and nothing will announce
+  it. Either keep the repository public, upgrade the plan, or accept that risk 4 reopens the
+  moment it is flipped. Two commits that failed CI are already in `main`'s history from before
+  this existed.
 
   Also corrected here: this bullet previously read "the CI workflow has never run … nothing has
   run on a Linux runner", which was false when written — `ci.yml` has existed since `12831ef` and
