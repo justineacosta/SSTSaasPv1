@@ -141,10 +141,14 @@ Corrected before commit. `.claude/skills/sentinel-phase/` encodes
 protocol work: verify a claimed status by running it before building on it, and update this file
 in the same change that moves the status.
 
-**Neither has been confirmed to load.** The files are at the documented project path and need no
-opt-in, but Claude Code only watches skill directories that existed at session start, and
-`.claude/skills/` did not — so it takes one fresh session to tell a skill from a file. Until
-that happens they are two Markdown files that no session has been observed to read.
+**Both have been confirmed to load** (2026-08-22). Proved by controlled comparison rather than by
+inspection: the session that wrote them — started before `.claude/skills/` existed — returns
+`Unknown skill: sentinel-verify`, while a session restarted afterwards resolves it and quoted a
+row from the middle of the file verbatim. That is the documented behaviour (Claude Code watches
+only the skill directories present at startup), and it rules out the alternative explanation: a
+wrong path, a missing opt-in or bad frontmatter would have failed in **both** sessions. The
+quote is what closes it — a name resolving proves registration, a line from deep in the body
+proves the body loaded.
 
 Nothing is deployed, and no request reaches this code from outside a test or a developer's own
 machine — so Phase 1 is Partially Implemented, not Implemented. Nothing in this product runs,
@@ -195,15 +199,6 @@ only on the machine that built it.** `progress.md` is the file to read first; it
 current pause state and the carry-forward rulings for Tasks 15–16.
 
 Known outstanding, none of it blocking Task 16:
-
-- **Neither project skill has been observed to load.** `sentinel-verify` and `sentinel-phase` are
-  at `.claude/skills/<name>/SKILL.md`, which is the documented project path and needs no
-  settings.json entry, no plugin and no marketplace. But Claude Code watches only the skill
-  directories that existed when a session started, and `.claude/skills/` did not exist when this
-  one did — a probe confirmed `Skill(sentinel-verify)` returns `Unknown skill`. The next fresh
-  session should confirm both names appear and that invoking `sentinel-verify` loads its **body**,
-  not merely that the name resolves. Plan Task 15 Step 4. One session away, and until then the
-  honest description is two files.
 
 - **`pnpm test` fails from a clean clone.** This is one of Phase 1's own exit criteria, so it is
   the most important item on this list. Four `apps/api` unit specs (and now one under `scripts/`)
