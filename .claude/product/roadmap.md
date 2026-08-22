@@ -8,7 +8,7 @@ code was written.
 Status vocabulary (specification §79): **Implemented** / **Partially Implemented** /
 **Not Implemented** / **Blocked**.
 
-## Current state — 2026-08-21
+## Current state — 2026-08-22
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -74,7 +74,8 @@ Phase 2 — so declaring a permission records an intention, it does not enforce 
 
 The OpenAPI document is generated from the route inventory and the Zod contracts, served at
 `/api/v1/openapi.json`, and committed as `apps/api/openapi.json`; a test asserts the committed
-file is byte-identical to what the code generates. The CI diff of that file arrives in Task 14.
+file is byte-identical to what the code generates. `pnpm check:openapi` now enforces the same
+thing in CI's cheap lane, without Postgres.
 
 Rate limiting is built and globally registered — a Redis sliding window over the table in
 `security/abuse-prevention.md` §1 — but it limits **nothing today**, and that distinction
@@ -105,6 +106,26 @@ including marketing, which contradicts `architecture/frontend.md` §2 — a deli
 explained in a new subsection there: Next can only nonce its inline bootstrap scripts for a
 page rendered against a real request, so a prerendered page under this CSP ships as dead
 HTML.
+
+**CI now has three mechanical checks, and all of them have been watched failing.** `check:registry`
+reads the Prisma DMMF and enforces four rules over the tenant registry: a model carrying
+`organizationId` that is not registered, a registered model that has lost the column or vanished,
+any model not accounted for by exactly one of tenant-owned / tenant-root / deliberately-global, and
+any `ON DELETE CASCADE` into a tenant-owned table from a parent that is not itself tenant-scoped —
+the exact shape of the defect Task 6 found live on `Membership.userId`, where deleting a `User`
+destroyed other organisations' rows. It refuses to answer from a generated client older than
+`schema.prisma`, because it was caught doing exactly that: a review reintroduced the Task 6 cascade
+defect, did not regenerate, and watched the check print OK. `check:openapi` fails on drift between
+the committed document and what the contracts generate. `check:specs` requires every spec file to
+be claimed by exactly one Vitest project and **bans the `*.test.*` spelling** — every project
+overrides Vitest's default `include` with `.spec.` patterns only, so a `.test.ts` file executes
+nothing while `pnpm test` prints green, which a review proved with a file asserting `1 === 2`.
+
+CI also gained an end-to-end stage, a `format:check` gate (green for the first time — it had failed
+on 11 files since the repository was created), and `eslint-plugin-react-hooks`. **The workflow
+itself has never run**: every command in it has been executed on one Windows machine, and nothing
+has executed on a Linux runner. The `playwright install --with-deps` step in particular installs
+Linux system packages that have never been installed here.
 
 Nothing is deployed, and no request reaches this code from outside a test or a developer's own
 machine — so Phase 1 is Partially Implemented, not Implemented. Nothing in this product runs,
@@ -137,65 +158,59 @@ Phase 1 is being executed as 16 tasks from
 `docs/superpowers/plans/2026-08-20-phase-1-foundation.md`, subagent-driven: a fresh implementer
 per task, then a separate adversarial reviewer, then scoped re-reviews per fix round.
 
-**Tasks 1–13 are complete.** Task 13 was implemented, independently reviewed (spec compliance
-pass, quality approved conditional on two corrections), and the fix round that corrected them
-has landed. 1 workspace and CI · 2
+**Tasks 1–14 are complete.** Task 14 was implemented, independently reviewed (spec compliance met
+with two partials, quality approved conditional on one Critical and four Importants), and the fix
+round that corrected them has landed and been re-reviewed clean — 0 items open. 1 workspace and CI · 2
 `packages/config` · 3 `packages/observability` · 4 compose stack, schema, prefixed UUIDv7 IDs,
 first migration · 5 `packages/contracts` · 6 tenant-scoped Prisma client and RLS · 7 seed · 8
 `packages/storage` · 9 `apps/api` bootstrap · 10 rate limiting · 11 route-access assertion and
-OpenAPI · 12 `packages/ui` tokens and primitives · 13 `apps/web` Next.js shell.
+OpenAPI · 12 `packages/ui` tokens and primitives · 13 `apps/web` Next.js shell · 14 CI checks.
 
-**Tasks 14–16 remain:** 14 CI checks (OpenAPI diff, tenant-registry completeness) · 15 the two
-reusable skills · 16 ADRs, documentation, and the full exit-criteria verification pass.
+**Tasks 15–16 remain:** 15 the two reusable skills · 16 ADRs, documentation, and the full
+exit-criteria verification pass.
 
 The execution ledger — every ruling with its cost if wrong, every review finding, per-task
 briefs and reports, and the review diffs — lives in
 `.superpowers/sdd/2026-08-20-phase-1-foundation/`. **That directory is gitignored and exists
 only on the machine that built it.** `progress.md` is the file to read first; it ends with the
-current pause state and the carry-forward rulings for Tasks 13–16.
+current pause state and the carry-forward rulings for Tasks 15–16.
 
-Known outstanding, none of it blocking Task 14:
+Known outstanding, none of it blocking Task 15:
 
+- **`pnpm test` fails from a clean clone.** This is one of Phase 1's own exit criteria, so it is
+  the most important item on this list. Four `apps/api` unit specs (and now one under `scripts/`)
+  import workspace packages by name, root `postinstall` runs only `prisma generate` and never a
+  build, so the `dist` those imports resolve to does not exist yet. Proved by moving
+  `packages/contracts/dist` aside: 7 files fail. CI survives **only** as a side effect — `pnpm lint`
+  and `pnpm typecheck` are turbo tasks with `dependsOn: ["^build"]` and happen to run first. The fix
+  is roughly one line (a `pretest` that builds, or routing root `test` through turbo), but it is a
+  workspace-topology change and deserves its own review rather than riding into a CI-checks task.
+  **Owed to Task 16, not suggested.** The failure mode — a gate whose correctness rests on an
+  earlier step's task graph — is exactly the rot Task 14 exists to stop.
+- **The CI workflow has never run.** Every command in `.github/workflows/ci.yml` has been executed
+  on one Windows machine; nothing has run on a Linux runner. Specifically unverified: `playwright
+  install --with-deps chromium` (it installs Linux system packages), the E2E stage on `ubuntu-latest`,
+  the Playwright artifact upload, and whether the 30-minute job timeout covers install → format →
+  lint → typecheck → unit → checks → docker stack → integration → build → `playwright install` →
+  a second Next build. All plausible, none measured. Watch the first real run rather than
+  pre-emptively tuning timeouts.
+- `check:openapi` treats every changed value as potentially breaking, and its prose exemption is
+  keyed on the leaf name — so a real API schema property named `description` (a future
+  `Finding.description`, say) would be classified as prose and not raise the `/api/v2` banner.
+  Messaging only: the exit code does not depend on that classification and still fails closed.
+  Found by the Task 14 re-review. Task 16 or whenever a schema property named `description` exists.
 - Task 10's fourth fix round has not itself been reviewed. Recommendation on file: fold it into
   the whole-branch review rather than spend a fifth round.
-- A short list of deferred residuals (Redis `EVALSHA`, `maxmemory-policy`, `pnpm format:check`
-  not wired into CI, dead `packages/config/tsconfig/*` presets, a missing root `dev` script) is
-  recorded in the ledger and assigned to Task 14 or Task 16. The missing root `dev` script now
-  matters more than it did: `apps/web` has a `dev` script and `.claude/development/setup.md`
-  still tells a developer to run `pnpm dev`, which does not exist.
-- **Task 14 owes a CI end-to-end stage — a browser install and `pnpm test:e2e`.** Required, not
-  suggested. `.github/workflows/ci.yml` today runs lint, typecheck, `pnpm test`,
-  `pnpm test:integration` and `pnpm build`, and none of them renders a page. The Playwright
-  suite is the *only* thing asserting that the CSP nonce reaches the HTML, that the enforcing
-  policy does not break the page, and that the §2 header table survives on a real response —
-  the assertions that separate `apps/web` from the twelve tasks before it. It passes on exactly
-  one developer's Windows machine and nowhere else, so any of those can regress with CI still
-  green. Recorded here rather than only in the gitignored ledger because a fresh session would
-  otherwise not know it owes this.
-- **No `eslint-plugin-react` / `eslint-plugin-react-hooks` anywhere, now that React application
-  code exists.** `grep -n react eslint.config.js` returns nothing. `apps/web/app/providers.tsx`
-  has three hooks with dependency arrays and a lazy `useState` initialiser, and nothing in the
-  toolchain checks any of it; the review confirmed the dependencies are correct **today**, so
-  this is a missing guard rather than a present bug — arriving at exactly the moment the repo
-  acquired the code it guards, over the most common React defect class. Task 14 or 16 to add
-  the plugins. Deliberately not installed by Task 13: adding a workspace-wide lint plugin is a
-  tooling change beyond a feature task, and it would have landed unreviewed.
+- Deferred residuals recorded in the ledger and assigned to Task 16 or later: dead
+  `packages/config/tsconfig/*` presets; a guard against client-level `omit` on scope columns
+  (Task 6 residual — it fails **closed**, and no client is constructed that way); Redis `EVALSHA`
+  and `maxmemory-policy` (performance, Phase 3/4).
 - Task 13 forced every HTML route dynamic to keep the nonce-based CSP intact. That is written
   up in `architecture/frontend.md` §2 and is a real cost to revisit when marketing content
   exists.
-- **Task 14 owes a guard that every `*.spec.*` under `packages/*/src` and `apps/*/src` is
-  matched by exactly one Vitest project.** Task 12 hit three separate spellings of the same
-  trap — a spec filename matching no project, passing green under `--passWithNoTests` while
-  executing nothing. All three instances are closed; the class is not, and patching globs one
-  at a time is losing to it. This is recorded here and not only in the gitignored ledger
-  because it is the one carry-forward that a fresh session would otherwise not know it owes.
-- Task 13 must know four things about `packages/ui` before it wires Tailwind: import
-  `@sentinel/ui`'s `tokens.css` **instead of** declaring its own `@import 'tailwindcss'`, or
-  Tailwind is emitted twice; named utilities (`bg-surface`) do not resolve, only arbitrary-value
-  ones; `--text-sm` is 13px app-wide and overrides Tailwind's own, while `--text-sm--line-height`
-  keeps Tailwind's, so pair `text-[length:var(--text-sm)]` with `leading-[var(--leading-sm)]`
-  explicitly; and an `apps/web` spec importing `@testing-library/react` directly needs that
-  package as an `apps/web` devDependency.
+- **Nobody has looked at `apps/web` in a browser.** It is verified by Playwright and by asserting
+  on returned HTML and headers, which says nothing about whether the typography and spacing are any
+  good, and no non-Chromium browser has loaded it. Owed to a human, not to a task.
 
 ### Phase 2 — Identity
 Registration, email verification, login/logout, Argon2id, sessions, CSRF, password reset,
