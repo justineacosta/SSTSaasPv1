@@ -208,9 +208,12 @@ Known outstanding, none of it blocking Task 15:
 - Task 13 forced every HTML route dynamic to keep the nonce-based CSP intact. That is written
   up in `architecture/frontend.md` §2 and is a real cost to revisit when marketing content
   exists.
-- **Nobody has looked at `apps/web` in a browser.** It is verified by Playwright and by asserting
-  on returned HTML and headers, which says nothing about whether the typography and spacing are any
-  good, and no non-Chromium browser has loaded it. Owed to a human, not to a task.
+- **A human has now looked at `apps/web` in a browser** (2026-08-22, `/` and `/dashboard` on the
+  dev server). Verdict: acceptable, and explicitly *too early to judge* — the design is expected to
+  change once there are real screens to design against. So this is no longer an open debt, but it
+  is also not a design sign-off, and nothing downstream should treat the current type, spacing or
+  colour choices as settled. Still true: no non-Chromium browser has loaded it, and Playwright plus
+  HTML/header assertions remain the only mechanical coverage.
 
 ### Phase 2 — Identity
 Registration, email verification, login/logout, Argon2id, sessions, CSRF, password reset,
