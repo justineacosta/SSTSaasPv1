@@ -46,10 +46,26 @@
  * HMR does need it, which is exactly why `operations/environments.md` §4 makes
  * the policy report-only in development — a violation report in a terminal is
  * a cheaper way to learn that than a policy with a permanent hole in it.
+ *
+ * On `upgrade-insecure-requests`: the one directive that is *not* identical in
+ * both modes. CSP Level 2 specifies that it is ignored when delivered in a
+ * report-only policy, and Chromium says so out loud — `The Content Security
+ * Policy directive 'upgrade-insecure-requests' is ignored when delivered in a
+ * report-only policy` — on every single response. A permanent console error in
+ * every local dev session is how a developer learns to ignore CSP console
+ * errors, and it broke a Playwright run for a reason that was not a defect.
+ * Omitting it while report-only costs no protection: it was never applied.
+ * The API middleware makes the same call, and the specs on both sides assert
+ * that the two policies differ by this directive and nothing else.
  */
 
-/** The header value shared by every response, enforcing or reporting. */
-function buildContentSecurityPolicy(nonce: string): string {
+/**
+ * The header value sent with every response.
+ *
+ * @param enforceCsp Everything here is identical in both modes except
+ *                   `upgrade-insecure-requests` — see the note above.
+ */
+function buildContentSecurityPolicy(nonce: string, enforceCsp: boolean): string {
   return [
     "default-src 'self'",
     // 'strict-dynamic' means scripts loaded *by* a nonced script inherit
@@ -66,7 +82,8 @@ function buildContentSecurityPolicy(nonce: string): string {
     "form-action 'self'",
     "base-uri 'self'",
     "object-src 'none'",
-    'upgrade-insecure-requests',
+    // Ignored by spec in a report-only policy, and loudly so. See above.
+    ...(enforceCsp ? ['upgrade-insecure-requests'] : []),
     'report-uri /api/csp-report',
   ].join('; ');
 }
@@ -76,12 +93,13 @@ function buildContentSecurityPolicy(nonce: string): string {
  *                nonce reused across responses is one an attacker can read
  *                from one page and reuse on the next.
  * @param enforceCsp `true` sends `Content-Security-Policy`; `false` sends
- *                `Content-Security-Policy-Report-Only` with the identical
- *                policy text. Derived from `APP_ENV` in one place
- *                (`src/env.ts`) so it cannot drift per call site.
+ *                `Content-Security-Policy-Report-Only` with the same policy
+ *                text minus `upgrade-insecure-requests`, which a report-only
+ *                policy is specified to ignore. Derived from `APP_ENV` in one
+ *                place (`src/env.ts`) so it cannot drift per call site.
  */
 export function buildSecurityHeaders(nonce: string, enforceCsp: boolean): Record<string, string> {
-  const policy = buildContentSecurityPolicy(nonce);
+  const policy = buildContentSecurityPolicy(nonce, enforceCsp);
 
   return {
     'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload',

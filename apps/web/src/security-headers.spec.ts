@@ -63,9 +63,33 @@ describe('buildSecurityHeaders', () => {
     expect(csp).toContain('report-uri /api/csp-report');
   });
 
-  it('carries the same policy text whether enforcing or reporting', () => {
-    const enforced = buildSecurityHeaders('abc123', true)['Content-Security-Policy'];
-    const reported = buildSecurityHeaders('abc123', false)['Content-Security-Policy-Report-Only'];
-    expect(reported).toBe(enforced);
+  // `upgrade-insecure-requests` is ignored by spec when it arrives in a
+  // report-only policy, and Chromium logs a console error saying so — which is
+  // how a developer learns to ignore CSP console errors. Omitting it when
+  // report-only loses no protection, because it was never applied.
+  it('sends upgrade-insecure-requests when enforcing', () => {
+    const csp = buildSecurityHeaders('abc123', true)['Content-Security-Policy'] ?? '';
+    expect(csp.split('; ')).toContain('upgrade-insecure-requests');
+  });
+
+  it('omits upgrade-insecure-requests when report-only, where it would be ignored', () => {
+    const csp = buildSecurityHeaders('abc123', false)['Content-Security-Policy-Report-Only'] ?? '';
+    expect(csp).not.toContain('upgrade-insecure-requests');
+  });
+
+  // Asserted as a whole-list comparison rather than by eye: the two policies
+  // must differ by that one directive and nothing else, so a directive added
+  // to one mode and not the other fails here rather than in production.
+  it('is otherwise byte-identical between enforcing and report-only', () => {
+    const enforced = (buildSecurityHeaders('abc123', true)['Content-Security-Policy'] ?? '').split(
+      '; ',
+    );
+    const reported = (
+      buildSecurityHeaders('abc123', false)['Content-Security-Policy-Report-Only'] ?? ''
+    ).split('; ');
+
+    expect(reported).toEqual(
+      enforced.filter((directive) => directive !== 'upgrade-insecure-requests'),
+    );
   });
 });
