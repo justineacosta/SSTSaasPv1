@@ -165,8 +165,10 @@ import by name. `lint` and `typecheck` survived only because they *are* turbo ta
 (`turbo run build --filter=./packages/*`) that `test`, `test:integration`, `check:openapi` and
 `check:registry` now run first. Measured, not assumed: from a cold tree the old scripts failed
 **10** spec files — not the 7 this file previously recorded, which came from moving only
-`packages/contracts/dist` aside — and the new ones pass 32 files / 403 tests in 8.8s cold, 25ms
-warm on a full turbo cache. `check:specs` was audited and deliberately left alone: it reads
+`packages/contracts/dist` aside — and the new ones pass 32 files / 403 tests in 8.8s cold. The
+warm cost of the added step is what matters for everyday use, and it is a turbo cache hit:
+`pnpm build:packages` alone returns in **0.6s** (`Time: 24ms >>> FULL TURBO` inside it), against
+`pnpm test` end to end at **~5.5s**. `check:specs` was audited and deliberately left alone: it reads
 `vitest.workspace.ts` and the filesystem only, and already passed cold.
 
 The second was the supply-chain cooldown. `minimumReleaseAge` is now **declared explicitly at
@@ -189,12 +191,12 @@ Nothing is deployed, and no request reaches this code from outside a test or a d
 machine. Nothing in this product runs, scans, stores, bills, or authenticates for an actual user
 today. Phase 1 stays **Partially Implemented** for one specific, closeable reason, stated
 precisely because "nearly done" is not a status: **three of its four exit criteria are proven and
-the fourth is not.** "CI is green" was last true for commit `486fc34`; Task 16 bumped four
-GitHub Actions majors (`checkout@v7`, `setup-node@v7`, `upload-artifact@v7`,
-`pnpm/action-setup@v6`) off the deprecated Node 20 runtime, and **no CI run has executed those
-pins.** The first push after this commit is what decides it. Until that run is green, the claim
-is unproven — and a pin verified only by reading `action.yml` is exactly the class of claim this
-file exists to refuse.
+the fourth is not.** CI was last green on `97cedb0`, this commit's own parent (runs
+`32566345255` and `32566346829`, both success). Task 16 then bumped four GitHub Actions majors
+(`checkout@v7`, `setup-node@v7`, `upload-artifact@v7`, `pnpm/action-setup@v6`) off the deprecated
+Node 20 runtime, and **no CI run has executed those pins.** The first push after this commit is
+what decides it. Until that run is green, the claim is unproven — and a pin verified only by
+reading `action.yml` is exactly the class of claim this file exists to refuse.
 
 ### Blocked items
 
@@ -323,11 +325,12 @@ Known outstanding. The one item that blocks Phase 1 reaching **Implemented** is 
   `org_01J8XK2P9V3QWERTYUIOPASDF` has a 25-character body where a real one has 26, and contains
   `U`, `I` and `O` — all excluded from the Crockford alphabet the file itself defines — so
   `parseIdPrefix()` returns `undefined` for it. The same invalid string appears in the Phase 1
-  plan. Found by Task 16 while writing ADR-0011, which records it as a consequence and uses a
-  generated ID instead. Left unfixed deliberately: it is a code change, and ADR-0011 is now
-  accepted and immutable, so the two want doing together and thinking about once.
+  plan. Found by Task 16 while writing ADR-0011, which uses a generated ID instead. Left unfixed
+  only because it is a code change outside Task 16's scope — **ADR-0011 is deliberately worded so
+  that fixing it does not disturb the ADR.** A one-line docstring correction closes this.
 - **CI's supply-chain policy will red the build again, and time was the only fix last time.**
-  Between commits `daf7fd7` and `486fc34` every run died in 30 seconds at
+  On commits `21746c5` and `2dad5bb` — the two pushes between `6d97bb5` and `486fc34` that
+  triggered runs at all — every run died in 30 seconds at
   `pnpm install --frozen-lockfile` with
   `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`: ten lockfile entries — `next@16.3.2` and its nine
   `@next/swc-*` platform binaries — are younger than pnpm 11's **default 24-hour** minimum
