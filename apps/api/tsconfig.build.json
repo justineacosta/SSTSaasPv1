@@ -1,5 +1,13 @@
 {
   "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "noEmit": false
+  },
+  // Emission is `src` only: `scripts/` is developer tooling run through Node's
+  // type stripping, and shipping it in the runtime image would be noise.
+  "include": ["src/**/*.ts"],
   // `src/testing` is harness, not product: it is imported only by specs, and
   // emitting it would ship dotenv and the test bootstrap in the runtime image.
   "exclude": ["src/**/*.spec.ts", "src/**/*.integration.spec.ts", "src/testing/**/*.ts"]

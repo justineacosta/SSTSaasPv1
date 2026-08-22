@@ -85,6 +85,16 @@ must get isolation right on their own, reviewed accordingly.
 The unscoped client lives in one module. An ESLint rule forbids importing it outside
 `packages/db/migrations`, seeds, and the platform-admin module, and CI fails on violation.
 
+The rule fences **two** specifiers, and it took a review to notice the second was missing: the
+`unscoped` wrapper module, *and* the generated Prisma client path it wraps
+(`packages/db/generated/client`). Fencing only the wrapper left
+`import { PrismaClient } from '../generated/client/index.js'` linting clean from any file — a
+non-exempt probe proved it — which meant this paragraph, and
+[`../development/coding-standards.md`](../development/coding-standards.md) §6, described a
+control that did not cover the shorter road to the same object. Both specifiers are now in the
+restricted group; the only exemptions on the generated path are `unscoped.ts` itself and
+`datamodel.ts`, which reads schema metadata and can issue no query.
+
 ### Layer 2 — PostgreSQL Row-Level Security (defence in depth)
 
 RLS is enabled and **forced** on every tenant table and on the tenant root, with a policy

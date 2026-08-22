@@ -68,6 +68,24 @@ export default tseslint.config(
               group: ['**/unscoped', '**/unscoped.js', '@sentinel/db/unscoped'],
               message: 'Use the tenant-scoped client. See security/tenant-isolation.md.',
             },
+            // The generated client itself, not just the `unscoped.ts` wrapper
+            // around it (Task 14 review, I3). The wrapper was fenced; the path
+            // it wraps was not, so `import { PrismaClient } from
+            // '../generated/client/index.js'` sailed straight past the rule.
+            // Proved with a non-exempt probe file importing PrismaClient that
+            // way: eslint exited 0, zero errors.
+            //
+            // This matters beyond the hole itself: coding-standards.md §6
+            // asserts as FACT that lint enforces "no import of the unscoped
+            // Prisma client outside migrations, seeds, and platform admin", and
+            // that claim was false for the direct path. A security document
+            // describing a control that does not exist is the defect class this
+            // branch keeps re-introducing.
+            {
+              group: ['**/generated/client', '**/generated/client/*'],
+              message:
+                'Import the tenant-scoped client from @sentinel/db. The generated Prisma client is unscoped. See security/tenant-isolation.md §2.',
+            },
           ],
         },
       ],
@@ -140,6 +158,10 @@ export default tseslint.config(
   {
     files: [
       'packages/db/src/unscoped.ts',
+      // datamodel.ts reads Prisma.dmmf — schema shape only. It exports no
+      // PrismaClient, does not re-export `Prisma`, and nothing it exports can
+      // issue a query; the review verified that specifically.
+      'packages/db/src/datamodel.ts',
       'packages/db/src/seed.ts',
       'packages/db/src/tenant-client.ts',
       'packages/db/src/tenant-transaction.ts',

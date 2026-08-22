@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.build.json",
     "dev": "dotenv -e ../../.env -- node scripts/dev.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "eslint src",
+    "lint": "eslint src scripts",
     "openapi:generate": "tsc -p tsconfig.build.json && dotenv -e ../../.env -- node dist/openapi/cli.js",
     "start": "node dist/main.js"
   },

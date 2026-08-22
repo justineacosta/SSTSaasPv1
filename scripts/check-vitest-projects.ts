@@ -36,9 +36,9 @@ import { fileURLToPath } from 'node:url';
 
 /** Where a spec file may live and still be expected to run under Vitest. */
 const SEARCH_GLOBS = [
-  'packages/*/**/*.spec.*',
-  'apps/*/**/*.spec.*',
-  'scripts/**/*.spec.*',
+  'packages/*/**/*.{spec,test}.*',
+  'apps/*/**/*.{spec,test}.*',
+  'scripts/**/*.{spec,test}.*',
 ] as const;
 
 /**
@@ -85,6 +85,32 @@ export function isExcludedSpecPath(relativePath: string): boolean {
   if (segments.some((segment) => EXCLUDED_SEGMENTS.includes(segment as never))) return true;
   // apps/<name>/e2e/** — Playwright's, not Vitest's.
   return segments[0] === 'apps' && segments[2] === E2E_DIRECTORY;
+}
+
+/**
+ * The `.test.*` spelling, which this repository bans.
+ *
+ * Vitest's DEFAULT `include` covers both `.test.` and `.spec.` — but every
+ * project in `vitest.workspace.ts` overrides that default with `.spec.`
+ * patterns only. So a `.test.ts` file matches no project and executes nothing
+ * while `pnpm test` prints green. A review proved it end to end: a
+ * `packages/db/src/__probe__.test.ts` asserting `1 === 2` sat in the tree and
+ * both `pnpm test` and this check reported OK, exit 0. The sweep only looked
+ * for `.spec.*`, so the guard built to end the silent-skip trap was blind to
+ * the most natural filename in the ecosystem.
+ *
+ * The fix is a RENAME, not a wider project include. Two spellings for one
+ * concept is how this trap regrows: Task 12 hit three separate spellings and
+ * the third was created by the fix round for the second. All 41 spec files in
+ * this repository are already `.spec.*`, so the ban costs nothing.
+ */
+export function findBannedSpellings(candidates: readonly string[]): string[] {
+  return candidates.filter((candidate) => /\.test\.[^./]+$/.test(normalisePath(candidate)));
+}
+
+/** `a/b/foo.test.ts` -> `a/b/foo.spec.ts`, for the rename instruction. */
+export function toCanonicalSpelling(path: string): string {
+  return normalisePath(path).replace(/\.test\.([^./]+)$/, '.spec.$1');
 }
 
 /** One Vitest project and the files it claims, as the project itself reports them. */
@@ -149,6 +175,12 @@ function report(lines: readonly string[]): void {
   console.error(lines.join('\n'));
 }
 
+/** Success goes to stdout; only failures belong on stderr. */
+function reportOk(lines: readonly string[]): void {
+  // eslint-disable-next-line no-console
+  console.log(lines.join('\n'));
+}
+
 /** Every spec file on disk that Vitest is expected to claim. */
 export function findCandidateSpecFiles(root: string): string[] {
   const found = SEARCH_GLOBS.flatMap((pattern) => globSync(pattern, { cwd: root }));
@@ -162,6 +194,12 @@ async function main(): Promise<void> {
   const { createVitest } = await import('vitest/node');
   const vitest = await createVitest('test', { watch: false });
 
+  // Globbed exactly once and reused (M6): the disk sweep and the report must
+  // describe the same set, and calling it twice invited them to diverge.
+  const candidates = findCandidateSpecFiles(REPO_ROOT);
+  const banned = findBannedSpellings(candidates);
+  const claimable = candidates.filter((candidate) => !banned.includes(candidate));
+
   let result: CoverageResult;
   let projectNames: string[];
   try {
@@ -172,12 +210,35 @@ async function main(): Promise<void> {
       })),
     );
     projectNames = projects.map((project) => project.project);
-    result = findSpecCoverageViolations(findCandidateSpecFiles(REPO_ROOT), projects);
+    result = findSpecCoverageViolations(claimable, projects);
   } finally {
     await vitest.close();
   }
 
   const lines: string[] = [];
+
+  if (banned.length > 0) {
+    lines.push(
+      'These files use the `.test.*` spelling, which this repository does not use:',
+      '',
+      ...banned.map(
+        (file) =>
+          `  ${file.replace(`${REPO_ROOT}/`, '')}` +
+          `
+      rename to  ${toCanonicalSpelling(file).replace(`${REPO_ROOT}/`, '')}`,
+      ),
+      '',
+      "Vitest's default include covers both `.test.` and `.spec.`, but every",
+      'project in vitest.workspace.ts overrides that default with `.spec.`',
+      'patterns only — so a `.test.*` file matches no project and executes',
+      'nothing while `pnpm test` prints green.',
+      '',
+      'RENAME the file. Do not teach a project to claim `.test.*`: two spellings',
+      'for one concept is how this trap regrows, and Task 12 hit three of them,',
+      'the third created by the fix round for the second.',
+      '',
+    );
+  }
 
   if (result.unclaimed.length > 0) {
     lines.push(
@@ -217,10 +278,25 @@ async function main(): Promise<void> {
     return;
   }
 
-  const candidates = findCandidateSpecFiles(REPO_ROOT);
-  report([
-    `check:specs OK — ${String(candidates.length)} spec files, each claimed by exactly one of: ` +
-      `${projectNames.join(', ')}.`,
+  // A floor assertion (M3). `OK — 0 spec files` would be a green answer from a
+  // check whose entire premise is distrusting silent zeros: a broken glob, a
+  // wrong cwd, or a renamed directory would all present as success.
+  if (claimable.length === 0) {
+    report([
+      'check:specs FAILED — the sweep found no spec files at all.',
+      '',
+      'That is not a repository with no tests; it is a broken sweep. Something',
+      'about SEARCH_GLOBS, the exclusion list, or the working directory is wrong.',
+      'Reporting OK here would be exactly the silent zero this check exists to',
+      'refuse.',
+    ]);
+    process.exitCode = 1;
+    return;
+  }
+
+  reportOk([
+    `check:specs OK — ${String(claimable.length)} spec files, each claimed by exactly one of: ` +
+      `${projectNames.join(', ')}. No banned .test.* spellings.`,
   ]);
 }
 

@@ -110,24 +110,41 @@ install -> format -> lint -> typecheck -> unit -> check:specs -> stack up -> int
 `security` and `container scan` are not in it: the security suites are Phase 2/3 (there is no
 authorization matrix to generate and no tenant-owned REST resource to assert over), and no
 container is built yet. `check:specs`, `check:openapi` and `check:registry` are the three
-mechanical checks Task 14 added — respectively that every `*.spec.*` file is claimed by exactly
-one Vitest project, that the committed OpenAPI document matches what the contracts generate, and
+mechanical checks Task 14 added — respectively that every spec file is claimed by exactly one
+Vitest project, that the committed OpenAPI document matches what the contracts generate, and
 that the tenant resource registry has not rotted
 ([`migrations.md`](migrations.md) §5).
+
+**Spec files are named `*.spec.*`, never `*.test.*`, and `check:specs` enforces that.** Vitest's
+default `include` covers both spellings, but every project in `vitest.workspace.ts` overrides
+that default with `.spec.` patterns only — so a `.test.ts` file matches no project and executes
+nothing while `pnpm test` prints green. A review proved it with a file asserting `1 === 2`. The
+check now sweeps both spellings and fails on `.test.*` with a rename instruction; the fix is
+always to rename the file, never to widen a project include, because two spellings for one
+concept is how the trap regrows.
 
 `check:specs` sits immediately after the unit tests because it is the check that says whether
 they ran anything: a spec matching no project executes nothing while `--passWithNoTests` prints
 green.
 
 Security suites run on every pull request, not nightly. The full E2E suite runs on pull
-requests to `main`; a smoke subset runs on every push. Flaky tests are quarantined and fixed,
-never retried into passing — a retried test is a test that no longer tells you anything.
+requests to `main`; a smoke subset runs on every push.
 
-**One live exception to that last sentence, recorded rather than hidden:**
-`apps/web/playwright.config.ts` sets `retries: 2` under CI. That was Task 13's decision and it
-predates this stage existing anywhere but one developer's machine; now that the E2E stage runs
-on every push, it is a real conflict with the rule above and it belongs in front of a reviewer
-rather than in a config file nobody re-reads. The argument for keeping it is that a cold Linux
-runner starting a fresh production build has startup races a developer's warm machine does not;
-the argument against is the rule above, which exists because a retried test stops telling you
-anything. Unresolved.
+**Retries.** Flaky tests are quarantined and fixed, not retried into passing. Concretely:
+
+- **Unit and integration run with zero retries, and a failure there is a failure.** Verified
+  behaviourally rather than by reading a default: a probe test that only passes on a second
+  attempt fails under both the `unit` and `integration` projects, so each test body executes
+  exactly once.
+- **The E2E lane may retry, and only the E2E lane.** `apps/web/playwright.config.ts` sets
+  `retries: 2` under CI. What that absorbs is *infrastructure* flake — port binding, a cold
+  production server start, network — not test flake, and that distinction is the whole
+  justification.
+- **A red-then-green retry is triaged, not ignored.** `trace: 'on-first-retry'` means the first
+  failure always leaves a trace behind, and `ci.yml` uploads it on failure. A retry that hid the
+  evidence would be exactly what this rule forbids; a retry that preserves it is a lead.
+
+This paragraph used to end on the flat absolute "never retried into passing". That was written
+about unit and integration tests, where it is right, and over-generalised to a browser lane that
+did not exist when it was written — a contradiction that only became live when Task 14 added the
+E2E stage to CI. Resolved in favour of amending the rule, not the config.

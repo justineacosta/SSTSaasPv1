@@ -71,7 +71,10 @@ path has a considered failure behaviour.
 These have ESLint rules, not just good intentions:
 
 - No `process.env` outside `packages/config`.
-- No import of the unscoped Prisma client outside migrations, seeds, and platform admin.
+- No import of the unscoped Prisma client outside migrations, seeds, and platform admin. This
+  covers both the `unscoped` module and the generated client path it wraps
+  (`packages/db/generated/client`) — fencing only the former left the direct import clean, which
+  a Task 14 review demonstrated with a probe file.
 - No `dangerouslySetInnerHTML` outside the reviewed markdown renderer.
 - No raw hex colours in `packages/ui` or `apps/web` components — reference a design token
   custom property instead (Task 12). Arbitrary spacing values are not yet lint-enforced.

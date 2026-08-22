@@ -3,6 +3,7 @@ import {
   diffJsonValues,
   formatDifferences,
   hasBreakingDifference,
+  isProseOnlyPath,
   type JsonDifference,
 } from './check-openapi-diff.js';
 
@@ -100,5 +101,58 @@ describe('formatDifferences', () => {
     expect(
       formatDifferences([{ path: 'a', kind: 'changed', committed: '1', generated: '2' }]),
     ).toEqual(['  ~ a\n      committed: 1\n      generated: 2']);
+  });
+});
+
+describe('isProseOnlyPath', () => {
+  it('treats every info.* field as prose', () => {
+    // A review edited info.description — free text no client consumes — and got
+    // the full "this needs /api/v2" banner. A banner that fires on every
+    // docstring tweak is a banner people learn to skim past.
+    expect(isProseOnlyPath('info.description')).toBe(true);
+    expect(isProseOnlyPath('info.title')).toBe(true);
+    expect(isProseOnlyPath('info.version')).toBe(true);
+  });
+
+  it('treats description and summary as prose at any depth', () => {
+    expect(isProseOnlyPath('paths./health/live.get.description')).toBe(true);
+    expect(isProseOnlyPath('paths./health/live.get.summary')).toBe(true);
+  });
+
+  it('does not treat contract-bearing fields as prose', () => {
+    expect(isProseOnlyPath('paths./health/live.get.operationId')).toBe(false);
+    expect(isProseOnlyPath('components.schemas.Error.required[0]')).toBe(false);
+    expect(isProseOnlyPath('openapi')).toBe(false);
+  });
+
+  it('is not fooled by a field whose name merely ends in the word', () => {
+    expect(isProseOnlyPath('paths./x.get.responses.200.contentDescription')).toBe(false);
+  });
+});
+
+describe('hasBreakingDifference, prose exemption', () => {
+  it('does not call a docstring edit breaking', () => {
+    expect(
+      hasBreakingDifference([
+        { path: 'info.description', kind: 'changed', committed: '"A"', generated: '"B"' },
+      ]),
+    ).toBe(false);
+  });
+
+  it('still calls an operationId rename breaking', () => {
+    expect(
+      hasBreakingDifference([
+        { path: 'paths./x.get.operationId', kind: 'changed', committed: '"a"', generated: '"b"' },
+      ]),
+    ).toBe(true);
+  });
+
+  it('still calls a removal breaking even on a prose path sibling', () => {
+    expect(
+      hasBreakingDifference([
+        { path: 'info.description', kind: 'changed', committed: '"A"', generated: '"B"' },
+        { path: 'paths./x', kind: 'removed', committed: '{}' },
+      ]),
+    ).toBe(true);
   });
 });

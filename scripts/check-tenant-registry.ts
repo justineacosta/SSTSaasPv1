@@ -205,6 +205,12 @@ function report(lines: readonly string[]): void {
   console.error(lines.join('\n'));
 }
 
+/** Success goes to stdout; only failures belong on stderr. */
+function reportOk(lines: readonly string[]): void {
+  // eslint-disable-next-line no-console
+  console.log(lines.join('\n'));
+}
+
 export function runChecks(
   models: readonly ModelInfo[],
   registries: Registries,
@@ -354,15 +360,54 @@ export function runChecks(
  * be imported — by the spec, or by anything else — without loading Prisma's
  * generated client and its query engine into the process.
  */
+/** The stale-DMMF refusal. Its own function so the message stays readable. */
+function reportStale(reason: string): void {
+  report([
+    'check:registry REFUSED TO ANSWER — the generated Prisma client does not',
+    'match packages/db/prisma/schema.prisma.',
+    '',
+    `Reason: ${reason}`,
+    '',
+    'Every rule this check applies is read from the generated DMMF. If that',
+    'artefact is older than the schema, the check reports on a model nobody has',
+    'any more — and it reports OK, which is the one answer it must never give',
+    'without grounds. This is not hypothetical: a review reintroduced the exact',
+    'live cascade defect Task 6 fixed, did not regenerate, and watched this',
+    'check print OK and exit 0.',
+    '',
+    'Run:  pnpm --filter @sentinel/db db:generate',
+    '',
+    'The comparison is against generated/client/schema.prisma — the copy Prisma',
+    'writes in the same invocation that writes the DMMF, so the two can never',
+    'disagree with each other about which schema they came from.',
+  ]);
+  process.exitCode = 1;
+}
+
 async function main(): Promise<void> {
   const {
     datamodelModels,
     DELIBERATELY_GLOBAL_MODEL_NAMES,
     DELIBERATELY_GLOBAL_MODELS,
-    PRISMA_CLIENT_VERSION,
+    schemaStaleness,
     TENANT_OWNED_MODELS,
     TENANT_ROOT_MODEL,
   } = await import('@sentinel/db');
+
+  // Before anything else. A check that reasons from an unverified artefact is
+  // the thing this check exists to prevent elsewhere.
+  const staleness = schemaStaleness();
+  if (staleness !== undefined) {
+    reportStale(
+      {
+        'no-source-schema': 'packages/db/prisma/schema.prisma could not be read at all.',
+        'no-generated-schema':
+          'the generated client carries no copy of the schema it was built from, so its provenance is unknown.',
+        'schema-mismatch': 'schema.prisma has changed since the client was generated.',
+      }[staleness],
+    );
+    return;
+  }
 
   const models = datamodelModels();
   const registries: Registries = {
@@ -383,11 +428,14 @@ async function main(): Promise<void> {
     return;
   }
 
-  report([
+  // The provenance clause is the point of this line. It used to print the
+  // Prisma *client version*, which reads like a provenance claim while saying
+  // nothing whatever about whether the DMMF matches the schema on disk.
+  reportOk([
     `check:registry OK — ${String(models.length)} models, ` +
       `${String(registries.tenantOwned.length)} tenant-owned, ` +
-      `1 tenant root, ${String(registries.deliberatelyGlobal.length)} deliberately global ` +
-      `(Prisma client ${PRISMA_CLIENT_VERSION}).`,
+      `1 tenant root, ${String(registries.deliberatelyGlobal.length)} deliberately global. ` +
+      `DMMF verified against packages/db/prisma/schema.prisma.`,
   ]);
 }
 

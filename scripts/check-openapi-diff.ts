@@ -109,15 +109,37 @@ export function diffJsonValues(
 }
 
 /**
+ * Free prose that no client can depend on, so a change to it is never breaking.
+ *
+ * `description` and `summary` are human documentation at any depth, and every
+ * `info.*` field (title, version, description) describes the document rather
+ * than the contract. Adding a field is still additive per §8, so only `removed`
+ * and `changed` are ever candidates in the first place.
+ */
+export function isProseOnlyPath(path: string): boolean {
+  if (path.startsWith('info.') || path === 'info') return true;
+  const leaf = path.split('.').pop() ?? '';
+  return leaf === 'description' || leaf === 'summary';
+}
+
+/**
  * True when a difference removes or renames something a client may depend on.
  *
  * Renames show up as one `removed` plus one `added`, so `removed` is the signal
  * either way. `api/conventions.md` §8: removing a field, renaming, changing a
  * type, tightening validation, or changing a status code needs `/api/v2`.
+ *
+ * Prose-only paths are excluded. The check still FAILS on them — the committed
+ * document must match what the code generates either way — but it stops
+ * printing a "this needs /api/v2" banner over a typo fix in a docstring. A
+ * banner that appears on every cosmetic edit is a banner people learn to skim
+ * past, and then it is not there when it matters.
  */
 export function hasBreakingDifference(differences: readonly JsonDifference[]): boolean {
   return differences.some(
-    (difference) => difference.kind === 'removed' || difference.kind === 'changed',
+    (difference) =>
+      (difference.kind === 'removed' || difference.kind === 'changed') &&
+      !isProseOnlyPath(difference.path),
   );
 }
 
@@ -167,6 +189,12 @@ function report(lines: readonly string[]): void {
   console.error(lines.join('\n'));
 }
 
+/** Success goes to stdout; only failures belong on stderr. */
+function reportOk(lines: readonly string[]): void {
+  // eslint-disable-next-line no-console
+  console.log(lines.join('\n'));
+}
+
 function main(): void {
   try {
     try {
@@ -189,11 +217,31 @@ function main(): void {
       return;
     }
 
-    const committedText = readFileSync(COMMITTED, 'utf8');
+    let committedText: string;
+    try {
+      committedText = readFileSync(COMMITTED, 'utf8');
+    } catch {
+      // Without this the reader gets a raw ENOENT stack from Node. It already
+      // failed closed, but a stack trace does not tell anyone what to do.
+      report([
+        'check:openapi FAILED — apps/api/openapi.json is missing.',
+        '',
+        'The committed OpenAPI document is the contract; there is nothing to',
+        'compare the generated one against. If it was deleted by accident,',
+        'restore it from git. If this is a fresh checkout that never had one:',
+        '',
+        '  pnpm --filter @sentinel/api openapi:generate',
+        '',
+        'then commit the result.',
+      ]);
+      process.exitCode = 1;
+      return;
+    }
+
     const generatedText = readFileSync(GENERATED, 'utf8');
 
     if (committedText === generatedText) {
-      report([
+      reportOk([
         'check:openapi OK — apps/api/openapi.json is byte-identical to what the contracts generate.',
       ]);
       return;

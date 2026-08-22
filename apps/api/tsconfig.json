@@ -1,8 +1,6 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "rootDir": "src",
-    "outDir": "dist",
     // NestJS is decorator-driven. `emitDecoratorMetadata` is deliberately NOT
     // enabled: esbuild — which Vitest uses to transform TypeScript — does not
     // implement it, so any DI that relied on `design:paramtypes` would resolve
@@ -11,7 +9,16 @@
     // reflected type metadata and behaves identically in both toolchains.
     "experimentalDecorators": true,
     "useDefineForClassFields": false,
-    "types": ["node"]
+    "types": ["node"],
+    // This project is for checking, not emitting. `rootDir`/`outDir` live in
+    // tsconfig.build.json, which is the only thing that emits — that split is
+    // what lets `include` below reach `scripts/`, which sits outside `src` and
+    // could not be added while `rootDir` was `src`.
+    "noEmit": true
   },
-  "include": ["src/**/*.ts"]
+  // `scripts/**` is not optional here. A review put a blatant type error AND a
+  // banned `console.log` in `scripts/dev.ts` and both `pnpm typecheck` and
+  // `pnpm lint` exited 0 — the same blind spot the root `tsconfig.json` was
+  // added to close for root `scripts/`, recreated one directory over.
+  "include": ["src/**/*.ts", "scripts/**/*.ts"]
 }

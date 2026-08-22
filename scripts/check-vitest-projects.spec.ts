@@ -1,8 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  findBannedSpellings,
+  findCandidateSpecFiles,
   findSpecCoverageViolations,
   isExcludedSpecPath,
   normalisePath,
+  toCanonicalSpelling,
   type ProjectFiles,
 } from './check-vitest-projects.js';
 
@@ -101,5 +107,95 @@ describe('findSpecCoverageViolations', () => {
     expect(
       findSpecCoverageViolations([], [{ project: 'unit', files: ['/elsewhere/x.spec.ts'] }]),
     ).toEqual({ unclaimed: [], contested: [] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C1 regression — the `.test.*` spelling.
+//
+// A review put `packages/db/src/__probe__.test.ts` containing
+// `expect(1).toBe(2)` in the tree. `pnpm test` printed 375 passed and
+// `check:specs` printed OK: both green, the failing test never executed. The
+// sweep only looked for `.spec.*`, so the guard built to end the silent-skip
+// trap was blind to the most natural filename in the ecosystem.
+// ---------------------------------------------------------------------------
+
+describe('findBannedSpellings', () => {
+  it('flags the exact file the review used', () => {
+    expect(findBannedSpellings(['/r/packages/db/src/__probe__.test.ts'])).toEqual([
+      '/r/packages/db/src/__probe__.test.ts',
+    ]);
+  });
+
+  it('flags every .test extension, not just .ts', () => {
+    expect(findBannedSpellings(['/r/a.test.tsx', '/r/b.test.js', '/r/c.test.mts'])).toHaveLength(3);
+  });
+
+  it('leaves canonical .spec files alone', () => {
+    expect(findBannedSpellings(['/r/a.spec.ts', '/r/b.integration.spec.tsx'])).toEqual([]);
+  });
+
+  it('does not flag a file merely containing the word test', () => {
+    expect(
+      findBannedSpellings(['/r/test-setup.ts', '/r/latest.spec.ts', '/r/tests/a.spec.ts']),
+    ).toEqual([]);
+  });
+});
+
+describe('toCanonicalSpelling', () => {
+  it('renders the rename instruction the failure message prints', () => {
+    expect(toCanonicalSpelling('/r/packages/db/src/auth.test.ts')).toBe(
+      '/r/packages/db/src/auth.spec.ts',
+    );
+  });
+
+  it('preserves the extension', () => {
+    expect(toCanonicalSpelling('/r/a.test.tsx')).toBe('/r/a.spec.tsx');
+  });
+});
+
+describe('the candidate sweep itself, against a real directory tree', () => {
+  // A fixture tree rather than the repository itself: this must keep pinning
+  // the glob even once the repo contains no `.test.*` file, which is exactly
+  // the state the ban is meant to maintain.
+  let fixtureRoot: string;
+
+  beforeAll(() => {
+    fixtureRoot = normalisePath(mkdtempSync(join(tmpdir(), 'sentinel-specs-')));
+    const src = join(fixtureRoot, 'packages', 'db', 'src');
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, '__fixture__.spec.ts'), '', 'utf8');
+    writeFileSync(join(src, '__fixture__.test.ts'), '', 'utf8');
+    const excluded = join(fixtureRoot, 'packages', 'db', 'node_modules');
+    mkdirSync(excluded, { recursive: true });
+    writeFileSync(join(excluded, 'dep.spec.ts'), '', 'utf8');
+  });
+
+  afterAll(() => {
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  });
+
+  const relative = (root: string): string[] =>
+    findCandidateSpecFiles(root).map((file) => file.replace(`${root}/`, ''));
+
+  it('finds a real .test.* file on disk, not only .spec.*', () => {
+    // Pins the SEARCH_GLOBS widening. Narrow the glob back to `*.spec.*` and
+    // this fails — which is the point, because narrowing it is invisible
+    // everywhere else, including to `pnpm test`.
+    expect(relative(fixtureRoot)).toContain('packages/db/src/__fixture__.test.ts');
+  });
+
+  it('finds .spec.* files in the same sweep', () => {
+    expect(relative(fixtureRoot)).toContain('packages/db/src/__fixture__.spec.ts');
+  });
+
+  it('still applies the exclusion list', () => {
+    expect(relative(fixtureRoot)).not.toContain('packages/db/node_modules/dep.spec.ts');
+  });
+
+  it('classifies exactly the .test.* one as banned', () => {
+    expect(
+      findBannedSpellings(findCandidateSpecFiles(fixtureRoot)).map((f) => f.split('/').pop()),
+    ).toEqual(['__fixture__.test.ts']);
   });
 });

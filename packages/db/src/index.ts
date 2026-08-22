@@ -15,5 +15,7 @@ export {
   isDeliberatelyGlobalModel,
 } from './tenant-resources.js';
 export type { DeliberatelyGlobalModel } from './tenant-resources.js';
-export { datamodelModels, PRISMA_CLIENT_VERSION } from './datamodel.js';
+export { datamodelModels, PRISMA_CLIENT_VERSION, schemaStaleness } from './datamodel.js';
 export type { DatamodelModel, DatamodelRelation } from './datamodel.js';
+export { computeSchemaHash, decideSchemaStaleness, normaliseSchema } from './schema-hash.js';
+export type { SchemaStaleness } from './schema-hash.js';
