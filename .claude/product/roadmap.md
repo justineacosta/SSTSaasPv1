@@ -13,7 +13,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 | Phase | Scope | Status |
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
-| 1 | Production foundation | **Partially Implemented** — three of four exit criteria proven 2026-08-22; CI-green unproven on the current tree |
+| 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22 |
 | 2 | Identity | **Not Implemented** |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
@@ -187,16 +187,27 @@ prefixed UUIDv7 identifiers, **0012** the Node 26 pin with an explicit revisit t
 the cooldown. `repository-audit.md` gained a dated **addendum rather than an edit** — §1–§6 still
 say what was true on 2026-08-20, which is the only thing an audit is for.
 
-Nothing is deployed, and no request reaches this code from outside a test or a developer's own
-machine. Nothing in this product runs, scans, stores, bills, or authenticates for an actual user
-today. Phase 1 stays **Partially Implemented** for one specific, closeable reason, stated
-precisely because "nearly done" is not a status: **three of its four exit criteria are proven and
-the fourth is not.** CI was last green on `97cedb0`, this commit's own parent (runs
-`32566345255` and `32566346829`, both success). Task 16 then bumped four GitHub Actions majors
+**Phase 1 is Implemented as of 2026-08-22: all four of its exit criteria have been run and
+passed.** The last one to fall was "CI is green". Task 16 bumped four GitHub Actions majors
 (`checkout@v7`, `setup-node@v7`, `upload-artifact@v7`, `pnpm/action-setup@v6`) off the deprecated
-Node 20 runtime, and **no CI run has executed those pins.** The first push after this commit is
-what decides it. Until that run is green, the claim is unproven — and a pin verified only by
-reading `action.yml` is exactly the class of claim this file exists to refuse.
+Node 20 runtime, and for one commit that made the criterion *unproven* — the pins had been read,
+not run, and this file refused to call that green. Run **`32579100605`** (commit `5aab4b5`,
+`ubuntu-latest`, **3m00s**) settled it: conclusion `success`, all four new action majors
+executing, every stage passing — format, lint, typecheck, unit, `check:specs`, the compose stack,
+integration, build, `check:openapi`, `check:registry`, Playwright install, and 5 E2E tests. The
+Node 20 deprecation annotations that prompted the bump are gone; the only annotation left is the
+Playwright pass notice. The run is also 1m22s faster than `32565519240`.
+
+Two things that remain unexercised, so they are not claimed: the two failure-only steps ("Stack
+logs on failure", "Upload Playwright artefacts on failure") were correctly skipped because
+nothing failed, so the artefact-upload path still has never run.
+
+**What Implemented means here, and what it does not.** It means Phase 1's exit criteria are met:
+the workspace builds and tests from a clean clone, the stack starts, migrations apply, and CI is
+green. It does **not** mean this is a product. Nothing is deployed, and no request reaches this
+code from outside a test or a developer's own machine. Nothing in this product runs, scans,
+stores, bills, or authenticates for an actual user today. Phase 1 built the floor, and the floor
+is finished and verified.
 
 ### Blocked items
 
@@ -251,9 +262,13 @@ commit's changes applied.
 | `prisma migrate deploy` | 0 | **empty database** | All 4 migrations apply to a freshly created database, producing 10 tables. **Exit criterion 3 met.** |
 | `pnpm db:seed` ×2 | 0, 0 | warm | Byte-identical output twice — 7 roles, 49 permissions, 190 grants, no tenant data. Idempotent. |
 
-**Exit criterion 4 — "CI is green" — is not met on this tree** and is the only thing standing
-between Phase 1 and **Implemented**. See the paragraph above: four action majors were bumped and
-have never run on a runner.
+**Exit criterion 4 — "CI is green" — met by run `32579100605`** on commit `5aab4b5`,
+`ubuntu-latest`, 3m00s, conclusion `success`, every stage executed. That run is also the proof
+for the four bumped action majors, which until it existed had only been read.
+
+All four criteria are therefore met, which is what moves Phase 1 to **Implemented**. Note what
+the table does and does not license: it proves the phase's exit criteria, not that any feature
+works for a user. There are no features.
 
 *Deliberately deferred, with the phase that picks it up:* workers, scheduler and engine SDKs
 (Phase 4); production Dockerfiles and container scanning (Phase 11); the full E2E journey suite
@@ -279,8 +294,12 @@ OpenAPI · 12 `packages/ui` tokens and primitives · 13 `apps/web` Next.js shell
 
 **Task 16 delivered:** ADRs 0011–0013, the audit addendum, the `setup.md` correction, the
 clean-clone `pnpm test` fix, the explicit release-age cooldown, the CI action-major bump, and the
-full exit-criteria verification pass recorded above. **Phase 1's build work is done.** What is
-left is not a task — it is one green CI run.
+full exit-criteria verification pass recorded above. **Phase 1 is complete and verified.** The
+review of Task 16 found 0 Critical, 4 Important and 6 Minor; all ten were re-verified against the
+repository and corrected in `5aab4b5` before the status moved. The Important four were every one
+of them a false factual claim in newly written prose — the twelfth instance of that class on this
+branch, and the fifth introduced while correcting an earlier one. **The commands were never the
+problem; the sentences written about them were.** Next session starts Phase 2.
 
 The execution ledger — every ruling with its cost if wrong, every review finding, per-task
 briefs and reports, and the review diffs — lives in
@@ -288,16 +307,16 @@ briefs and reports, and the review diffs — lives in
 only on the machine that built it.** `progress.md` is the file to read first; it ends with the
 current pause state and the carry-forward rulings for Tasks 15–16.
 
-Known outstanding. The one item that blocks Phase 1 reaching **Implemented** is the first:
+Known outstanding. **None of it blocks Phase 1, which is complete.** All of it is owed to a later
+phase or to the operator:
 
-- **The four bumped GitHub Actions majors have never run on a runner.** `checkout@v4→v7`,
-  `setup-node@v4→v7`, `upload-artifact@v4→v7`, `pnpm/action-setup@v4→v6`, bumped because run
-  `32565519240` warned that the old majors declare the deprecated `node20` runtime and were being
-  forced onto Node 24 — a warning that becomes a failure when the runner stops carrying Node 20.
-  The majors were read from each repository's latest release rather than guessed, and each new
-  `action.yml` was checked to declare `node24` and still accept the inputs used here
-  (`node-version-file`, `cache`, `version`, `retention-days`, `if-no-files-found`). **That is
-  reading, not running.** The next push settles it, and nothing else is owed for Phase 1.
+- ~~The four bumped GitHub Actions majors have never run on a runner.~~ **Closed 2026-08-22 by
+  run `32579100605`** — `checkout@v7`, `setup-node@v7`, `upload-artifact@v7` and
+  `pnpm/action-setup@v6` all executed successfully on `ubuntu-latest`, and the Node 20
+  deprecation annotations are gone. Worth keeping the reasoning: the bump was verified by reading
+  each new `action.yml` for its runtime and inputs, the branch was still recorded as
+  **Partially Implemented** on the strength of that reading, and only the run moved it. Reading
+  an action's contract is a good way to choose a pin and not a way to prove one.
 - ~~`pnpm test` fails from a clean clone.~~ **Closed 2026-08-22 by Task 16.** Root `test` now runs
   `build:packages` first; proven green from a genuine clean clone with no prior build (see the
   verification table above). Two corrections to what this bullet used to say: the cold-tree

@@ -1,10 +1,15 @@
 # Local development setup
 
-> **Status: Partially Implemented.** The root `package.json`, the compose stack, the migrations
-> and the seed all exist and the "First run" block below has been run end to end. What it starts
-> is a shell: two web pages, health probes, and an OpenAPI document — no authentication and no
-> product. The commands listed under "Commands" are real; the ones under "Not yet real" are not.
-> This banner was left claiming "No `package.json` or compose file exists yet" until Task 14.
+> **Status: Implemented — every instruction on this page works.** The "First run" block has been
+> run end to end, most recently as part of Phase 1's exit-criteria pass on 2026-08-22, including
+> from a genuine clean clone. The commands listed under "Commands" are real; the ones under
+> "Not yet real" are not, and are labelled with the phase that brings them.
+>
+> **What this sets up is a shell, and that is a statement about the product, not about these
+> steps:** two web pages, health probes, and an OpenAPI document — no authentication, no product.
+> Phase 1 being Implemented means its foundation is built and verified, not that anything here is
+> usable by a customer. This banner was left claiming "No `package.json` or compose file exists
+> yet" until Task 14, and read "Partially Implemented" until Phase 1 closed.
 
 ## Prerequisites
 
