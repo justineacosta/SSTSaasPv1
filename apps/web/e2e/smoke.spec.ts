@@ -49,9 +49,14 @@ test('a real response carries the security header table and a fresh CSP nonce', 
   // it. `start:e2e` pins APP_ENV=test, so the server this suite owns always
   // enforces; a report-only header means the response came from some *other*
   // server — the reason this used to read `enforcing ?? report-only` and
-  // quietly accept either. Narrow guard: it catches a CSP-shaped mismatch
-  // only. A stale server running old code with APP_ENV=test still slips
-  // through, and nothing here detects that.
+  // quietly accept either.
+  //
+  // This is a narrow guard and always was: it catches a CSP-shaped mismatch,
+  // not a server running stale code. What closes that gap is not this
+  // assertion but `reuseExistingServer: false` in playwright.config.ts, which
+  // means no foreign server can serve this suite in the first place. The two
+  // are worth keeping together — the config prevents it, this explains it if
+  // the config is ever loosened.
   expect(
     headers['content-security-policy-report-only'],
     'Response carries a report-only CSP. The E2E server pins APP_ENV=test and always enforces, so this is very likely a different server being reused — a `next dev` on E2E_PORT — rather than a defect in the header table.',

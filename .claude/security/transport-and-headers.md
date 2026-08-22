@@ -69,13 +69,17 @@ frame-ancestors 'none';
 form-action 'self';
 base-uri 'self';
 object-src 'none';
-upgrade-insecure-requests;
+upgrade-insecure-requests;          <- enforcing policies only; see below
 report-uri /api/v1/csp-report
 ```
 
+**Do not copy that block verbatim into a report-only policy.** The one line that is not
+unconditional is marked above, and the reason is the paragraph that follows.
+
 `upgrade-insecure-requests` is emitted **only when the policy is enforcing**, and is omitted
-from `Content-Security-Policy-Report-Only`. CSP Level 2 specifies that a report-only policy
-ignores it, so sending it there changes nothing about what the browser does — but Chromium
+from `Content-Security-Policy-Report-Only`. The W3C *Upgrade Insecure Requests* specification
+(the standalone W3C document that defines this directive — CSP Level 2 does not) states that a
+report-only policy ignores it, so sending it there changes nothing about what the browser does — but Chromium
 logs `The Content Security Policy directive 'upgrade-insecure-requests' is ignored when
 delivered in a report-only policy` on every response, which put a permanent console error in
 every local development session (`APP_ENV=development` is report-only, per

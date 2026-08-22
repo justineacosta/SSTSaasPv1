@@ -48,7 +48,8 @@
  * a cheaper way to learn that than a policy with a permanent hole in it.
  *
  * On `upgrade-insecure-requests`: the one directive that is *not* identical in
- * both modes. CSP Level 2 specifies that it is ignored when delivered in a
+ * both modes. The W3C Upgrade Insecure Requests specification — which defines
+ * this directive; CSP Level 2 does not — says it is ignored when delivered in a
  * report-only policy, and Chromium says so out loud — `The Content Security
  * Policy directive 'upgrade-insecure-requests' is ignored when delivered in a
  * report-only policy` — on every single response. A permanent console error in
