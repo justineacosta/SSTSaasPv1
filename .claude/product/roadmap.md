@@ -127,6 +127,25 @@ itself has never run**: every command in it has been executed on one Windows mac
 has executed on a Linux runner. The `playwright install --with-deps` step in particular installs
 Linux system packages that have never been installed here.
 
+**Two project skills now encode the two rules this build keeps having to relearn.**
+`.claude/skills/sentinel-verify/` turns the honesty rule into a runnable gate — it lists the ten
+commands CI actually runs, refuses a row for a command that was not run, and refuses
+**Implemented** without a zero exit behind every command covering the claim. It carries one
+control no command can enforce: a citation rule for the false-claim class this branch had
+produced ten instances of by Task 14 — a report or document asserting something untrue, four of
+them introduced *while correcting an earlier one*. Task 15's own re-review then caught an
+eleventh, inside the skill written to stop it: the sentence "five green rows from a warm tree are
+not a phase" was left standing after the same fix round took that table from five rows to seven.
+Corrected before commit. `.claude/skills/sentinel-phase/` encodes
+`development/resuming-work.md` as an ordered checklist, including the two rules that make the
+protocol work: verify a claimed status by running it before building on it, and update this file
+in the same change that moves the status.
+
+**Neither has been confirmed to load.** The files are at the documented project path and need no
+opt-in, but Claude Code only watches skill directories that existed at session start, and
+`.claude/skills/` did not — so it takes one fresh session to tell a skill from a file. Until
+that happens they are two Markdown files that no session has been observed to read.
+
 Nothing is deployed, and no request reaches this code from outside a test or a developer's own
 machine — so Phase 1 is Partially Implemented, not Implemented. Nothing in this product runs,
 scans, stores, bills, or authenticates for an actual user today.
@@ -158,16 +177,16 @@ Phase 1 is being executed as 16 tasks from
 `docs/superpowers/plans/2026-08-20-phase-1-foundation.md`, subagent-driven: a fresh implementer
 per task, then a separate adversarial reviewer, then scoped re-reviews per fix round.
 
-**Tasks 1–14 are complete.** Task 14 was implemented, independently reviewed (spec compliance met
-with two partials, quality approved conditional on one Critical and four Importants), and the fix
-round that corrected them has landed and been re-reviewed clean — 0 items open. 1 workspace and CI · 2
+**Tasks 1–15 are complete.** Task 15 was implemented, independently reviewed (0 Critical, 3
+Important, 6 Minor), and the fix round that corrected all three Importants has been re-reviewed
+clean. 1 workspace and CI · 2
 `packages/config` · 3 `packages/observability` · 4 compose stack, schema, prefixed UUIDv7 IDs,
 first migration · 5 `packages/contracts` · 6 tenant-scoped Prisma client and RLS · 7 seed · 8
 `packages/storage` · 9 `apps/api` bootstrap · 10 rate limiting · 11 route-access assertion and
-OpenAPI · 12 `packages/ui` tokens and primitives · 13 `apps/web` Next.js shell · 14 CI checks.
+OpenAPI · 12 `packages/ui` tokens and primitives · 13 `apps/web` Next.js shell · 14 CI checks ·
+15 the two project skills.
 
-**Tasks 15–16 remain:** 15 the two reusable skills · 16 ADRs, documentation, and the full
-exit-criteria verification pass.
+**Task 16 remains:** ADRs, documentation, and the full exit-criteria verification pass.
 
 The execution ledger — every ruling with its cost if wrong, every review finding, per-task
 briefs and reports, and the review diffs — lives in
@@ -175,7 +194,16 @@ briefs and reports, and the review diffs — lives in
 only on the machine that built it.** `progress.md` is the file to read first; it ends with the
 current pause state and the carry-forward rulings for Tasks 15–16.
 
-Known outstanding, none of it blocking Task 15:
+Known outstanding, none of it blocking Task 16:
+
+- **Neither project skill has been observed to load.** `sentinel-verify` and `sentinel-phase` are
+  at `.claude/skills/<name>/SKILL.md`, which is the documented project path and needs no
+  settings.json entry, no plugin and no marketplace. But Claude Code watches only the skill
+  directories that existed when a session started, and `.claude/skills/` did not exist when this
+  one did — a probe confirmed `Skill(sentinel-verify)` returns `Unknown skill`. The next fresh
+  session should confirm both names appear and that invoking `sentinel-verify` loads its **body**,
+  not merely that the name resolves. Plan Task 15 Step 4. One session away, and until then the
+  honest description is two files.
 
 - **`pnpm test` fails from a clean clone.** This is one of Phase 1's own exit criteria, so it is
   the most important item on this list. Four `apps/api` unit specs (and now one under `scripts/`)

@@ -148,6 +148,10 @@ moves the status** — a stale roadmap makes a resuming session rebuild what exi
 does not. Full protocol, including how to end a session cleanly:
 [`.claude/development/resuming-work.md`](.claude/development/resuming-work.md).
 
+Two project skills automate this protocol: **`sentinel-phase`** for starting, resuming, and
+finishing a phase, and **`sentinel-verify`** for turning a completion claim into captured
+evidence. Invoke them by name.
+
 ## Where to read next
 
 - [`.claude/README.md`](.claude/README.md) — documentation map

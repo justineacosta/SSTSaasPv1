@@ -15,6 +15,7 @@ This tree is the authoritative internal knowledge base for **Sentinel**. The roo
 | Understand a security control | [`security/overview.md`](security/overview.md) |
 | Know why something is the way it is | [`decisions/`](decisions/) |
 | Know what is actually built | [`product/roadmap.md`](product/roadmap.md) |
+| Start, resume, or finish a phase | [`skills/`](skills/) — project skills: `sentinel-phase`, `sentinel-verify` |
 
 ## Map
 
@@ -28,6 +29,7 @@ api/            REST conventions the API must obey
 development/    Setup, standards, testing, migrations
 operations/     Environments, deploy, monitoring, backups, runbooks
 decisions/      ADRs — the record of significant choices
+skills/         Project skills: sentinel-phase, sentinel-verify
 ```
 
 ## Rules for this tree
