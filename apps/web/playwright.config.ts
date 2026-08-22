@@ -8,15 +8,15 @@ import { defineConfig, devices } from '@playwright/test';
  * `start:e2e`) is the one these tests navigate to. Hardcoding 3000 here is what
  * let `WEB_PORT` be decorative in the first place.
  *
- * `E2E_PORT` rather than `WEB_PORT` because of `reuseExistingServer` below.
- * That option is kept — consecutive local runs should not pay for a rebuild —
- * but it means Playwright attaches to whatever is already listening on this
- * port. When that port was `WEB_PORT`, a `next dev` left running from the
- * morning was what the suite tested: `APP_ENV=development`, report-only CSP, a
- * different application from the one CI runs. It produced a confusing red once,
- * and the direction that costs more is the false green — a stale server means
- * the suite passes against code that no longer exists. Its own port makes the
- * collision structurally impossible rather than a thing to remember.
+ * `E2E_PORT` rather than `WEB_PORT` because this suite must never be served by
+ * a process it did not start. When the port was `WEB_PORT`, a `next dev` left
+ * running from the morning was what the suite tested: `APP_ENV=development`,
+ * report-only CSP, a different application from the one CI runs. It produced a
+ * confusing red once, and the direction that costs more is the false green — a
+ * stale server means the suite passes against code that no longer exists. Its
+ * own port makes that collision structurally impossible rather than a thing to
+ * remember, and `reuseExistingServer` is off (see `webServer` below) so nothing
+ * else can be adopted either.
  */
 const { E2E_PORT } = loadEnv(e2eEnvSchema);
 const baseURL = `http://localhost:${String(E2E_PORT)}`;
@@ -58,7 +58,22 @@ export default defineConfig({
     // test has watched block anything. operations/environments.md §4.
     command: 'pnpm build && pnpm start:e2e',
     url: baseURL,
-    reuseExistingServer: process.env['CI'] === undefined,
+    // Never adopt a server this config did not start, locally or in CI.
+    //
+    // This was `process.env['CI'] === undefined` — reuse locally — and the
+    // stated reason was that consecutive local runs should not pay for a
+    // rebuild. **That reason was false, and measuring it is what settled it.**
+    // Playwright tears down the server it spawns, so back-to-back
+    // `pnpm test:e2e` runs each rebuilt anyway: both printed `next build`,
+    // nothing was left listening on E2E_PORT afterwards, and the wall clock was
+    // 9.146s then 9.179s. The option bought nothing it claimed to buy.
+    //
+    // What it still bought was the failure mode: the one server it could adopt
+    // is a `pnpm start:e2e` someone left running, which serves the build from
+    // whenever they started it. That is the stale-code false green the smoke
+    // spec admits it cannot detect — a suite passing against code that no
+    // longer exists. Paying nothing to remove it is an easy trade.
+    reuseExistingServer: false,
     timeout: 180_000,
   },
 });

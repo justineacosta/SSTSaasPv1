@@ -54,7 +54,8 @@ export class SecurityHeadersMiddleware implements NestMiddleware {
       "form-action 'self'",
       "base-uri 'self'",
       "object-src 'none'",
-      // Enforcing only. CSP Level 2 specifies that `upgrade-insecure-requests`
+      // Enforcing only. The W3C Upgrade Insecure Requests spec — where this
+      // directive is defined, not CSP Level 2 — says `upgrade-insecure-requests`
       // is ignored when delivered in a report-only policy, and Chromium logs a
       // console error saying so on every response — a permanent error in every
       // local dev session, which is how developers learn to ignore CSP errors.

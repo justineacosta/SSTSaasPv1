@@ -117,9 +117,16 @@ describe('SecurityHeadersMiddleware', () => {
     expect(headers['content-security-policy']).toContain(`'nonce-${String(nonce)}'`);
   });
 
-  it('mints a fresh nonce for every request', () => {
+  // Both modes, because the byte-identical test above normalises each run's own
+  // nonce away and therefore cannot see a nonce that varies *by mode*. Proved
+  // by mutation: making the nonce a fixed string when report-only left that
+  // test green. A report-only policy is development-only and does not block
+  // anything, so a static nonce there would leak no protection — but it would
+  // be a per-environment difference in a security header that no test watches,
+  // which is how the enforcing path eventually inherits one.
+  it.each([true, false])('mints a fresh nonce for every request (enforcing: %s)', (enforceCsp) => {
     const seen = new Set<unknown>();
-    for (let i = 0; i < 25; i += 1) seen.add(run(true).nonce);
+    for (let i = 0; i < 25; i += 1) seen.add(run(enforceCsp).nonce);
     expect(seen.size).toBe(25);
   });
 

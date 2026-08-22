@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EnvValidationError, loadEnv } from './load-env.js';
-import { apiEnvSchema, sharedEnvSchema } from './env.js';
+import { apiEnvSchema, e2eEnvSchema, sharedEnvSchema, webEnvSchema } from './env.js';
 
 const validShared = {
   NODE_ENV: 'development',
@@ -130,5 +130,57 @@ describe('loadEnv', () => {
     // pass vacuously — the same defect this test replaces. Fail loudly instead.
     expect(throwCount).toBeGreaterThan(0);
     expect(leaked).toEqual([]);
+  });
+});
+
+/**
+ * `E2E_PORT` is a Playwright-only variable. It lives on `e2eEnvSchema` and must
+ * never migrate onto `webEnvSchema`, because `apps/web/src/env.ts` parses
+ * `webEnvSchema` at module load in *every* environment — so a test port on that
+ * schema is a test port that a production deploy must define in order to boot.
+ *
+ * This is asserted here because **no gate would otherwise catch the
+ * regression.** CI copies `.env.example` to `.env`, and `.env.example` defines
+ * `E2E_PORT`, so the variable is always present in CI; fold it onto
+ * `webEnvSchema` and every check stays green while production breaks on boot.
+ * The separation is a property of the source, and this is what holds it there.
+ */
+describe('e2eEnvSchema / webEnvSchema separation', () => {
+  const validWeb = {
+    ...validShared,
+    WEB_PORT: '3000',
+    WEB_BASE_URL: 'http://localhost:3000',
+    API_BASE_URL: 'http://localhost:3001',
+  };
+
+  it('does not put E2E_PORT on the schema the web app boots with', () => {
+    expect(Object.keys(webEnvSchema.shape)).not.toContain('E2E_PORT');
+  });
+
+  it('loads the web app config with no E2E_PORT present at all', () => {
+    expect(() => loadEnv(webEnvSchema, validWeb)).not.toThrow();
+  });
+
+  it('refuses the e2e config when E2E_PORT is missing, naming it', () => {
+    let error: EnvValidationError | undefined;
+    try {
+      loadEnv(e2eEnvSchema, validWeb);
+    } catch (caught) {
+      error = caught as EnvValidationError;
+    }
+
+    expect(error).toBeInstanceOf(EnvValidationError);
+    expect(error?.variables).toContain('E2E_PORT');
+  });
+
+  it('accepts the e2e config when E2E_PORT is supplied', () => {
+    const parsed = loadEnv(e2eEnvSchema, { ...validWeb, E2E_PORT: '3100' });
+    expect(parsed.E2E_PORT).toBe(3100);
+  });
+
+  it('keeps E2E_PORT the only difference between the two schemas', () => {
+    const web = new Set(Object.keys(webEnvSchema.shape));
+    const e2e = Object.keys(e2eEnvSchema.shape);
+    expect(e2e.filter((key) => !web.has(key))).toEqual(['E2E_PORT']);
   });
 });

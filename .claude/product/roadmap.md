@@ -335,11 +335,32 @@ phase or to the operator:
   spec correctly counts as a console error. 1 failed, 4 passed. Re-run with the server Playwright
   owns (`APP_ENV=test`, enforcing CSP): 5 passed. **No code was wrong.** But a suite that tests a
   different application depending on what a developer left running is the same failure class as
-  the warm-tree blindness above, and it presents as a code defect. Worth either dropping
-  `reuseExistingServer` or making the mismatch loud. Also latent underneath it: both
-  `apps/web/src/security-headers.ts` and `apps/api/.../security-headers.middleware.ts` emit
-  `upgrade-insecure-requests` in report-only mode, where the spec says it is ignored — harmless,
-  but it guarantees a console error in every local dev session.
+  the warm-tree blindness above, and it presents as a code defect.
+
+  **Closed 2026-08-23.** The suite now has its own port — `E2E_PORT=3100`, owned in `.env` like
+  `WEB_PORT`, selected by an explicit `--e2e-port` flag on the launcher so no shell expansion is
+  involved (pnpm on Windows does not perform any). `E2E_PORT` lives on a separate `e2eEnvSchema`
+  rather than on `webEnvSchema`, because `apps/web/src/env.ts` parses the latter at module load in
+  every environment and a Playwright port on it would be a variable production must define in
+  order to boot. Proven with the offending `next dev` still holding port 3000: the command that
+  gave 1 failed / 4 passed gave 5 passed, no CI flag, no workaround. The smoke spec also now
+  refuses a report-only policy outright, naming server reuse as the likely cause.
+
+  **And `reuseExistingServer` is now `false` everywhere, which was not the original plan.** It was
+  kept on the stated grounds that consecutive local runs should not pay for a rebuild. Review
+  asked for that number and it did not exist: Playwright tears down the server it spawns, so
+  back-to-back `pnpm test:e2e` runs each rebuild regardless — both printed `next build`, nothing
+  was left listening afterwards, 9.146s then 9.179s. The only server the flag could still adopt
+  was a hand-started `pnpm start:e2e` serving whenever-old code, which is precisely the stale-code
+  **false green** the guard assertion cannot detect. A benefit that does not exist, guarding a
+  hazard that does; removed for nothing.
+
+  Fixed with it: both `apps/web/src/security-headers.ts` and
+  `apps/api/.../security-headers.middleware.ts` emitted `upgrade-insecure-requests` in report-only
+  mode, where the W3C *Upgrade Insecure Requests* specification says it is ignored — harmless to
+  protection, but it put a permanent CSP console error in every local dev session, which is how a
+  team learns to ignore CSP errors. Now enforcing-only in both, with specs asserting the two
+  policies differ by exactly that directive and nothing else.
 - **`packages/db/src/id.ts`'s own docstring example is not a valid ID.**
   `org_01J8XK2P9V3QWERTYUIOPASDF` has a 25-character body where a real one has 26, and contains
   `U`, `I` and `O` — all excluded from the Crockford alphabet the file itself defines — so
