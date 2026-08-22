@@ -122,10 +122,13 @@ overrides Vitest's default `include` with `.spec.` patterns only, so a `.test.ts
 nothing while `pnpm test` prints green, which a review proved with a file asserting `1 === 2`.
 
 CI also gained an end-to-end stage, a `format:check` gate (green for the first time — it had failed
-on 11 files since the repository was created), and `eslint-plugin-react-hooks`. **The workflow
-itself has never run**: every command in it has been executed on one Windows machine, and nothing
-has executed on a Linux runner. The `playwright install --with-deps` step in particular installs
-Linux system packages that have never been installed here.
+on 11 files since the repository was created), and `eslint-plugin-react-hooks`. **The whole
+pipeline is now green on a Linux runner** — run `32565519240` on `ubuntu-latest`, 4m22s, with every
+stage executing: format, lint, typecheck, unit, `check:specs`, the compose stack, integration,
+build, `check:openapi`, `check:registry`, `playwright install --with-deps chromium`, and 5 E2E
+tests. That took three red runs to reach, all of them dying at `pnpm install` on a supply-chain
+policy rather than on anything this repository had written; see Known outstanding, because the
+cause is not fixed.
 
 **Two project skills now encode the two rules this build keeps having to relearn.**
 `.claude/skills/sentinel-verify/` turns the honesty rule into a runnable gate — it lists the ten
@@ -210,8 +213,9 @@ Known outstanding, none of it blocking Task 16:
   workspace-topology change and deserves its own review rather than riding into a CI-checks task.
   **Owed to Task 16, not suggested.** The failure mode — a gate whose correctness rests on an
   earlier step's task graph — is exactly the rot Task 14 exists to stop.
-- **CI is red, and has been since 2026-08-22, on `pnpm install`.** Every run since commit
-  `daf7fd7` dies in 30 seconds at `pnpm install --frozen-lockfile` with
+- **CI's supply-chain policy will red the build again, and time was the only fix last time.**
+  Between commits `daf7fd7` and `486fc34` every run died in 30 seconds at
+  `pnpm install --frozen-lockfile` with
   `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`: ten lockfile entries — `next@16.3.2` and its nine
   `@next/swc-*` platform binaries — are younger than pnpm 11's **default 24-hour** minimum
   release age. Nothing in this repository sets that policy; it is a pnpm default, and the run's
@@ -227,21 +231,32 @@ Known outstanding, none of it blocking Task 16:
   `pnpm test` item above, and it is exactly what `sentinel-verify` §3's phase-status rule was
   written for.
 
-  **It is self-healing for these ten entries** — `next@16.3.2` was published 2026-08-21T09:38:38Z,
-  so the window closed 2026-08-22T09:38:38Z and a re-run after that clears. It is **not** fixed:
-  the next dependency added within a day of its publication reproduces it, and the misleading
-  comment is still in `pnpm-workspace.yaml`. **Owed to Task 16**, which should correct the comment
-  and decide the policy deliberately — pin, wait out the cooldown, or set `minimumReleaseAge`
-  explicitly rather than inheriting a default nobody chose.
-- **The Task 14 CI stages have never run**, though the workflow itself has. Corrected claim: this
-  bullet previously read "the CI workflow has never run … nothing has run on a Linux runner",
-  which was false — `ci.yml` has existed since `12831ef` and ran green on `ubuntu-latest` on
-  2026-08-20 and 2026-08-21. What has genuinely never executed are the stages Task 14 added,
-  because every run since has died at install: the `format:check` gate, `check:specs`,
-  `check:openapi` and `check:registry` in CI, `playwright install --with-deps chromium` (it
-  installs Linux system packages), the E2E stage, the Playwright artefact upload, and whether the
-  30-minute job timeout covers the full sequence. All plausible, none measured. Watch the first
-  green run rather than pre-emptively tuning timeouts.
+  **It self-healed for these ten entries, and that is the whole point.** `next@16.3.2` was
+  published 2026-08-21T09:38:38Z; the `486fc34` push was deliberately timed after
+  2026-08-22T09:38:38Z and the run went green. **No change was made to fix it — the fix was the
+  passage of 24 hours**, so the green run is not evidence that anything is solved. The next
+  dependency added within a day of its publication reproduces it exactly, and the misleading
+  comment still stands in `pnpm-workspace.yaml`. **Owed to Task 16**, which should correct that
+  comment and decide the policy deliberately — pin, adopt cooldown-waiting as policy, or set
+  `minimumReleaseAge` explicitly rather than inheriting a default nobody chose.
+- ~~The CI workflow has never run.~~ **Closed 2026-08-22 — the full pipeline is green on a Linux
+  runner** (run `32565519240`, commit `486fc34`, `ubuntu-latest`, **4m22s**). Every stage Task 14
+  added executed for the first time and passed: the `format:check` gate, `check:specs`,
+  `check:openapi`, `check:registry`, the compose stack started on the runner, integration tests
+  against it, `playwright install --with-deps chromium` (the Linux system packages install
+  cleanly), and the E2E stage — 5 passed in 10.4s. The 30-minute job timeout question is answered
+  with room to spare: 4m22s for install → format → lint → typecheck → unit → checks → stack →
+  integration → build → Playwright install → a second Next build.
+
+  Two things this does **not** cover, so they are not claimed: the two failure-only steps ("Stack
+  logs on failure", "Upload Playwright artefacts on failure") were correctly skipped because
+  nothing failed, so the artefact-upload path remains unexercised; and the runner warns that
+  `actions/checkout@v4`, `actions/setup-node@v4` and `pnpm/action-setup@v4` target the deprecated
+  Node 20 and are being forced onto Node 24. Harmless today, a pin worth bumping in Task 16.
+
+  Also corrected here: this bullet previously read "the CI workflow has never run … nothing has
+  run on a Linux runner", which was false when written — `ci.yml` has existed since `12831ef` and
+  ran green on `ubuntu-latest` on 2026-08-20 and 2026-08-21.
 - `check:openapi` treats every changed value as potentially breaking, and its prose exemption is
   keyed on the leaf name — so a real API schema property named `description` (a future
   `Finding.description`, say) would be classified as prose and not raise the `/api/v2` banner.
