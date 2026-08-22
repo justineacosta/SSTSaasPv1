@@ -72,11 +72,43 @@ describe('SecurityHeadersMiddleware', () => {
       "object-src 'none'",
       "base-uri 'self'",
       "form-action 'self'",
-      'upgrade-insecure-requests',
       'report-uri /api/v1/csp-report',
     ]) {
       expect(csp).toContain(directive);
     }
+  });
+
+  // `upgrade-insecure-requests` is ignored by spec when it arrives in a
+  // report-only policy, and Chromium logs a console error saying so — which is
+  // how a developer learns to ignore CSP console errors. Omitting it when
+  // report-only loses no protection, because it was never applied.
+  it('sends upgrade-insecure-requests when enforcing', () => {
+    const csp = run(true).headers['content-security-policy'] ?? '';
+    expect(csp.split('; ')).toContain('upgrade-insecure-requests');
+  });
+
+  it('omits upgrade-insecure-requests when report-only, where it would be ignored', () => {
+    const csp = run(false).headers['content-security-policy-report-only'] ?? '';
+    expect(csp).not.toContain('upgrade-insecure-requests');
+  });
+
+  // Asserted as a whole-list comparison rather than by eye: the two policies
+  // must differ by that one directive and nothing else, so a directive added
+  // to one mode and not the other fails here rather than in production. The
+  // per-request nonce is normalised away first, since it is the one part that
+  // is *supposed* to differ between two calls.
+  it('is otherwise byte-identical between enforcing and report-only', () => {
+    const directives = (enforceCsp: boolean): string[] => {
+      const { headers, nonce } = run(enforceCsp);
+      const csp =
+        headers[enforceCsp ? 'content-security-policy' : 'content-security-policy-report-only'] ??
+        '';
+      return csp.replaceAll(String(nonce), 'NONCE').split('; ');
+    };
+
+    expect(directives(false)).toEqual(
+      directives(true).filter((directive) => directive !== 'upgrade-insecure-requests'),
+    );
   });
 
   it('exposes the nonce on response.locals so a renderer can use the same one', () => {

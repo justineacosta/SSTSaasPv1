@@ -45,6 +45,22 @@ test('a real response carries the security header table and a fresh CSP nonce', 
   expect(first).not.toBeNull();
   const headers = first?.headers() ?? {};
 
+  // First, because it is the assertion that explains every other failure below
+  // it. `start:e2e` pins APP_ENV=test, so the server this suite owns always
+  // enforces; a report-only header means the response came from some *other*
+  // server — the reason this used to read `enforcing ?? report-only` and
+  // quietly accept either. Narrow guard: it catches a CSP-shaped mismatch
+  // only. A stale server running old code with APP_ENV=test still slips
+  // through, and nothing here detects that.
+  expect(
+    headers['content-security-policy-report-only'],
+    'Response carries a report-only CSP. The E2E server pins APP_ENV=test and always enforces, so this is very likely a different server being reused — a `next dev` on E2E_PORT — rather than a defect in the header table.',
+  ).toBeUndefined();
+  expect(
+    headers['content-security-policy'],
+    'Response carries no enforcing CSP. Expected the APP_ENV=test server started by playwright.config.ts.',
+  ).toBeDefined();
+
   expect(headers['strict-transport-security']).toBe('max-age=31536000; includeSubDomains; preload');
   expect(headers['x-content-type-options']).toBe('nosniff');
   expect(headers['x-frame-options']).toBe('DENY');
@@ -57,19 +73,19 @@ test('a real response carries the security header table and a fresh CSP nonce', 
   // Next's own header; the config sets poweredByHeader: false.
   expect(headers['x-powered-by']).toBeUndefined();
 
-  // Exactly one of the two is sent, and which one is APP_ENV's decision.
-  const policy =
-    headers['content-security-policy'] ?? headers['content-security-policy-report-only'];
-  expect(policy).toBeDefined();
+  const policy = headers['content-security-policy'];
   expect(policy).toContain("frame-ancestors 'none'");
   expect(policy).not.toContain('unsafe-inline');
   expect(policy).not.toContain('unsafe-eval');
+  // Only meaningful in an enforcing policy, which is why it is only asserted
+  // now that the header above has been pinned to the enforcing one — a
+  // report-only policy is specified to ignore it, so security-headers.ts omits
+  // it there. See security/transport-and-headers.md §3.
+  expect(policy).toContain('upgrade-insecure-requests');
 
   // A nonce reused across responses is the same as having no nonce at all.
   const second = await page.goto('/api/health');
-  const secondPolicy =
-    second?.headers()['content-security-policy'] ??
-    second?.headers()['content-security-policy-report-only'];
+  const secondPolicy = second?.headers()['content-security-policy'];
   expect(secondPolicy).toBeDefined();
   expect(secondPolicy).not.toBe(policy);
 });

@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { loadEnv, webEnvSchema } from '@sentinel/config';
+import { e2eEnvSchema, loadEnv, webEnvSchema } from '@sentinel/config';
 
 /**
- * Runs `next dev` / `next start` bound to `WEB_PORT`.
+ * Runs `next dev` / `next start` bound to `WEB_PORT`, or to `E2E_PORT` when
+ * passed `--e2e-port`.
  *
  * This exists because the obvious thing does not work. Writing
  * `next start -p $WEB_PORT` straight into a package.json script relies on the
@@ -29,19 +30,38 @@ import { loadEnv, webEnvSchema } from '@sentinel/config';
  * bin shim, because the shim is `next.CMD` on Windows and `next` elsewhere and
  * resolving that difference means `shell: true`, which then has to worry about
  * quoting. Resolving the CLI's JS entry sidesteps both.
+ *
+ * `--e2e-port` is this launcher's own flag, not one of Next's, and it is an
+ * explicit opt-in rather than anything inferred from `APP_ENV`: only
+ * `start:e2e` passes it. It selects `E2E_PORT`, which exists so the Playwright
+ * suite never shares a port with a developer's `pnpm dev` — see
+ * `playwright.config.ts`. It is stripped before the remaining arguments are
+ * forwarded to Next, which would reject an unknown flag. The port still
+ * arrives the same way it always did, through `@sentinel/config` in Node, so
+ * the property this file exists to protect is untouched: no shell-variable
+ * expansion in package.json.
  */
 const command = process.argv[2];
 if (command !== 'dev' && command !== 'start') {
   throw new Error(`Expected "dev" or "start", received ${JSON.stringify(command)}.`);
 }
 
+// Everything after the subcommand is forwarded to Next verbatim, minus our own
+// flag. Note these land *after* `--port` below, so a caller passing `--port`
+// here would silently win; nothing in this repository does.
+const forwarded = process.argv.slice(3).filter((argument) => argument !== '--e2e-port');
+const useE2ePort = forwarded.length !== process.argv.length - 3;
+
+// Two schemas rather than one, so that `dev`, `build` and `start` never
+// require a variable that exists only for Playwright: `E2E_PORT` is demanded
+// exactly when `--e2e-port` asks for it, and is invisible otherwise.
+const port = useE2ePort ? loadEnv(e2eEnvSchema).E2E_PORT : loadEnv(webEnvSchema).WEB_PORT;
+
 const nextCli = createRequire(import.meta.url).resolve('next/dist/bin/next');
 
-const child = spawn(
-  process.execPath,
-  [nextCli, command, '--port', String(loadEnv(webEnvSchema).WEB_PORT), ...process.argv.slice(3)],
-  { stdio: 'inherit' },
-);
+const child = spawn(process.execPath, [nextCli, command, '--port', String(port), ...forwarded], {
+  stdio: 'inherit',
+});
 
 // Forward the child's fate rather than swallowing it: a `next build` that
 // fails must fail the turbo task, and Ctrl-C on `next dev` must stop this

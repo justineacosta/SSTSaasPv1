@@ -46,6 +46,31 @@ export const webEnvSchema = sharedEnvSchema.extend({
   API_BASE_URL: z.string().url(),
 });
 
+/**
+ * The web schema plus the one variable only the end-to-end harness needs.
+ *
+ * `E2E_PORT` is the port the Playwright suite's own server binds, deliberately
+ * not `WEB_PORT`. `playwright.config.ts` keeps `reuseExistingServer` locally so
+ * consecutive runs stay fast, which means it attaches to whatever is already
+ * listening — and a `next dev` left on `WEB_PORT` runs `APP_ENV=development`,
+ * making the suite test a different application than CI does. That happened,
+ * and it produced both a confusing false failure and (worse) a false pass. A
+ * separate port makes the collision structurally impossible rather than a
+ * habit.
+ *
+ * **It is a separate schema rather than a field on `webEnvSchema` because the
+ * running web app must never need it.** `apps/web/src/env.ts` parses
+ * `webEnvSchema` at module load in every environment, so a test-only variable
+ * added there becomes a variable every production deploy has to define in order
+ * to boot — a Playwright port gating a customer-facing server. Only
+ * `playwright.config.ts` and the launcher's `--e2e-port` path parse this, which
+ * is precisely where a missing `E2E_PORT` should fail loudly.
+ */
+export const e2eEnvSchema = webEnvSchema.extend({
+  E2E_PORT: port,
+});
+
 export type SharedEnv = z.infer<typeof sharedEnvSchema>;
 export type ApiEnv = z.infer<typeof apiEnvSchema>;
 export type WebEnv = z.infer<typeof webEnvSchema>;
+export type E2eEnv = z.infer<typeof e2eEnvSchema>;

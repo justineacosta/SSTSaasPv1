@@ -1,15 +1,25 @@
-import { loadEnv, webEnvSchema } from '@sentinel/config';
+import { e2eEnvSchema, loadEnv } from '@sentinel/config';
 import { defineConfig, devices } from '@playwright/test';
 
 /**
- * The port the app is actually served on, from the one place that owns it.
+ * The port this suite's server is served on, from the one place that owns it.
  * `pnpm test:e2e` runs this config under `dotenv -e ../../.env`, so the same
- * `WEB_PORT` the launcher binds (`scripts/next-on-web-port.ts`) is the one
- * these tests navigate to. Hardcoding 3000 here is what let `WEB_PORT` be
- * decorative in the first place.
+ * `E2E_PORT` the launcher binds (`scripts/next-on-web-port.ts --e2e-port`, via
+ * `start:e2e`) is the one these tests navigate to. Hardcoding 3000 here is what
+ * let `WEB_PORT` be decorative in the first place.
+ *
+ * `E2E_PORT` rather than `WEB_PORT` because of `reuseExistingServer` below.
+ * That option is kept — consecutive local runs should not pay for a rebuild —
+ * but it means Playwright attaches to whatever is already listening on this
+ * port. When that port was `WEB_PORT`, a `next dev` left running from the
+ * morning was what the suite tested: `APP_ENV=development`, report-only CSP, a
+ * different application from the one CI runs. It produced a confusing red once,
+ * and the direction that costs more is the false green — a stale server means
+ * the suite passes against code that no longer exists. Its own port makes the
+ * collision structurally impossible rather than a thing to remember.
  */
-const { WEB_PORT } = loadEnv(webEnvSchema);
-const baseURL = `http://localhost:${String(WEB_PORT)}`;
+const { E2E_PORT } = loadEnv(e2eEnvSchema);
+const baseURL = `http://localhost:${String(E2E_PORT)}`;
 
 /**
  * Playwright runs against a **production build** (`next build` then

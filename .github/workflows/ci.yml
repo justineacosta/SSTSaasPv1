@@ -126,9 +126,12 @@ jobs:
       # `pnpm build && pnpm start:e2e`, so the app is rebuilt and started by
       # Playwright rather than here. `start:e2e` pins `APP_ENV=test`, which is
       # what makes the CSP enforcing rather than report-only, and both it and
-      # the config read `WEB_PORT` from the `.env` copied out of `.env.example`
+      # the config read `E2E_PORT` from the `.env` copied out of `.env.example`
       # in the stack step above — so that file has to exist before this runs,
       # which is why the E2E stage sits after it and not next to the unit tests.
+      # `E2E_PORT` is deliberately not `WEB_PORT`: `reuseExistingServer` is on
+      # locally, so a shared port would let a developer's stray `pnpm dev` be
+      # what the suite tests. CI sets `CI`, so it never reuses anything.
       - name: End-to-end tests
         run: pnpm test:e2e
 

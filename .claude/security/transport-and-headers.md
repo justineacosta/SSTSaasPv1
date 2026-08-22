@@ -73,6 +73,18 @@ upgrade-insecure-requests;
 report-uri /api/v1/csp-report
 ```
 
+`upgrade-insecure-requests` is emitted **only when the policy is enforcing**, and is omitted
+from `Content-Security-Policy-Report-Only`. CSP Level 2 specifies that a report-only policy
+ignores it, so sending it there changes nothing about what the browser does — but Chromium
+logs `The Content Security Policy directive 'upgrade-insecure-requests' is ignored when
+delivered in a report-only policy` on every response, which put a permanent console error in
+every local development session (`APP_ENV=development` is report-only, per
+[`../operations/environments.md`](../operations/environments.md) §4) and once presented as a
+Playwright failure that was not a defect. Both origins do this — `apps/web/src/security-headers.ts`
+and `apps/api/src/common/middleware/security-headers.middleware.ts` — and the unit spec beside
+each asserts that the enforcing and report-only policies differ by that one directive and
+nothing else.
+
 Nonces are generated per request. `report-uri` is wired from day one and the reports are
 actually read — a CSP nobody monitors is decoration. The evidence-viewer origin gets its own,
 even tighter policy (`default-src 'none'; img-src 'self'; style-src 'nonce-…'`).

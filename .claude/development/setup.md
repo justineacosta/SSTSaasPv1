@@ -134,7 +134,18 @@ only, and `.env` is git-ignored. Never copy a staging or production secret into 
 ([`../security/secrets.md`](../security/secrets.md)).
 
 Config is validated by a Zod schema at boot: a missing or malformed variable **crashes
-startup** with a message naming the variable, rather than failing mysteriously later.
+startup** with a message naming the variable, rather than failing mysteriously later. A
+consequence worth knowing: a server already running when a new variable is added keeps its
+launch-time environment, so it fails validation until you restart it.
+
+One variable is not obvious from its name. **`E2E_PORT` (3100) is the port the Playwright
+suite starts its own server on, and it is deliberately not `WEB_PORT`.**
+`apps/web/playwright.config.ts` keeps `reuseExistingServer` so consecutive local runs do not
+pay for a rebuild, which means Playwright attaches to whatever is already listening on that
+port. While that port was `WEB_PORT`, a `pnpm dev` left running was what the suite tested —
+`APP_ENV=development`, so a report-only CSP and a different application from the one CI runs.
+Separate ports make the collision impossible instead of something to remember. `pnpm dev` and
+`pnpm start` still bind `WEB_PORT`; only `start:e2e` passes the launcher's `--e2e-port` flag.
 
 ## Troubleshooting
 
@@ -147,6 +158,7 @@ startup** with a message naming the variable, rather than failing mysteriously l
 | Integration tests hang | Docker daemon down — Testcontainers needs it |
 | Scan stays `QUEUED` | Worker not running (`pnpm dev:worker`), or Redis down |
 | `Tenant context missing` | A repository was called outside a request context; pass `TenantContext` |
+| E2E fails on a report-only CSP | Something other than the suite's own server is on `E2E_PORT`. The suite pins `APP_ENV=test` and always enforces; the assertion in `smoke.spec.ts` says so. |
 
 ## Before you open a pull request
 
