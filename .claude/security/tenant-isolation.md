@@ -118,6 +118,19 @@ stay inside the one tenant being deleted, layer 1 already scopes `organization.d
 the caller's own `id`, and `sentinel_app` holds no `DELETE` on `Organization` at all — see
 `packages/db/prisma/schema.prisma`'s relation comments for the reasoning per FK.
 
+That rule is now **mechanically enforced**, not just written down. `pnpm check:registry`
+(`scripts/check-tenant-registry.ts`, a required step in `.github/workflows/ci.yml`) reads
+`onDelete` from the Prisma DMMF and fails the build on any `Cascade` into a tenant-owned
+table from a non-tenant-scoped parent. It carries the qualifier: a cascade whose parent is
+`TENANT_ROOT_MODEL` passes, so `Membership.organizationId` and `Invitation.organizationId`
+are not exceptions the check has to be told about — they are simply not violations. This
+paragraph said the unqualified version once, and it was wrong; the check is the reason the
+next person cannot re-introduce either the wrong constraint or the wrong sentence. It also
+fails on a foreign key that omits `onDelete` entirely, because Prisma does not put its
+default in the DMMF and the default it would apply depends on field optionality — there is
+nothing there for a check to read, and guessing in this specific place is guessing about
+the one failure mode neither isolation layer can see.
+
 ### Layer 3 — Response serialisation
 
 Responses are built from explicit DTOs, never from raw Prisma models. A relation
@@ -154,6 +167,15 @@ The harness is table-driven over a resource registry. **Adding a tenant-owned re
 without adding it to the registry fails CI**, so the coverage cannot rot as the product
 grows — which is exactly how isolation bugs normally appear: not in the code that was
 reviewed for isolation, but in the resource added six months later.
+
+The harness above is Phase 3's, and does not exist yet — there is no tenant-owned REST
+resource to drive it over. **The registry check itself does exist**: `pnpm check:registry`
+runs in CI today and fails the build for an unregistered tenant-owned model, for a registry
+entry that has gone stale in either direction, for a model accounted for by none or by more
+than one of the three registries in `packages/db/src/tenant-resources.ts`, and for an unsafe
+FK cascade (§2, Layer 2). So the *registration* half of "adding a resource without
+registering it fails CI" is enforced now; the *assertion* half arrives with the resources it
+would assert over.
 
 Additional cases: removed member loses access immediately; suspended organisation blocks
 all access; API key scoped to org A rejected against org B; a job enqueued for org A that

@@ -9,3 +9,11 @@ export { isTenantOwnedModel, TENANT_OWNED_MODELS } from './tenant-resources.js';
 export type { TenantOwnedModel } from './tenant-resources.js';
 export { isTenantRootModel, TENANT_ROOT_MODEL } from './tenant-resources.js';
 export type { TenantRootModel } from './tenant-resources.js';
+export {
+  DELIBERATELY_GLOBAL_MODEL_NAMES,
+  DELIBERATELY_GLOBAL_MODELS,
+  isDeliberatelyGlobalModel,
+} from './tenant-resources.js';
+export type { DeliberatelyGlobalModel } from './tenant-resources.js';
+export { datamodelModels, PRISMA_CLIENT_VERSION } from './datamodel.js';
+export type { DatamodelModel, DatamodelRelation } from './datamodel.js';

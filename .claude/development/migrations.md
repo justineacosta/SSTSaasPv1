@@ -70,6 +70,8 @@ Every new tenant-owned table requires, in the same change:
 
 - [ ] `organizationId` column with an index leading on it
 - [ ] Foreign key to `Organization` with deliberate `ON DELETE` behaviour
+- [ ] **Every other** foreign key on the table declares `onDelete` explicitly, and none of
+      them is `Cascade` from a parent that is not itself tenant-scoped
 - [ ] RLS enabled with the standard policy
 - [ ] Registration in the tenant-isolation resource registry
       ([`testing.md`](testing.md) §3) — **CI fails without it**
@@ -77,6 +79,30 @@ Every new tenant-owned table requires, in the same change:
 
 The registry requirement is the important one: it is what stops isolation coverage rotting as
 the schema grows.
+
+Three of those are now mechanical rather than a promise. `pnpm check:registry`
+(`scripts/check-tenant-registry.ts`, wired into `.github/workflows/ci.yml`) reads the generated
+Prisma DMMF and fails the build when:
+
+- a model carries `organizationId` and is not in `TENANT_OWNED_MODELS`;
+- a model *in* `TENANT_OWNED_MODELS` has lost the column, or no longer exists — so the registry
+  cannot go stale in either direction;
+- a model is accounted for by none, or by more than one, of `TENANT_OWNED_MODELS`,
+  `TENANT_ROOT_MODEL` and `DELIBERATELY_GLOBAL_MODELS` (all in
+  `packages/db/src/tenant-resources.ts`). The first two rules are keyed on a column, so neither
+  can see `Organization` — the tenant root has no `organizationId` because it *is* the tenant.
+  Accounting is what covers it;
+- a foreign key **into** a tenant-owned table **from a parent that is not itself tenant-scoped**
+  is `ON DELETE CASCADE`, or omits `onDelete` altogether. See
+  [`../security/tenant-isolation.md`](../security/tenant-isolation.md) §2, Layer 2, for why
+  RI cascades are the one class both isolation layers are blind to — and for why the qualifier
+  in that sentence is load-bearing rather than pedantic.
+
+The omission case is reported rather than assumed on purpose. Measured against Prisma 6.19.3:
+when a relation omits `onDelete`, the DMMF carries no `relationOnDelete` key at all, so there is
+no default for the check to evaluate — and the default Prisma would apply differs by whether the
+field is optional. One word of schema per foreign key is cheaper than a guess in the one place
+where being wrong is invisible to both isolation layers.
 
 ## 6. Audit table
 

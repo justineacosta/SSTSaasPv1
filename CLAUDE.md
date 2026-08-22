@@ -47,18 +47,24 @@ Full detail: [`.claude/architecture/overview.md`](.claude/architecture/overview.
 
 ## Commands
 
-Commands are defined in Phase 1. Until `package.json` exists at the root, these are
-the *intended* contract, not yet runnable — do not cite them as working.
+Every command below exists in the root `package.json` and has been run. Anything
+named in a phase plan but not listed here does not exist yet — see
+[`.claude/development/setup.md`](.claude/development/setup.md) for the
+not-yet-real list (`dev:worker`, `test:security`).
 
 ```
 pnpm install            # install workspace
-pnpm dev                # web + api + workers, watch mode
+pnpm dev                # web + api, watch mode (workers arrive in Phase 4)
 pnpm build              # build all packages
 pnpm lint               # eslint across workspace
 pnpm typecheck          # tsc --noEmit across workspace
+pnpm format:check       # prettier --check — gated in CI
 pnpm test               # vitest unit tests
 pnpm test:integration   # integration tests (requires Docker)
 pnpm test:e2e           # Playwright
+pnpm check:specs        # every *.spec.* is claimed by exactly one Vitest project
+pnpm check:openapi      # committed openapi.json matches what the contracts generate
+pnpm check:registry     # tenant resource registry has not rotted
 pnpm db:migrate         # prisma migrate dev
 pnpm db:studio          # prisma studio
 pnpm db:seed            # seed reference data (CWE/OWASP/plans) — never fake tenant data

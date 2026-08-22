@@ -29,7 +29,13 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: Boolean(process.env['CI']),
   retries: process.env['CI'] !== undefined ? 2 : 0,
-  reporter: process.env['CI'] !== undefined ? 'github' : 'list',
+  // `github` annotates the failing line in the PR diff; `html` writes
+  // `playwright-report/`, which the CI job uploads on failure (Task 14). Both,
+  // because the annotation is what a reviewer sees first and the report is what
+  // they need once they want the trace. Locally, neither — `list` prints to the
+  // terminal the developer is already looking at.
+  reporter:
+    process.env['CI'] !== undefined ? [['github'], ['html', { open: 'never' }]] : [['list']],
   use: {
     baseURL,
     trace: 'on-first-retry',

@@ -110,4 +110,9 @@ tightening validation, or changing a status code requires `/api/v2` and a docume
 with a minimum 6-month overlap and `Deprecation`/`Sunset` headers throughout.
 
 The OpenAPI schema is generated from the Zod contracts, committed, and **diffed in CI**, so an
-accidental breaking change is caught in review rather than by a customer's pipeline.
+accidental breaking change is caught in review rather than by a customer's pipeline. The diff is
+`pnpm check:openapi` (`scripts/check-openapi-diff.ts`), a required step in
+`.github/workflows/ci.yml`: it regenerates the document to a scratch path, compares it to the
+committed `apps/api/openapi.json`, and prints the differing JSON paths. A difference that
+*removes* or *changes* something is called out as breaking, because that is the case this
+section says needs `/api/v2`.

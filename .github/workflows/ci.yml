@@ -28,6 +28,16 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # `pnpm format:check` existed since Task 1 and had never passed — it is
+      # not one of the five gates and nothing ran it, so 11 files had drifted.
+      # Task 14 reformatted them and gates it here: fixing the files without
+      # gating them just lets the same drift happen again, and a formatter that
+      # has never passed is a broken window rather than a control.
+      #
+      # First, because it is the cheapest signal in the job.
+      - name: Format
+        run: pnpm format:check
+
       - name: Lint
         run: pnpm lint
 
@@ -36,6 +46,15 @@ jobs:
 
       - name: Unit tests
         run: pnpm test
+
+      # Immediately after the unit tests, and deliberately not later: this is
+      # the check that says whether the step above actually ran anything. A
+      # spec matching no Vitest project executes nothing while
+      # `--passWithNoTests` prints green, and Task 12 hit three separate
+      # spellings of that in one task — the third introduced by the fix round
+      # for the second. Needs no build and no services.
+      - name: Spec-project coverage
+        run: pnpm check:specs
 
       # The integration suites are the only gate that proves the tenant-isolation
       # layer, the storage adapter and the API pipeline actually work against
@@ -63,3 +82,51 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      # Both of these run after the build because they read built output:
+      # `check:registry` imports `@sentinel/db`, which resolves to
+      # `packages/db/dist`, and `check:openapi` compiles `apps/api` and boots
+      # its Nest container. Neither needs Postgres, Redis or MinIO — the stack
+      # is already up by this point, but that is incidental, not a dependency.
+      - name: OpenAPI contract diff
+        run: pnpm check:openapi
+
+      - name: Tenant resource registry completeness
+        run: pnpm check:registry
+
+      # The end-to-end stage. Until it existed, nothing in CI rendered a page:
+      # the Playwright suite is the only thing asserting that the CSP nonce
+      # reaches the HTML, that the enforcing policy does not break the page, and
+      # that the transport-and-headers.md §2 header table survives on a real
+      # response — and it ran on exactly one developer's Windows machine, so any
+      # of those could regress with CI green.
+      #
+      # Only chromium, and only its system dependencies: installing all three
+      # browser families costs minutes per run to assert nothing this suite
+      # asserts (playwright.config.ts declares a single `chromium` project).
+      - name: Install Playwright chromium
+        run: pnpm --filter @sentinel/web exec playwright install --with-deps chromium
+
+      # `playwright.config.ts` owns the server: its `webServer.command` is
+      # `pnpm build && pnpm start:e2e`, so the app is rebuilt and started by
+      # Playwright rather than here. `start:e2e` pins `APP_ENV=test`, which is
+      # what makes the CSP enforcing rather than report-only, and both it and
+      # the config read `WEB_PORT` from the `.env` copied out of `.env.example`
+      # in the stack step above — so that file has to exist before this runs,
+      # which is why the E2E stage sits after it and not next to the unit tests.
+      - name: End-to-end tests
+        run: pnpm test:e2e
+
+      # A failing E2E stage with no artefact is a stage people disable. The
+      # trace is written on first retry (`trace: 'on-first-retry'`), and CI runs
+      # with `retries: 2`, so a genuine failure always leaves one behind.
+      - name: Upload Playwright artefacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+          retention-days: 7
+          if-no-files-found: ignore

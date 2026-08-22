@@ -94,10 +94,40 @@ regardless of the aggregate number.
 
 ## 6. CI
 
+The intended pipeline:
+
 ```
 install -> lint -> typecheck -> unit -> integration -> security -> build -> e2e -> container scan
 ```
 
+**What `.github/workflows/ci.yml` runs today** (Task 14), which is not yet all of it:
+
+```
+install -> format -> lint -> typecheck -> unit -> check:specs -> stack up -> integration
+        -> build -> check:openapi -> check:registry -> playwright install -> e2e
+```
+
+`security` and `container scan` are not in it: the security suites are Phase 2/3 (there is no
+authorization matrix to generate and no tenant-owned REST resource to assert over), and no
+container is built yet. `check:specs`, `check:openapi` and `check:registry` are the three
+mechanical checks Task 14 added — respectively that every `*.spec.*` file is claimed by exactly
+one Vitest project, that the committed OpenAPI document matches what the contracts generate, and
+that the tenant resource registry has not rotted
+([`migrations.md`](migrations.md) §5).
+
+`check:specs` sits immediately after the unit tests because it is the check that says whether
+they ran anything: a spec matching no project executes nothing while `--passWithNoTests` prints
+green.
+
 Security suites run on every pull request, not nightly. The full E2E suite runs on pull
 requests to `main`; a smoke subset runs on every push. Flaky tests are quarantined and fixed,
 never retried into passing — a retried test is a test that no longer tells you anything.
+
+**One live exception to that last sentence, recorded rather than hidden:**
+`apps/web/playwright.config.ts` sets `retries: 2` under CI. That was Task 13's decision and it
+predates this stage existing anywhere but one developer's machine; now that the E2E stage runs
+on every push, it is a real conflict with the rule above and it belongs in front of a reviewer
+rather than in a config file nobody re-reads. The argument for keeping it is that a cold Linux
+runner starting a fresh production build has startup races a developer's warm machine does not;
+the argument against is the rule above, which exists because a retried test stops telling you
+anything. Unresolved.

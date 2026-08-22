@@ -30,6 +30,12 @@ out/
 *.pfx
 secrets/
 
+# `pnpm check:openapi` regenerates the OpenAPI document here rather than over
+# the committed apps/api/openapi.json, so the check never destroys the evidence
+# it is comparing against. Removed in a `finally`; ignored so that a killed run
+# still cannot dirty the working tree.
+apps/api/.openapi-check.json
+
 # Test and coverage output
 coverage/
 .nyc_output/

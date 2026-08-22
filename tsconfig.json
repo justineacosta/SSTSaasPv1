@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  // The root repository scripts — `pnpm check:openapi`, `check:registry`,
+  // `check:specs` — belong to no workspace package, so `turbo run typecheck`
+  // and `turbo run lint` (which only visit packages) were checking none of
+  // them. A CI check that nothing typechecks is the same silent gap the checks
+  // themselves exist to close, so root `typecheck` and `lint` now run against
+  // this project as well.
+  //
+  // `noEmit`, because these run under Node's native type stripping
+  // (`node scripts/x.ts`) and are never compiled to `dist`.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "types": ["node"]
+  },
+  "include": ["scripts/**/*.ts"]
+}

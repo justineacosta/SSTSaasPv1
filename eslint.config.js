@@ -1,6 +1,7 @@
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 import importPlugin from 'eslint-plugin-import';
+import reactHooks from 'eslint-plugin-react-hooks';
 import globals from 'globals';
 
 export default tseslint.config(
@@ -181,6 +182,33 @@ export default tseslint.config(
       'no-restricted-imports': 'off',
       '@typescript-eslint/no-non-null-assertion': 'off',
       'no-restricted-properties': 'off',
+    },
+  },
+  // React hooks (Task 14). Nothing in the toolchain checked a dependency array
+  // until this block existed: `apps/web/app/providers.tsx` has three hooks with
+  // dependency arrays and a lazy `useState` initialiser, and the Task 13 review
+  // confirmed they are correct *today* — so this is a missing guard over the
+  // most common React defect class, not a fix for a present bug.
+  //
+  // Scoped to the two packages that actually contain React, not workspace-wide.
+  // `apps/api`, `packages/db` and the rest have no components, and a plugin
+  // that parses them buys nothing while widening what a lint run can break on.
+  //
+  // `exhaustive-deps` is raised from the plugin's own `warn` to `error`
+  // deliberately. ESLint exits 0 on warnings, so as shipped by
+  // `recommended-latest` the rule would print advice in a green build and gate
+  // nothing — and the entire reason this arrives in the CI-checks task is to be
+  // a gate. `coding-standards.md` §8 is the React section this enforces.
+  {
+    files: ['apps/web/**/*.{ts,tsx}', 'packages/ui/**/*.{ts,tsx}'],
+    // The plugin object by hand, not `configs['recommended-latest'].plugins` —
+    // measured: that field is still the legacy `['react-hooks']` string array,
+    // and ESLint 9.39.5 rejects it outright ("Flat config requires 'plugins' to
+    // be an object"). Only the config's `rules` are reused below.
+    plugins: { 'react-hooks': reactHooks },
+    rules: {
+      ...reactHooks.configs['recommended-latest'].rules,
+      'react-hooks/exhaustive-deps': 'error',
     },
   },
   // ui-ux/design-system.md §7 — "no component may use a raw hex value. A

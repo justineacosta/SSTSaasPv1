@@ -1,8 +1,10 @@
 # Local development setup
 
-> **Status: Not Implemented.** No `package.json` or compose file exists yet — these are built
-> in Phase 1. This document is the target contract, written now so Phase 1 has a specification
-> to satisfy. **Do not follow these steps expecting them to work today.**
+> **Status: Partially Implemented.** The root `package.json`, the compose stack, the migrations
+> and the seed all exist and the "First run" block below has been run end to end. What it starts
+> is a shell: two web pages, health probes, and an OpenAPI document — no authentication and no
+> product. The commands listed under "Commands" are real; the ones under "Not yet real" are not.
+> This banner was left claiming "No `package.json` or compose file exists yet" until Task 14.
 
 ## Prerequisites
 
@@ -28,7 +30,7 @@ cp .env.example .env            # placeholders are safe defaults for local only
 docker compose up -d            # postgres, redis, minio, mailpit
 pnpm db:migrate                 # apply migrations
 pnpm db:seed                    # reference data only — CWE, OWASP, roles, plans
-pnpm dev                        # web + api + workers, watch mode
+pnpm dev                        # web + api, watch mode (workers arrive in Phase 4)
 ```
 
 | Service | URL |
@@ -46,21 +48,28 @@ illusion this codebase is meant to avoid.
 
 ## Commands
 
+Everything in this block exists and has been run. Commands that do not exist yet are listed
+separately below, because a documented command that does not run is the same defect class as a
+false claim about a feature.
+
 ```
-pnpm dev                 # everything, watch mode
-pnpm dev:web             # frontend only
-pnpm dev:api             # api only
-pnpm dev:worker          # workers only
+pnpm dev                 # web + api, watch mode (turbo persistent task)
+pnpm dev:web             # frontend only  — http://localhost:3000
+pnpm dev:api             # api only       — http://localhost:3001
 
 pnpm build               # build all
-pnpm lint                # eslint
-pnpm format              # prettier
-pnpm typecheck           # tsc --noEmit
+pnpm lint                # eslint (packages via turbo, plus root scripts/)
+pnpm format              # prettier --write
+pnpm format:check        # prettier --check — gated in CI
+pnpm typecheck           # tsc --noEmit (packages via turbo, plus root scripts/)
 
-pnpm test                # vitest unit
+pnpm test                # vitest unit + ui
 pnpm test:integration    # integration (needs Docker — uses Testcontainers)
 pnpm test:e2e            # playwright
-pnpm test:security       # tenant isolation + authorization matrix
+
+pnpm check:specs         # every *.spec.* is claimed by exactly one Vitest project
+pnpm check:openapi       # committed openapi.json matches what the contracts generate
+pnpm check:registry      # tenant resource registry has not rotted
 
 pnpm db:migrate          # prisma migrate dev
 pnpm db:migrate:create   # create without applying
@@ -68,6 +77,19 @@ pnpm db:reset            # DESTRUCTIVE — drop, recreate, migrate, seed
 pnpm db:studio
 pnpm db:seed
 ```
+
+**Not yet real.** These are named in the phase plans and will arrive with the code they run:
+
+- `pnpm dev:worker` — Phase 4. `apps/worker-node` and `apps/worker-python` do not exist, so
+  `pnpm dev` starts web and api only.
+- `pnpm test:security` — the tenant-isolation and authorization-matrix suites, Phases 2–3.
+  `pnpm check:registry` enforces the *registration* half of that today
+  ([`testing.md`](testing.md) §3); the generated assertions need resources to assert over.
+
+`pnpm dev:api` runs `tsc --watch` and `node --watch dist/main.js` side by side rather than
+executing TypeScript directly: Nest resolves providers from `emitDecoratorMetadata`, and Node's
+type-stripping emits no metadata, so an un-compiled API starts with dependency injection that
+cannot resolve anything.
 
 ## Vulnerable test target
 
@@ -101,5 +123,14 @@ startup** with a message naming the variable, rather than failing mysteriously l
 
 ## Before you open a pull request
 
-`pnpm lint && pnpm typecheck && pnpm test && pnpm test:integration` — all green.
-See [`pull-request-rules.md`](pull-request-rules.md).
+Everything CI runs, in the order CI runs it:
+
+```bash
+pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm check:specs
+pnpm test:integration        # Docker Desktop must be running
+pnpm build && pnpm check:openapi && pnpm check:registry
+pnpm test:e2e
+```
+
+`check:openapi` and `check:registry` read built output, so they go after `pnpm build`.
+See [`pull-request-rules.md`](pull-request-rules.md) and [`testing.md`](testing.md) §6.
