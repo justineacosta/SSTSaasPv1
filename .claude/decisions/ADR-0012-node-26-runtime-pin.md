@@ -20,8 +20,11 @@ Choosing the runtime now therefore means choosing between the line the developer
 typing against and the line that is presently blessed.
 
 There is a second force. This repository leans on Node's native TypeScript type-stripping: the
-root `check:*` scripts run `node scripts/*.ts` directly, with no build step and no `tsx`. That
-capability is newer than Node 22 and is not something to be casual about downgrading.
+root `check:*` scripts invoke `node scripts/*.ts` directly, with no `tsx` and no compile step of
+their own. (`check:openapi` and `check:registry` run `build:packages` first, but that builds the
+workspace packages they import — the script file itself is still handed straight to `node`.
+`check:specs` has no build step at all.) That capability is newer than Node 22 and is not
+something to be casual about downgrading.
 
 ## Decision
 

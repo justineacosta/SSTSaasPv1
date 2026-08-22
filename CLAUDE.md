@@ -56,7 +56,8 @@ not-yet-real list (`dev:worker`, `test:security`).
 pnpm install            # install workspace
 pnpm dev                # web + api, watch mode (workers arrive in Phase 4)
 pnpm build              # build all packages
-pnpm build:packages     # build packages/* only (turbo); test and check:* run this first
+pnpm build:packages     # build packages/* only (turbo); test, test:integration,
+                        #   check:openapi and check:registry run it first (not check:specs)
 pnpm lint               # eslint across workspace
 pnpm typecheck          # tsc --noEmit across workspace
 pnpm format:check       # prettier --check — gated in CI

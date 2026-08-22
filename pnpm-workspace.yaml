@@ -24,7 +24,7 @@ allowBuilds:
 #
 # 1440 minutes is also pnpm 11's own default, so this line changes no behaviour
 # today. It is here because an inherited default is a policy nobody chose, and
-# this one has already reddened CI three times — see
+# this one has already reddened CI four times — see
 # `.claude/decisions/ADR-0013-dependency-release-age-cooldown.md`. Written down,
 # it is a supply-chain control with an owner and a stated cost; unwritten, it
 # was an unexplained 30-second install failure. If pnpm changes its default, the

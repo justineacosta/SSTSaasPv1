@@ -60,10 +60,17 @@ records that the removal's original justification was invalid.
 Verified 2026-08-22 that pnpm reads and enforces the key from this file, rather than assuming the
 name and placement were right:
 
-- `pnpm config get minimumReleaseAge` → `1440`, and the key appears in `pnpm config list`.
 - A throwaway workspace carrying only `minimumReleaseAge: 5256000` and a pinned `next@16.3.2`
   failed resolution with `ERR_PNPM_NO_MATURE_MATCHING_VERSION`, naming a cutoff computed from
-  that value. The check fires off this file.
+  **that** value. The check fires off this file, at this key, at this nesting level.
+- Setting a deliberately absurd value in a scratch copy of *this* workspace and reading it back
+  with `pnpm config get minimumReleaseAge` returned the absurd value, not the default.
+
+**Note what is deliberately not offered as proof.** `pnpm config get minimumReleaseAge` → `1440`
+on the real workspace proves nothing on its own: 1440 is pnpm's default, so that command answers
+`1440` whether or not the key is read. Only a non-default value distinguishes the two, which is
+why both checks above use one. Recording a check that cannot fail as though it were evidence is
+the exact mistake this ADR was written about — it would have been an embarrassing way to make it.
 
 ## Alternatives considered
 
