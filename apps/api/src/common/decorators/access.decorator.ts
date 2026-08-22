@@ -15,8 +15,7 @@ import type { Permission } from '@sentinel/contracts';
 export const ACCESS_METADATA_KEY = 'sentinel:access';
 
 export type AccessDeclaration =
-  | { readonly kind: 'public' }
-  | { readonly kind: 'permission'; readonly permission: Permission };
+  { readonly kind: 'public' } | { readonly kind: 'permission'; readonly permission: Permission };
 
 /**
  * Declares a route reachable without authentication.

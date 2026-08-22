@@ -125,7 +125,7 @@ describe('both layers composed: tenant-scoped client + sentinel_app + withTenant
     });
   });
 
-  it('C4: findUnique inside a transaction still refuses another tenant\'s row', async () => {
+  it("C4: findUnique inside a transaction still refuses another tenant's row", async () => {
     await withTenantTransaction(app, orgA, async (tx) => {
       const found = await tx.membership.findUnique({ where: { id: membershipSharedB } });
       expect(found).toBeNull();
@@ -177,7 +177,9 @@ describe('select/omit and the findUniqueOrThrow oracle, over the real applicatio
     // file/line/column, so two calls on two different lines would differ by
     // that alone, which is not the leak this test is checking for.
     await withTenantTransaction(app, orgA, async (tx) => {
-      const attempt = async (id: string): Promise<Prisma.PrismaClientKnownRequestError | undefined> => {
+      const attempt = async (
+        id: string,
+      ): Promise<Prisma.PrismaClientKnownRequestError | undefined> => {
         try {
           await tx.membership.findUniqueOrThrow({ where: { id } });
           return undefined;
@@ -200,12 +202,12 @@ describe('select/omit and the findUniqueOrThrow oracle, over the real applicatio
 });
 
 describe('C3: the tenant root (Organization) is scoped, over both layers', () => {
-  it('scopes Organization reads to the caller\'s own org', async () => {
+  it("scopes Organization reads to the caller's own org", async () => {
     const rows = await withTenantTransaction(app, orgA, (tx) => tx.organization.findMany());
     expect(rows.map((row) => row.id)).toEqual([orgA]);
   });
 
-  it('findUnique on Organization refuses another tenant\'s id', async () => {
+  it("findUnique on Organization refuses another tenant's id", async () => {
     await withTenantTransaction(app, orgA, async (tx) => {
       const found = await tx.organization.findUnique({ where: { id: orgB } });
       expect(found).toBeNull();
@@ -213,13 +215,18 @@ describe('C3: the tenant root (Organization) is scoped, over both layers', () =>
   });
 
   it('is the backstop for Organization too: raw SQL under orgA sees only orgA', async () => {
-    const rows = await withTenantTransaction(app, orgA, (tx) =>
-      tx.$queryRaw<{ id: string }[]>`SELECT id FROM "Organization" WHERE id IN (${orgA}, ${orgB})`,
+    const rows = await withTenantTransaction(
+      app,
+      orgA,
+      (tx) =>
+        tx.$queryRaw<
+          { id: string }[]
+        >`SELECT id FROM "Organization" WHERE id IN (${orgA}, ${orgB})`,
     );
     expect(rows.map((row) => row.id)).toEqual([orgA]);
   });
 
-  it('refuses to delete another org rather than silently redirecting onto the caller\'s own', async () => {
+  it("refuses to delete another org rather than silently redirecting onto the caller's own", async () => {
     // M-note (review, tenant-scope.ts): a plain where-override here would
     // have silently turned "delete org B" into "delete my own org" instead
     // of failing, because `id` is both the caller's target field and the
@@ -263,7 +270,7 @@ describe('C1/C2: relation traversal is invisible to layer 1, caught by layer 2 (
     ).rejects.toThrow();
   });
 
-  it('nested write (updateMany): only the caller\'s own tenant\'s membership is touched', async () => {
+  it("nested write (updateMany): only the caller's own tenant's membership is touched", async () => {
     await withTenantTransaction(app, orgA, (tx) =>
       tx.user.update({
         where: { id: userShared },
@@ -282,7 +289,7 @@ describe('C1/C2: relation traversal is invisible to layer 1, caught by layer 2 (
     await owner.membership.update({ where: { id: membershipSharedA }, data: { status: 'ACTIVE' } });
   });
 
-  it('nested write (deleteMany): only the caller\'s own tenant\'s membership is deleted', async () => {
+  it("nested write (deleteMany): only the caller's own tenant's membership is deleted", async () => {
     const extraA = newId('mbr');
     const extraUser = newId('usr');
     await owner.user.create({ data: { id: extraUser, email: `${extraUser}@example.test` } });
@@ -314,7 +321,7 @@ describe('C1/C2: relation traversal is invisible to layer 1, caught by layer 2 (
     });
   });
 
-  it('nested read: a global model\'s relation to Invitation leaks nothing outside RLS\'s reach', async () => {
+  it("nested read: a global model's relation to Invitation leaks nothing outside RLS's reach", async () => {
     // Role is global reference data (no organizationId, not the tenant
     // root) — the extension does not touch it at all. Without RLS on
     // Invitation, `role.findMany({ include: { invitations: true } })` would
@@ -330,12 +337,14 @@ describe('C1/C2: relation traversal is invisible to layer 1, caught by layer 2 (
     const invitations = roles[0]?.invitations ?? [];
     expect(invitations.length).toBeGreaterThan(0);
     expect(invitations.every((invitation) => invitation.organizationId === orgA)).toBe(true);
-    expect(invitations.some((invitation) => invitation.tokenHash === 'hash_org_b_secret')).toBe(false);
+    expect(invitations.some((invitation) => invitation.tokenHash === 'hash_org_b_secret')).toBe(
+      false,
+    );
   });
 });
 
 describe('referential-integrity cascades run below both layers', () => {
-  it('deleting a User does not destroy another tenant\'s Membership through the FK cascade', async () => {
+  it("deleting a User does not destroy another tenant's Membership through the FK cascade", async () => {
     // RI cascades execute inside Postgres's own constraint machinery, below
     // RLS and entirely outside the tenant-scoped client's view (the top-level
     // operation is `user.delete`, not `membership.delete` — decideScope never

@@ -30,8 +30,20 @@ beforeAll(async () => {
   await owner.user.create({ data: { id: sharedUserId, email: `${sharedUserId}@example.test` } });
   await owner.auditEvent.createMany({
     data: [
-      { id: newId('aud'), organizationId: orgA, actorType: 'SYSTEM', action: 'A', resourceType: 'T' },
-      { id: newId('aud'), organizationId: orgB, actorType: 'SYSTEM', action: 'B', resourceType: 'T' },
+      {
+        id: newId('aud'),
+        organizationId: orgA,
+        actorType: 'SYSTEM',
+        action: 'A',
+        resourceType: 'T',
+      },
+      {
+        id: newId('aud'),
+        organizationId: orgB,
+        actorType: 'SYSTEM',
+        action: 'B',
+        resourceType: 'T',
+      },
     ],
   });
 }, 180_000);
@@ -44,8 +56,10 @@ afterAll(async () => {
 
 describe('row-level security', () => {
   it('is the backstop: raw SQL that skips the client extension still sees only one tenant', async () => {
-    const rows = await withTenantTransaction(app, orgA, (tx) =>
-      tx.$queryRaw<{ organizationId: string }[]>`SELECT "organizationId" FROM "AuditEvent"`,
+    const rows = await withTenantTransaction(
+      app,
+      orgA,
+      (tx) => tx.$queryRaw<{ organizationId: string }[]>`SELECT "organizationId" FROM "AuditEvent"`,
     );
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((row) => row.organizationId === orgA)).toBe(true);
@@ -58,8 +72,11 @@ describe('row-level security', () => {
 
   it('refuses an insert claiming another tenant', async () => {
     await expect(
-      withTenantTransaction(app, orgA, (tx) =>
-        tx.$executeRaw`
+      withTenantTransaction(
+        app,
+        orgA,
+        (tx) =>
+          tx.$executeRaw`
           INSERT INTO "AuditEvent" ("id","organizationId","actorType","action","resourceType","createdAt")
           VALUES (${newId('aud')}, ${orgB}, 'SYSTEM', 'X', 'T', now())`,
       ),
@@ -77,7 +94,9 @@ describe('row-level security', () => {
     // Organization (the tenant root) added in review round 3: its RLS flags
     // were correct from the moment the migration landed, but untested —
     // this only asserted the three TENANT_OWNED_MODELS.
-    const rows = await owner.$queryRaw<{ relname: string; relrowsecurity: boolean; relforcerowsecurity: boolean }[]>`
+    const rows = await owner.$queryRaw<
+      { relname: string; relrowsecurity: boolean; relforcerowsecurity: boolean }[]
+    >`
       SELECT relname, relrowsecurity, relforcerowsecurity
       FROM pg_class
       WHERE relname IN ('Membership', 'Invitation', 'AuditEvent', 'Organization')`;
@@ -90,8 +109,10 @@ describe('row-level security', () => {
 
   it('revokes UPDATE and DELETE on AuditEvent from the application role', async () => {
     await expect(
-      withTenantTransaction(app, orgA, (tx) =>
-        tx.$executeRaw`UPDATE "AuditEvent" SET "action" = 'TAMPERED'`,
+      withTenantTransaction(
+        app,
+        orgA,
+        (tx) => tx.$executeRaw`UPDATE "AuditEvent" SET "action" = 'TAMPERED'`,
       ),
     ).rejects.toThrow();
 
@@ -119,8 +140,11 @@ describe('row-level security', () => {
       ],
     });
 
-    const rows = await withTenantTransaction(app, orgA, (tx) =>
-      tx.$queryRaw<{ id: string; organizationId: string }[]>`
+    const rows = await withTenantTransaction(
+      app,
+      orgA,
+      (tx) =>
+        tx.$queryRaw<{ id: string; organizationId: string }[]>`
         SELECT id, "organizationId" FROM "Membership" WHERE id IN (${membershipA}, ${membershipB})`,
     );
     expect(rows.map((row) => row.id)).toEqual([membershipA]);
@@ -154,8 +178,11 @@ describe('row-level security', () => {
       ],
     });
 
-    const rows = await withTenantTransaction(app, orgA, (tx) =>
-      tx.$queryRaw<{ id: string; organizationId: string }[]>`
+    const rows = await withTenantTransaction(
+      app,
+      orgA,
+      (tx) =>
+        tx.$queryRaw<{ id: string; organizationId: string }[]>`
         SELECT id, "organizationId" FROM "Invitation" WHERE id IN (${invitationA}, ${invitationB})`,
     );
     expect(rows.map((row) => row.id)).toEqual([invitationA]);
@@ -183,7 +210,9 @@ describe('row-level security', () => {
     await owner.$executeRawUnsafe(
       `CREATE POLICY "p" ON "force_probe" USING (tenant = current_setting('app.organization_id', true))`,
     );
-    await owner.$executeRawUnsafe(`INSERT INTO "force_probe" VALUES ('row-1', 'someone-elses-tenant')`);
+    await owner.$executeRawUnsafe(
+      `INSERT INTO "force_probe" VALUES ('row-1', 'someone-elses-tenant')`,
+    );
 
     const probeUrl = new URL(harness.appUrl);
     probeUrl.username = probeRole;

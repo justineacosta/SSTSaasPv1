@@ -6,8 +6,14 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./unscoped": { "types": "./dist/unscoped.d.ts", "default": "./dist/unscoped.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./unscoped": {
+      "types": "./dist/unscoped.d.ts",
+      "default": "./dist/unscoped.js"
+    }
   },
   "scripts": {
     "build": "prisma generate && tsc -p tsconfig.build.json",

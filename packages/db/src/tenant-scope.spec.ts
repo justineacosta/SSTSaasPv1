@@ -52,7 +52,12 @@ describe('decideScope', () => {
   });
 
   it('marks findUniqueOrThrow so a scope mismatch throws instead of returning null', () => {
-    const plan = decideScope('Membership', 'findUniqueOrThrow', { where: { id: 'mbr_x' } }, 'org_a');
+    const plan = decideScope(
+      'Membership',
+      'findUniqueOrThrow',
+      { where: { id: 'mbr_x' } },
+      'org_a',
+    );
     expect(plan.kind).toBe('run-and-check');
     expect(plan.kind === 'run-and-check' && plan.notFoundIsThrow).toBe(true);
   });
@@ -250,14 +255,18 @@ describe('scopeUniqueWhere', () => {
 
 describe('withScopedData', () => {
   it('forces the scope key on a single object, overriding any caller value', () => {
-    expect(withScopedData({ organizationId: 'org_evil', a: 1 }, 'organizationId', 'org_a')).toEqual({
-      organizationId: 'org_a',
-      a: 1,
-    });
+    expect(withScopedData({ organizationId: 'org_evil', a: 1 }, 'organizationId', 'org_a')).toEqual(
+      {
+        organizationId: 'org_a',
+        a: 1,
+      },
+    );
   });
 
   it('forces the scope key on every element of an array payload', () => {
-    expect(withScopedData([{ a: 1 }, { a: 2, organizationId: 'org_evil' }], 'organizationId', 'org_a')).toEqual([
+    expect(
+      withScopedData([{ a: 1 }, { a: 2, organizationId: 'org_evil' }], 'organizationId', 'org_a'),
+    ).toEqual([
       { a: 1, organizationId: 'org_a' },
       { a: 2, organizationId: 'org_a' },
     ]);

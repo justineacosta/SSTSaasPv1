@@ -263,7 +263,9 @@ describe('findUniqueOrThrow is not an existence oracle across tenants (review ro
     // row's tenant). Funnelling both through one function is what makes this
     // a fair comparison of the same call site's two possible outcomes.
     const db = createTenantClient(root, { organizationId: orgA });
-    const attempt = async (id: string): Promise<Prisma.PrismaClientKnownRequestError | undefined> => {
+    const attempt = async (
+      id: string,
+    ): Promise<Prisma.PrismaClientKnownRequestError | undefined> => {
       try {
         await db.membership.findUniqueOrThrow({ where: { id } });
         return undefined;
@@ -299,7 +301,9 @@ describe('findUniqueOrThrow is not an existence oracle across tenants (review ro
     });
 
     const db = createTenantClient(root, { organizationId: orgA });
-    await expect(db.membership.findUniqueOrThrow({ where: { id: membershipB } })).rejects.toMatchObject({
+    await expect(
+      db.membership.findUniqueOrThrow({ where: { id: membershipB } }),
+    ).rejects.toMatchObject({
       code: 'P2025',
     });
   });

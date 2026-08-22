@@ -51,10 +51,7 @@ export const NEVER_MATCHES_ID = '00000000000000000000000000-tenant-scope-miss';
  * meaningfully more surface to a file that has already produced four
  * Critical review findings, and this stays small and auditable instead.
  */
-export function createTenantClient(
-  base: PrismaClient,
-  context: TenantContext,
-): TenantPrismaClient {
+export function createTenantClient(base: PrismaClient, context: TenantContext): TenantPrismaClient {
   return base.$extends({
     query: {
       $allModels: {

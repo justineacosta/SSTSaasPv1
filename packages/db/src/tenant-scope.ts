@@ -287,13 +287,20 @@ export function decideScope(
     if (!scoped.ok) return { kind: 'refuse' };
     return {
       kind: 'run',
-      args: { ...typed, where: scoped.where, data: withScopedData(typed.data, keyField, organizationId) },
+      args: {
+        ...typed,
+        where: scoped.where,
+        data: withScopedData(typed.data, keyField, organizationId),
+      },
     };
   }
 
   if (SCOPED_DATA_OPERATIONS.has(operation)) {
     const typed = args as { data?: unknown };
-    return { kind: 'run', args: { ...typed, data: withScopedData(typed.data, keyField, organizationId) } };
+    return {
+      kind: 'run',
+      args: { ...typed, data: withScopedData(typed.data, keyField, organizationId) },
+    };
   }
 
   if (operation === 'upsert') {

@@ -19,7 +19,9 @@ describe('errorEnvelopeSchema', () => {
         message: 'The request contains invalid fields.',
         requestId: 'req_1',
         details: {
-          fields: [{ path: 'targets[0]', code: 'invalid_host', message: 'Enter a valid hostname.' }],
+          fields: [
+            { path: 'targets[0]', code: 'invalid_host', message: 'Enter a valid hostname.' },
+          ],
         },
       },
     });
