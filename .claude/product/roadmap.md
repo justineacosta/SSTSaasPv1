@@ -210,13 +210,38 @@ Known outstanding, none of it blocking Task 16:
   workspace-topology change and deserves its own review rather than riding into a CI-checks task.
   **Owed to Task 16, not suggested.** The failure mode — a gate whose correctness rests on an
   earlier step's task graph — is exactly the rot Task 14 exists to stop.
-- **The CI workflow has never run.** Every command in `.github/workflows/ci.yml` has been executed
-  on one Windows machine; nothing has run on a Linux runner. Specifically unverified: `playwright
-  install --with-deps chromium` (it installs Linux system packages), the E2E stage on `ubuntu-latest`,
-  the Playwright artifact upload, and whether the 30-minute job timeout covers install → format →
-  lint → typecheck → unit → checks → docker stack → integration → build → `playwright install` →
-  a second Next build. All plausible, none measured. Watch the first real run rather than
-  pre-emptively tuning timeouts.
+- **CI is red, and has been since 2026-08-22, on `pnpm install`.** Every run since commit
+  `daf7fd7` dies in 30 seconds at `pnpm install --frozen-lockfile` with
+  `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`: ten lockfile entries — `next@16.3.2` and its nine
+  `@next/swc-*` platform binaries — are younger than pnpm 11's **default 24-hour** minimum
+  release age. Nothing in this repository sets that policy; it is a pnpm default, and the run's
+  cutoff is exactly 24h before the run itself.
+
+  **Why it passes here and fails there, which is the part worth keeping.** `pnpm-workspace.yaml`
+  carries a comment stating the removal of the `minimumReleaseAgeExclude` block was verified
+  because `pnpm install`, `pnpm install --frozen-lockfile` and `pnpm install --lockfile-only` all
+  succeed locally. They do — and the verification is worthless. With `node_modules` already in
+  sync, pnpm prints "Already up to date" in ~290ms and **never runs the supply-chain check at
+  all**; CI starts from an empty `node_modules` and performs the full 885-entry verification pass.
+  A warm tree cannot see this class of failure. That is the same defect as the clean-clone
+  `pnpm test` item above, and it is exactly what `sentinel-verify` §3's phase-status rule was
+  written for.
+
+  **It is self-healing for these ten entries** — `next@16.3.2` was published 2026-08-21T09:38:38Z,
+  so the window closed 2026-08-22T09:38:38Z and a re-run after that clears. It is **not** fixed:
+  the next dependency added within a day of its publication reproduces it, and the misleading
+  comment is still in `pnpm-workspace.yaml`. **Owed to Task 16**, which should correct the comment
+  and decide the policy deliberately — pin, wait out the cooldown, or set `minimumReleaseAge`
+  explicitly rather than inheriting a default nobody chose.
+- **The Task 14 CI stages have never run**, though the workflow itself has. Corrected claim: this
+  bullet previously read "the CI workflow has never run … nothing has run on a Linux runner",
+  which was false — `ci.yml` has existed since `12831ef` and ran green on `ubuntu-latest` on
+  2026-08-20 and 2026-08-21. What has genuinely never executed are the stages Task 14 added,
+  because every run since has died at install: the `format:check` gate, `check:specs`,
+  `check:openapi` and `check:registry` in CI, `playwright install --with-deps chromium` (it
+  installs Linux system packages), the E2E stage, the Playwright artefact upload, and whether the
+  30-minute job timeout covers the full sequence. All plausible, none measured. Watch the first
+  green run rather than pre-emptively tuning timeouts.
 - `check:openapi` treats every changed value as potentially breaking, and its prose exemption is
   keyed on the leaf name — so a real API schema property named `description` (a future
   `Finding.description`, say) would be classified as prose and not raise the `/api/v2` banner.
