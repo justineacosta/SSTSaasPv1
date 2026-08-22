@@ -148,9 +148,19 @@ moves the status** — a stale roadmap makes a resuming session rebuild what exi
 does not. Full protocol, including how to end a session cleanly:
 [`.claude/development/resuming-work.md`](.claude/development/resuming-work.md).
 
-Two project skills automate this protocol: **`sentinel-phase`** for starting, resuming, and
-finishing a phase, and **`sentinel-verify`** for turning a completion claim into captured
-evidence. Invoke them by name.
+Two project skills in [`.claude/skills/`](.claude/skills/) carry this protocol, and using them is
+not optional:
+
+- **Invoke `sentinel-phase` before starting, resuming, or finishing any phase *or numbered
+  task*.** It encodes the protocol above as an ordered checklist. The user should not have to ask
+  for it.
+- **Invoke `sentinel-verify` before writing that anything is complete, implemented, working or
+  passing, and before moving a status in `roadmap.md`.** It turns the claim into captured
+  evidence.
+
+Claude Code only discovers skills in directories that existed when the session started. **If
+either name is missing from your skill list, say so before proceeding** — a control that is
+silently absent is worse than one that is known to be missing.
 
 ## Where to read next
 
