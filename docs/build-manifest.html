@@ -1,0 +1,4997 @@
+<!--
+===============================================================================
+  SENTINEL BUILD MANIFEST  —  source of the published artifact
+===============================================================================
+
+  PUBLISHED AT
+    https://claude.ai/code/artifact/2cc8be1b-7557-4d0d-b0bb-ddf6f9d56821
+
+    Revision 1.0 lived at .../2f1c7fc6-c7b0-... and is frozen and stale.
+    Do not resurrect that URL; it can no longer be republished.
+
+  HOW TO UPDATE
+    1. Edit this file.
+    2. Republish it TO THE URL ABOVE. In Claude Code, that means passing the
+       URL explicitly — publishing this path without it mints a NEW artifact
+       and orphans the link people hold.
+    3. Bump the revision in all three places listed under REVISION below.
+
+  WHAT IS AUTHORITATIVE
+    `.claude/product/roadmap.md` is the answer to "what actually works?".
+    THIS PAGE IS A SNAPSHOT OF IT, NOT A SECOND SOURCE OF TRUTH.
+    If the two disagree, the roadmap is right and this file is stale.
+
+  THE RULE THAT KEEPS IT HONEST
+    Never hand-edit a status or a count to what you assume it is. Re-derive it
+    (see VOLATILE FACTS below), and for anything phrased as "verified", run the
+    commands and read the real exit codes first — `.claude/skills/sentinel-verify`.
+    A number typed from memory into a page that says "verified" is a lie with
+    a citation attached.
+
+-------------------------------------------------------------------------------
+  VOLATILE FACTS  —  everything below goes stale. Re-derive, never guess.
+-------------------------------------------------------------------------------
+
+  Each row: the fact, how to re-derive it, and every section it appears in.
+  Grep the search term to find all occurrences before changing one of them.
+
+  FACT                  RE-DERIVE WITH                            APPEARS IN
+  --------------------  ----------------------------------------  ------------
+  Revision + date       (decide)                                  rail, masthead,
+                                                                  footer  [3x]
+  Commit                git log --oneline -1                      §03, footer
+  Docs count            find .claude -name '*.md' | wc -l         §02, §03, §30
+  ADR count             ls .claude/decisions/ADR-*.md | wc -l     §02, §03, §30
+  Source file count     git ls-files 'apps/**' 'packages/**' \
+                          | grep -cE '\.(ts|tsx)$'                §02, §03
+  Unit tests            pnpm test            (tail: "N passed")   §02, §03
+  Integration tests     pnpm test:integration                     §02, §03
+  E2E specs             pnpm test:e2e                             §03
+  Spec file count       pnpm check:specs                          §03
+  Models in schema      pnpm check:registry                       §02, §03
+  Workspaces built      ls -d apps/*/ packages/*                  §02, §03, §04
+  Services healthy      docker compose ps                         §03
+  CI state              gh run list --branch main --limit 1       §03
+  Migration state       pnpm --filter @sentinel/db exec dotenv \
+                          -e ../../.env -- prisma migrate status  §03
+  Repo visibility       gh repo view --json visibility            §03, §32
+  Phase statuses        .claude/product/roadmap.md  (§ "Current state")
+                                                                  §01, §03, §30
+
+  DESIGN TARGETS (§§05-29) are projections, not measurements. They change only
+  when the design changes — not when the build advances. Leave them alone unless
+  the corresponding `.claude/` document changed.
+
+-------------------------------------------------------------------------------
+  REVISION  —  update all three together
+-------------------------------------------------------------------------------
+    1. rail       .rail-sub          "rev N.N · <state>"
+    2. masthead   .eyebrow           "rev N.N · <date> · <state>"
+    3. footer     (bottom of file)   "rev N.N · <date> · <commit> · <state>"
+
+-------------------------------------------------------------------------------
+  EDITING THE MARKUP
+-------------------------------------------------------------------------------
+
+  Sections are delimited by an HTML comment reading  ==== §NN · Title ====
+  Add a section: append it, add a matching <li> to the rail's <ul class="toc">,
+  and keep the id (#sNN) and the .sn number in step. A test of this file is just
+  reading it — every href="#sNN" must have a <section id="sNN">.
+
+  REUSABLE BLOCKS (all styled in the <style> block, see CSS MAP there):
+
+    <div class="tw"><table>…</table></div>     table + horizontal scroll wrapper
+    <span class="sev s-crit|s-high|s-med|s-low|s-info">label</span>
+                                               severity pill; ALWAYS carries text,
+                                               never colour alone (WCAG + greyscale)
+    <span class="ph">P4</span>                 phase chip, not started
+    <span class="ph ph-now">P2 next</span>     phase chip, current
+    <span class="ph ph-done">P1 done</span>    phase chip, verified complete
+    <div class="note">…</div>                  callout; add .crit .warn .ok to tint
+      <span class="lbl">LABEL</span>           first child of a note
+    <div class="dec"><div class="dec-h">Title</div><div class="dec-b">…</div></div>
+                                               decision card
+    <div class="kv"><div><dt>K</dt><dd>V<small>note</small></dd></div>…</div>
+                                               key/value grid
+    <div class="tally"><div><div class="fig">N</div>
+      <div class="cap">LABEL</div><div class="ph">note</div></div>…</div>
+                                               big-number grid (§02 only)
+    <div class="part">Part N — Title</div>     part divider between sections
+    <pre>…<b>emphasis</b>…<i>accent</i>…</pre> code/diagram block
+    <div class="figcap">caption</div>          caption, sits under a <pre>
+
+  CONSTRAINTS THAT ARE NOT NEGOTIABLE:
+    - Self-contained. No external CSS/JS/images; Google Fonts is the sole
+      exception the artifact CSP permits.
+    - No <!doctype>, <html>, <head> or <body> tags — they are added at publish.
+    - Both themes. Every colour comes from a token defined on bare :root and
+      redefined in BOTH dark blocks. A colour defined only inside a media query
+      or [data-theme] block renders one theme's text on the other theme's ground.
+    - Wide content scrolls inside .tw, never the page body.
+
+===============================================================================
+-->
+
+<title>Sentinel Build Manifest</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link
+  rel="stylesheet"
+  href="https://fonts.googleapis.com/css2?family=Chivo:wght@500;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+/>
+<style>
+  /* ==========================================================================
+   CSS MAP — edit the tokens, not the rules. Nothing below uses a raw colour.
+
+     1. TOKENS      :root + both dark blocks. Change the palette here only.
+     2. BASE        body, headings, links, focus
+     3. SHELL       .shell .rail .toc — the sticky left navigation
+     4. MASTHEAD    .mast .eyebrow .lede .meta
+     5. SECTIONS    section, h2/.sn, h3, h4, .part
+     6. BLOCKS      pre, code, .figcap
+     7. TABLES      .tw table th td
+     8. COMPONENTS  .sev .ph .note .dec .kv .tally
+   ========================================================================== */
+  :root {
+    --ground: #fafafc;
+    --surface: #ffffff;
+    --surface-2: #f1f2f8;
+    --surface-3: #e9eaf3;
+    --ink: #14161f;
+    --ink-2: #454a5e;
+    --ink-3: #6e7489;
+    --rule: #dee0ea;
+    --rule-strong: #c3c7d6;
+    --accent: #3a3f8f;
+    --accent-ink: #3a3f8f;
+    --accent-soft: #ecedf8;
+    --crit: #a8123a;
+    --high: #c2551b;
+    --med: #8e6a06;
+    --low: #1f6e60;
+    --info: #3b5c82;
+    --crit-soft: #fbebef;
+    --high-soft: #fcf0e8;
+    --med-soft: #faf4e2;
+    --low-soft: #e7f4f1;
+    --info-soft: #ecf1f7;
+    --code-bg: #f4f5fa;
+    --maxw: 960px;
+    --prose: 68ch;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) {
+      --ground: #0b0d14;
+      --surface: #11141e;
+      --surface-2: #181c28;
+      --surface-3: #212636;
+      --ink: #e9ebf3;
+      --ink-2: #a9aec2;
+      --ink-3: #787e96;
+      --rule: #242938;
+      --rule-strong: #394054;
+      --accent: #9096ec;
+      --accent-ink: #9096ec;
+      --accent-soft: #1b1e36;
+      --crit: #f2657f;
+      --high: #e8975a;
+      --med: #d6b24c;
+      --low: #4fc0a8;
+      --info: #84acd6;
+      --crit-soft: #2a121b;
+      --high-soft: #2a1b12;
+      --med-soft: #26200f;
+      --low-soft: #0f2420;
+      --info-soft: #131c27;
+      --code-bg: #161a25;
+    }
+  }
+  :root[data-theme='dark'] {
+    --ground: #0b0d14;
+    --surface: #11141e;
+    --surface-2: #181c28;
+    --surface-3: #212636;
+    --ink: #e9ebf3;
+    --ink-2: #a9aec2;
+    --ink-3: #787e96;
+    --rule: #242938;
+    --rule-strong: #394054;
+    --accent: #9096ec;
+    --accent-ink: #9096ec;
+    --accent-soft: #1b1e36;
+    --crit: #f2657f;
+    --high: #e8975a;
+    --med: #d6b24c;
+    --low: #4fc0a8;
+    --info: #84acd6;
+    --crit-soft: #2a121b;
+    --high-soft: #2a1b12;
+    --med-soft: #26200f;
+    --low-soft: #0f2420;
+    --info-soft: #131c27;
+    --code-bg: #161a25;
+  }
+  /* --- 2. BASE ------------------------------------------------------- */
+  * {
+    box-sizing: border-box;
+  }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family:
+      'IBM Plex Sans',
+      -apple-system,
+      BlinkMacSystemFont,
+      'Segoe UI',
+      sans-serif;
+    font-size: 15.5px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: Chivo, 'IBM Plex Sans', sans-serif;
+    text-wrap: balance;
+    margin: 0;
+  }
+  code,
+  pre,
+  .mono {
+    font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  a {
+    color: var(--accent-ink);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+  }
+  a:focus-visible,
+  button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  /* --- 3. SHELL ------------------------------------------------------ */
+  .shell {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  @media (min-width: 1120px) {
+    .shell {
+      grid-template-columns: 268px minmax(0, 1fr);
+    }
+  }
+
+  .rail {
+    border-bottom: 1px solid var(--rule);
+    background: var(--surface);
+  }
+  @media (min-width: 1120px) {
+    .rail {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+      border-bottom: 0;
+      border-right: 1px solid var(--rule);
+    }
+  }
+  .rail-in {
+    padding: 22px 20px 40px;
+  }
+  .rail-mark {
+    font-family: Chivo;
+    font-weight: 800;
+    font-size: 13px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink);
+  }
+  .rail-sub {
+    font-size: 11.5px;
+    color: var(--ink-3);
+    letter-spacing: 0.03em;
+    margin-top: 3px;
+  }
+  .ramp {
+    display: flex;
+    gap: 2px;
+    margin: 14px 0 18px;
+  }
+  .ramp span {
+    height: 4px;
+    flex: 1;
+    border-radius: 1px;
+  }
+  .toc {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .toc a {
+    display: grid;
+    grid-template-columns: 26px 1fr;
+    gap: 8px;
+    padding: 4px 6px;
+    border-radius: 2px;
+    font-size: 12.9px;
+    line-height: 1.35;
+    color: var(--ink-2);
+    text-decoration: none;
+  }
+  .toc a:hover {
+    background: var(--surface-2);
+    color: var(--ink);
+  }
+  .toc .n {
+    font-family: 'IBM Plex Mono';
+    font-size: 11px;
+    color: var(--ink-3);
+    font-variant-numeric: tabular-nums;
+    padding-top: 1px;
+  }
+  .toc-grp {
+    font-size: 10.5px;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin: 16px 0 5px;
+    padding: 0 6px;
+    font-weight: 600;
+  }
+  .toc-grp:first-of-type {
+    margin-top: 0;
+  }
+
+  main {
+    min-width: 0;
+    padding: 0 24px 120px;
+  }
+  .wrap {
+    max-width: var(--maxw);
+    margin: 0 auto;
+  }
+  main p,
+  main li {
+    max-width: var(--prose);
+  }
+
+  /* --- 4. MASTHEAD --------------------------------------------------- */
+  .mast {
+    padding: 56px 0 34px;
+    border-bottom: 1px solid var(--rule-strong);
+  }
+  .eyebrow {
+    font-family: 'IBM Plex Mono';
+    font-size: 11.5px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .mast h1 {
+    font-size: clamp(34px, 5.2vw, 52px);
+    line-height: 1.03;
+    letter-spacing: -0.025em;
+    font-weight: 800;
+    margin: 14px 0 0;
+  }
+  .mast .lede {
+    font-size: 17.5px;
+    color: var(--ink-2);
+    margin: 16px 0 0;
+    max-width: 60ch;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0;
+    margin: 28px 0 0;
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    background: var(--surface);
+  }
+  .meta div {
+    flex: 1 1 150px;
+    padding: 10px 14px;
+    border-right: 1px solid var(--rule);
+  }
+  .meta div:last-child {
+    border-right: 0;
+  }
+  .meta dt {
+    font-family: 'IBM Plex Mono';
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .meta dd {
+    margin: 3px 0 0;
+    font-size: 13.5px;
+    font-weight: 500;
+  }
+
+  /* --- 5. SECTIONS --------------------------------------------------- */
+  section {
+    padding-top: 52px;
+    scroll-margin-top: 14px;
+  }
+  section > h2 {
+    font-size: 26px;
+    letter-spacing: -0.02em;
+    font-weight: 700;
+    line-height: 1.15;
+    padding-top: 14px;
+    border-top: 1px solid var(--rule);
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 12px;
+    align-items: baseline;
+  }
+  section > h2 .sn {
+    font-family: 'IBM Plex Mono';
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--accent-ink);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.06em;
+  }
+  h3 {
+    font-size: 16.5px;
+    font-weight: 700;
+    letter-spacing: -0.008em;
+    margin: 30px 0 8px;
+  }
+  h4 {
+    font-size: 13.5px;
+    font-weight: 600;
+    margin: 22px 0 6px;
+    color: var(--ink-2);
+  }
+  p {
+    margin: 12px 0;
+  }
+  ul,
+  ol {
+    margin: 12px 0;
+    padding-left: 20px;
+  }
+  li {
+    margin: 5px 0;
+  }
+  li::marker {
+    color: var(--ink-3);
+  }
+  strong {
+    font-weight: 600;
+  }
+  .part {
+    font-family: Chivo;
+    font-weight: 800;
+    font-size: 11px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin: 64px 0 0;
+    padding-bottom: 4px;
+  }
+
+  /* --- 6. BLOCKS ----------------------------------------------------- */
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-size: 12.4px;
+    line-height: 1.55;
+    margin: 16px 0;
+    color: var(--ink-2);
+  }
+  pre b {
+    color: var(--ink);
+    font-weight: 600;
+  }
+  pre i {
+    color: var(--accent-ink);
+    font-style: normal;
+  }
+  :not(pre) > code {
+    background: var(--surface-2);
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    padding: 0.5px 4px;
+    font-size: 12.4px;
+    color: var(--ink);
+  }
+  .figcap {
+    font-size: 11.5px;
+    color: var(--ink-3);
+    margin: -8px 0 20px;
+    font-family: 'IBM Plex Mono';
+    letter-spacing: 0.02em;
+  }
+
+  /* --- 7. TABLES ----------------------------------------------------- */
+  .tw {
+    overflow-x: auto;
+    margin: 16px 0;
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    background: var(--surface);
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 13.2px;
+    min-width: 540px;
+  }
+  th {
+    text-align: left;
+    font-family: 'IBM Plex Mono';
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-weight: 500;
+    padding: 9px 13px;
+    border-bottom: 1px solid var(--rule-strong);
+    background: var(--surface-2);
+    white-space: nowrap;
+  }
+  td {
+    padding: 9px 13px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+    color: var(--ink-2);
+  }
+  tr:last-child td {
+    border-bottom: 0;
+  }
+  td:first-child {
+    color: var(--ink);
+    font-weight: 500;
+  }
+  td.num,
+  th.num {
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  table code {
+    font-size: 11.8px;
+  }
+
+  /* --- 8. COMPONENTS ------------------------------------------------- */
+  .sev {
+    display: inline-block;
+    font-family: 'IBM Plex Mono';
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border-radius: 2px;
+    white-space: nowrap;
+    border: 1px solid;
+  }
+  .s-crit {
+    color: var(--crit);
+    background: var(--crit-soft);
+    border-color: var(--crit);
+  }
+  .s-high {
+    color: var(--high);
+    background: var(--high-soft);
+    border-color: var(--high);
+  }
+  .s-med {
+    color: var(--med);
+    background: var(--med-soft);
+    border-color: var(--med);
+  }
+  .s-low {
+    color: var(--low);
+    background: var(--low-soft);
+    border-color: var(--low);
+  }
+  .s-info {
+    color: var(--info);
+    background: var(--info-soft);
+    border-color: var(--info);
+  }
+  .s-done {
+    color: var(--low);
+    background: var(--low-soft);
+    border-color: var(--low);
+  }
+
+  .note {
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--ink-3);
+    background: var(--surface);
+    padding: 12px 15px;
+    margin: 18px 0;
+    border-radius: 2px;
+    font-size: 14px;
+  }
+  .note.crit {
+    border-left-color: var(--crit);
+    background: var(--crit-soft);
+  }
+  .note.warn {
+    border-left-color: var(--high);
+    background: var(--high-soft);
+  }
+  .note.ok {
+    border-left-color: var(--low);
+    background: var(--low-soft);
+  }
+  .note p {
+    margin: 6px 0;
+    max-width: none;
+  }
+  .note p:first-child {
+    margin-top: 0;
+  }
+  .note p:last-child {
+    margin-bottom: 0;
+  }
+  .note .lbl {
+    font-family: 'IBM Plex Mono';
+    font-size: 10.5px;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    font-weight: 600;
+    display: block;
+    margin-bottom: 4px;
+    color: var(--ink-3);
+  }
+  .note.crit .lbl {
+    color: var(--crit);
+  }
+  .note.warn .lbl {
+    color: var(--high);
+  }
+  .note.ok .lbl {
+    color: var(--low);
+  }
+
+  .dec {
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    background: var(--surface);
+    margin: 16px 0;
+    overflow: hidden;
+  }
+  .dec-h {
+    padding: 9px 14px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--rule);
+    font-family: 'IBM Plex Mono';
+    font-size: 11px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    font-weight: 500;
+  }
+  .dec-b {
+    padding: 4px 14px 12px;
+  }
+
+  .kv {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 0;
+    border: 1px solid var(--rule);
+    border-top: 0;
+    border-left: 0;
+    border-radius: 2px;
+    margin: 16px 0;
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .kv > div {
+    padding: 11px 14px;
+    border-top: 1px solid var(--rule);
+    border-left: 1px solid var(--rule);
+  }
+  .kv dt {
+    font-family: 'IBM Plex Mono';
+    font-size: 10.5px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .kv dd {
+    margin: 4px 0 0;
+    font-size: 13.5px;
+    color: var(--ink);
+    font-weight: 500;
+  }
+  .kv dd small {
+    display: block;
+    font-weight: 400;
+    color: var(--ink-3);
+    font-size: 11.8px;
+    margin-top: 2px;
+    letter-spacing: 0;
+  }
+
+  /* build-manifest additions: the tally grid and phase chips */
+  .tally {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+    gap: 0;
+    border: 1px solid var(--rule);
+    border-top: 0;
+    border-left: 0;
+    border-radius: 2px;
+    margin: 18px 0;
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .tally > div {
+    padding: 13px 14px;
+    border-top: 1px solid var(--rule);
+    border-left: 1px solid var(--rule);
+  }
+  .tally .fig {
+    font-family: Chivo;
+    font-weight: 800;
+    font-size: 27px;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+  }
+  .tally .cap {
+    font-family: 'IBM Plex Mono';
+    font-size: 10.5px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin-top: 6px;
+  }
+  .tally .ph {
+    font-size: 11.5px;
+    color: var(--ink-3);
+    margin-top: 3px;
+  }
+
+  .ph {
+    display: inline-block;
+    font-family: 'IBM Plex Mono';
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    padding: 1.5px 5px;
+    border-radius: 2px;
+    border: 1px solid;
+    white-space: nowrap;
+    color: var(--ink-3);
+    background: var(--surface-2);
+    border-color: var(--rule-strong);
+  }
+  .ph-now {
+    color: var(--accent-ink);
+    background: var(--accent-soft);
+    border-color: var(--accent);
+  }
+  .ph-done {
+    color: var(--low);
+    background: var(--low-soft);
+    border-color: var(--low);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * {
+      animation: none !important;
+      transition: none !important;
+    }
+  }
+</style>
+
+<div class="shell">
+  <nav class="rail" aria-label="Contents">
+    <div class="rail-in">
+      <div class="rail-mark">Sentinel</div>
+      <div class="rail-sub">Build manifest &middot; rev 2.0 &middot; Phase&nbsp;1 verified</div>
+      <div class="ramp" aria-hidden="true">
+        <span style="background: var(--crit)"></span><span style="background: var(--high)"></span>
+        <span style="background: var(--med)"></span><span style="background: var(--low)"></span>
+        <span style="background: var(--info)"></span>
+      </div>
+      <ul class="toc">
+        <div class="toc-grp">Frame</div>
+        <li>
+          <a href="#s1"><span class="n">01</span><span>What this document is</span></a>
+        </li>
+        <li>
+          <a href="#s2"><span class="n">02</span><span>The whole build, counted</span></a>
+        </li>
+        <li>
+          <a href="#s3"><span class="n">03</span><span>What exists today</span></a>
+        </li>
+        <div class="toc-grp">Foundation</div>
+        <li>
+          <a href="#s4"><span class="n">04</span><span>Workspaces</span></a>
+        </li>
+        <li>
+          <a href="#s5"><span class="n">05</span><span>Shared contracts</span></a>
+        </li>
+        <li>
+          <a href="#s6"><span class="n">06</span><span>Local stack &amp; config</span></a>
+        </li>
+        <li>
+          <a href="#s7"><span class="n">07</span><span>CI pipeline</span></a>
+        </li>
+        <div class="toc-grp">Data</div>
+        <li>
+          <a href="#s8"><span class="n">08</span><span>Database tables</span></a>
+        </li>
+        <li>
+          <a href="#s9"><span class="n">09</span><span>Enumerations</span></a>
+        </li>
+        <li>
+          <a href="#s10"><span class="n">10</span><span>Indexes &amp; constraints</span></a>
+        </li>
+        <li>
+          <a href="#s11"><span class="n">11</span><span>Reference &amp; seed data</span></a>
+        </li>
+        <div class="toc-grp">Server surface</div>
+        <li>
+          <a href="#s12"><span class="n">12</span><span>Endpoint inventory</span></a>
+        </li>
+        <li>
+          <a href="#s13"><span class="n">13</span><span>Permissions &amp; roles</span></a>
+        </li>
+        <li>
+          <a href="#s14"><span class="n">14</span><span>Error codes</span></a>
+        </li>
+        <li>
+          <a href="#s15"><span class="n">15</span><span>Realtime events</span></a>
+        </li>
+        <li>
+          <a href="#s16"><span class="n">16</span><span>Audit actions</span></a>
+        </li>
+        <div class="toc-grp">Client surface</div>
+        <li>
+          <a href="#s17"><span class="n">17</span><span>Route inventory</span></a>
+        </li>
+        <li>
+          <a href="#s18"><span class="n">18</span><span>Design primitives</span></a>
+        </li>
+        <li>
+          <a href="#s19"><span class="n">19</span><span>Page patterns</span></a>
+        </li>
+        <li>
+          <a href="#s20"><span class="n">20</span><span>Domain components</span></a>
+        </li>
+        <div class="toc-grp">Execution</div>
+        <li>
+          <a href="#s21"><span class="n">21</span><span>Queues &amp; workers</span></a>
+        </li>
+        <li>
+          <a href="#s22"><span class="n">22</span><span>Scheduler jobs</span></a>
+        </li>
+        <li>
+          <a href="#s23"><span class="n">23</span><span>Engines</span></a>
+        </li>
+        <li>
+          <a href="#s24"><span class="n">24</span><span>Web security checks</span></a>
+        </li>
+        <li>
+          <a href="#s25"><span class="n">25</span><span>Finding pipeline</span></a>
+        </li>
+        <div class="toc-grp">Commercial</div>
+        <li>
+          <a href="#s26"><span class="n">26</span><span>Entitlements &amp; plans</span></a>
+        </li>
+        <li>
+          <a href="#s27"><span class="n">27</span><span>Integrations &amp; reports</span></a>
+        </li>
+        <div class="toc-grp">Assurance</div>
+        <li>
+          <a href="#s28"><span class="n">28</span><span>Test suites</span></a>
+        </li>
+        <li>
+          <a href="#s29"><span class="n">29</span><span>Metrics &amp; alerts</span></a>
+        </li>
+        <div class="toc-grp">Delivery</div>
+        <li>
+          <a href="#s30"><span class="n">30</span><span>Build order</span></a>
+        </li>
+        <li>
+          <a href="#s31"><span class="n">31</span><span>Not being built</span></a>
+        </li>
+        <li>
+          <a href="#s32"><span class="n">32</span><span>Your decisions</span></a>
+        </li>
+        <li>
+          <a href="#s33"><span class="n">33</span><span>Changed since rev 1.0</span></a>
+        </li>
+      </ul>
+    </div>
+  </nav>
+
+  <main>
+    <div class="wrap">
+      <header class="mast">
+        <div class="eyebrow">
+          Build manifest &middot; rev 2.0 &middot; 23 Aug 2026 &middot; Phases 0 and 1 verified
+        </div>
+        <h1>Everything we are going to make</h1>
+        <p class="lede">
+          The architecture blueprint fixed how the system works. This one enumerates what actually
+          gets built &mdash; every workspace, table, endpoint, route, component, engine, queue, and
+          test suite, with the phase each lands in and an honest count of how much of it exists
+          today. <strong>Revision 2.0:</strong> Phase 1 is built and independently re-verified, and
+          every count below has been re-derived from the repository rather than carried forward.
+          What changed is in <a href="#s33">&sect;33</a>.
+        </p>
+        <dl class="meta">
+          <div>
+            <dt>Repository</dt>
+            <dd>justineacosta/SSTSaasPv1</dd>
+          </div>
+          <div>
+            <dt>Phases done</dt>
+            <dd>0 and 1 &mdash; verified</dd>
+          </div>
+          <div>
+            <dt>Code</dt>
+            <dd>134 files, 553 tests</dd>
+          </div>
+          <div>
+            <dt>Next</dt>
+            <dd>Phase 2 &mdash; identity</dd>
+          </div>
+        </dl>
+      </header>
+
+      <div class="note warn" style="margin-top: 24px">
+        <span class="lbl">This revision lives at a new address</span>
+        <p>
+          Revision 1.0 was published on 20 Aug at
+          <code>claude.ai/code/artifact/2f1c7fc6&hellip;</code> and is
+          <strong>frozen there</strong> &mdash; that page still says no code exists, which stopped
+          being true on 22 Aug. It could not be updated in place because it is now served as a
+          shared page rather than an owned one, so this revision was published fresh.
+          <strong>If you are holding the old link, replace it with this one.</strong>
+        </p>
+      </div>
+
+      <div class="part">Part I &mdash; Frame</div>
+
+      <!-- ==== §01 · What this document is =========================================== -->
+      <section id="s1">
+        <h2><span class="sn">01</span><span>What this document is</span></h2>
+
+        <p>
+          A manifest, not an architecture. The architecture blueprint answered <em>how</em> &mdash;
+          the tenancy model, the trust boundaries, the queue semantics, the engine contract. Those
+          decisions are settled and recorded as ten ADRs in the repository. This document answers
+          the next question, which is the one you actually schedule against:
+          <strong>what are the discrete things that have to be built, and in what order?</strong>
+        </p>
+
+        <p>
+          Every table below is an inventory. Where a count appears, it is a count of things that
+          must exist for the product to work &mdash; not an estimate, and not padding. Where
+          something does not exist yet, it says so.
+        </p>
+
+        <div class="note ok">
+          <span class="lbl">How to read the phase markers</span>
+          <p>
+            <span class="ph ph-done">done</span> is built <em>and verified by running it</em>, not
+            merely written. <span class="ph ph-now">P2</span> is the phase currently queued.
+            <span class="ph">P4</span> and above are committed but not started. A status moves only
+            after the phase&rsquo;s exit criteria have been executed and their real exit codes read;
+            the evidence for the two that have moved is in <a href="#s3">&sect;3</a>.
+          </p>
+        </div>
+
+        <h3>The four things that make this build different from ordinary SaaS</h3>
+
+        <p>
+          <strong>Ownership verification gates everything.</strong> An asset cannot be scanned until
+          the customer has proven they control it. This is the single unskippable step in
+          onboarding, and it is why <a href="#s8">&sect;8</a> has an
+          <code>AssetOwnershipVerification</code> table and <a href="#s12">&sect;12</a> has a
+          verification endpoint group before any scanning endpoint exists.
+        </p>
+
+        <p>
+          <strong>Scope is evaluated twice.</strong> Once at the API for feedback, once inside the
+          worker immediately before traffic leaves. That means the scope evaluator is a shared
+          library used by two callers, not a controller method &mdash; a structural consequence that
+          shows up in <a href="#s4">&sect;4</a>.
+        </p>
+
+        <p>
+          <strong>Findings are identities.</strong> A finding persists across scans; each detection
+          attaches as an occurrence. This has to be right from the first scan ever run, because the
+          history is not reconstructible afterwards. It is why <a href="#s25">&sect;25</a> is a
+          pipeline with six named stages rather than an insert.
+        </p>
+
+        <p>
+          <strong>Engines hold nothing.</strong> No credentials, no tenant identity, no database
+          access. They read a job on stdin and write JSON on stdout. That is what makes
+          <a href="#s23">&sect;23</a>'s twelve engine categories a plugin list rather than twelve
+          architectures.
+        </p>
+      </section>
+
+      <!-- ==== §02 · The whole build, counted ======================================== -->
+      <section id="s2">
+        <h2><span class="sn">02</span><span>The whole build, counted</span></h2>
+
+        <p>Every number here is enumerated somewhere in this document. None is a guess.</p>
+
+        <div class="tally">
+          <div>
+            <div class="fig">8</div>
+            <div class="cap">Workspaces built</div>
+            <div class="ph">of 12 planned</div>
+          </div>
+          <div>
+            <div class="fig">64</div>
+            <div class="cap">Tables</div>
+            <div class="ph">across 12 domains</div>
+          </div>
+          <div>
+            <div class="fig">195</div>
+            <div class="cap">Endpoints</div>
+            <div class="ph">under /api/v1</div>
+          </div>
+          <div>
+            <div class="fig">93</div>
+            <div class="cap">Routes</div>
+            <div class="ph">marketing + app + admin</div>
+          </div>
+          <div>
+            <div class="fig">96</div>
+            <div class="cap">Components</div>
+            <div class="ph">40 primitive, 16 pattern, 40 domain</div>
+          </div>
+          <div>
+            <div class="fig">49</div>
+            <div class="cap">Permissions</div>
+            <div class="ph">7 system roles</div>
+          </div>
+          <div>
+            <div class="fig">12</div>
+            <div class="cap">Engines</div>
+            <div class="ph">3 by MVP</div>
+          </div>
+          <div>
+            <div class="fig">25</div>
+            <div class="cap">Check families</div>
+            <div class="ph">web engine</div>
+          </div>
+          <div>
+            <div class="fig">8</div>
+            <div class="cap">Queues</div>
+            <div class="ph">10 scheduler jobs</div>
+          </div>
+          <div>
+            <div class="fig">21</div>
+            <div class="cap">Entitlement keys</div>
+            <div class="ph">4 plans</div>
+          </div>
+          <div>
+            <div class="fig">13</div>
+            <div class="cap">Realtime events</div>
+            <div class="ph">SSE</div>
+          </div>
+          <div>
+            <div class="fig">553</div>
+            <div class="cap">Tests passing</div>
+            <div class="ph">414 unit, 139 integration</div>
+          </div>
+          <div>
+            <div class="fig">10</div>
+            <div class="cap">Models live</div>
+            <div class="ph">of 64 designed</div>
+          </div>
+          <div>
+            <div class="fig">86</div>
+            <div class="cap">Documents</div>
+            <div class="ph">13 ADRs</div>
+          </div>
+        </div>
+
+        <p>
+          Two of these numbers deserve comment. <strong>195 endpoints</strong> sounds like a lot
+          until you notice that roughly 60 of them are the CRUD tail on resources that must exist
+          for the product to be usable at all &mdash; tags, saved views, notification preferences,
+          invitation management. They are cheap individually and unskippable collectively.
+          <strong>96 components</strong> is the honest cost of the requirement that every view
+          carries loading, empty, error, partial, and permission states; the primitive layer is a
+          third of it and lands once, in Phase 1.
+        </p>
+
+        <p>
+          Two counts now split into <em>built</em> and <em>planned</em>, and more will split as
+          phases land. <strong>8 of 12 workspaces</strong> exist; the four absent are the worker
+          tier and the scope evaluator, due in Phases 3 and 4. <strong>10 of 64 models</strong> are
+          in the live schema, covering identity and tenancy only. Where a number is still a
+          projection, it says so.
+        </p>
+      </section>
+
+      <!-- ==== §03 · What exists today =============================================== -->
+      <section id="s3">
+        <h2><span class="sn">03</span><span>What exists today</span></h2>
+
+        <p>
+          Two phases, both verified by running them. The evidence below was captured on 23 Aug 2026
+          against commit <code>edea948</code>.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Artifact</th>
+                <th class="num">Count</th>
+                <th>State</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Documentation set</td>
+                <td class="num">86 files</td>
+                <td>
+                  <span class="sev s-low">verified</span> Architecture, security, product, UI/UX,
+                  scanners, API, development, operations, <strong>13 ADRs</strong>. All internal
+                  links resolve.
+                </td>
+              </tr>
+              <tr>
+                <td>Application code</td>
+                <td class="num">134 files</td>
+                <td>
+                  <span class="sev s-low">verified</span> 8 workspaces building. TypeScript strict,
+                  ESLint, Prettier, Turborepo.
+                </td>
+              </tr>
+              <tr>
+                <td>Database</td>
+                <td class="num">10 models</td>
+                <td>
+                  <span class="sev s-low">verified</span> Prisma schema, 4 migrations applied,
+                  <strong>row-level security</strong> and the mandatory tenant-scoped client,
+                  covered by integration tests against a real Postgres 16.
+                </td>
+              </tr>
+              <tr>
+                <td>Tests</td>
+                <td class="num">553</td>
+                <td>
+                  <span class="sev s-low">verified</span> 414 unit across 32 files; 139 integration
+                  across 10 files; 5 Playwright smoke specs.
+                </td>
+              </tr>
+              <tr>
+                <td>Running services</td>
+                <td class="num">4</td>
+                <td>
+                  <span class="sev s-low">verified</span> Postgres, Redis, MinIO, Mailpit &mdash;
+                  all healthy. The Docker blocker from rev 1.0 is resolved.
+                </td>
+              </tr>
+              <tr>
+                <td>CI</td>
+                <td class="num">green</td>
+                <td>
+                  <span class="sev s-low">verified</span> Success on <code>main</code> at HEAD, and
+                  <code>main</code> is branch-protected behind the pipeline.
+                </td>
+              </tr>
+              <tr>
+                <td>Business endpoints</td>
+                <td class="num">0</td>
+                <td>
+                  <span class="sev s-info">by design</span> The API serves health probes and its
+                  OpenAPI document. <strong>There are no features yet</strong> &mdash; no auth, no
+                  scans, no findings.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Phase 1 exit criteria, re-verified on this tree</h3>
+
+        <p>
+          The roadmap recorded a passing run on 22 Aug. Three commits landed after it, one touching
+          <code>apps/web</code> and the CSP headers, so that evidence no longer covered the current
+          tree. Every row below was re-executed rather than quoted.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Command</th>
+                <th class="num">Exit</th>
+                <th>Tree</th>
+                <th>What it proves &mdash; and no more</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>pnpm install --frozen-lockfile</code></td>
+                <td class="num">0</td>
+                <td><strong>clean clone</strong></td>
+                <td>
+                  The lockfile resolves from cold in 23s under the 24-hour release-age cooldown.
+                </td>
+              </tr>
+              <tr>
+                <td><code>pnpm build</code></td>
+                <td class="num">0</td>
+                <td><strong>clean clone</strong></td>
+                <td>8 packages build from cold, 0 cached, 16.7s.</td>
+              </tr>
+              <tr>
+                <td><code>pnpm test</code></td>
+                <td class="num">0</td>
+                <td><strong>clean clone</strong></td>
+                <td>32 files / 414 tests. <strong>Criterion 1 met as written.</strong></td>
+              </tr>
+              <tr>
+                <td><code>docker compose ps</code></td>
+                <td class="num">&mdash;</td>
+                <td>live</td>
+                <td>4 services up and healthy. <strong>Criterion 2 met.</strong></td>
+              </tr>
+              <tr>
+                <td><code>prisma migrate status</code></td>
+                <td class="num">0</td>
+                <td>warm</td>
+                <td>
+                  Schema up to date. <strong>Criterion 3 met</strong>, with
+                  <code>migration.integration.spec.ts</code> covering apply-from-scratch.
+                </td>
+              </tr>
+              <tr>
+                <td><code>gh run list</code></td>
+                <td class="num">&mdash;</td>
+                <td>&mdash;</td>
+                <td>CI success on HEAD. <strong>Criterion 4 met.</strong></td>
+              </tr>
+              <tr>
+                <td><code>pnpm test:integration</code></td>
+                <td class="num">0</td>
+                <td>warm + stack</td>
+                <td>
+                  10 files / 139 tests inc. <code>rls</code>, <code>tenant-client</code>,
+                  <code>tenant-transaction</code>, <code>seed</code>, <code>s3-adapter</code>.
+                </td>
+              </tr>
+              <tr>
+                <td><code>pnpm test:e2e</code></td>
+                <td class="num">0</td>
+                <td>warm</td>
+                <td>5 chromium specs inc. CSP nonce freshness and the security-header table.</td>
+              </tr>
+              <tr>
+                <td><code>pnpm check:openapi</code></td>
+                <td class="num">0</td>
+                <td>warm</td>
+                <td>
+                  Committed <code>openapi.json</code> is byte-identical to what the contracts
+                  generate.
+                </td>
+              </tr>
+              <tr>
+                <td><code>pnpm check:registry</code></td>
+                <td class="num">0</td>
+                <td>warm</td>
+                <td>
+                  10 models &mdash; 3 tenant-owned, 1 tenant root, 6 deliberately global &mdash;
+                  verified against the schema.
+                </td>
+              </tr>
+              <tr>
+                <td><code>pnpm check:specs</code></td>
+                <td class="num">0</td>
+                <td>warm</td>
+                <td>
+                  42 spec files, each claimed by exactly one Vitest project. No silently-unrun
+                  tests.
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <code>format:check</code> &middot; <code>lint</code> &middot;
+                  <code>typecheck</code>
+                </td>
+                <td class="num">0</td>
+                <td>warm</td>
+                <td>Style, lint rules and types across all 8 workspaces.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note ok">
+          <span class="lbl">What this licenses, and what it does not</span>
+          <p>
+            All four exit criteria are met, which is what moves Phase 1 to
+            <strong>Implemented</strong>. It proves the foundation builds, tests, migrates and ships
+            through a green pipeline from cold.
+            <strong>It does not prove any feature works for a user, because there are none.</strong>
+            No login exists. No scan can be created. That is the correct state at the end of Phase
+            1, and it is worth saying plainly rather than letting a wall of green ticks imply
+            otherwise.
+          </p>
+        </div>
+
+        <h3>Remaining blockers</h3>
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Blocker</th>
+                <th>Blocks</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Docker daemon</td>
+                <td>&mdash;</td>
+                <td>
+                  <span class="sev s-low">resolved</span> Running. The compose stack has been up 15
+                  hours and integration tests execute against it.
+                </td>
+              </tr>
+              <tr>
+                <td>Go not installed</td>
+                <td>Go engines only</td>
+                <td>
+                  <span class="sev s-info">deferred</span> ADR-0010. A host-setup task, never
+                  architectural.
+                </td>
+              </tr>
+              <tr>
+                <td>Terraform not installed</td>
+                <td>IaC execution</td>
+                <td>
+                  <span class="sev s-info">deferred</span> Phase 11. IaC is authored before it is
+                  applied.
+                </td>
+              </tr>
+              <tr>
+                <td><strong>Branch protection is visibility-dependent</strong></td>
+                <td>The CI gate on <code>main</code></td>
+                <td>
+                  <span class="sev s-med">watch</span> The repository is public, which is what makes
+                  the ruleset free. <strong>Flipping it private silently removes the gate</strong>,
+                  and nothing announces that. See <a href="#s32">&sect;32</a> decision 9.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note warn">
+          <span class="lbl">The honesty rule this document runs on</span>
+          <p>
+            Nothing here is described as implemented until it has been run and verified. A file that
+            exists is not a feature that works, and a phase is not complete until its exit criteria
+            in <a href="#s30">&sect;30</a> are demonstrably met.
+            <strong>A previous verification does not carry across commits</strong> &mdash; which is
+            exactly why every row above was re-executed.
+          </p>
+        </div>
+      </section>
+
+      <div class="part">Part II &mdash; Foundation</div>
+
+      <!-- ==== §04 · Workspaces ====================================================== -->
+      <section id="s4">
+        <h2><span class="sn">04</span><span>Workspaces</span></h2>
+
+        <p>
+          Twelve workspaces planned in a pnpm + Turborepo monorepo.
+          <strong>Eight exist and build today</strong>; the four absent are the worker tier and the
+          scope evaluator.
+        </p>
+
+        <pre><b>apps/</b>
+  <i>web</i>              Next.js &mdash; marketing site + authenticated application
+  <i>api</i>              NestJS modular monolith, all authn/authz enforcement
+  <i>worker-node</i>      BullMQ consumer, TypeScript engines, finding pipeline
+  <i>worker-python</i>    BullMQ consumer, Python engines
+  <i>scheduler</i>        leader-elected periodic jobs (Redis lock)
+
+<b>packages/</b>
+  <i>db</i>               Prisma schema, migrations, tenant-scoped client, seeds
+  <i>contracts</i>        Zod schemas + inferred types &mdash; the spine
+  <i>engine-sdk</i>       TS engine contract + SSRF-guarded HTTP client
+  <i>scope</i>            scope evaluator, shared by API and worker
+  <i>storage</i>          S3-compatible adapter, mandatory tenant key prefixes
+  <i>ui</i>               design tokens + primitives
+  <i>observability</i>    logger, tracing, metrics, redaction serialiser
+  <i>config</i>           env schema, tsconfig/eslint presets
+
+<b>workers/</b>
+  <i>python-sdk</i>       Python implementation of the engine contract</pre>
+        <div class="figcap">
+          8 of these exist today; scope, engine-sdk, worker-node and scheduler are Phase 3&ndash;4
+        </div>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Workspace</th>
+                <th>Phase</th>
+                <th>What it must contain by end of phase</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>config</code></td>
+                <td><span class="ph ph-done">P1 done</span></td>
+                <td>
+                  Zod env schema that crashes startup on a missing variable; shared tsconfig,
+                  eslint, prettier presets.
+                </td>
+              </tr>
+              <tr>
+                <td><code>observability</code></td>
+                <td><span class="ph ph-done">P1 done</span></td>
+                <td>
+                  Structured JSON logger with the allowlist-based redaction serialiser and
+                  request-ID propagation. <em>OTel tracing deferred to Phase 4.</em>
+                </td>
+              </tr>
+              <tr>
+                <td><code>db</code></td>
+                <td><span class="ph ph-done">P1 done</span></td>
+                <td>
+                  Prisma schema (10 models), 4 migrations, the mandatory tenant-scoped client
+                  <strong>and PostgreSQL RLS</strong>. Reference seeds cover roles and permissions;
+                  CWE/OWASP/plans land with their tables.
+                </td>
+              </tr>
+              <tr>
+                <td><code>contracts</code></td>
+                <td><span class="ph ph-done">P1 done</span></td>
+                <td>
+                  Error envelope, pagination, prefixed UUIDv7 IDs, the permission matrix. Grows
+                  every phase.
+                </td>
+              </tr>
+              <tr>
+                <td><code>ui</code></td>
+                <td><span class="ph ph-now">partial</span></td>
+                <td>
+                  Full token set, both themes, and <strong>8 of 40 primitives</strong>: Button,
+                  Input, Label, Field, Card, Alert, Badge, Skeleton. No Storybook yet. The
+                  no-raw-hex lint rule now exists and is proven to fire.
+                </td>
+              </tr>
+              <tr>
+                <td><code>api</code></td>
+                <td><span class="ph ph-done">P1 done</span></td>
+                <td>
+                  Boots. Request-ID, security headers + CSP, error-envelope filter, logging
+                  interceptor, Zod pipe, access decorators, rate limiting, health module.
+                  <strong>Pipeline slots for auth exist and are empty</strong> &mdash; Phase 2 fills
+                  them.
+                </td>
+              </tr>
+              <tr>
+                <td><code>web</code></td>
+                <td><span class="ph ph-done">P1 done</span></td>
+                <td>
+                  Next.js app rendering a marketing page in both colour schemes, with the
+                  security-header and CSP-nonce path proven by E2E.
+                </td>
+              </tr>
+              <tr>
+                <td><code>storage</code></td>
+                <td><span class="ph ph-done">P1 done</span></td>
+                <td>
+                  <em>Not in rev 1.0.</em> S3-compatible adapter with mandatory per-tenant key
+                  prefixes, tested against MinIO.
+                </td>
+              </tr>
+              <tr>
+                <td><code>scope</code></td>
+                <td><span class="ph">P3</span></td>
+                <td>Rule evaluator, global deny list, target normaliser, decision reasons.</td>
+              </tr>
+              <tr>
+                <td><code>engine-sdk</code></td>
+                <td><span class="ph">P4</span></td>
+                <td>Event emitters, job reader, guarded HTTP client, constraint enforcement.</td>
+              </tr>
+              <tr>
+                <td><code>worker-node</code></td>
+                <td><span class="ph">P4</span></td>
+                <td>Job re-validation, container supervision, event stream consumption.</td>
+              </tr>
+              <tr>
+                <td><code>scheduler</code></td>
+                <td><span class="ph">P4</span></td>
+                <td>Leader election, 10 periodic jobs.</td>
+              </tr>
+              <tr>
+                <td><code>worker-python</code> / <code>python-sdk</code></td>
+                <td><span class="ph">P12</span></td>
+                <td>Deferred until the first Python engine.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="dec">
+          <div class="dec-h">Why packages/scope is its own workspace</div>
+          <div class="dec-b">
+            <p>
+              The scope evaluator is called from the API (for user feedback) and from the worker (as
+              the authoritative check before traffic leaves). Those two callers must produce
+              byte-identical decisions, forever. Putting the evaluator in a shared package with its
+              own table-driven test suite makes divergence a compile error rather than a subtle
+              behavioural drift that nobody notices until a scan reaches something it should not
+              have.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==== §05 · Shared contracts ================================================ -->
+      <section id="s5">
+        <h2><span class="sn">05</span><span>Shared contracts</span></h2>
+
+        <p>
+          <code>packages/contracts</code> is the spine of the monorepo. Every shape crosses at least
+          two workspaces, and a change that breaks a consumer breaks the typecheck in the same
+          commit.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Contract group</th>
+                <th>Consumed by</th>
+                <th>Contains</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Request / response DTOs</td>
+                <td>web, api</td>
+                <td>
+                  One Zod schema per endpoint. The API validates with it; the form resolves with it.
+                  Types are inferred, never hand-written alongside.
+                </td>
+              </tr>
+              <tr>
+                <td>Permission strings</td>
+                <td>web, api</td>
+                <td>
+                  All 49, as a const union. A typo becomes a type error rather than a
+                  silently-denied route.
+                </td>
+              </tr>
+              <tr>
+                <td>Error codes</td>
+                <td>web, api</td>
+                <td>
+                  All 40. The frontend branches on <code>code</code>, never on <code>message</code>.
+                </td>
+              </tr>
+              <tr>
+                <td>Engine job payload</td>
+                <td>api, worker, engine-sdk, python-sdk</td>
+                <td>Targets, profile, config, constraints. Four consumers, one definition.</td>
+              </tr>
+              <tr>
+                <td>Engine event stream</td>
+                <td>worker, engine-sdk, python-sdk</td>
+                <td>
+                  <code>progress</code>, <code>log</code>, <code>finding</code>,
+                  <code>artifact</code>, <code>metric</code>, <code>complete</code>.
+                </td>
+              </tr>
+              <tr>
+                <td>Raw finding shape</td>
+                <td>worker, engines</td>
+                <td>Candidate finding as engines emit it, before normalisation.</td>
+              </tr>
+              <tr>
+                <td>Realtime event payloads</td>
+                <td>web, api, worker</td>
+                <td>All 13 SSE events. Thin by design &mdash; identifiers and status only.</td>
+              </tr>
+              <tr>
+                <td>Webhook payloads</td>
+                <td>api, worker, docs</td>
+                <td>Public contract. Changing one is a breaking API change.</td>
+              </tr>
+              <tr>
+                <td>Entitlement keys</td>
+                <td>web, api, worker</td>
+                <td>All 21, typed with their value type.</td>
+              </tr>
+              <tr>
+                <td>Filter / pagination params</td>
+                <td>web, api</td>
+                <td>Allowlisted filter fields per resource, cursor encoding, sort fields.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          <strong>Rule:</strong> <code>contracts</code> imports from nothing in the workspace. It is
+          a leaf. Anything it needed to import would be a sign that a domain concept had leaked into
+          the wire format.
+        </p>
+      </section>
+
+      <!-- ==== §06 · Local stack & configuration ===================================== -->
+      <section id="s6">
+        <h2><span class="sn">06</span><span>Local stack &amp; configuration</span></h2>
+
+        <h3>Compose services</h3>
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Service</th>
+                <th>Image</th>
+                <th>Port</th>
+                <th>Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>postgres</td>
+                <td>postgres:16</td>
+                <td>5432</td>
+                <td>System of record</td>
+              </tr>
+              <tr>
+                <td>redis</td>
+                <td>redis:7</td>
+                <td>6379</td>
+                <td>Queue, cache, rate limits, pub/sub</td>
+              </tr>
+              <tr>
+                <td>minio</td>
+                <td>minio/minio</td>
+                <td>9000 / 9001</td>
+                <td>S3-compatible evidence and report storage</td>
+              </tr>
+              <tr>
+                <td>mailpit</td>
+                <td>axllent/mailpit</td>
+                <td>8025</td>
+                <td>Captures all outbound mail; nothing leaves the machine</td>
+              </tr>
+              <tr>
+                <td>vulnerable-target</td>
+                <td>profile: <code>testing</code></td>
+                <td>8080</td>
+                <td>Deliberately vulnerable app. The only thing local scans may point at.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Environment variables</h3>
+        <p>
+          Every one is documented in <code>.env.example</code> with a safe placeholder and validated
+          by a Zod schema at boot. A missing or malformed variable crashes startup naming the
+          variable &mdash; a service never runs half-configured.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Group</th>
+                <th>Variables</th>
+                <th>Held by</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Core</td>
+                <td>
+                  <code>NODE_ENV</code>, <code>APP_ENV</code>, <code>APP_URL</code>,
+                  <code>API_URL</code>, <code>LOG_LEVEL</code>
+                </td>
+                <td>all</td>
+              </tr>
+              <tr>
+                <td>Data</td>
+                <td><code>DATABASE_URL</code>, <code>REDIS_URL</code></td>
+                <td>api, worker, scheduler</td>
+              </tr>
+              <tr>
+                <td>Identity</td>
+                <td>
+                  <code>SESSION_SECRET</code>, <code>ENCRYPTION_KEY</code>,
+                  <code>ENCRYPTION_KEY_ID</code>, <code>ARGON2_*</code>
+                </td>
+                <td>api</td>
+              </tr>
+              <tr>
+                <td>Storage</td>
+                <td>
+                  <code>S3_ENDPOINT</code>, <code>S3_REGION</code>, <code>S3_ACCESS_KEY</code>,
+                  <code>S3_SECRET_KEY</code>, bucket names
+                </td>
+                <td>api, worker</td>
+              </tr>
+              <tr>
+                <td>Mail</td>
+                <td>
+                  <code>RESEND_API_KEY</code>, <code>MAIL_FROM</code>, <code>SMTP_URL</code> (dev)
+                </td>
+                <td>api, scheduler</td>
+              </tr>
+              <tr>
+                <td>Billing</td>
+                <td>
+                  <code>STRIPE_SECRET_KEY</code>, <code>STRIPE_WEBHOOK_SECRET</code>,
+                  <code>STRIPE_PRICE_*</code>
+                </td>
+                <td>api</td>
+              </tr>
+              <tr>
+                <td>Telemetry</td>
+                <td><code>SENTRY_DSN</code>, <code>OTEL_EXPORTER_OTLP_ENDPOINT</code></td>
+                <td>all</td>
+              </tr>
+              <tr>
+                <td>Scanning</td>
+                <td>
+                  <code>ENGINE_NETWORK</code>, <code>ENGINE_REGISTRY</code>,
+                  <code>DENY_LIST_EXTRA</code>, <code>ALLOW_PRIVATE_RANGES</code>
+                </td>
+                <td>worker</td>
+              </tr>
+              <tr>
+                <td>Integrations</td>
+                <td>OAuth client IDs and secrets per provider</td>
+                <td>api</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          <code>ALLOW_PRIVATE_RANGES</code> is an install-time flag for on-premise internal
+          scanning. It is never a tenant setting, and it defaults to off.
+        </p>
+      </section>
+
+      <!-- ==== §07 · CI pipeline ===================================================== -->
+      <section id="s7">
+        <h2><span class="sn">07</span><span>CI pipeline</span></h2>
+
+        <pre>
+install  &rarr;  lint  &rarr;  typecheck  &rarr;  unit  &rarr;  integration  &rarr;  <b>security</b>
+         &rarr;  build  &rarr;  e2e  &rarr;  container scan  &rarr;  [main] staging  &rarr;  approval  &rarr;  production</pre>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Job</th>
+                <th>Gate</th>
+                <th>What fails it</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>lint</td>
+                <td>blocking</td>
+                <td>
+                  ESLint, including the security rules: no <code>process.env</code> outside
+                  <code>config</code>, no unscoped Prisma import, no
+                  <code>dangerouslySetInnerHTML</code>, no raw hex in components, no
+                  <code>alert()</code>.
+                </td>
+              </tr>
+              <tr>
+                <td>typecheck</td>
+                <td>blocking</td>
+                <td><code>tsc --noEmit</code> across all workspaces.</td>
+              </tr>
+              <tr>
+                <td>unit</td>
+                <td>blocking</td>
+                <td>
+                  Vitest. Domain logic, scope evaluation, fingerprinting, risk, state machines.
+                </td>
+              </tr>
+              <tr>
+                <td>integration</td>
+                <td>blocking</td>
+                <td>Testcontainers &mdash; real Postgres, Redis, MinIO. Requires Docker.</td>
+              </tr>
+              <tr>
+                <td><strong>security</strong></td>
+                <td>blocking</td>
+                <td>
+                  The generated tenant-isolation matrix and the generated authorization matrix. Also
+                  fails if a tenant-owned resource is missing from the isolation registry.
+                </td>
+              </tr>
+              <tr>
+                <td>build</td>
+                <td>blocking</td>
+                <td>All apps build; bundle size within budget.</td>
+              </tr>
+              <tr>
+                <td>e2e</td>
+                <td>blocking on PRs to main</td>
+                <td>
+                  Playwright journeys; axe on every route; no horizontal page overflow at any
+                  breakpoint.
+                </td>
+              </tr>
+              <tr>
+                <td>container scan</td>
+                <td>blocking</td>
+                <td>A critical vulnerability in our own image blocks the deploy.</td>
+              </tr>
+              <tr>
+                <td>contract diff</td>
+                <td>advisory + review</td>
+                <td>OpenAPI schema diff surfaced in the PR.</td>
+              </tr>
+              <tr>
+                <td>secret scan</td>
+                <td>blocking</td>
+                <td>Also runs as a pre-commit hook.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note crit">
+          <span class="lbl">Non-negotiable</span>
+          <p>
+            The security job runs on <strong>every pull request</strong>, not nightly. It is the
+            gate that makes tenant isolation a property of the system rather than an intention, and
+            the registry check is what stops its coverage rotting as the schema grows. No merge on
+            red &mdash; not with an override, not for "unrelated" failures, not for flakiness. A
+            flaky test is quarantined and fixed.
+          </p>
+        </div>
+      </section>
+
+      <div class="part">Part III &mdash; Data</div>
+
+      <!-- ==== §08 · Database tables ================================================= -->
+      <section id="s8">
+        <h2><span class="sn">08</span><span>Database tables</span></h2>
+
+        <p>
+          64 tables across 12 domains. Every tenant-owned table carries
+          <code>organizationId</code> directly &mdash; not through a join &mdash; which is what
+          makes mandatory scoping and RLS a single predicate.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Domain</th>
+                <th class="num">Tables</th>
+                <th>Members</th>
+                <th>Phase</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Identity</td>
+                <td class="num">7</td>
+                <td>
+                  <code>User</code>, <code>Credential</code>, <code>MfaFactor</code>,
+                  <code>Session</code>, <code>EmailVerificationToken</code>,
+                  <code>PasswordResetToken</code>, <code>IdentityProviderLink</code>
+                </td>
+                <td><span class="ph">P2</span></td>
+              </tr>
+              <tr>
+                <td>Organisation</td>
+                <td class="num">7</td>
+                <td>
+                  <code>Organization</code>, <code>Membership</code>, <code>Team</code>,
+                  <code>TeamMembership</code>, <code>Role</code>, <code>RolePermission</code>,
+                  <code>Invitation</code>
+                </td>
+                <td><span class="ph">P2</span></td>
+              </tr>
+              <tr>
+                <td>Projects &amp; assets</td>
+                <td class="num">5</td>
+                <td>
+                  <code>Project</code>, <code>Asset</code>, <code>AssetOwnershipVerification</code>,
+                  <code>Tag</code>, <code>AssetTag</code>
+                </td>
+                <td><span class="ph">P3</span></td>
+              </tr>
+              <tr>
+                <td>Scope</td>
+                <td class="num">3</td>
+                <td><code>Scope</code>, <code>ScopeVersion</code>, <code>ScopeRule</code></td>
+                <td><span class="ph">P3</span></td>
+              </tr>
+              <tr>
+                <td>Scanning</td>
+                <td class="num">6</td>
+                <td>
+                  <code>Engine</code>, <code>Scan</code>, <code>ScanTarget</code>,
+                  <code>ScanLog</code>, <code>ScanArtifact</code>, <code>ScanSchedule</code>
+                </td>
+                <td><span class="ph">P4</span></td>
+              </tr>
+              <tr>
+                <td>Findings</td>
+                <td class="num">6</td>
+                <td>
+                  <code>Finding</code>, <code>FindingOccurrence</code>, <code>FindingComment</code>,
+                  <code>FindingActivity</code>, <code>FindingRelation</code>, <code>Evidence</code>
+                </td>
+                <td><span class="ph">P5</span></td>
+              </tr>
+              <tr>
+                <td>Engagements</td>
+                <td class="num">7</td>
+                <td>
+                  <code>Engagement</code>, <code>EngagementScope</code>,
+                  <code>EngagementMember</code>, <code>TestCase</code>, <code>TestCaseResult</code>,
+                  <code>Retest</code>, <code>RetestResult</code>
+                </td>
+                <td><span class="ph">P7</span></td>
+              </tr>
+              <tr>
+                <td>Reports</td>
+                <td class="num">2</td>
+                <td><code>Report</code>, <code>ReportArtifact</code></td>
+                <td><span class="ph">P8</span></td>
+              </tr>
+              <tr>
+                <td>Platform</td>
+                <td class="num">11</td>
+                <td>
+                  <code>AuditEvent</code>, <code>Notification</code>,
+                  <code>NotificationPreference</code>, <code>ApiKey</code>,
+                  <code>WebhookEndpoint</code>, <code>WebhookDelivery</code>,
+                  <code>Integration</code>, <code>OutboxEvent</code>, <code>FeatureFlag</code>,
+                  <code>FeatureFlagOverride</code>, <code>PlatformAdmin</code>
+                </td>
+                <td><span class="ph">P3&ndash;P11</span></td>
+              </tr>
+              <tr>
+                <td>Billing</td>
+                <td class="num">6</td>
+                <td>
+                  <code>Plan</code>, <code>PlanEntitlement</code>, <code>Subscription</code>,
+                  <code>Entitlement</code>, <code>UsageRecord</code>, <code>StripeEvent</code>
+                </td>
+                <td><span class="ph">P10</span></td>
+              </tr>
+              <tr>
+                <td>Reference</td>
+                <td class="num">3</td>
+                <td>
+                  <code>CweCatalog</code>, <code>OwaspCategory</code>, <code>CheckTaxonomy</code>
+                </td>
+                <td><span class="ph">P5</span></td>
+              </tr>
+              <tr>
+                <td>Onboarding</td>
+                <td class="num">1</td>
+                <td><code>OnboardingState</code></td>
+                <td><span class="ph">P2</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>The five tables that carry the most design weight</h3>
+
+        <div class="dec">
+          <div class="dec-h">Asset &mdash; the unit of "a thing we may test"</div>
+          <div class="dec-b">
+            <p>
+              Nine types, criticality, environment, owner, tags. The field that matters most is
+              <code>ownershipVerifiedAt</code>: null means no scan may target it, enforced at the
+              API and again in the worker. Unique on
+              <code>(organizationId, projectId, type, normalizedValue)</code> so the same asset
+              cannot be registered twice with cosmetic differences.
+            </p>
+          </div>
+        </div>
+
+        <div class="dec">
+          <div class="dec-h">ScopeVersion &mdash; why scope is immutable once referenced</div>
+          <div class="dec-b">
+            <p>
+              Editing a scope creates a new version rather than mutating rules in place. A scan
+              records the <code>scopeVersionId</code> that authorised it, so months later we can
+              answer "what permitted this?" exactly. This matters for audit, and it matters more for
+              disputes.
+            </p>
+          </div>
+        </div>
+
+        <div class="dec">
+          <div class="dec-h">Finding + FindingOccurrence &mdash; the dedup model</div>
+          <div class="dec-b">
+            <p>
+              The single most consequential schema decision in the product. <code>Finding</code> is
+              the vulnerability; <code>FindingOccurrence</code> is one sighting. Unique on
+              <code>(organizationId, assetId, fingerprint)</code>. Triage state lives on the finding
+              and survives every rescan &mdash; a decision made in January is not erased by a scan
+              in August.
+            </p>
+          </div>
+        </div>
+
+        <div class="dec">
+          <div class="dec-h">AuditEvent &mdash; append-only at the database level</div>
+          <div class="dec-b">
+            <p>
+              The application role holds <code>INSERT</code> and <code>SELECT</code> and no
+              <code>UPDATE</code> or <code>DELETE</code> grant, revoked by migration, with a trigger
+              as a second barrier. Tampering requires DBA credentials, not an application bug.
+              Events are written in the same transaction as the change they describe.
+            </p>
+          </div>
+        </div>
+
+        <div class="dec">
+          <div class="dec-h">Entitlement &mdash; the flat projection</div>
+          <div class="dec-b">
+            <p>
+              One row per <code>(organizationId, key)</code> with a <code>source</code> of
+              <code>PLAN</code>, <code>OVERRIDE</code>, or <code>PROMOTION</code>. The application
+              asks what an organisation is entitled to; it never asks what plan they are on. This is
+              what makes grandfathering and enterprise deals a data change rather than a code
+              change.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==== §09 · Enumerations ==================================================== -->
+      <section id="s9">
+        <h2><span class="sn">09</span><span>Enumerations</span></h2>
+
+        <p>
+          Postgres enums for closed domains that change with code. Lookup tables for domains that
+          change with data (plans, permissions, CWE).
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Enum</th>
+                <th>Values</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>AssetType</code></td>
+                <td>
+                  <code>DOMAIN</code> <code>SUBDOMAIN</code> <code>URL</code> <code>API</code>
+                  <code>IP</code> <code>CIDR</code> <code>REPOSITORY</code> <code>APPLICATION</code>
+                  <code>CLOUD_RESOURCE</code> <code>MOBILE_APP</code>
+                </td>
+              </tr>
+              <tr>
+                <td><code>Environment</code></td>
+                <td>
+                  <code>PRODUCTION</code> <code>STAGING</code> <code>DEVELOPMENT</code>
+                  <code>TEST</code>
+                </td>
+              </tr>
+              <tr>
+                <td><code>Criticality</code></td>
+                <td>
+                  <code>CRITICAL</code> <code>HIGH</code> <code>MEDIUM</code> <code>LOW</code>
+                </td>
+              </tr>
+              <tr>
+                <td><code>VerificationMethod</code></td>
+                <td>
+                  <code>DNS_TXT</code> <code>DNS_CNAME</code> <code>HTTP_FILE</code>
+                  <code>HTML_META</code> <code>HTTP_HEADER</code> <code>OAUTH_GRANT</code>
+                  <code>CLOUD_ROLE</code> <code>MANUAL_REVIEW</code>
+                </td>
+              </tr>
+              <tr>
+                <td><code>ScopeRuleType</code></td>
+                <td>
+                  <code>DOMAIN</code> <code>SUBDOMAIN_WILDCARD</code> <code>URL_PREFIX</code>
+                  <code>IP</code> <code>CIDR</code> <code>PORT_RANGE</code>
+                </td>
+              </tr>
+              <tr>
+                <td><code>ScopeRuleEffect</code></td>
+                <td><code>ALLOW</code> <code>DENY</code></td>
+              </tr>
+              <tr>
+                <td><code>ScanStatus</code></td>
+                <td>
+                  <code>QUEUED</code> <code>RUNNING</code> <code>COMPLETED</code>
+                  <code>FAILED</code> <code>CANCELLED</code> <code>TIMED_OUT</code>
+                </td>
+              </tr>
+              <tr>
+                <td><code>ScanProfile</code></td>
+                <td>
+                  <code>PASSIVE</code> <code>SAFE</code> <code>STANDARD</code>
+                  <code>AGGRESSIVE</code>
+                </td>
+              </tr>
+              <tr>
+                <td><code>Severity</code></td>
+                <td>
+                  <code>CRITICAL</code> <code>HIGH</code> <code>MEDIUM</code> <code>LOW</code>
+                  <code>INFO</code>
+                </td>
+              </tr>
+              <tr>
+                <td><code>Confidence</code></td>
+                <td><code>HIGH</code> <code>MEDIUM</code> <code>LOW</code></td>
+              </tr>
+              <tr>
+                <td><code>FindingStatus</code></td>
+                <td>
+                  <code>OPEN</code> <code>CONFIRMED</code> <code>FALSE_POSITIVE</code>
+                  <code>ACCEPTED_RISK</code> <code>REMEDIATED</code> <code>RETESTING</code>
+                  <code>RESOLVED</code> <code>REOPENED</code>
+                </td>
+              </tr>
+              <tr>
+                <td><code>EvidenceType</code></td>
+                <td>
+                  <code>SCREENSHOT</code> <code>HTTP_REQUEST</code> <code>HTTP_RESPONSE</code>
+                  <code>LOG</code> <code>JSON</code> <code>TEXT</code> <code>FILE</code>
+                  <code>ARTIFACT</code>
+                </td>
+              </tr>
+              <tr>
+                <td><code>RetestResult</code></td>
+                <td><code>PASSED</code> <code>FAILED</code> <code>INCONCLUSIVE</code></td>
+              </tr>
+              <tr>
+                <td><code>ActorType</code></td>
+                <td>
+                  <code>USER</code> <code>API_KEY</code> <code>SYSTEM</code>
+                  <code>PLATFORM_ADMIN</code>
+                </td>
+              </tr>
+              <tr>
+                <td><code>AuditOutcome</code></td>
+                <td><code>SUCCESS</code> <code>FAILURE</code> <code>DENIED</code></td>
+              </tr>
+              <tr>
+                <td><code>ReportType</code></td>
+                <td>
+                  <code>TECHNICAL</code> <code>EXECUTIVE</code> <code>RETEST</code>
+                  <code>COMPLIANCE</code>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          All enum values are <code>SCREAMING_SNAKE_CASE</code> strings on the wire, never integers.
+          An integer enum in a public API is a future migration.
+        </p>
+      </section>
+
+      <!-- ==== §10 · Indexes & constraints =========================================== -->
+      <section id="s10">
+        <h2><span class="sn">10</span><span>Indexes &amp; constraints</span></h2>
+
+        <p>
+          Designed against the actual access patterns rather than added reactively when something
+          gets slow.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Access pattern</th>
+                <th>Index</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Every tenant-scoped list</td>
+                <td>Leading <code>organizationId</code> on <strong>every</strong> tenant table</td>
+              </tr>
+              <tr>
+                <td>Findings queue &mdash; the hottest query in the product</td>
+                <td><code>(organizationId, status, severity, lastSeenAt DESC)</code></td>
+              </tr>
+              <tr>
+                <td>Findings by project / asset</td>
+                <td>
+                  <code>(organizationId, projectId, status)</code>,
+                  <code>(organizationId, assetId, status)</code>
+                </td>
+              </tr>
+              <tr>
+                <td>Dedup lookup on every ingested finding</td>
+                <td><code>UNIQUE (organizationId, assetId, fingerprint)</code></td>
+              </tr>
+              <tr>
+                <td>Occurrence history</td>
+                <td><code>(findingId, seenAt DESC)</code></td>
+              </tr>
+              <tr>
+                <td>Scan monitoring</td>
+                <td><code>(organizationId, status, createdAt DESC)</code></td>
+              </tr>
+              <tr>
+                <td>Audit log</td>
+                <td>
+                  <code>(organizationId, createdAt DESC)</code>,
+                  <code>(organizationId, actorId, createdAt DESC)</code>
+                </td>
+              </tr>
+              <tr>
+                <td>Cursor pagination</td>
+                <td>Every paginated list sorts on an indexed <code>(sortKey, id)</code> pair</td>
+              </tr>
+              <tr>
+                <td>Search</td>
+                <td>GIN on generated <code>tsvector</code> for findings, assets, projects</td>
+              </tr>
+              <tr>
+                <td>SLA sweep</td>
+                <td>
+                  Partial:
+                  <code>WHERE status IN ('OPEN','CONFIRMED') AND slaDueAt IS NOT NULL</code>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          Partial indexes are used aggressively for status-filtered queries, because open findings
+          are a small fraction of total findings in a mature tenant and that fraction is what the
+          product looks at constantly.
+        </p>
+
+        <h3>Constraints that live in the database</h3>
+        <ul>
+          <li>
+            Foreign keys on every relation with deliberate <code>ON DELETE</code>:
+            <code>CASCADE</code> for owned children, <code>RESTRICT</code> where deletion should be
+            refused, <code>SET NULL</code> for optional references.
+          </li>
+          <li>
+            <code>UNIQUE</code> on <code>(organizationId, slug)</code>,
+            <code>(organizationId, userId)</code> for membership, the finding fingerprint, API key
+            hash, session token hash.
+          </li>
+          <li>
+            <code>CHECK</code> on severity/CVSS agreement, <code>finishedAt &gt;= startedAt</code>,
+            non-negative counters, and
+            <code>ownershipVerifiedAt IS NULL OR ownershipVerificationMethod IS NOT NULL</code>.
+          </li>
+          <li>
+            Optimistic concurrency <code>version</code> integer on <code>Finding</code> and
+            <code>Scope</code> so two triagers cannot silently overwrite each other.
+          </li>
+          <li>
+            RLS enabled on every tenant table, policy on
+            <code>current_setting('app.organization_id')</code>, application role not
+            <code>BYPASSRLS</code>.
+          </li>
+        </ul>
+      </section>
+
+      <!-- ==== §11 · Reference & seed data =========================================== -->
+      <section id="s11">
+        <h2><span class="sn">11</span><span>Reference &amp; seed data</span></h2>
+
+        <p>
+          The seed script loads reference data only. It never creates fake organisations, users,
+          findings, or scans.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Seed</th>
+                <th class="num">Rows</th>
+                <th>Why it must exist before the product works</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>CWE catalogue</td>
+                <td class="num">~940</td>
+                <td>Findings map to CWE IDs; the UI renders the name and link.</td>
+              </tr>
+              <tr>
+                <td>OWASP categories</td>
+                <td class="num">10</td>
+                <td>Top 10 2021 mapping on every finding.</td>
+              </tr>
+              <tr>
+                <td>Check taxonomy</td>
+                <td class="num">~25 &rarr; 60+</td>
+                <td>
+                  <strong>Findings text comes from here, not from engine code.</strong> Canonical
+                  title, description template, base severity, remediation, references.
+                </td>
+              </tr>
+              <tr>
+                <td>System roles</td>
+                <td class="num">7</td>
+                <td>Owner, Admin, Security Lead, Member, Viewer, Auditor, Guest.</td>
+              </tr>
+              <tr>
+                <td>Role permissions</td>
+                <td class="num">~200</td>
+                <td>The 7 &times; 49 matrix, minus the gaps.</td>
+              </tr>
+              <tr>
+                <td>Plans</td>
+                <td class="num">4</td>
+                <td>Free, Starter, Professional, Enterprise.</td>
+              </tr>
+              <tr>
+                <td>Plan entitlements</td>
+                <td class="num">84</td>
+                <td>4 plans &times; 21 keys. Seed data, not constants in code.</td>
+              </tr>
+              <tr>
+                <td>Engine registry</td>
+                <td class="num">3 at MVP</td>
+                <td>Descriptor, version, capabilities, config schema.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note ok">
+          <span class="lbl">Deliberate</span>
+          <p>
+            There are no seeded user accounts. Register through the UI; the verification email lands
+            in Mailpit. An empty product must look empty &mdash; seeding fake tenants creates
+            exactly the illusion of a working system that this build is trying to avoid. E2E
+            fixtures are created through the real API so the tests exercise real code paths
+            including validation, authorization, and audit.
+          </p>
+        </div>
+      </section>
+
+      <div class="part">Part IV &mdash; Server surface</div>
+
+      <!-- ==== §12 · Endpoint inventory ============================================== -->
+      <section id="s12">
+        <h2><span class="sn">12</span><span>Endpoint inventory</span></h2>
+
+        <p>
+          195 endpoints under <code>/api/v1</code>. Every one declares a permission; a route without
+          an explicit access declaration fails a startup assertion.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Group</th>
+                <th class="num">Endpoints</th>
+                <th>Notable</th>
+                <th>Phase</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Auth</td>
+                <td class="num">14</td>
+                <td>
+                  login, mfa/verify, mfa/enroll, logout, session, switch-org, register,
+                  verify-email, forgot/reset password, recovery
+                </td>
+                <td><span class="ph">P2</span></td>
+              </tr>
+              <tr>
+                <td>Organisations</td>
+                <td class="num">10</td>
+                <td>CRUD, settings, transfer ownership, suspend state read</td>
+                <td><span class="ph">P2</span></td>
+              </tr>
+              <tr>
+                <td>Members &amp; invitations</td>
+                <td class="num">11</td>
+                <td>invite, accept, revoke, resend, role change, remove</td>
+                <td><span class="ph">P2</span></td>
+              </tr>
+              <tr>
+                <td>Roles</td>
+                <td class="num">5</td>
+                <td>list, create, update, delete custom roles; permission catalogue</td>
+                <td><span class="ph">P11</span></td>
+              </tr>
+              <tr>
+                <td>Projects</td>
+                <td class="num">6</td>
+                <td>CRUD, archive, settings</td>
+                <td><span class="ph">P3</span></td>
+              </tr>
+              <tr>
+                <td>Assets</td>
+                <td class="num">12</td>
+                <td>
+                  CRUD, bulk import, <strong>verify/start</strong>, <strong>verify/check</strong>,
+                  verification status, tags
+                </td>
+                <td><span class="ph">P3</span></td>
+              </tr>
+              <tr>
+                <td>Scope</td>
+                <td class="num">9</td>
+                <td>
+                  read, update (creates version), rule CRUD, version history,
+                  <strong>simulate</strong>
+                </td>
+                <td><span class="ph">P3</span></td>
+              </tr>
+              <tr>
+                <td>Scans</td>
+                <td class="num">11</td>
+                <td>create, list, detail, cancel, logs, retry, schedules CRUD</td>
+                <td><span class="ph">P4</span></td>
+              </tr>
+              <tr>
+                <td>Engines</td>
+                <td class="num">3</td>
+                <td>list available, descriptor, config schema</td>
+                <td><span class="ph">P4</span></td>
+              </tr>
+              <tr>
+                <td>Findings</td>
+                <td class="num">15</td>
+                <td>
+                  list, detail, create manual, update, status transition, bulk triage, assign,
+                  comment, occurrences, activity, related
+                </td>
+                <td><span class="ph">P5</span></td>
+              </tr>
+              <tr>
+                <td>Evidence</td>
+                <td class="num">8</td>
+                <td>list, detail, upload presign, confirm, download, redact, delete</td>
+                <td><span class="ph">P5</span></td>
+              </tr>
+              <tr>
+                <td>Engagements</td>
+                <td class="num">12</td>
+                <td>CRUD, scope, members, timeline, findings, status</td>
+                <td><span class="ph">P7</span></td>
+              </tr>
+              <tr>
+                <td>Test cases</td>
+                <td class="num">9</td>
+                <td>templates, instances, results, bulk update</td>
+                <td><span class="ph">P7</span></td>
+              </tr>
+              <tr>
+                <td>Retests</td>
+                <td class="num">6</td>
+                <td>create, list, detail, execute, submit result</td>
+                <td><span class="ph">P7</span></td>
+              </tr>
+              <tr>
+                <td>Reports</td>
+                <td class="num">7</td>
+                <td>create (queued), list, detail, download, cancel, templates</td>
+                <td><span class="ph">P8</span></td>
+              </tr>
+              <tr>
+                <td>Notifications</td>
+                <td class="num">6</td>
+                <td>list, mark read, mark all, preferences read/update</td>
+                <td><span class="ph">P3</span></td>
+              </tr>
+              <tr>
+                <td>Search</td>
+                <td class="num">2</td>
+                <td>global, per-resource</td>
+                <td><span class="ph">P3</span></td>
+              </tr>
+              <tr>
+                <td>Audit</td>
+                <td class="num">3</td>
+                <td>list, detail, export</td>
+                <td><span class="ph">P3</span></td>
+              </tr>
+              <tr>
+                <td>API keys</td>
+                <td class="num">6</td>
+                <td>create, list, detail, rotate, revoke, usage</td>
+                <td><span class="ph">P9</span></td>
+              </tr>
+              <tr>
+                <td>Webhooks</td>
+                <td class="num">10</td>
+                <td>CRUD, test, deliveries, retry delivery, rotate secret</td>
+                <td><span class="ph">P9</span></td>
+              </tr>
+              <tr>
+                <td>Integrations</td>
+                <td class="num">9</td>
+                <td>catalogue, connect, callback, configure, test, disconnect</td>
+                <td><span class="ph">P9</span></td>
+              </tr>
+              <tr>
+                <td>Billing</td>
+                <td class="num">10</td>
+                <td>
+                  subscription, checkout session, portal, plans, usage, invoices, entitlements
+                </td>
+                <td><span class="ph">P10</span></td>
+              </tr>
+              <tr>
+                <td>Inbound webhooks</td>
+                <td class="num">4</td>
+                <td>stripe, github, gitlab, jira &mdash; the only public mutating endpoints</td>
+                <td><span class="ph">P9&ndash;10</span></td>
+              </tr>
+              <tr>
+                <td>Health</td>
+                <td class="num">3</td>
+                <td>live, ready, detailed</td>
+                <td><span class="ph ph-now">P1</span></td>
+              </tr>
+              <tr>
+                <td>Realtime</td>
+                <td class="num">1</td>
+                <td>SSE event stream</td>
+                <td><span class="ph">P4</span></td>
+              </tr>
+              <tr>
+                <td>Platform admin</td>
+                <td class="num">14</td>
+                <td>
+                  orgs, users, verifications queue, abuse, system, workers, flags, break-glass
+                </td>
+                <td><span class="ph">P11</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          Two endpoints in that list do disproportionate work.
+          <code>POST /assets/:id/verify/check</code> is what turns onboarding from a dead end into a
+          completed signup. <code>POST /scopes/:id/simulate</code> lets a user test a target against
+          their rules without running a scan &mdash; it exists specifically so nobody debugs scope
+          by trial-and-error against a live scanner.
+        </p>
+      </section>
+
+      <!-- ==== §13 · Permissions & roles ============================================= -->
+      <section id="s13">
+        <h2><span class="sn">13</span><span>Permissions &amp; roles</span></h2>
+
+        <p>
+          49 permissions, 7 system roles. The machine-readable source is
+          <code>packages/contracts</code>; a test asserts it matches the documented matrix.
+        </p>
+
+        <pre>
+organization.read/update/delete/manage_members/manage_roles
+project.read/create/update/delete
+asset.read/create/update/delete/<b>verify_ownership</b>
+scope.read/update
+scan.read/create/cancel/<b>create_aggressive</b>
+finding.read/create/update/delete/triage/<b>accept_risk</b>
+evidence.read/upload/delete
+engagement.read/create/update/delete
+report.read/create/download
+apikey.read/create/revoke      webhook.read/create/update/delete
+integration.read/manage        notification.manage
+audit.read                     billing.read/manage</pre>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Role</th>
+                <th>Intent</th>
+                <th>Deliberately lacks</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>OWNER</td>
+                <td>Full control including billing and deletion</td>
+                <td>&mdash; (at least one always exists; last owner cannot be demoted)</td>
+              </tr>
+              <tr>
+                <td>ADMIN</td>
+                <td>Everything operational</td>
+                <td><code>billing.manage</code>, <code>organization.delete</code></td>
+              </tr>
+              <tr>
+                <td>SECURITY_LEAD</td>
+                <td>Full security workflow, scope, triage</td>
+                <td>member and billing management</td>
+              </tr>
+              <tr>
+                <td>MEMBER</td>
+                <td>Run scans, triage findings</td>
+                <td><code>finding.accept_risk</code>, <code>scan.create_aggressive</code></td>
+              </tr>
+              <tr>
+                <td>VIEWER</td>
+                <td>Read-only across the org</td>
+                <td>all mutation</td>
+              </tr>
+              <tr>
+                <td>AUDITOR</td>
+                <td>Read-only <strong>plus</strong> <code>audit.read</code></td>
+                <td>
+                  <strong><code>evidence.read</code></strong>
+                </td>
+              </tr>
+              <tr>
+                <td>GUEST</td>
+                <td>Read-only, explicitly granted projects only</td>
+                <td>everything outside its grants</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="dec">
+          <div class="dec-h">Three separations that look odd until you need them</div>
+          <div class="dec-b">
+            <p>
+              <strong>AUDITOR reads the audit log but not evidence.</strong> A compliance reviewer
+              must prove that testing happened and findings were verified. They rarely need the
+              vulnerability detail, and evidence routinely contains the customer's own secrets and
+              PII. Least privilege says separate them; an auditor who genuinely needs evidence gets
+              <code>VIEWER</code> alongside, as a deliberate act.
+            </p>
+            <p>
+              <strong>MEMBER cannot accept risk.</strong> Accepting a risk is a business decision
+              with compliance weight, not a triage action.
+            </p>
+            <p>
+              <strong>MEMBER cannot run aggressive scans.</strong> Potentially disruptive testing is
+              a separate decision from routine scanning.
+            </p>
+          </div>
+        </div>
+
+        <p>
+          <strong>Invariants enforced in code:</strong> a custom role can hold only permissions its
+          creator holds; an API key only a subset of its creator's, and never
+          <code>organization.delete</code>, <code>organization.manage_roles</code>,
+          <code>billing.manage</code>, or <code>apikey.create</code>; a role change takes effect on
+          the next request, not at a cache TTL.
+        </p>
+      </section>
+
+      <!-- ==== §14 · Error codes ===================================================== -->
+      <section id="s14">
+        <h2><span class="sn">14</span><span>Error codes</span></h2>
+
+        <p>
+          40 stable codes. Clients branch on <code>code</code>, never on <code>message</code>. Every
+          error returns the same envelope with a <code>requestId</code>.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Group</th>
+                <th>Codes</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Auth</td>
+                <td>
+                  <code>UNAUTHENTICATED</code> <code>INVALID_CREDENTIALS</code>
+                  <code>SESSION_EXPIRED</code> <code>MFA_REQUIRED</code> <code>MFA_INVALID</code>
+                  <code>EMAIL_NOT_VERIFIED</code> <code>ACCOUNT_LOCKED</code>
+                  <code>INVALID_API_KEY</code> <code>API_KEY_EXPIRED</code>
+                  <code>CSRF_TOKEN_INVALID</code>
+                </td>
+              </tr>
+              <tr>
+                <td>Access</td>
+                <td>
+                  <code>PERMISSION_DENIED</code> <code>NOT_A_MEMBER</code>
+                  <code>ORGANIZATION_SUSPENDED</code> <code>RESOURCE_NOT_FOUND</code>
+                </td>
+              </tr>
+              <tr>
+                <td>Validation</td>
+                <td>
+                  <code>VALIDATION_ERROR</code> <code>UNKNOWN_FIELD</code>
+                  <code>INVALID_STATE_TRANSITION</code> <code>VERSION_CONFLICT</code>
+                  <code>DUPLICATE_RESOURCE</code> <code>CURSOR_SORT_MISMATCH</code>
+                </td>
+              </tr>
+              <tr>
+                <td><strong>Domain &mdash; unique to this product</strong></td>
+                <td>
+                  <code>SCOPE_VIOLATION</code> <code>ASSET_NOT_VERIFIED</code>
+                  <code>ASSET_VERIFICATION_EXPIRED</code> <code>TARGET_DENIED_BY_POLICY</code>
+                  <code>PROFILE_NOT_PERMITTED</code> <code>ENGINE_NOT_AVAILABLE</code>
+                  <code>SCAN_ALREADY_RUNNING</code> <code>SCAN_NOT_CANCELLABLE</code>
+                </td>
+              </tr>
+              <tr>
+                <td>Entitlement</td>
+                <td>
+                  <code>QUOTA_EXCEEDED</code> <code>PLAN_LIMIT_REACHED</code>
+                  <code>FEATURE_NOT_AVAILABLE</code> <code>PAYMENT_REQUIRED</code>
+                  <code>SUBSCRIPTION_INACTIVE</code>
+                </td>
+              </tr>
+              <tr>
+                <td>Limits &amp; server</td>
+                <td>
+                  <code>RATE_LIMITED</code> <code>INTERNAL_ERROR</code>
+                  <code>SERVICE_UNAVAILABLE</code> <code>DEPENDENCY_UNAVAILABLE</code>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Refusals must be actionable</h3>
+        <pre>
+{ "error": {
+    "code": <b>"SCOPE_VIOLATION"</b>,
+    "message": "admin.example.com isn't covered by this project's scope.",
+    "details": {
+      "target": "admin.example.com",
+      "reason": <i>"NO_MATCHING_ALLOW_RULE"</i>,
+      "suggestion": "Add an allow rule for admin.example.com in project scope."
+    },
+    "requestId": "req_01J8XK2P9V3QWERTY" } }</pre>
+        <div class="figcap">a refusal that doesn't say how to succeed becomes a support ticket</div>
+
+        <p>
+          Quota errors always carry the entitlement key, the limit, current usage, and the upgrade
+          path. <code>RESOURCE_NOT_FOUND</code> is returned for cross-tenant access &mdash; never
+          <code>PERMISSION_DENIED</code>, which would confirm the resource exists.
+        </p>
+      </section>
+
+      <!-- ==== §15 · Realtime events ================================================= -->
+      <section id="s15">
+        <h2><span class="sn">15</span><span>Realtime events</span></h2>
+
+        <p>
+          13 events over SSE. Payloads are thin by design &mdash; identifiers and status only, never
+          finding bodies or evidence.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Event</th>
+                <th>Permission required</th>
+                <th>Triggers</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>scan.started</code></td>
+                <td><code>scan.read</code></td>
+                <td>Worker transitions QUEUED &rarr; RUNNING</td>
+              </tr>
+              <tr>
+                <td><code>scan.progress</code></td>
+                <td><code>scan.read</code></td>
+                <td>Engine progress event, throttled to 1/sec</td>
+              </tr>
+              <tr>
+                <td><code>scan.finding</code></td>
+                <td><code>finding.read</code></td>
+                <td>A finding is persisted mid-scan</td>
+              </tr>
+              <tr>
+                <td>
+                  <code>scan.completed</code> / <code>.failed</code> / <code>.cancelled</code>
+                </td>
+                <td><code>scan.read</code></td>
+                <td>Terminal transition</td>
+              </tr>
+              <tr>
+                <td><code>finding.created</code> / <code>.updated</code></td>
+                <td><code>finding.read</code></td>
+                <td>Ingestion or triage</td>
+              </tr>
+              <tr>
+                <td><code>finding.reopened</code></td>
+                <td><code>finding.read</code></td>
+                <td>A remediated finding recurs &mdash; <strong>always notifies</strong></td>
+              </tr>
+              <tr>
+                <td><code>report.generated</code> / <code>.failed</code></td>
+                <td><code>report.read</code></td>
+                <td>Report worker completes</td>
+              </tr>
+              <tr>
+                <td><code>retest.completed</code></td>
+                <td><code>finding.read</code></td>
+                <td>Retest result recorded</td>
+              </tr>
+              <tr>
+                <td><code>notification.created</code></td>
+                <td>&mdash;</td>
+                <td>Any notification for this user</td>
+              </tr>
+              <tr>
+                <td><code>usage.limit_approaching</code></td>
+                <td><code>billing.read</code></td>
+                <td>80% of an entitlement consumed</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          Authorization is applied <strong>per event at send time</strong>, not once at handshake,
+          so a demoted user stops receiving events they may no longer see. The client uses events to
+          invalidate query keys and refetch through normal authorised endpoints &mdash; the realtime
+          channel can never become a second, less-guarded way to read data.
+        </p>
+
+        <div class="note crit">
+          <span class="lbl">Never simulate</span>
+          <p>
+            The UI never advances a progress bar on a timer. If the stream drops, the interface says
+            so and falls back to polling. In a security product, the difference between "this scan
+            is running" and "this scan was running when we last heard" is a real difference, and
+            pretending otherwise is the interface lying about system state.
+          </p>
+        </div>
+      </section>
+
+      <!-- ==== §16 · Audit actions =================================================== -->
+      <section id="s16">
+        <h2><span class="sn">16</span><span>Audit actions</span></h2>
+
+        <p>
+          ~55 action types. Failures and denials are audited, not only successes &mdash; that is the
+          signal an investigation actually needs.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Group</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Auth</td>
+                <td>
+                  <code>LOGIN</code> <code>LOGIN_FAILED</code> <code>LOGOUT</code>
+                  <code>MFA_ENABLED</code> <code>MFA_DISABLED</code>
+                  <code>MFA_CHALLENGE_FAILED</code> <code>PASSWORD_CHANGED</code>
+                  <code>PASSWORD_RESET_REQUESTED</code> <code>PASSWORD_RESET_COMPLETED</code>
+                  <code>SESSION_REVOKED</code> <code>EMAIL_VERIFIED</code>
+                </td>
+              </tr>
+              <tr>
+                <td>Access</td>
+                <td>
+                  <code>ORGANIZATION_CREATED/UPDATED/DELETED/SUSPENDED</code>
+                  <code>MEMBER_INVITED</code> <code>INVITATION_ACCEPTED/REVOKED</code>
+                  <code>MEMBER_REMOVED</code> <code>ROLE_CHANGED</code>
+                  <code>ROLE_CREATED/UPDATED/DELETED</code> <code>PERMISSION_DENIED</code>
+                </td>
+              </tr>
+              <tr>
+                <td>Domain</td>
+                <td>
+                  <code>PROJECT_*</code> <code>ASSET_CREATED/UPDATED/DELETED</code>
+                  <code>ASSET_OWNERSHIP_VERIFIED</code> <code>ASSET_OWNERSHIP_EXPIRED</code>
+                  <code>SCOPE_CHANGED</code>
+                  <code>SCAN_CREATED/STARTED/CANCELLED/COMPLETED/FAILED</code>
+                  <code>FINDING_*</code> <code>EVIDENCE_UPLOADED/ACCESSED/DELETED/REDACTED</code>
+                  <code>RETEST_*</code> <code>REPORT_GENERATED/DOWNLOADED</code>
+                </td>
+              </tr>
+              <tr>
+                <td>Platform</td>
+                <td>
+                  <code>API_KEY_CREATED/REVOKED/USED_AFTER_REVOCATION</code> <code>WEBHOOK_*</code>
+                  <code>INTEGRATION_CONNECTED/DISCONNECTED</code> <code>SUBSCRIPTION_CHANGED</code>
+                  <code>PLATFORM_ADMIN_ACCESS</code>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note warn">
+          <span class="lbl">The two most operationally important events in the system</span>
+          <p>
+            <code>SCAN_REJECTED_OUT_OF_SCOPE</code> is the abuse signal &mdash; a legitimate
+            customer occasionally mistypes a host; someone mapping the boundary of what we will scan
+            looks entirely different, and that difference is detectable.
+            <code>BREAK_GLASS_ACCESS</code> is the trust signal &mdash; it fires whenever a platform
+            operator reaches customer data, and it notifies the organisation owner automatically,
+            with no way for the operator to suppress it.
+          </p>
+        </div>
+      </section>
+
+      <div class="part">Part V &mdash; Client surface</div>
+
+      <!-- ==== §17 · Route inventory ================================================= -->
+      <section id="s17">
+        <h2><span class="sn">17</span><span>Route inventory</span></h2>
+
+        <p>93 routes across five groups. A route ships only when it has all six required states.</p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Group</th>
+                <th class="num">Routes</th>
+                <th>Contents</th>
+                <th>Phase</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>(marketing)</code></td>
+                <td class="num">14</td>
+                <td>
+                  landing, features, solutions, security, pricing, documentation, customers, about,
+                  contact, changelog, status, terms, privacy, security-policy
+                </td>
+                <td><span class="ph ph-now">P1&ndash;P10</span></td>
+              </tr>
+              <tr>
+                <td><code>(auth)</code></td>
+                <td class="num">9</td>
+                <td>
+                  login, register, forgot/reset password, verify-email, mfa, mfa/enroll, recovery,
+                  invitations/[token]
+                </td>
+                <td><span class="ph">P2</span></td>
+              </tr>
+              <tr>
+                <td><code>(onboarding)</code></td>
+                <td class="num">1</td>
+                <td>Nine resumable steps on one route, persisted server-side</td>
+                <td><span class="ph">P2&ndash;P5</span></td>
+              </tr>
+              <tr>
+                <td><code>(app)</code></td>
+                <td class="num">55</td>
+                <td>
+                  dashboard, search, notifications, orgs, projects, assets, scopes, scans, findings,
+                  engagements, test cases, evidence, retests, reports, team, api keys, webhooks,
+                  integrations, audit, billing, 9 settings pages
+                </td>
+                <td><span class="ph">P2&ndash;P11</span></td>
+              </tr>
+              <tr>
+                <td>Admin (separate subdomain)</td>
+                <td class="num">9</td>
+                <td>orgs, users, verifications, abuse, system, workers, flags, audit</td>
+                <td><span class="ph">P11</span></td>
+              </tr>
+              <tr>
+                <td>Error &amp; utility</td>
+                <td class="num">5</td>
+                <td>not-found, error, 403, suspended, maintenance</td>
+                <td><span class="ph ph-now">P1</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Two routes that are not in the original spec and earn their place</h3>
+        <ul>
+          <li>
+            <code>/assets/[id]/verify</code> &mdash; per-method instructions, copyable token, live
+            re-check. This is the highest drop-off point in onboarding and the largest support
+            driver; it gets a dedicated route rather than a modal.
+          </li>
+          <li>
+            <code>/scopes/[id]/simulate</code> &mdash; paste a target, see the decision and the
+            exact rule that produced it. Debugging scope against a live scanner is precisely the
+            behaviour we do not want to encourage.
+          </li>
+        </ul>
+
+        <h3>The six states every data-bound route must implement</h3>
+        <div class="kv">
+          <div>
+            <dt>Loading</dt>
+            <dd>
+              Skeleton<small
+                >Matching final layout. Never a bare spinner, never a layout shift.</small
+              >
+            </dd>
+          </div>
+          <div>
+            <dt>Empty</dt>
+            <dd>
+              Explains + acts<small
+                >What the thing is, why it's empty, primary action inline.</small
+              >
+            </dd>
+          </div>
+          <div>
+            <dt>Error</dt>
+            <dd>Recoverable<small>What failed, retry, request ID for support.</small></dd>
+          </div>
+          <div>
+            <dt>Partial</dt>
+            <dd>Honest<small>Show what loaded, mark what failed.</small></dd>
+          </div>
+          <div>
+            <dt>Permission</dt>
+            <dd>Explains<small>Which permission is missing and who can grant it.</small></dd>
+          </div>
+          <div>
+            <dt>Success</dt>
+            <dd>Confirms<small>Toast for background, inline for in-context.</small></dd>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==== §18 · Design primitives =============================================== -->
+      <section id="s18">
+        <h2><span class="sn">18</span><span>Design primitives</span></h2>
+
+        <p>
+          40 primitives in <code>packages/ui</code>, shadcn-based, restyled to tokens. Built once in
+          Phase 1.
+        </p>
+
+        <pre>
+Button · IconButton · Input · Textarea · Select · Combobox · MultiSelect
+Checkbox · RadioGroup · Switch · Slider · DatePicker · DateRangePicker
+Label · FormField · FormError · Card · Separator · Tabs · Accordion · Collapsible
+Dialog · AlertDialog · Drawer · Sheet · Popover · Tooltip · DropdownMenu
+ContextMenu · CommandMenu · Toast · Alert · Badge · Avatar · Progress
+Skeleton · Spinner · Breadcrumb · Pagination · ScrollArea · Table · Code · Kbd</pre>
+
+        <h3>The design thesis these are built against</h3>
+        <p>
+          <strong>The interface is quiet so the findings can be loud.</strong> In a triage queue the
+          most important signal is severity, and severity is communicated by colour. If the chrome
+          around it is also saturated, severity stops meaning anything and the user loses the one
+          visual channel doing real work.
+        </p>
+
+        <p>
+          So the colour budget is spent in exactly one place. Chrome, navigation, surfaces, and
+          typography are near-neutral cool ink tones. Saturated colour is reserved for severity,
+          status, and destructive intent, and appears nowhere else &mdash; not in empty-state
+          illustrations, not in chart defaults, not in a hero gradient. This rules out the
+          dark-terminal-with-neon-accent look most security products adopt, which is fun and is also
+          why everything in the category feels alarming at 4pm on a Thursday when nothing is wrong.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Severity</th>
+                <th>Glyph</th>
+                <th>Why this hue</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="sev s-crit">critical</span></td>
+                <td>&#9670; filled diamond</td>
+                <td>
+                  Magenta-shifted, not pure red &mdash; pure red is spoken for by destructive
+                  actions, and magenta stays distinguishable from high-orange under common colour
+                  vision deficiencies
+                </td>
+              </tr>
+              <tr>
+                <td><span class="sev s-high">high</span></td>
+                <td>&#9650; filled triangle</td>
+                <td>Orange</td>
+              </tr>
+              <tr>
+                <td><span class="sev s-med">medium</span></td>
+                <td>&#9679; filled circle</td>
+                <td>Amber</td>
+              </tr>
+              <tr>
+                <td><span class="sev s-low">low</span></td>
+                <td>&#9675; hollow circle</td>
+                <td>Slate-teal</td>
+              </tr>
+              <tr>
+                <td><span class="sev s-info">info</span></td>
+                <td>&mdash; dash</td>
+                <td>Neutral</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          <strong>Severity is never conveyed by colour alone.</strong> Every indicator carries the
+          glyph and the text label &mdash; a WCAG requirement, and also how the product stays
+          readable in a printed report, a screenshot pasted into Slack, and a greyscale PDF.
+        </p>
+      </section>
+
+      <!-- ==== §19 · Page patterns =================================================== -->
+      <section id="s19">
+        <h2><span class="sn">19</span><span>Page patterns</span></h2>
+
+        <p>
+          16 patterns. This is where consistency actually comes from &mdash; a product with
+          excellent primitives and no patterns still ends up with fifteen different page headers.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Pattern</th>
+                <th>Responsibility</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>DataTable</code></td>
+                <td>
+                  Sorting, filtering, column visibility, density, selection, bulk actions, cursor
+                  pagination, virtualisation past 100 rows, URL state sync. The single most-used
+                  pattern in the product.
+                </td>
+              </tr>
+              <tr>
+                <td><code>PageHeader</code></td>
+                <td>Title, description, breadcrumb, actions, tabs</td>
+              </tr>
+              <tr>
+                <td><code>FilterBar</code></td>
+                <td>Composable filters, saved views, active chips, clear-all</td>
+              </tr>
+              <tr>
+                <td>
+                  <code>EmptyState</code> / <code>ErrorState</code> / <code>PermissionState</code>
+                </td>
+                <td>The three non-happy states, standardised so they cannot be skipped</td>
+              </tr>
+              <tr>
+                <td><code>LoadingSkeleton</code></td>
+                <td>Per-layout skeletons matching final geometry</td>
+              </tr>
+              <tr>
+                <td><code>ConfirmDialog</code></td>
+                <td>Destructive confirmation; typed object name for irreversible actions</td>
+              </tr>
+              <tr>
+                <td><code>FormLayout</code></td>
+                <td>Consistent geometry, sticky actions, unsaved-changes guard</td>
+              </tr>
+              <tr>
+                <td><code>DetailLayout</code></td>
+                <td>Main panel + metadata sidebar + activity timeline</td>
+              </tr>
+              <tr>
+                <td><code>StatCard</code></td>
+                <td>Metric, delta, sparkline, drill-through</td>
+              </tr>
+              <tr>
+                <td><code>Timeline</code></td>
+                <td>Actor, action, timestamp</td>
+              </tr>
+              <tr>
+                <td><code>FileDropzone</code></td>
+                <td>Drag-drop, progress, validation errors, retry</td>
+              </tr>
+              <tr>
+                <td><code>CopyField</code></td>
+                <td>
+                  Copy-to-clipboard with confirmation &mdash; used constantly for tokens and IDs
+                </td>
+              </tr>
+              <tr>
+                <td><code>RelativeTime</code></td>
+                <td>Relative display, absolute on hover, correct timezone</td>
+              </tr>
+              <tr>
+                <td><code>UpgradePrompt</code></td>
+                <td>Entitlement-gated feature with usage and upgrade path</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>The findings table, in full</h3>
+        <pre>+--------------------------------------------------------------------+
+| Filters: [Status v][Severity v][Project v][Assignee v]  [Save view] |
+| 3 active: Open x  Critical+High x  Acme Prod x         [Clear all]  |
++--------------------------------------------------------------------+
+| [ ] | Sev | Finding                | Asset      | Age | Assignee |   |
++-----+-----+------------------------+------------+-----+----------+---+
+|<b>&#9612;</b>[ ] | <b>&#9670; C</b> | SQL injection in /sea. | app.acme.  | 3d  | MA       | >|
+|<b>&#9612;</b>[ ] | <b>&#9650; H</b> | Missing HSTS           | api.acme.  | 12d | &mdash;        | >|
++--------------------------------------------------------------------+
+| 2 selected: [Assign] [Status v] [Export]     1-50 of 1,284  [More] |
++--------------------------------------------------------------------+</pre>
+        <div class="figcap">the leading rule is the severity spine &mdash; see below</div>
+
+        <p>
+          <strong>The signature element:</strong> a 2px vertical rule at the left edge of every
+          finding row, coloured by severity, with a notch whose height encodes confidence. Read down
+          a list of forty findings it forms a waterfall &mdash; you see the shape of the queue,
+          where the critical cluster sits, how much is low-confidence noise, before reading a single
+          word. It replaces the severity pill that would otherwise take a column, and survives dense
+          mode where pills would not.
+        </p>
+      </section>
+
+      <!-- ==== §20 · Domain components =============================================== -->
+      <section id="s20">
+        <h2><span class="sn">20</span><span>Domain components</span></h2>
+
+        <p>
+          40 components. Entity-aware, presentational only &mdash;
+          <strong>they receive data and callbacks and never fetch.</strong> That is what lets the
+          same <code>FindingRow</code> appear in the global queue, a project view, an engagement,
+          and a report preview.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Domain</th>
+                <th>Components</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Findings</td>
+                <td>
+                  <code>SeverityIndicator</code> <code>ConfidenceBadge</code>
+                  <code>FindingRow</code> <code>FindingCard</code> <code>FindingStatusBadge</code>
+                  <code>FindingStatusMenu</code> <code>CvssVector</code> <code>RiskScore</code>
+                  <code>OccurrenceTimeline</code> <code>SlaIndicator</code>
+                </td>
+              </tr>
+              <tr>
+                <td>Evidence</td>
+                <td>
+                  <code>EvidenceViewer</code> <code>HttpExchangeView</code>
+                  <code>ScreenshotViewer</code> <code>EvidenceList</code>
+                  <code>RedactionControls</code>
+                </td>
+              </tr>
+              <tr>
+                <td>Scanning</td>
+                <td>
+                  <code>ScanStatusBadge</code> <code>ScanProgress</code> <code>ScanLogViewer</code>
+                  <code>EngineSelector</code> <code>ProfileSelector</code>
+                  <code>ScanConfigForm</code>
+                </td>
+              </tr>
+              <tr>
+                <td>Assets &amp; scope</td>
+                <td>
+                  <code>AssetTypeIcon</code> <code>AssetRow</code> <code>CriticalityBadge</code>
+                  <code>EnvironmentBadge</code> <code>VerificationStatus</code>
+                  <code>VerificationInstructions</code> <code>ScopeRuleEditor</code>
+                  <code>ScopeSimulator</code>
+                </td>
+              </tr>
+              <tr>
+                <td>Org &amp; access</td>
+                <td>
+                  <code>OrgSwitcher</code> <code>MemberRow</code> <code>RoleBadge</code>
+                  <code>RoleSelector</code> <code>PermissionMatrix</code>
+                  <code>InvitationForm</code> <code>ApiKeyRow</code> <code>AuditEventRow</code>
+                </td>
+              </tr>
+              <tr>
+                <td>Charts</td>
+                <td>
+                  <code>SeverityDistribution</code> <code>FindingsOverTime</code>
+                  <code>RiskTrend</code> <code>RemediationVelocity</code> <code>CoverageChart</code>
+                  <code>Sparkline</code>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          Two of these have unusual constraints. <code>ScanConfigForm</code> is
+          <strong>generated from the engine's JSON Schema</strong> &mdash; adding an engine must not
+          require frontend work. <code>HttpExchangeView</code> renders scan output, which is
+          attacker-controlled by definition, as escaped syntax-highlighted <strong>text</strong>;
+          evidence is never injected into the application DOM as markup anywhere in the product.
+        </p>
+
+        <p>
+          Every chart has a table equivalent behind a toggle &mdash; a chart alone is not
+          accessible, and people need the numbers to paste into a report.
+        </p>
+      </section>
+
+      <div class="part">Part VI &mdash; Execution</div>
+
+      <!-- ==== §21 · Queues & workers ================================================ -->
+      <section id="s21">
+        <h2><span class="sn">21</span><span>Queues &amp; workers</span></h2>
+
+        <p>
+          8 queues, separated by class rather than sharing one queue with priorities, so a slow
+          class cannot block a fast one and each gets its own concurrency and retry policy.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Queue</th>
+                <th class="num">Concurrency</th>
+                <th>Timeout</th>
+                <th>Retries</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>scan:web</code></td>
+                <td class="num">per pool</td>
+                <td>30&ndash;120 min</td>
+                <td>3, transient only</td>
+              </tr>
+              <tr>
+                <td><code>scan:api</code></td>
+                <td class="num">per pool</td>
+                <td>30&ndash;120 min</td>
+                <td>3, transient only</td>
+              </tr>
+              <tr>
+                <td><code>scan:analysis</code></td>
+                <td class="num">per pool</td>
+                <td>60 min</td>
+                <td>3, transient only</td>
+              </tr>
+              <tr>
+                <td><code>report</code></td>
+                <td class="num">4</td>
+                <td>10 min</td>
+                <td>3</td>
+              </tr>
+              <tr>
+                <td><code>notification</code></td>
+                <td class="num">20</td>
+                <td>30 s</td>
+                <td>5</td>
+              </tr>
+              <tr>
+                <td><code>webhook</code></td>
+                <td class="num">20</td>
+                <td>30 s</td>
+                <td>8, up to 24 h</td>
+              </tr>
+              <tr>
+                <td><code>integration</code></td>
+                <td class="num">10</td>
+                <td>60 s</td>
+                <td>5</td>
+              </tr>
+              <tr>
+                <td><code>maintenance</code></td>
+                <td class="num">2</td>
+                <td>30 min</td>
+                <td>2</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Payloads carry identifiers, never authority</h3>
+        <pre>
+{ "scanId": "scn_01J...", "organizationId": "org_01J...", "requestId": "req_01J..." }</pre>
+        <p>
+          <code>organizationId</code> is present
+          <strong>only so the worker can assert it matches what it loads.</strong> A mismatch means
+          a bug or a forgery attempt and fails loudly. Everything else &mdash; scope, entitlements,
+          verification, cancellation &mdash; is re-read from Postgres at execution time, because all
+          of it can change between enqueue and execution and the stale copy would be the one that
+          ran.
+        </p>
+
+        <h3>The worker re-validation sequence</h3>
+        <pre><b>1.</b>  Load scan by id.                          missing &rarr; fail, alert
+<b>2.</b>  Assert payload org == loaded org.         mismatch &rarr; fail, <i>alert loudly</i>
+<b>3.</b>  Assert organisation active, not suspended.
+<b>4.</b>  Assert subscription and entitlements permit execution.
+<b>5.</b>  Assert status is QUEUED and not cancelled.
+<b>6.</b>  Load asset; assert exists, not deleted, <i>ownership verified</i>.
+<b>7.</b>  Load the referenced scope version; <i>re-evaluate every target</i>.
+<b>8.</b>  Validate engine config against the pinned version's schema.
+<b>9.</b>  Only then: mark RUNNING and execute.</pre>
+
+        <p>
+          <strong>Authorization, scope, and entitlement failures are never retried.</strong> The
+          refusal was the correct answer; retrying a refusal is exactly backwards.
+        </p>
+      </section>
+
+      <!-- ==== §22 · Scheduler jobs ================================================== -->
+      <section id="s22">
+        <h2><span class="sn">22</span><span>Scheduler jobs</span></h2>
+
+        <p>
+          10 periodic jobs, leader-elected through a Redis lock with heartbeat renewal so running
+          multiple instances is safe.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Job</th>
+                <th>Cadence</th>
+                <th>Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>SLA sweep</td>
+                <td>15 min</td>
+                <td>Mark breaches, notify</td>
+              </tr>
+              <tr>
+                <td>Stuck scan sweep</td>
+                <td>5 min</td>
+                <td>
+                  Fail scans past timeout + grace. A scan stuck forever is worse than one that
+                  failed.
+                </td>
+              </tr>
+              <tr>
+                <td>Asset verification re-check</td>
+                <td>daily</td>
+                <td>Re-verify ownership; expire lapsed. <strong>Domains change hands.</strong></td>
+              </tr>
+              <tr>
+                <td>Auto-resolution sweep</td>
+                <td>daily</td>
+                <td>Resolve findings not seen by qualifying scans</td>
+              </tr>
+              <tr>
+                <td>Retention enforcement</td>
+                <td>daily</td>
+                <td>Expire findings, evidence, audit, reports per plan</td>
+              </tr>
+              <tr>
+                <td>Usage rollup</td>
+                <td>hourly</td>
+                <td>Aggregate <code>UsageRecord</code>, report metered usage to Stripe</td>
+              </tr>
+              <tr>
+                <td>Webhook retry</td>
+                <td>1 min</td>
+                <td>Redrive failed deliveries</td>
+              </tr>
+              <tr>
+                <td>Storage reconciliation</td>
+                <td>weekly</td>
+                <td>Compare storage against the database <strong>in both directions</strong></td>
+              </tr>
+              <tr>
+                <td>Scheduled scans</td>
+                <td>1 min</td>
+                <td>Enqueue due recurring scans</td>
+              </tr>
+              <tr>
+                <td>Session &amp; token cleanup</td>
+                <td>hourly</td>
+                <td>Purge expired rows</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          Storage reconciliation runs in both directions deliberately: objects without metadata rows
+          are orphans to clean, but metadata rows without objects are a
+          <strong>data-loss incident</strong> that alerts immediately. Silent divergence between a
+          file store and its index is how "we still have the evidence" quietly becomes untrue.
+        </p>
+      </section>
+
+      <!-- ==== §23 · Engines ========================================================= -->
+      <section id="s23">
+        <h2><span class="sn">23</span><span>Engines</span></h2>
+
+        <p>
+          12 categories behind one contract. Three by MVP. Adding one touches its own folder and a
+          registry entry &mdash; nothing else.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Engine</th>
+                <th>Category</th>
+                <th>Runtime</th>
+                <th>Phase</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>web-security</code></td>
+                <td>WEB</td>
+                <td>Node</td>
+                <td><span class="ph">P5</span></td>
+              </tr>
+              <tr>
+                <td><code>tls-config</code></td>
+                <td>WEB</td>
+                <td>Node</td>
+                <td><span class="ph">P5</span></td>
+              </tr>
+              <tr>
+                <td><code>api-security</code></td>
+                <td>API</td>
+                <td>Node</td>
+                <td><span class="ph">P6</span></td>
+              </tr>
+              <tr>
+                <td><code>sast</code></td>
+                <td>SAST</td>
+                <td>Python</td>
+                <td><span class="ph">P12</span></td>
+              </tr>
+              <tr>
+                <td><code>dependency</code></td>
+                <td>DEPENDENCY</td>
+                <td>Node</td>
+                <td><span class="ph">P12</span></td>
+              </tr>
+              <tr>
+                <td><code>container</code></td>
+                <td>CONTAINER</td>
+                <td>Go</td>
+                <td><span class="ph">P12</span></td>
+              </tr>
+              <tr>
+                <td><code>cloud-config</code></td>
+                <td>CLOUD</td>
+                <td>Python</td>
+                <td><span class="ph">P12</span></td>
+              </tr>
+              <tr>
+                <td><code>network</code></td>
+                <td>NETWORK</td>
+                <td>Go</td>
+                <td><span class="ph">P12</span></td>
+              </tr>
+              <tr>
+                <td><code>mobile</code></td>
+                <td>MOBILE</td>
+                <td>Python</td>
+                <td><span class="ph">P12</span></td>
+              </tr>
+              <tr>
+                <td><code>llm-security</code></td>
+                <td>LLM</td>
+                <td>Python</td>
+                <td><span class="ph">P12</span></td>
+              </tr>
+              <tr>
+                <td><code>performance</code></td>
+                <td>PERFORMANCE</td>
+                <td>Node</td>
+                <td><span class="ph">P12</span></td>
+              </tr>
+              <tr>
+                <td><code>accessibility</code></td>
+                <td>ACCESSIBILITY</td>
+                <td>Node</td>
+                <td><span class="ph">P12</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>What every engine must ship with</h3>
+        <div class="kv">
+          <div>
+            <dt>Descriptor</dt>
+            <dd>
+              Static metadata<small
+                >Semver, capabilities, supported asset types, resource hints, JSON Schema
+                config</small
+              >
+            </dd>
+          </div>
+          <div>
+            <dt>Detection tests</dt>
+            <dd>Against the vulnerable target<small>Must find the planted issues</small></dd>
+          </div>
+          <div>
+            <dt>False-positive suite</dt>
+            <dd>
+              Against a clean target<small><strong>Must find nothing.</strong> Not optional.</small>
+            </dd>
+          </div>
+          <div>
+            <dt>Fingerprint stability</dt>
+            <dd>Across runs and patch versions<small>Same vulnerability, same hash</small></dd>
+          </div>
+          <div>
+            <dt>Constraint compliance</dt>
+            <dd>Timeout, rate limit, cancellation<small>Prompt SIGTERM handling</small></dd>
+          </div>
+          <div>
+            <dt>Container image</dt>
+            <dd>
+              Minimal, digest-pinned<small
+                >Non-root, no credentials, no shell where avoidable</small
+              >
+            </dd>
+          </div>
+        </div>
+
+        <div class="note crit">
+          <span class="lbl">Eight rules every engine obeys</span>
+          <p>
+            Only contact given targets &middot; all HTTP through the SDK's guarded client, never a
+            raw socket &middot; respect <code>constraints</code> &middot; non-destructive unless the
+            profile is <code>AGGRESSIVE</code> &middot; never log credentials or full response
+            bodies &middot; deterministic fingerprint inputs with no volatile values &middot; exit
+            non-zero on failure and emit <code>complete</code> with a reason &middot; no filesystem
+            writes outside scratch.
+          </p>
+        </div>
+
+        <p>
+          The false-positive suite deserves emphasis: an engine that cries wolf is worse than no
+          engine, because it destroys the triage queue that is the thing customers actually use.
+        </p>
+      </section>
+
+      <!-- ==== §24 · Web security checks ============================================= -->
+      <section id="s24">
+        <h2><span class="sn">24</span><span>Web security checks</span></h2>
+
+        <p>
+          25 check families in the Phase 5 engine. Every one is non-destructive at
+          <code>SAFE</code>, the default profile.
+        </p>
+
+        <h3>Passive &mdash; no attack traffic</h3>
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Family</th>
+                <th>Detects</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Security headers</td>
+                <td>
+                  HSTS, CSP, <code>X-Content-Type-Options</code>, <code>X-Frame-Options</code>,
+                  <code>Referrer-Policy</code>, <code>Permissions-Policy</code>
+                </td>
+              </tr>
+              <tr>
+                <td>Cookie attributes</td>
+                <td>
+                  <code>Secure</code>, <code>HttpOnly</code>, <code>SameSite</code>, prefixes, scope
+                </td>
+              </tr>
+              <tr>
+                <td>TLS configuration</td>
+                <td>
+                  Protocol versions, cipher suites, certificate validity, chain, key strength, OCSP
+                </td>
+              </tr>
+              <tr>
+                <td>CORS misconfiguration</td>
+                <td>Wildcard with credentials, origin reflection, null origin</td>
+              </tr>
+              <tr>
+                <td>Information disclosure</td>
+                <td>
+                  Server banners, version headers, stack traces,
+                  <code>.git</code>/<code>.env</code>/backups, source maps, directory listing
+                </td>
+              </tr>
+              <tr>
+                <td>Technology fingerprinting</td>
+                <td>Framework and version identification</td>
+              </tr>
+              <tr>
+                <td>Mixed content</td>
+                <td>Insecure subresources on HTTPS pages</td>
+              </tr>
+              <tr>
+                <td>Cache-control</td>
+                <td>Cacheable sensitive responses</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Active but safe &mdash; detection, not exploitation</h3>
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Family</th>
+                <th>How it stays safe</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Open redirect</td>
+                <td>Marker-based, no external callback</td>
+              </tr>
+              <tr>
+                <td>Path traversal</td>
+                <td>Read-only probes for known-safe files</td>
+              </tr>
+              <tr>
+                <td>Reflected XSS</td>
+                <td>
+                  Unique marker reflection with context analysis &mdash;
+                  <strong>detection, not execution</strong>
+                </td>
+              </tr>
+              <tr>
+                <td>SQL injection</td>
+                <td>
+                  Boolean and time-based inference only. Never <code>UNION</code> dumping, never
+                  writes.
+                </td>
+              </tr>
+              <tr>
+                <td>Command injection</td>
+                <td>Time-based inference only</td>
+              </tr>
+              <tr>
+                <td>SSRF</td>
+                <td>
+                  Marker request to <strong>our own controlled collector</strong>, never a third
+                  party
+                </td>
+              </tr>
+              <tr>
+                <td>CSRF</td>
+                <td>Token presence and validation behaviour on state-changing endpoints</td>
+              </tr>
+              <tr>
+                <td>Session handling</td>
+                <td>Fixation, rotation on login, timeout, invalidation on logout</td>
+              </tr>
+              <tr>
+                <td>Authentication behaviour</td>
+                <td>User enumeration, lockout presence, password policy</td>
+              </tr>
+              <tr>
+                <td>Rate-limit presence</td>
+                <td>Bounded probing</td>
+              </tr>
+              <tr>
+                <td>File upload validation</td>
+                <td>Type and content enforcement &mdash; without uploading anything executable</td>
+              </tr>
+              <tr>
+                <td>HTTP methods</td>
+                <td>Permissive method configuration</td>
+              </tr>
+              <tr>
+                <td>Host-header injection</td>
+                <td>Reflection into links and redirects</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note crit">
+          <span class="lbl">Never below AGGRESSIVE, and never without explicit opt-in</span>
+          <p>
+            Anything that writes, deletes, or changes target state. Brute forcing. Resource
+            exhaustion. Payloads intended to execute rather than to prove reachability.
+            <code>scan.create_aggressive</code> is a separate permission from
+            <code>scan.create</code> for exactly this reason.
+          </p>
+        </div>
+      </section>
+
+      <!-- ==== §25 · Finding pipeline ================================================ -->
+      <section id="s25">
+        <h2><span class="sn">25</span><span>Finding pipeline</span></h2>
+
+        <p>
+          Six stages between an engine emitting a candidate and a row appearing in the findings
+          table. All six are platform concerns, never engine concerns &mdash; that is what makes
+          findings from different engines comparable.
+        </p>
+
+        <pre>raw finding
+  &rarr; <b>1 normalise</b>   taxonomy lookup, canonical text, location canonicalisation
+  &rarr; <b>2 verify</b>      HIGH accept &middot; MEDIUM re-probe once &middot; LOW retain but suppress
+  &rarr; <b>3 fingerprint</b> deterministic SHA-256 over normalised inputs
+  &rarr; <b>4 deduplicate</b> upsert Finding, always append Occurrence
+  &rarr; <b>5 evidence</b>   upload artifacts, link metadata, redact at capture
+  &rarr; <b>6 risk</b>       severity x criticality x environment x exposure x confidence
+  &rarr; transaction: persist + audit &rarr; realtime event &rarr; notification</pre>
+
+        <h3>Fingerprint normalisation &mdash; where the work is</h3>
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Input</th>
+                <th>Normalisation</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Host</td>
+                <td>Lowercase, trailing dot stripped, IDN to punycode, default port removed</td>
+              </tr>
+              <tr>
+                <td>Path</td>
+                <td>Percent-decoded then re-encoded canonically, duplicate slashes collapsed</td>
+              </tr>
+              <tr>
+                <td>Query</td>
+                <td>
+                  <strong>Parameter names only, sorted.</strong> Values excluded &mdash;
+                  <code>?id=1</code> and <code>?id=2</code> are one vulnerability
+                </td>
+              </tr>
+              <tr>
+                <td>Path IDs</td>
+                <td>
+                  Numeric and UUID segments &rarr; <code>{id}</code>.
+                  <strong>The highest-leverage rule</strong> &mdash; without it an IDOR check over a
+                  hundred user IDs produces a hundred findings of one defect
+                </td>
+              </tr>
+              <tr>
+                <td>Code location</td>
+                <td>
+                  File path + symbol, <strong>never line number</strong> &mdash; lines move, the
+                  vulnerability does not
+                </td>
+              </tr>
+              <tr>
+                <td>Dependency</td>
+                <td>Package + ecosystem + vulnerability ID, not installed version</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          <strong>Never in a fingerprint:</strong> timestamps, scan IDs, session tokens, nonces,
+          CSRF values, response bodies, payload values, line numbers, severity. A fingerprint
+          containing a volatile value produces a new finding every scan, which is the bug this
+          entire design exists to prevent.
+        </p>
+
+        <h3>Three ingestion behaviours worth stating plainly</h3>
+        <ul>
+          <li>
+            <strong>Reopening always notifies.</strong> A vulnerability returning after being fixed
+            is the most important event the system can report.
+          </li>
+          <li>
+            <strong
+              ><code>FALSE_POSITIVE</code> and <code>ACCEPTED_RISK</code> are never overridden by a
+              scan.</strong
+            >
+            A machine does not overrule a human's triage decision. The occurrence is still recorded,
+            so the history stays honest, but the status and the silence hold.
+          </li>
+          <li>
+            <strong>An existing <code>OPEN</code> finding generates no notification.</strong>
+            Re-notifying about known issues is how alerting gets muted.
+          </li>
+        </ul>
+
+        <div class="note warn">
+          <span class="lbl">Auto-resolution has a qualification that matters</span>
+          <p>
+            A finding not seen by a scan is only a resolution candidate if that scan's check
+            <em>completed successfully</em>. A scan that failed, timed out, or ran a different
+            profile proves nothing about the finding's absence. Each scan records which checks
+            completed; a finding needs two consecutive qualifying misses before it resolves, with an
+            activity entry and a notification &mdash; never silently. Manual findings are never
+            auto-resolved.
+          </p>
+        </div>
+      </section>
+
+      <div class="part">Part VII &mdash; Commercial</div>
+
+      <!-- ==== §26 · Entitlements & plans ============================================ -->
+      <section id="s26">
+        <h2><span class="sn">26</span><span>Entitlements &amp; plans</span></h2>
+
+        <p>
+          21 entitlement keys, 4 plans, 84 seeded plan-entitlement rows.
+          <strong>The application never asks what plan an organisation is on.</strong>
+        </p>
+
+        <pre><i>// forbidden &mdash; scatters commercial policy through the codebase</i>
+if (org.plan === 'PRO') { ... }
+
+<i>// required</i>
+const limit = await entitlements.get(orgId, <b>'maxConcurrentScans'</b>);</pre>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Entitlement</th>
+                <th>Free</th>
+                <th>Starter</th>
+                <th>Professional</th>
+                <th>Enterprise</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Price / month</td>
+                <td>&pound;0</td>
+                <td>&pound;99</td>
+                <td>&pound;399</td>
+                <td>Custom</td>
+              </tr>
+              <tr>
+                <td><code>maxUsers</code></td>
+                <td class="num">2</td>
+                <td class="num">10</td>
+                <td class="num">50</td>
+                <td class="num">&infin;</td>
+              </tr>
+              <tr>
+                <td><code>maxProjects</code></td>
+                <td class="num">1</td>
+                <td class="num">5</td>
+                <td class="num">25</td>
+                <td class="num">&infin;</td>
+              </tr>
+              <tr>
+                <td><code>maxAssets</code></td>
+                <td class="num">5</td>
+                <td class="num">50</td>
+                <td class="num">500</td>
+                <td class="num">&infin;</td>
+              </tr>
+              <tr>
+                <td><code>maxScansPerMonth</code></td>
+                <td class="num">10</td>
+                <td class="num">200</td>
+                <td class="num">2000</td>
+                <td class="num">&infin;</td>
+              </tr>
+              <tr>
+                <td><code>maxConcurrentScans</code></td>
+                <td class="num">1</td>
+                <td class="num">3</td>
+                <td class="num">10</td>
+                <td class="num">Custom</td>
+              </tr>
+              <tr>
+                <td><code>maxStorageBytes</code></td>
+                <td>1 GiB</td>
+                <td>25 GiB</td>
+                <td>250 GiB</td>
+                <td>Custom</td>
+              </tr>
+              <tr>
+                <td><code>scanProfiles</code></td>
+                <td>passive, safe</td>
+                <td>+ standard</td>
+                <td>+ aggressive</td>
+                <td>all</td>
+              </tr>
+              <tr>
+                <td><code>apiAccess</code></td>
+                <td>&mdash;</td>
+                <td>yes</td>
+                <td>yes</td>
+                <td>yes</td>
+              </tr>
+              <tr>
+                <td><code>webhooks</code></td>
+                <td class="num">0</td>
+                <td class="num">3</td>
+                <td class="num">20</td>
+                <td class="num">&infin;</td>
+              </tr>
+              <tr>
+                <td><code>sso</code> / <code>scim</code></td>
+                <td>&mdash;</td>
+                <td>&mdash;</td>
+                <td>&mdash;</td>
+                <td>yes</td>
+              </tr>
+              <tr>
+                <td><code>auditRetentionDays</code></td>
+                <td class="num">30</td>
+                <td class="num">90</td>
+                <td class="num">365</td>
+                <td class="num">2555</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          Remaining keys: <code>maxEngagements</code>, <code>engines</code>,
+          <code>reportFormats</code>, <code>reportBranding</code>, <code>apiRateLimit</code>,
+          <code>integrations</code>, <code>customRoles</code>, <code>dataRetentionDays</code>,
+          <code>supportTier</code>. Every numeric key is checked before the action and, for anything
+          reaching a worker, again at execution.
+        </p>
+
+        <div class="note ok">
+          <span class="lbl">Downgrades never destroy data</span>
+          <p>
+            If a downgrade puts an organisation over a limit, existing resources stay readable and
+            exportable; only <em>creation</em> is blocked until they are under. This costs us
+            storage on downgraded accounts. Deleting a customer's security findings because they
+            moved to a cheaper plan is not something we will do &mdash; and payment failure follows
+            the same principle: read access to your own security data is the last thing to go.
+          </p>
+        </div>
+      </section>
+
+      <!-- ==== §27 · Integrations & reports ========================================== -->
+      <section id="s27">
+        <h2><span class="sn">27</span><span>Integrations &amp; reports</span></h2>
+
+        <h3>Integrations &mdash; 9 providers</h3>
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>Direction</th>
+                <th>Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Outbound webhooks</td>
+                <td>out</td>
+                <td>
+                  Signed HTTP delivery of any event. The most security-sensitive because the
+                  customer chooses the destination.
+                </td>
+              </tr>
+              <tr>
+                <td>Slack / Teams</td>
+                <td>out</td>
+                <td>Finding and scan notifications</td>
+              </tr>
+              <tr>
+                <td>Jira / Linear</td>
+                <td>both</td>
+                <td>Create issues from findings; sync status back</td>
+              </tr>
+              <tr>
+                <td>GitHub / GitLab / Bitbucket</td>
+                <td>both</td>
+                <td>Issues, checks, repository assets, CI triggers</td>
+              </tr>
+              <tr>
+                <td>SIEM (generic)</td>
+                <td>out</td>
+                <td>Audit and finding streams &mdash; Phase 11</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          Domain services emit events to an <code>OutboxEvent</code> table
+          <strong>in the same transaction as the change</strong>; a worker relays them. Without the
+          outbox, a committed change with a failed dispatch silently diverges from every downstream
+          system. An integration failure never fails the domain operation &mdash; the finding is the
+          product, the Jira issue is a convenience.
+        </p>
+
+        <p>
+          Webhook signature: <code>HMAC-SHA256(secret, "{timestamp}.{raw_body}")</code>, with the
+          timestamp inside the signed material so replay is detectable. SSRF rules apply to delivery
+          targets &mdash; HTTPS only, public addresses only, DNS resolved and checked before
+          connecting, redirects not followed.
+        </p>
+
+        <h3>Reports &mdash; 3 types</h3>
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th>Audience</th>
+                <th>Contains</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Technical</td>
+                <td>Engineering</td>
+                <td>
+                  Full findings, evidence, reproduction, remediation, references, scope, methodology
+                </td>
+              </tr>
+              <tr>
+                <td>Executive</td>
+                <td>Leadership</td>
+                <td>
+                  Posture summary, risk trend, severity distribution, coverage, SLA compliance
+                </td>
+              </tr>
+              <tr>
+                <td>Retest</td>
+                <td>Client / auditor</td>
+                <td>Before/after per finding, retest results, what was verified and how</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          Generated in a worker, never in a request. HTML from templates, PDF via headless Chromium
+          in a capped container. Uploaded, hashed, and recorded <strong>immutably</strong> &mdash;
+          customers cite report contents in contracts and audits, so a report once generated is
+          never regenerated in place. Regeneration produces a new version with its own ID and hash.
+        </p>
+      </section>
+
+      <div class="part">Part VIII &mdash; Assurance</div>
+
+      <!-- ==== §28 · Test suites ===================================================== -->
+      <section id="s28">
+        <h2><span class="sn">28</span><span>Test suites</span></h2>
+
+        <p>
+          Test at the layer where the thing can actually fail.
+          <strong>Do not mock the thing you are trying to verify</strong> &mdash; a test that mocks
+          Prisma proves your mock works; a test that mocks the authorization guard proves nothing
+          about authorization.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Suite</th>
+                <th>Runs against</th>
+                <th>Covers</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Unit</td>
+                <td>Pure functions</td>
+                <td>
+                  Finding state machine (every valid and invalid transition), fingerprint
+                  normalisation, risk composition, scope evaluation (table-driven), CVSS parsing,
+                  SLA calculation, entitlement resolution with overrides
+                </td>
+              </tr>
+              <tr>
+                <td>Integration</td>
+                <td><strong>Real</strong> Postgres, Redis, MinIO via Testcontainers</td>
+                <td>
+                  Every endpoint: happy path, validation failure, full authorization matrix.
+                  Transaction rollback including audit events. Pagination under concurrent inserts.
+                  Query-count assertions on hot paths.
+                </td>
+              </tr>
+              <tr>
+                <td><strong>Tenant isolation</strong></td>
+                <td>Generated from a resource registry</td>
+                <td>
+                  Tenant A gets 404 for Tenant B's IDs across read, list, update, delete, evidence
+                  download, presigned URL, report download, search, export, SSE.
+                  <strong>An unregistered resource fails CI.</strong>
+                </td>
+              </tr>
+              <tr>
+                <td><strong>Authorization matrix</strong></td>
+                <td>Generated from the route table</td>
+                <td>
+                  401 unauthenticated &middot; 403 without permission &middot; 404 cross-tenant
+                  &middot; success with permission. A new endpoint gets tests automatically.
+                </td>
+              </tr>
+              <tr>
+                <td><strong>Scope &amp; abuse</strong></td>
+                <td>API and worker</td>
+                <td>
+                  Unverified asset refused at both. Deny list refuses metadata endpoints, loopback,
+                  our own infrastructure even when a tenant allows them. Scope narrowed after
+                  enqueue refused. SSRF: DNS rebinding, redirect to internal, redirect chain to
+                  metadata.
+                </td>
+              </tr>
+              <tr>
+                <td>Worker &amp; queue</td>
+                <td>Real containers</td>
+                <td>
+                  Payload/DB tenant mismatch fails loudly. Timeout kills the container. Engine
+                  container <strong>provably cannot reach</strong> Postgres, Redis, storage, or
+                  metadata &mdash; asserted from inside the container. Orphans reaped. Per-org
+                  concurrency holds under load.
+                </td>
+              </tr>
+              <tr>
+                <td>Engine</td>
+                <td>Vulnerable + clean targets</td>
+                <td>
+                  Detection, false-positive suite, fingerprint stability, constraint compliance,
+                  event schema conformance
+                </td>
+              </tr>
+              <tr>
+                <td>Billing</td>
+                <td>Stripe CLI, test mode</td>
+                <td>
+                  Signature rejection, stale timestamp, duplicate event no-op, out-of-order ignored,
+                  entitlement projection per lifecycle event
+                </td>
+              </tr>
+              <tr>
+                <td>E2E</td>
+                <td>Full stack in Docker</td>
+                <td>
+                  18 user journeys, axe on every route, no horizontal overflow at 360/768/1280/1920
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Coverage floors</h3>
+        <div class="kv">
+          <div>
+            <dt>Domain logic</dt>
+            <dd>&ge; 90%<small>Line coverage</small></dd>
+          </div>
+          <div>
+            <dt>API handlers</dt>
+            <dd>&ge; 80%<small>Line coverage</small></dd>
+          </div>
+          <div>
+            <dt>Isolation registry</dt>
+            <dd>
+              100%<small
+                >Completeness, not lines &mdash; the only coverage number worth gating on</small
+              >
+            </dd>
+          </div>
+          <div>
+            <dt>Route table</dt>
+            <dd>100%<small>Every route has an access declaration and a matrix test</small></dd>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==== §29 · Metrics & alerts ================================================ -->
+      <section id="s29">
+        <h2><span class="sn">29</span><span>Metrics &amp; alerts</span></h2>
+
+        <p>
+          Logs, metrics, and traces all carry <code>requestId</code> and <code>traceId</code>,
+          propagated from the HTTP request into queue payloads and worker logs &mdash; so "my scan
+          failed at 14:32" resolves to a single trace spanning the API call, the job, the worker,
+          and the engine container.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Alert</th>
+                <th>Response</th>
+                <th>Threshold</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Scan executed against unverified or out-of-scope target</strong></td>
+                <td><span class="sev s-crit">page</span></td>
+                <td>Any occurrence. <strong>SEV1, equal to a breach.</strong></td>
+              </tr>
+              <tr>
+                <td>Cross-tenant exposure detected</td>
+                <td><span class="sev s-crit">page</span></td>
+                <td>Any occurrence</td>
+              </tr>
+              <tr>
+                <td>Break-glass access</td>
+                <td><span class="sev s-crit">page</span></td>
+                <td>Any occurrence</td>
+              </tr>
+              <tr>
+                <td>API error rate</td>
+                <td><span class="sev s-crit">page</span></td>
+                <td>&gt; 5% for 5 min</td>
+              </tr>
+              <tr>
+                <td>Database or Redis unreachable</td>
+                <td><span class="sev s-crit">page</span></td>
+                <td>Immediate</td>
+              </tr>
+              <tr>
+                <td>Queue oldest-job age</td>
+                <td><span class="sev s-crit">page</span></td>
+                <td>&gt; 30 min</td>
+              </tr>
+              <tr>
+                <td>Dead-letter arrival on a scan queue</td>
+                <td><span class="sev s-crit">page</span></td>
+                <td>Any</td>
+              </tr>
+              <tr>
+                <td><strong>Scope-denial rate spike</strong></td>
+                <td><span class="sev s-high">notify</span></td>
+                <td>Above tenant baseline &mdash; the primary abuse signal</td>
+              </tr>
+              <tr>
+                <td>Failed-login spike</td>
+                <td><span class="sev s-high">notify</span></td>
+                <td>Above baseline</td>
+              </tr>
+              <tr>
+                <td>Worker validation failures by reason</td>
+                <td><span class="sev s-high">notify</span></td>
+                <td>Distinguishes a benign race from something needing a human</td>
+              </tr>
+              <tr>
+                <td>Storage approaching quota</td>
+                <td><span class="sev s-med">notify</span></td>
+                <td>80%</td>
+              </tr>
+              <tr>
+                <td>Certificate expiring</td>
+                <td><span class="sev s-med">notify</span></td>
+                <td>14 days</td>
+              </tr>
+              <tr>
+                <td>Backup job failed</td>
+                <td><span class="sev s-med">notify</span></td>
+                <td>Any</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          Every alert has a runbook &mdash; 12 are already written. An alert nobody can act on gets
+          deleted or downgraded, because alert fatigue is what makes the real page get ignored.
+        </p>
+
+        <p>
+          <strong>Recovery objectives:</strong> RPO 5 minutes (continuous WAL archiving, not nightly
+          dumps), RTO 4 hours. Backups live in a separate cloud account with write-once retention
+          that production credentials cannot reach. A weekly automated restore runs integrity
+          queries and alerts on deviation &mdash; a backup that has never been restored is an
+          assumption, not a backup.
+        </p>
+      </section>
+
+      <div class="part">Part IX &mdash; Delivery</div>
+
+      <!-- ==== §30 · Build order ===================================================== -->
+      <section id="s30">
+        <h2><span class="sn">30</span><span>Build order</span></h2>
+
+        <p>
+          Thirteen phases. A phase is complete only when its exit criteria are demonstrably met
+          &mdash; run and verified, not written.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Phase</th>
+                <th>Builds</th>
+                <th>Exit criteria</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="ph ph-done">0 done</span></td>
+                <td>Audit, architecture, 86 documents, 13 ADRs</td>
+                <td><strong>Met.</strong> All internal links verified resolving.</td>
+              </tr>
+              <tr>
+                <td><span class="ph ph-done">1 done</span></td>
+                <td>
+                  Monorepo, CI, config, logging, Prisma + tenant client + RLS, compose stack,
+                  storage adapter, rate limiting, headers + CSP, 8 primitives
+                </td>
+                <td>
+                  <strong>All four met, re-verified 23 Aug on a clean clone</strong> &mdash;
+                  evidence table in <a href="#s3">&sect;3</a>. Built as 16 subagent-driven tasks,
+                  each with a separate adversarial review round.
+                </td>
+              </tr>
+              <tr>
+                <td><span class="ph ph-now">2 next</span></td>
+                <td>
+                  Auth, MFA, sessions, CSRF, orgs, memberships, roles, permission guards,
+                  invitations, onboarding shell
+                </td>
+                <td>
+                  Full auth journey passes E2E; authorization matrix passes for every endpoint;
+                  sessions revoke immediately
+                </td>
+              </tr>
+              <tr>
+                <td><span class="ph">3</span></td>
+                <td>
+                  Projects, assets, <strong>ownership verification</strong>, scope + evaluator,
+                  <strong>global deny list</strong>, tags, search, notifications, audit log
+                </td>
+                <td>
+                  Unverified asset cannot be scheduled; scope suite passes; isolation matrix passes
+                  for every resource; audit rows cannot be updated or deleted
+                </td>
+              </tr>
+              <tr>
+                <td><span class="ph">4</span></td>
+                <td>
+                  Queues, workers, container isolation, job lifecycle, worker re-validation,
+                  SSRF-guarded client, SSE, worker health
+                </td>
+                <td>
+                  A scan runs end-to-end against the local target; cancellation stops it; timeout
+                  enforced; container provably cannot reach infrastructure; scope narrowed after
+                  enqueue is refused
+                </td>
+              </tr>
+              <tr>
+                <td><span class="ph">5</span></td>
+                <td>
+                  Web + TLS engines, 25 check families, normalisation, verification, fingerprinting,
+                  dedup, evidence, risk, findings UI, dashboard
+                </td>
+                <td>
+                  Scanning the vulnerable target produces true findings with real evidence; a rescan
+                  deduplicates; no fabricated results anywhere
+                </td>
+              </tr>
+              <tr>
+                <td><span class="ph">6</span></td>
+                <td>
+                  API security engine, OpenAPI import, discovery, BOLA/IDOR, injection, API
+                  inventory
+                </td>
+                <td>Authenticated API scan produces findings against the local target</td>
+              </tr>
+              <tr>
+                <td><span class="ph">7</span></td>
+                <td>
+                  Engagements, methodology, test cases, manual findings, retests, collaboration
+                </td>
+                <td>A full engagement runs from scope to retest</td>
+              </tr>
+              <tr>
+                <td><span class="ph">8</span></td>
+                <td>
+                  Technical, executive, retest reports; PDF + HTML; branding; authorised download
+                </td>
+                <td>Real downloadable files generated from live data</td>
+              </tr>
+              <tr>
+                <td><span class="ph">9</span></td>
+                <td>
+                  Webhooks with signing and retry, GitHub, Jira, Slack, API keys, public API docs
+                </td>
+                <td>
+                  Signed delivery verified; retries follow schedule; SSRF rules enforced on targets
+                </td>
+              </tr>
+              <tr>
+                <td><span class="ph">10</span></td>
+                <td>
+                  Stripe checkout, subscription lifecycle, webhook projection, entitlements, usage,
+                  invoices
+                </td>
+                <td>
+                  Full lifecycle against Stripe test mode; duplicate and out-of-order events handled
+                </td>
+              </tr>
+              <tr>
+                <td><span class="ph">11</span></td>
+                <td>SSO, SCIM, custom roles, retention, Terraform, platform admin</td>
+                <td>Enterprise controls operable; IaC applies</td>
+              </tr>
+              <tr>
+                <td><span class="ph">12</span></td>
+                <td>9 further engines behind the same contract</td>
+                <td>Each ships with its false-positive suite</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note ok">
+          <span class="lbl">MVP definition</span>
+          <p>
+            The smallest thing worth charging for is <strong>Phases 1&ndash;5 plus 8</strong>:
+            register, verify, create an organisation and project, register and verify an asset,
+            define scope, run a real web security scan, review real findings with real evidence,
+            generate a real report. Phases 6, 7, 9, and 10 make it a business; 11 and 12 make it an
+            enterprise product.
+          </p>
+        </div>
+      </section>
+
+      <!-- ==== §31 · Not being built ================================================= -->
+      <section id="s31">
+        <h2><span class="sn">31</span><span>Not being built</span></h2>
+
+        <p>Stated so that their absence is a decision rather than an oversight.</p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Not building</th>
+                <th>Why</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Microservices</td>
+                <td>
+                  The domain is aggressively relational. Splitting it buys distribution problems and
+                  sells transactional integrity. ADR-0001.
+                </td>
+              </tr>
+              <tr>
+                <td>GraphQL</td>
+                <td>
+                  Consumers are a first-party frontend and enterprise CI integrations that want
+                  stable, versioned, documented endpoints.
+                </td>
+              </tr>
+              <tr>
+                <td>JWTs for user sessions</td>
+                <td>
+                  A stolen token we cannot revoke is unacceptable for this data class. ADR-0005.
+                </td>
+              </tr>
+              <tr>
+                <td>Client-side authorization as a control</td>
+                <td>
+                  It exists only as a UX affordance. Hiding a button is not a security control.
+                </td>
+              </tr>
+              <tr>
+                <td>Third-party auth provider for the core</td>
+                <td>
+                  Outsourcing authentication of our customers' most sensitive data is a hard
+                  conversation in every enterprise security review.
+                </td>
+              </tr>
+              <tr>
+                <td>OpenSearch at MVP</td>
+                <td>
+                  Postgres full-text with GIN serves expected scale. Search sits behind an interface
+                  so it can be swapped.
+                </td>
+              </tr>
+              <tr>
+                <td>Redis backups</td>
+                <td>
+                  Deliberately. Queue state is reconstructible from Postgres; backing up a cache
+                  creates a temptation to restore stale state.
+                </td>
+              </tr>
+              <tr>
+                <td>Hot standby region</td>
+                <td>
+                  A cost that buys minutes we have not committed to. Secondary region holds
+                  replicated backups and IaC, not warm capacity.
+                </td>
+              </tr>
+              <tr>
+                <td>Self-service IP/CIDR verification</td>
+                <td>
+                  A wrong domain is a wasted scan. A wrong CIDR is an incident involving someone who
+                  never heard of us.
+                </td>
+              </tr>
+              <tr>
+                <td>Automatic cross-engine finding merge</td>
+                <td>
+                  Engines disagree about what "the same issue" means often enough that merging
+                  destroys information. Surfaced as <em>related</em> instead.
+                </td>
+              </tr>
+              <tr>
+                <td>Seeded demo data</td>
+                <td>An empty product must look empty.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ==== §32 · Your decisions ================================================== -->
+      <section id="s32">
+        <h2><span class="sn">32</span><span>Your decisions</span></h2>
+
+        <p>
+          Ten things I have taken a position on that are genuinely yours to overrule. Each has a
+          default so the build is not blocked waiting.
+          <strong>Three have been answered since rev 1.0</strong> and are marked as such; the rest
+          are still open.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th class="num">#</th>
+                <th>Decision</th>
+                <th>Current default</th>
+                <th>Why it matters now</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="num">1</td>
+                <td><strong>Ownership verification friction.</strong> It will cost signups.</td>
+                <td>Mandatory, no exceptions</td>
+                <td>
+                  The alternative is a terms-of-service checkbox, which is a legal shield rather
+                  than a control. Changing this later means re-doing onboarding.
+                </td>
+              </tr>
+              <tr>
+                <td class="num">2</td>
+                <td><strong>Phase order.</strong> MVP is Phases 1&ndash;5 + 8.</td>
+                <td>As listed in &sect;30</td>
+                <td>
+                  If a launch customer needs engagements or Jira before reports, the order shifts
+                  and the schedule with it.
+                </td>
+              </tr>
+              <tr>
+                <td class="num">3</td>
+                <td><strong>Team size.</strong> The phase plan assumes a small team.</td>
+                <td><span class="sev s-low">answered</span> One human, subagent-driven</td>
+                <td>
+                  Phase 1 ran as 16 tasks: a fresh implementer per task, then a separate adversarial
+                  reviewer. That worked &mdash; the review rounds caught real defects, including
+                  four false claims in a report. It is the working assumption for Phase 2.
+                </td>
+              </tr>
+              <tr>
+                <td class="num">4</td>
+                <td><strong>Go engines.</strong> Toolchain absent on this host.</td>
+                <td>Deferred to Phase 12</td>
+                <td>
+                  Still open, still only a host-setup task. Node 26 is now pinned for development
+                  and CI with <code>engines &gt;= 22</code> (ADR-0012), so the runtime question
+                  underneath it is settled.
+                </td>
+              </tr>
+              <tr>
+                <td class="num">5</td>
+                <td><strong>Product name.</strong> Docs say Sentinel; repo says SSTSaasPv1.</td>
+                <td><span class="sev s-med">hardening</span> Sentinel</td>
+                <td>
+                  Every package now ships as <code>@sentinel/*</code> and the compose services are
+                  <code>sentinel-*</code>. Still renameable, but the cost has risen from a
+                  find-and-replace to a coordinated one.
+                  <strong>Decide before Phase 2 puts it in emails.</strong>
+                </td>
+              </tr>
+              <tr>
+                <td class="num">6</td>
+                <td><strong>Pricing basis.</strong> Seats vs assets vs scans.</td>
+                <td>Hybrid &mdash; seats plus asset and scan limits</td>
+                <td>
+                  Changes what usage metering must measure. Easier to decide before instrumenting
+                  than after.
+                </td>
+              </tr>
+              <tr>
+                <td class="num">7</td>
+                <td><strong>Wrapping third-party scanners</strong> (ZAP, Nuclei, Semgrep).</td>
+                <td>Own engines; contract accommodates wrappers</td>
+                <td>
+                  Faster to coverage, slower to differentiate, and brings licence obligations
+                  &mdash; AGPL in particular &mdash; that need checking before shipping.
+                </td>
+              </tr>
+              <tr>
+                <td class="num">8</td>
+                <td><strong>Data residency.</strong> EU customers may require it.</td>
+                <td>Single region at MVP</td>
+                <td>
+                  The explicit <code>organizationId</code> on every row is what would make a
+                  regional split tractable, but it needs planning before the first EU enterprise
+                  deal.
+                </td>
+              </tr>
+              <tr>
+                <td class="num">9</td>
+                <td><strong>Repository visibility.</strong> It is public.</td>
+                <td>Public &mdash; and now load-bearing</td>
+                <td>
+                  Unchanged, but the stakes moved: <code>main</code> is protected by a free ruleset
+                  that <strong>only applies to public repositories</strong>. Flipping to private
+                  silently removes the CI gate with no warning. Going private now means paying for
+                  protection or losing it.
+                </td>
+              </tr>
+              <tr>
+                <td class="num">10</td>
+                <td><strong>SOC 2 timing.</strong></td>
+                <td>Controls built from Phase 2; observation window post-revenue</td>
+                <td>
+                  If a launch customer requires it, the audit timeline drives the roadmap rather
+                  than the reverse.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note warn">
+          <span class="lbl">One thing I would push back on</span>
+          <p>
+            The brief lists twenty-one testing domains. The architecture genuinely supports all of
+            them &mdash; that is what the engine contract in <a href="#s23">&sect;23</a> is for
+            &mdash; but the build order deliberately pursues two. Shipping web and API security
+            <em>well</em>, with deduplication that works and evidence people trust, is the version
+            of this that succeeds. Twelve engines that each half-work is the version that gets
+            churned out of.
+          </p>
+          <p>
+            That is a scope recommendation, not a refusal. Say the word and any of them moves
+            forward.
+          </p>
+        </div>
+      </section>
+
+      <!-- ==== §33 · Changed since rev 1.0 =========================================== -->
+      <section id="s33">
+        <h2><span class="sn">33</span><span>Changed since rev 1.0</span></h2>
+
+        <p>
+          Rev 1.0 was published on 20 Aug, three days and 71 commits ago, when nothing but
+          documentation existed. Recording the drift rather than silently overwriting it is the
+          point of this section &mdash; a manifest whose history is invisible is the stale-document
+          problem this project treats as a defect.
+        </p>
+
+        <p>
+          This revision is a <strong>new page rather than an update</strong>. Rev 1.0 could not be
+          republished in place: it now resolves as a shared page rather than an owned one, so the
+          publish was refused rather than overwriting something unverifiable. The old address
+          remains readable and permanently stale.
+        </p>
+
+        <h3>Corrections to rev 1.0</h3>
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Rev 1.0 said</th>
+                <th>Actual</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>&ldquo;Code written: none yet&rdquo;</td>
+                <td>134 TypeScript files across 8 workspaces, 553 passing tests.</td>
+              </tr>
+              <tr>
+                <td>&ldquo;0 tables, 0 running services&rdquo;</td>
+                <td>
+                  10 models, 4 migrations, RLS, and a 4-service compose stack that integration tests
+                  run against.
+                </td>
+              </tr>
+              <tr>
+                <td>&ldquo;Docker daemon down&rdquo; as a blocker</td>
+                <td>
+                  Resolved. It was the one thing standing between Phase 1 being written and being
+                  verified.
+                </td>
+              </tr>
+              <tr>
+                <td>83 documents, 10 ADRs</td>
+                <td>86 documents, 13 ADRs.</td>
+              </tr>
+              <tr>
+                <td>12 workspaces incl. <code>packages/scope</code></td>
+                <td>
+                  8 exist. <code>scope</code> was a Phase 3 projection stated in the present tense
+                  &mdash; a small instance of exactly the error this document is meant to avoid.
+                  <code>packages/storage</code> exists and was missing from rev 1.0 entirely.
+                </td>
+              </tr>
+              <tr>
+                <td>&ldquo;40 primitives&rdquo; in Phase 1</td>
+                <td>
+                  8 shipped. The token system is complete; the component set is not, and the roadmap
+                  says so.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Three decisions rev 1.0 did not know about</h3>
+
+        <div class="dec">
+          <div class="dec-h">
+            ADR-0011 &mdash; Prefixed UUIDv7 identifiers, generated in application code
+          </div>
+          <div class="dec-b">
+            <p>
+              IDs are time-ordered for index locality and carry a type prefix (<code>fnd_</code>,
+              <code>scn_</code>) so a misrouted identifier is obvious in a log rather than an opaque
+              hex string. Generated in application code, not the database, so an ID exists before
+              the insert and can be referenced inside the same transaction.
+            </p>
+          </div>
+        </div>
+
+        <div class="dec">
+          <div class="dec-h">
+            ADR-0012 &mdash; Node 26 pinned for development and CI, engines &gt;= 22
+          </div>
+          <div class="dec-b">
+            <p>
+              The host runs Node 26, ahead of what should ship. Pinning development and CI to one
+              version while declaring a wider <code>engines</code> floor keeps local, CI and
+              production honest with each other without forcing every consumer onto the bleeding
+              edge.
+            </p>
+          </div>
+        </div>
+
+        <div class="dec">
+          <div class="dec-h">
+            ADR-0013 &mdash; A 24-hour release-age cooldown on every dependency
+          </div>
+          <div class="dec-b">
+            <p>
+              The most interesting of the three, because it was discovered rather than designed.
+              pnpm 11 defaults to a 1440-minute minimum release age; that default
+              <strong>reddened CI four times</strong> before anyone wrote it down, presenting as an
+              unexplained 30-second install failure. It is now declared explicitly in
+              <code>pnpm-workspace.yaml</code> with its rationale and its cost.
+            </p>
+            <p>
+              The failure taught something sharper than the control itself:
+              <strong>a warm tree cannot observe this failure class.</strong> With
+              <code>node_modules</code> in sync, pnpm prints &ldquo;Already up to date&rdquo; in
+              277ms and never runs the check, so three local install variants passed while CI died
+              from cold. It is the clearest argument in the repository for verifying exit criteria
+              the way they are written &mdash; from a clean clone &mdash; which is why
+              &sect;3&rsquo;s evidence table does exactly that.
+            </p>
+          </div>
+        </div>
+
+        <h3>One implementation note that contradicts a shipped decision</h3>
+
+        <div class="note warn">
+          <span class="lbl">ADR-0006 changed during implementation</span>
+          <p>
+            The original decision said the tenant-scoped Prisma client would rewrite
+            <code>findUnique</code> into a scoped <code>findFirst</code>, closing the most common
+            multi-tenant bug. <strong>It shipped, then changed.</strong> Rewriting invokes a
+            <em>different</em> client method, which cannot be guaranteed to run on the same
+            connection or transaction as the original call &mdash; inside
+            <code>withTenantTransaction</code> that silently broke read-your-own-writes and put the
+            rewritten query on a connection with no RLS setting.
+          </p>
+          <p>
+            The shipped implementation runs <code>findUnique</code> unmodified, which stays on the
+            correct connection by construction, and checks the tenant column on the <em>result</em>.
+            Same guarantee, different mechanism. The ADR carries the note rather than being quietly
+            edited, because the reasoning is more useful than the tidy version.
+          </p>
+          <p>
+            A second gap surfaced the same way: <code>Organization</code> is the tenant root, has no
+            <code>organizationId</code> of its own, and was missing from the original decision. It
+            needs both isolation layers too, scoped by <code>id</code>.
+          </p>
+        </div>
+
+        <h3>What has not changed</h3>
+        <p>
+          Every architectural decision from rev 1.0 still holds. The engine contract, the double
+          scope evaluation, the finding-identity model, the entitlement projection, and the
+          three-layer tenancy design are all intact &mdash; ADR-0006&rsquo;s note is a change of
+          mechanism, not of guarantee. The counts in &sect;&sect;8&ndash;27 remain the design
+          targets; what moved is how much of them exists.
+        </p>
+      </section>
+
+      <footer
+        style="
+          margin-top: 72px;
+          padding-top: 20px;
+          border-top: 1px solid var(--rule-strong);
+          font-size: 12.5px;
+          color: var(--ink-3);
+          font-family: 'IBM Plex Mono';
+        "
+      >
+        Sentinel build manifest &middot; rev 2.0 &middot; 23 Aug 2026 &middot; commit edea948
+        &middot; Phases 0 and 1 verified &middot; no features yet
+      </footer>
+    </div>
+  </main>
+</div>
