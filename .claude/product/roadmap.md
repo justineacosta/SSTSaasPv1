@@ -515,14 +515,51 @@ correction of a false claim; they are the same measurement on a later tree.
 
 The plan is
 [`docs/superpowers/plans/2026-08-24-phase-2-identity.md`](../../docs/superpowers/plans/2026-08-24-phase-2-identity.md)
-— **18 tasks** on branch `feat/phase-2-identity`, to be executed subagent-driven the way Phase 1
-was: a fresh implementer per task, then a separate adversarial reviewer, then scoped re-reviews
-per fix round. Order: 1 schema and migrations · 2 contracts · 3 password hashing and breach check
+— **18 tasks plus one checkpoint** on branch `feat/phase-2-identity`. Order: 1 schema and
+migrations · 2 contracts · 3 password hashing and breach check
 · 4 single-use tokens · 5 mail · 6 sessions · 7 authentication guard, CSRF and CORS · 8
 registration and verification · 9 login and lockout · 10 password reset · 11 TOTP MFA and
 recovery codes · 12 tenant resolution and the authorization guard · 13 organisations and
 switching · 14 memberships and roles · 15 invitations · 16 web auth screens · 17 web app shell
-and `/settings/security` · 18 E2E journey, docs and this file.
+and `/settings/security` · 18 E2E journey, doc audit and this file.
+
+**Checkpoint A falls after Task 12** — the identity API enforced end to end with no UI. At that
+point the branch is pushed, CI must be green on a Linux runner, and this file gets an evidence
+table moving Phase 2 to **Partially Implemented** with the gap named: no authentication UI, so the
+E2E journey criterion is unmet. Twelve tasks is the largest unrecorded window in the plan and the
+checkpoint exists to close it.
+
+**How Phase 2 is executed, decided by the operator on 2026-08-24** and binding on every task
+(protocol in the plan's *Execution protocol* section):
+
+- **One session per task**, each starting with `sentinel-phase` and verifying **the previous task
+  only** — Phase 1's exit criteria are proven above and do not need repeating per task. A fresh
+  session that cannot pick up Task N from the committed record is a documentation defect found
+  early rather than in Phase 7.
+- **Execution mode varies by task shape**, because Phase 2 is a chain where Phase 1 was a set of
+  independent packages. Fresh implementer plus adversarial reviewer for the self-contained tasks
+  (1, 3, 4, 5, 11); one implementer across each chained run (6→7, 9→10, 13→15, 16→17), since a
+  cold agent re-invents conventions rather than inheriting them; the orchestrator takes the two
+  gates (12, 18). **The reviewer is fresh for every task in every mode.**
+- **Implementers report commands and exit codes, not prose.** No status sentences, no `roadmap.md`
+  edits, no `.claude/` narrative from an implementer — the orchestrator writes every sentence that
+  asserts anything. And **the reviewer's first pass is citation, not code**: re-verify every claim
+  against the repository before opening a diff. Both rules exist because Phase 1's recurring
+  defect was never the commands, it was the sentences written about them.
+- **The execution ledger is committed**, at
+  [`docs/superpowers/ledger/phase-2/`](../../docs/superpowers/ledger/phase-2/), unlike Phase 1's,
+  which sits in `.superpowers/` (excluded at `.gitignore:81`) and exists only on the machine that
+  built it. The safeguard that makes a committed ledger safe rather than a second source of false
+  claims: **a ledger entry never moves a status and is never cited as evidence that something
+  works.** This file, backed by captured command output, remains the only authority on status.
+- **Every migration is generated with `prisma migrate dev --create-only` and its SQL reviewed by
+  the operator before it is applied.** Task 1 is why this matters immediately: Prisma cannot detect
+  a column rename and will emit `DROP COLUMN` + `ADD COLUMN` for `Session.expiresAt` →
+  `idleExpiresAt`, which is data loss wearing a rename's name, and it cannot express the partial
+  unique index at all. Both statements are hand-written into the generated file.
+- **Documentation ships in the task that makes it false**, not in Task 18. Each task in the plan
+  carries a *Doc ownership* line; Task 18 audits that they were honoured rather than doing the
+  work itself.
 
 **Six decisions were taken before the plan was written**, four of them by the operator:
 

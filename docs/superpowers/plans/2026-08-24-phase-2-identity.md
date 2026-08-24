@@ -70,6 +70,119 @@ Phase 2 adds these, and each one is a review-blocking rule:
 
 ---
 
+## Execution protocol
+
+Decided by the operator on 2026-08-24, before Task 1. This section is binding on every task and
+every subagent below.
+
+### 1. One session per task
+
+Each task starts a **new Claude Code session**. That session invokes `sentinel-phase`, reads this
+plan's section for its task, reads the previous task's ledger entry, and verifies **the previous
+task only** — not the whole phase. Phase 1's exit criteria were re-proven at `40852c1` on
+2026-08-24 and recorded in `roadmap.md`; that does not need repeating per task.
+
+A new session per task is not overhead, it is the test. If a fresh session cannot pick up Task N
+from the committed record, that is a documentation defect found in five minutes instead of in
+Phase 7.
+
+### 2. Execution mode varies by task shape
+
+Phase 1's tasks were mostly independent greenfield packages, which is the ideal shape for a
+cold-start implementer. **Phase 2 is a chain**: sessions → auth guard → login → MFA →
+authorization guard each inherit shapes and conventions from the one before, and a cold
+implementer does not inherit conventions, it re-invents them.
+
+| Shape | Tasks | Mode |
+|---|---|---|
+| **Self-contained** — clear contract, testable in isolation | 1, 3, 4, 5, 11 | Fresh implementer subagent + separate adversarial reviewer, exactly as Phase 1 |
+| **Chained** — shared shapes and conventions | 6→7, 9→10, 13→14→15, 16→17 | One implementer across the whole run; reviewer still fresh per task |
+| **Gate** — the phase's own correctness | 12, 18 | Orchestrator does these directly with the operator. Task 12 is where the security model becomes real; Task 18 is where a status gets written |
+
+Tasks 2 and 8 are self-contained enough for a fresh implementer but feed directly into a chain;
+either mode is acceptable, and the choice is recorded in the ledger.
+
+**The adversarial reviewer is always fresh, for every task, in every mode.** That part of Phase 1
+worked and does not change.
+
+### 3. Who writes prose
+
+Phase 1's recurring defect was not bad code. It was **false factual claims in written prose — 12
+instances on that branch, 5 of them introduced while correcting an earlier one**, and the
+roadmap's own conclusion was "the commands were never the problem; the sentences written about
+them were". Two rules follow, and they are review-blocking:
+
+- **Implementers report commands and exit codes. They do not write status prose.** No "this now
+  works", no summary paragraphs, no `roadmap.md` edits, no `.claude/` narrative. Raw evidence
+  goes up; the orchestrator writes every sentence that asserts anything.
+- **The reviewer's first pass is citation, not code.** Before opening a diff, re-verify every
+  factual claim in the implementer's report against the actual repository — run the command, open
+  the file, `git show` the range. Only then review the code. Phase 1's reviewers found code
+  defects reliably; nobody was assigned the sentences.
+
+### 4. The ledger is committed, in full
+
+`docs/superpowers/ledger/phase-2/` is **tracked in git**, unlike Phase 1's, which lives in
+`.superpowers/` (excluded at `.gitignore:81`) and therefore exists only on the machine that built
+it — every ruling and review finding from 16 tasks, one disk failure from gone.
+
+One entry per task: the brief, the implementer's report, the review findings, every ruling with
+its cost if wrong, and the fix rounds. `progress.md` is the index and ends with the current pause
+state.
+
+**The known hazard, stated because committing the full ledger is what creates it.** This is a
+large volume of agent-written prose in the repository, and agent-written prose is exactly the
+material that carried Phase 1's twelve false claims. A committed ledger must therefore never be
+read as a description of current state. Two guards:
+
+- Every ledger file opens with: *"A dated record of what was said and decided at the time. Not a
+  description of current state — `roadmap.md` is the only authority on that."*
+- **`roadmap.md` remains the single source of truth for status.** A ledger entry never moves a
+  status and is never cited as evidence that something works. Only `sentinel-verify`'s captured
+  command output does that.
+
+### 5. Migrations are reviewed as SQL before they are applied
+
+The operator reviews every migration's SQL before it touches a database. The mechanism is
+`prisma migrate dev --create-only`, which writes the file and stops.
+
+```
+pnpm --filter @sentinel/db exec prisma migrate dev --create-only --name <name>
+#   -> operator reads packages/db/prisma/migrations/<ts>_<name>/migration.sql
+#   -> hand-edits land here, then:
+pnpm db:migrate
+```
+
+This is not ceremony. **Prisma cannot detect a column rename**: for `Session.expiresAt` →
+`idleExpiresAt` it generates `DROP COLUMN` + `ADD COLUMN`, which is data loss wearing a rename's
+name. The correct statement is `ALTER TABLE "Session" RENAME COLUMN`, and it has to be written by
+hand. Harmless today because no session rows exist — which is precisely why the habit has to form
+now, while being wrong is free. The partial unique index in Task 1 is the same story: Prisma's
+schema language cannot express it at all.
+
+Match the house style already in `packages/db/prisma/migrations/`: the Phase 1 migrations lead
+with the reasoning and then the SQL — in
+`20260820142200_membership_user_restrict/migration.sql` the first executable statement is on
+**line 21**, after 20 lines of comment explaining why the cascade became `RESTRICT`.
+
+### 6. Documentation ships with the behaviour, not at the end
+
+A `.claude/` document is updated in the **same task** that makes its current text false, per
+`CLAUDE.md`'s documentation rule. Task 18 is the phase gate, not a documentation backlog. Each
+task below names the documents it owns.
+
+### 7. Checkpoint after Task 12
+
+Tasks 1–12 are a milestone in their own right: **the identity API enforced end to end, with no
+UI**. At that point authentication, CSRF, tenant resolution and the authorization matrix are all
+live and provable, and nothing in `apps/web` has been touched.
+
+Stop there. Run `sentinel-verify`, write the evidence table, and record the checkpoint in
+`roadmap.md` as **Partially Implemented** with the gap named ("identity API enforced; no
+authentication UI, so the E2E journey criterion is unmet"). Then Tasks 13–18 continue against a
+recorded state rather than against 18 tasks of accumulated assumption.
+
+---
 ## Task Order and Rationale
 
 The order is a thin vertical slice thickened layer by layer, exactly as Phase 1 was built, so CI is
@@ -98,6 +211,7 @@ follows the API it calls (16–17). The phase closes by proving it (18).
 | 10 | Password reset | 3, 4, 5, 9 |
 | 11 | TOTP MFA and recovery codes | 9 |
 | 12 | Tenant resolution and the authorization guard | 7, 9 |
+| **A** | **Checkpoint — verify, push, get CI green, record a status in `roadmap.md`** | **1–12** |
 | 13 | Organisations and organisation switching | 12 |
 | 14 | Memberships, roles, and the last-owner invariant | 13 |
 | 15 | Invitations | 5, 14 |
@@ -168,6 +282,18 @@ follows the API it calls (16–17). The phase closes by proving it (18).
       the right grants on them. Extend the row-level-security migration's grant block and assert the
       grants in an integration test, because a missing `GRANT` surfaces at runtime as a confusing
       permission error rather than at migration time.
+
+- [ ] **The migration is generated with `--create-only` and reviewed as SQL by the operator before it
+      touches any database** (Execution protocol §5). Two statements in this task are ones Prisma gets
+      wrong or cannot express, and both must be hand-written into the generated file: the
+      `Session.expiresAt` → `idleExpiresAt` rename, which Prisma emits as `DROP COLUMN` + `ADD COLUMN`
+      and which must become `ALTER TABLE "Session" RENAME COLUMN`; and the partial unique index, which
+      Prisma's schema language cannot express at all. Lead the file with the reasoning, as the four
+      Phase 1 migrations do.
+
+**Doc ownership:** none — this task changes no documented behaviour. The `KNOWN ISSUE` comment on
+`Membership` in `schema.prisma` is removed by the fix it describes, and `roadmap.md`'s "Where Phase 2
+starts" note that the residual is owed to Task 1 is updated to say it landed.
 
 **Verify:** `pnpm db:migrate` applies; `prisma migrate deploy` against a **fresh empty database** applies
 all migrations; `pnpm check:registry` exits 0 and reports the new model counts; the re-invite integration
@@ -329,6 +455,9 @@ specs, integration specs
 - [ ] Sessions record `ip`, `userAgent`, `createdAt`, `lastSeenAt` so `/settings/security` can list them.
       `userAgent` is user-controlled input: length-cap it and never render it unescaped.
 
+**Doc ownership:** `.claude/security/authentication.md` §3 — its "Status: Designed. Not Implemented"
+banner becomes false for sessions in this task. Update the banner to name what is built and what is not.
+
 **Verify:** `pnpm test`, `pnpm test:integration`, and the revocation-immediacy test explicitly named in
 the task report.
 
@@ -370,6 +499,13 @@ the task report.
       same-origin and sidestep CORS entirely, at the cost of a hop and of `apps/web` holding routing
       authority it otherwise does not have. Name it as the alternative and say what would make us switch.
 
+**Doc ownership, and this task carries the most of it:**
+`.claude/security/abuse-prevention.md` — the "Implemented (Phase 1), governing nothing yet" banner and
+its "limits no endpoint today" paragraph both become false the moment the auth routes carry limit
+classes. `.claude/security/authentication.md` §4 (CSRF). `.claude/api/authentication.md` §3.
+`.claude/architecture/backend.md` §3 — the cross-cutting pipeline gains two live stages.
+`.claude/development/setup.md` — any new environment variable.
+
 **Verify:** `pnpm test`, `pnpm test:integration`, `pnpm check:openapi`, and a boot of the app proving the
 access assertion still crashes on an undeclared route.
 
@@ -398,6 +534,10 @@ access assertion still crashes on an undeclared route.
       down which you chose: either these events are not audited at this stage, or the schema gains a
       platform-scoped audit path. **Do not quietly skip the audit** and leave rule 10 looking satisfied.
 
+**Doc ownership:** `.claude/security/authentication.md` §6 (verification token row, and the
+unverified-user gating rule this task actually enforces). `.claude/api/authentication.md` — the
+registration and verification endpoints, which the committed OpenAPI document now contains.
+
 **Verify:** `pnpm test`, `pnpm test:integration`, `pnpm check:openapi`, `pnpm check:registry`.
 
 ---
@@ -424,6 +564,10 @@ access assertion still crashes on an undeclared route.
       set, and an entitlements placeholder. The frontend's permission-aware UI reads this and nothing else.
 - [ ] 401 `ACCOUNT_LOCKED` is wrong — `api/authentication.md` §6 says **403**. Follow the document.
 
+**Doc ownership:** `.claude/security/authentication.md` §2 (password verification and timing equality)
+and §7 (brute force and enumeration) — both stop being aspirational here.
+`.claude/api/authentication.md` §2 and §6.
+
 **Verify:** `pnpm test`, `pnpm test:integration`, `pnpm check:openapi`.
 
 ---
@@ -440,6 +584,9 @@ access assertion still crashes on an undeclared route.
       *other* sessions while rotating the current one, and emails the notice. Losing your own session on
       a password change is a usability bug; keeping every other one is a security bug.
 - [ ] Audit events for reset requested, reset completed, and password changed.
+
+**Doc ownership:** `.claude/security/authentication.md` §6 (reset token row and the
+revoke-all-sessions rule). `.claude/security/audit.md` §4 if the action taxonomy gains rows.
 
 **Verify:** `pnpm test`, `pnpm test:integration`, `pnpm check:openapi`.
 
@@ -476,6 +623,11 @@ controller additions, `.claude/decisions/ADR-0018-*.md`, specs
       Redis-only token. It reuses revocation, makes "rotate on privilege change" literal, and survives a
       Redis restart mid-login. The cost is a database write per login attempt that reaches MFA; name it.
 
+**Doc ownership:** `.claude/security/authentication.md` §5 in full — every bullet in it is either
+built or deliberately deferred by this task, and the section must say which. Note the replay defence
+explicitly: it is a control §5 does not currently mention, and an undocumented control is one a future
+refactor deletes. `.claude/api/authentication.md` §2 (the MFA verify endpoint).
+
 **Verify:** `pnpm test` (RFC vectors, replay, recovery single-use), `pnpm test:integration`,
 `pnpm check:openapi`.
 
@@ -510,11 +662,50 @@ controller additions, `.claude/decisions/ADR-0018-*.md`, specs
       it.
 - [ ] Place the `requireMfa` and `emailVerifiedAt` gates in the pipeline here.
 
+**Doc ownership:** `.claude/security/authorization.md` — the whole document's "Designed. Not
+Implemented" banner falls here, and §5's claim about `@RequirePermission()` becomes true for the first
+time. `.claude/architecture/backend.md` §3. `.claude/product/permissions.md` if any grant moved.
+`.claude/product/roadmap.md` — this is the checkpoint below, so it gets an evidence table.
+
 **Verify:** `pnpm test`, `pnpm test:integration`, the matrix test green over every existing route,
 `pnpm check:openapi`, `pnpm check:registry`.
 
 ---
 
+## Checkpoint A — after Task 12: the identity API, enforced, with no UI
+
+**Stop here.** This is a milestone in its own right and it gets recorded before Task 13 begins.
+
+What is true at this point, and it is worth stating because it is the first time any of it has been
+true in this repository: a request arrives, is rate-limited, is authenticated against an opaque
+server-side session, is CSRF-checked if it carries a cookie, resolves to a tenant, and is authorized
+against a permission the route declares — and every one of those stages can deny. Nothing in
+`apps/web` has been touched.
+
+- [ ] Run `sentinel-verify` in full: `format:check`, `lint`, `typecheck`, `test`, `check:specs`,
+      `check:openapi`, `check:registry`, `test:integration`, `build`, plus `prisma migrate deploy`
+      against a **fresh empty database**. `test:e2e` runs but proves only that the Phase 1 smoke specs
+      still pass — say exactly that in the row, and no more.
+- [ ] Push the branch and get a green CI run on a Linux runner. Cite it by run ID. Twelve tasks of
+      unpushed work is a long time to have never seen the pipeline.
+- [ ] Write the evidence table into `roadmap.md` and move Phase 2 to **Partially Implemented** with the
+      gap named precisely: *"identity API built and enforced end to end; no authentication UI exists,
+      so the E2E journey exit criterion is unmet and the phase is not complete."* Partially Implemented
+      with a named gap is a real status — `sentinel-verify` §3 says so explicitly, and using it here is
+      the point of having it.
+- [ ] Confirm the three exit criteria's actual state rather than implying it. At Checkpoint A:
+      *sessions revoke immediately* is **met and proven** (Task 6); *the authorization matrix passes for
+      every existing endpoint* is **met** (Task 12) — noting honestly that "every existing endpoint" is
+      a smaller set than it will be after Tasks 13–15; *the full authentication journey passes E2E* is
+      **unmet**, and cannot be met until Task 18.
+- [ ] Write the ledger entry and update `progress.md`'s pause state, then stop and report to the
+      operator.
+
+**Do not skip this because the work is going well.** The window between building something and
+recording it is exactly when a session ends unexpectedly, and twelve tasks is the largest such window
+in this plan.
+
+---
 ## Task 13: Organisations and organisation switching
 
 **Files:** `apps/api/src/modules/organizations/*`, specs, integration specs
@@ -652,12 +843,14 @@ passing jsdom test.
       destination.
 - [ ] CI runs the authorization matrix test as its own named step so a failure reads as "authorization
       matrix failed" rather than as a generic test failure.
-- [ ] **Update every `.claude/` document this phase invalidated, in the same change** — the documentation
-      rule. At minimum: `security/authentication.md`, `security/authorization.md`, `api/authentication.md`
-      and `security/abuse-prevention.md` all carry "Status: Designed. Not Implemented" or "governing
-      nothing" banners that Phase 2 makes false; `architecture/backend.md` §3's pipeline; `product/permissions.md`
-      if any grant changed; `development/setup.md` for new env vars; `architecture/frontend.md` for the
-      real route table.
+- [ ] **This task does not update documentation — it audits it.** Every `.claude/` document is owned by
+      the task that made its text false, per Execution protocol §6, and each task above names the
+      documents it owns. What happens here is the sweep: walk the **Doc ownership** line of Tasks 1–17,
+      confirm each named document was actually changed in that task's commit range with
+      `git log -- <path>`, and fix what was missed. A document nobody owned is the finding.
+- [ ] The two documents genuinely owned by this task, because only the finished phase makes them false:
+      `architecture/frontend.md`'s route table, and `development/testing.md` §3's "what must be tested"
+      list now that the E2E journeys exist.
 - [ ] ADRs 0014–0018 written **when their decisions were made** (Tasks 3, 5, 7, 11), not retrofitted here.
       This task only adds their rows to `.claude/decisions/README.md` and checks none was missed.
 - [ ] Run `sentinel-verify` and record the evidence table in `roadmap.md`. **Move Phase 2's status to
