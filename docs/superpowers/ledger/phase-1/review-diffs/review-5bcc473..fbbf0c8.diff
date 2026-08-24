@@ -1,0 +1,429 @@
+# Review package: 5bcc473..HEAD
+
+## Commits
+fbbf0c8 fix(observability): review round - three Critical, two Important, docs
+
+## Files changed
+ packages/observability/src/logger.spec.ts |  97 +++++++++++++++++++++++++---
+ packages/observability/src/logger.ts      | 103 ++++++++++++++++++++++--------
+ packages/observability/src/redaction.ts   |  28 +++++++-
+ 3 files changed, 192 insertions(+), 36 deletions(-)
+
+## Diff
+diff --git a/packages/observability/src/logger.spec.ts b/packages/observability/src/logger.spec.ts
+index 899e36b..6f6e65d 100644
+--- a/packages/observability/src/logger.spec.ts
++++ b/packages/observability/src/logger.spec.ts
+@@ -143,30 +143,20 @@ describe('createLogger', () => {
+     expect(out.msg).toBe(`token=${REDACTED}`);
+   });
+ 
+   it('leaves a non-secret trailing interpolation argument unchanged', () => {
+     const { logger, lines } = captureLogger();
+     logger.info('scan %s completed', 'scn_01J');
+     const out = lines[0] as { msg: string };
+     expect(out.msg).toBe('scan scn_01J completed');
+   });
+ 
+-  it('leaves the existing top-level err message/stack redaction unchanged', () => {
+-    const { logger, lines } = captureLogger();
+-    const err = new Error('auth failed: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
+-    logger.error(err, 'request failed');
+-    const out = lines[0] as { err: { message: string; stack: string } };
+-    expect(out.err.message).toBe(`auth failed: ${REDACTED}`);
+-    expect(out.err.stack).toContain(REDACTED);
+-    expect(out.err.stack).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
+-  });
+-
+   it('redacts a secret in child logger bindings, and again on a second line from the same child', () => {
+     const { logger, lines } = captureLogger();
+     const child = logger.child({ apiKey: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def' });
+     child.info('first line');
+     child.info('second line');
+     expect(lines).toHaveLength(2);
+     expect((lines[0] as { apiKey: string }).apiKey).toBe(REDACTED);
+     expect((lines[1] as { apiKey: string }).apiKey).toBe(REDACTED);
+   });
+ 
+@@ -196,11 +186,98 @@ describe('createLogger', () => {
+       { apiKey: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def' },
+       { level: 'warn' },
+     );
+     child.info('should be suppressed by level');
+     child.warn('should appear');
+     expect(lines).toHaveLength(1);
+     const out = lines[0] as { level: number; apiKey: string; msg: string };
+     expect(out.msg).toBe('should appear');
+     expect(out.apiKey).toBe(REDACTED);
+   });
++
++  // Crash-safety properties, tested here through createLogger rather than
++  // only against redact() directly: a guard proven safe in isolation but
++  // never exercised through the actual per-call pipeline is not proven safe
++  // in the position that matters (C2/I4 review finding).
++
++  it('does not crash on a throwing getter at the top level of the merge object', () => {
++    const { logger, lines } = captureLogger();
++    const hostile = {
++      get poison(): string {
++        throw new Error('getter exploded');
++      },
++      ok: 'value',
++    };
++    expect(() => logger.info(hostile, 'hostile object')).not.toThrow();
++    const out = lines[0] as { poison: string; ok: string };
++    expect(out.poison).toBe('[unreadable]');
++    expect(out.ok).toBe('value');
++  });
++
++  it('does not crash on a circular reference reaching the logger', () => {
++    const { logger, lines } = captureLogger();
++    const circular: Record<string, unknown> = { name: 'x' };
++    circular.self = circular;
++    const payload = { nested: circular };
++    expect(() => logger.info(payload, 'circular object')).not.toThrow();
++    const out = lines[0] as { nested: { name: string; self: string } };
++    expect(out.nested.name).toBe('x');
++    expect(out.nested.self).toBe('[circular]');
++  });
++
++  it('does not crash on a null-prototype object reaching the logger', () => {
++    const { logger, lines } = captureLogger();
++    const nullProto = Object.assign(Object.create(null), { scanId: 'scn_01J' }) as Record<
++      string,
++      unknown
++    >;
++    expect(() => logger.info(nullProto, 'null-proto object')).not.toThrow();
++    const out = lines[0] as { scanId: string };
++    expect(out.scanId).toBe('scn_01J');
++  });
++
++  it('does not crash on a non-string Error.message (C3)', () => {
++    const { logger, lines } = captureLogger();
++    const err = new Error('placeholder');
++    (err as unknown as { message: unknown }).message = 12345;
++    expect(() => logger.error(err)).not.toThrow();
++    const out = lines[0] as { msg: string; err: { message: string } };
++    expect(out.msg).toBe(REDACTED);
++    expect(out.err.message).toBe(REDACTED);
++  });
++
++  it('redacts Error.message when logged with an explicit undefined second argument (C1)', () => {
++    const { logger, lines } = captureLogger();
++    const err = new Error('auth failed: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
++    logger.error(err, undefined);
++    const out = lines[0] as { msg: string; err: { message: string } };
++    expect(out.msg).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
++    expect(out.msg).toBe(`auth failed: ${REDACTED}`);
++    expect(out.err.message).toBe(`auth failed: ${REDACTED}`);
++  });
++
++  it('drops an own-enumerable toJSON so it cannot resurrect an already-redacted subtree (C2)', () => {
++    const { logger, lines } = captureLogger();
++    const hostile = {
++      a: {
++        b: {
++          toJSON() {
++            return { token: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def' };
++          },
++        },
++      },
++    };
++    logger.info(hostile, 'hostile toJSON');
++    const out = lines[0] as { a: { b: Record<string, unknown> } };
++    expect(out.a.b).toEqual({});
++  });
++
++  it('does not let a log-call field shadow the ambient request context (M9)', () => {
++    const { logger, lines } = captureLogger();
++    runWithRequestContext({ requestId: 'req_real', organizationId: 'org_real' }, () => {
++      logger.info({ requestId: 'attacker-controlled' }, 'x');
++    });
++    const out = lines[0] as { requestId: string; organizationId: string };
++    expect(out.requestId).toBe('req_real');
++    expect(out.organizationId).toBe('org_real');
++  });
+ });
+diff --git a/packages/observability/src/logger.ts b/packages/observability/src/logger.ts
+index 496c4ec..63c73cd 100644
+--- a/packages/observability/src/logger.ts
++++ b/packages/observability/src/logger.ts
+@@ -59,20 +59,28 @@ function redactInterpolationArg(value: unknown): unknown {
+  * redacted instead of dropped outright.
+  *
+  * `pino.stdSerializers.err` is used as a base for its `type`/`message`/
+  * `stack`/cause-chain handling and its copy of any custom own properties on
+  * the error. Its non-enumerable `.raw` (the original Error) is never copied
+  * by object spread, so it never reaches the output. `message` and `stack`
+  * are then overwritten with a substring-redacted copy; every other property
+  * (including any custom one an application attached to the Error, which
+  * could itself be secret-shaped) goes through the normal structural
+  * `redact()` used everywhere else.
++ *
++ * Residual (not fixed — see the coverage list in task-3-report.md, item I5):
++ * this only runs because `serializers.err` is set to this function below. A
++ * caller who registers their *own* `err` serializer via `logger.child(...,
++ * { serializers: { err: ... } })` (or an equivalent pino API) overrides this
++ * one entirely — `formatters.log` still hands the raw, untouched `Error`
++ * downstream on the assumption that *some* `err` serializer will run, and if
++ * a caller's replaces this one, nothing redacts it.
+  */
+ function redactError(error: unknown): unknown {
+   if (!(error instanceof Error)) return error;
+   const serialized = pino.stdSerializers.err(error);
+   const { message, stack, ...extra } = serialized;
+   return {
+     ...(redact(extra) as Record<string, unknown>),
+     message: redactSecretsInText(message),
+     stack: redactSecretsInText(stack),
+   };
+@@ -111,20 +119,45 @@ function wrapChild(logger: Logger): Logger {
+     configurable: true,
+     writable: true,
+     enumerable: false,
+     value(this: Logger, bindings: Bindings, options?: ChildLoggerOptions) {
+       return inheritedChild.call(this, redact(bindings) as Bindings, options);
+     },
+   });
+   return logger;
+ }
+ 
++/**
++ * Builds a Pino JSON logger with structural redaction wired into every
++ * stage of the pipeline: the merged per-call object (`formatters.log`), the
++ * `msg` string (`hooks.logMethod`), the top-level `err` key's message and
++ * stack (`serializers.err`), and `.child()` bindings at any depth
++ * (`wrapChild`) — all verified under `pretty: true` too, since that routes
++ * through a separate worker-thread transport that only ever sees data that
++ * already passed through the stages above.
++ *
++ * Residual, by deliberate ruling rather than oversight: a secret passed as
++ * a trailing printf-style interpolation argument (`logger.info('token=%s',
++ * value)`) is covered only by the value-shape backstop —
++ * `redactInterpolationArg` runs `redactSecretsInText` (strings) or
++ * `redact()` (objects) on it before pino substitutes it into the formatted
++ * message — because that position carries no key name to match against
++ * `SECRET_KEY_FRAGMENTS`. A secret that isn't one of the five recognised
++ * shapes (bearer token, JWT, credentialed URL, Stripe-style key, PEM block)
++ * — a plain password, an opaque internal token — is indistinguishable from
++ * an ordinary interpolated value and is not redacted. Reimplementing pino's
++ * `%s`/`%d`/`%j`/`%o` formatting ourselves to close that fully was
++ * considered and rejected: maintaining a second copy of pino's
++ * interpolation semantics is a worse failure mode than the residual gap it
++ * would close. Full coverage list, including this and other residuals
++ * (I5, I6), lives in task-3-report.md.
++ */
+ export function createLogger(options: CreateLoggerOptions): Logger {
+   const base: LoggerOptions = {
+     level: options.silent === true ? 'silent' : options.level,
+     base: { service: options.service },
+     timestamp: pino.stdTimeFunctions.isoTime,
+     // The merged bindings object passes through structural redaction before
+     // it is serialised. Verified empirically: this covers a bare Error (or
+     // `{ err }`) passed as the log call's first argument — its message and
+     // stack are redacted by the `err` serializer below — and it survives
+     // `pretty: true`, because `formatters.log` runs before both the
+@@ -152,68 +185,88 @@ export function createLogger(options: CreateLoggerOptions): Logger {
+       // never see child bindings, by construction, not by omission. What
+       // this formatter actually covers is narrow: this root logger's own
+       // `base` bindings only (`{ service }`, which never carries a secret
+       // in this package's design). Child bindings — the case that matters,
+       // since `.child()` is this codebase's expected way to attach
+       // `organizationId`/`requestId` per request — are instead redacted by
+       // wrapping `.child` itself; see `wrapChild` below.
+       bindings: (bindings) => redact(bindings) as Record<string, unknown>,
+       log: (object) => {
+         const context = getRequestContext();
+-        const { [ERROR_KEY]: topLevelError, ...rest } = object;
++        // Built with the same guarded read `redact()` uses internally,
++        // rather than `const { [ERROR_KEY]: topLevelError, ...rest } =
++        // object`: rest-destructuring reads every own enumerable property
++        // up front, *before* redact() ever runs, which invokes a throwing
++        // getter outside any try/catch — the object-spread equivalent of
++        // the bug the try/catch below exists to prevent, at exactly the
++        // position most likely to be hit (the top-level merge object).
++        let topLevelError: unknown;
++        const rest: Record<string, unknown> = {};
++        for (const key of Object.keys(object)) {
++          let item: unknown;
++          try {
++            item = object[key];
++          } catch {
++            item = '[unreadable]';
++          }
++          if (key === ERROR_KEY) {
++            topLevelError = item;
++          } else {
++            rest[key] = item;
++          }
++        }
+         const redactedRest = redact(rest) as Record<string, unknown>;
+         const redacted: Record<string, unknown> =
+           topLevelError === undefined
+             ? redactedRest
+             : {
+                 ...redactedRest,
+                 [ERROR_KEY]: topLevelError instanceof Error ? topLevelError : redact(topLevelError),
+               };
+-        return context === undefined ? redacted : { ...context, ...redacted };
++        // Context last: a log-call field with the same name as a
++        // correlation ID (`requestId`, `organizationId`, ...) must not be
++        // able to shadow it — those IDs are what makes a customer's report
++        // traceable to one request, and a caller-controlled override would
++        // silently break that traceability. Spreading `redacted` first and
++        // `context` last means context always wins on a key collision.
++        return context === undefined ? redacted : { ...redacted, ...context };
+       },
+     },
+     serializers: {
+       err: redactError,
+     },
+     // Covers the other real gaps: pino carries the `msg` string through a
+     // path that never reaches `formatters.log` (confirmed by reading
+     // lib/tools.js — `serializers[messageKey]` runs independently of the
+     // `log` formatter). This hook runs earliest of all, before pino has even
+     // decided which argument is the message, so it redacts whichever
+     // position holds a string: `logger.info(msg)` or `logger.info(obj, msg)`.
+     // Substring redaction, not whole-value: a message is prose, not a
+     // secret, and should stay readable around the part that had to go.
+-    //
+-    // Trailing printf-style interpolation arguments (`logger.info('token=%s',
+-    // value)`) also pass through `redactInterpolationArg` before pino
+-    // substitutes them into the formatted message. This is a narrower
+-    // guarantee than the rest of this hook: those positions carry no key
+-    // name to match against `SECRET_KEY_FRAGMENTS`, so only the value-shape
+-    // backstop applies — a shape the backstop does not recognise (a plain
+-    // password, an opaque internal ID) is not distinguishable from an
+-    // ordinary interpolated value and is not redacted. Reimplementing pino's
+-    // `%s`/`%d`/`%j`/`%o` formatting ourselves to close that fully was
+-    // considered and rejected: it would mean maintaining a second copy of
+-    // pino's interpolation semantics, which is a worse failure mode than the
+-    // residual gap it would close.
++    // Trailing interpolation arguments are covered too, with the narrower
++    // value-shape-only guarantee documented on `createLogger` above.
+     hooks: {
+       logMethod(inputArgs, method) {
+-        // A single-argument call — `logger.error(err)` or
+-        // `logger.error({ err })` — is the common shape for logging a
+-        // caught error, and it is also the one pino resolves specially:
+-        // when no separate message argument is supplied, pino's own
+-        // write() (lib/proto.js) derives `msg` straight from the raw
+-        // `err.message` *after* this hook has already run, bypassing every
+-        // redaction stage below. Preempt that fallback by supplying an
+-        // explicit, already-redacted message ourselves, so pino's fallback
+-        // never fires (it only derives `msg` when none was given).
+-        if (inputArgs.length === 1) {
++        // `logger.error(err)` / `logger.error({ err })` — logging a caught
++        // error with no separate message string — is the common shape, and
++        // also the one pino resolves specially: when no message argument is
++        // *given*, pino's own write() (lib/proto.js) derives `msg` straight
++        // from the raw `err.message` *after* this hook has already run,
++        // bypassing every redaction stage below. Gated on whether a string
++        // message is present at all, not on argument count: an explicit
++        // `logger.error(err, undefined)` — e.g. `logger.error(err,
++        // exception.message)` when that message is absent — has length 2,
++        // but inputArgs[1] still isn't a string, so pino's fallback still
++        // fires unless this branch also catches it. Preempt that fallback by
++        // supplying an explicit, already-redacted message ourselves, so
++        // pino's fallback never has a reason to run.
++        if (typeof inputArgs[1] !== 'string') {
+           const [first] = inputArgs;
+           if (first instanceof Error) {
+             method.call(this, { [ERROR_KEY]: first }, redactSecretsInText(first.message));
+             return;
+           }
+           if (isRecord(first)) {
+             const err = first[ERROR_KEY];
+             if (err instanceof Error) {
+               method.call(this, first, redactSecretsInText(err.message));
+               return;
+diff --git a/packages/observability/src/redaction.ts b/packages/observability/src/redaction.ts
+index c33f14c..8e3c861 100644
+--- a/packages/observability/src/redaction.ts
++++ b/packages/observability/src/redaction.ts
+@@ -56,22 +56,31 @@ const GLOBAL_SECRET_VALUE_PATTERNS: RegExp[] = SECRET_VALUE_PATTERNS.map(
+ 
+ /**
+  * Substring redaction for free text — log messages and error text — where the
+  * value is prose that may *contain* a secret rather than being one outright.
+  * Unlike `redact()`'s whole-value backstop for structured fields, this
+  * replaces only the matched span, so `"exchanging token=Bearer xyz now"`
+  * becomes `"exchanging token=[redacted] now"` instead of disappearing
+  * entirely — replacing the whole message would trade a credential leak for
+  * an unreadable log, and an operator debugging a failure still needs the
+  * rest of the sentence.
++ *
++ * Accepts `unknown`, not `string`: an `Error.message` is conventionally a
++ * string but is not guaranteed to be one (a plain assignment or a hostile
++ * getter can make it anything). A non-string here fails closed — returns
++ * `REDACTED` rather than crashing — because this runs on the error-logging
++ * path, and a logger that throws while reporting a failure hides the real
++ * one. Deliberately not `String(text)`: a hostile `toString`/`Symbol.toPrimitive`
++ * can itself throw, which would put us right back where we started.
+  */
+-export function redactSecretsInText(text: string): string {
++export function redactSecretsInText(text: unknown): string {
++  if (typeof text !== 'string') return REDACTED;
+   let result = text;
+   for (const pattern of GLOBAL_SECRET_VALUE_PATTERNS) {
+     result = result.replace(pattern, REDACTED);
+   }
+   return result;
+ }
+ 
+ const MAX_DEPTH = 12;
+ 
+ /**
+@@ -85,20 +94,27 @@ const MAX_DEPTH = 12;
+  */
+ export function redact(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
+   if (depth > MAX_DEPTH) return REDACTED;
+ 
+   if (typeof value === 'string') return valueLooksSecret(value) ? REDACTED : value;
+   if (value === null || typeof value !== 'object') return value;
+ 
+   if (seen.has(value)) return '[circular]';
+   seen.add(value);
+ 
++  // Date has no own enumerable properties, so the generic object walk below
++  // would otherwise silently reduce every Date to `{}` — a real regression
++  // against stock pino, and dates are common in log payloads (timestamps,
++  // expiries). Preserved as the same ISO string `JSON.stringify` would have
++  // produced anyway; a Date can never itself be secret-shaped.
++  if (value instanceof Date) return value.toISOString();
++
+   if (value instanceof Error) {
+     // Stacks are dropped here; the logger attaches them separately at error
+     // level, where they are wanted, rather than everywhere an Error is nested.
+     // The message is still text-scanned: an Error nested anywhere else in a
+     // payload (not under the top-level err key, which gets its own
+     // serializer in logger.ts) has no other stage that will ever see it.
+     return { name: value.name, message: redactSecretsInText(value.message) };
+   }
+ 
+   if (Array.isArray(value)) {
+@@ -111,14 +127,24 @@ export function redact(value: unknown, depth = 0, seen = new WeakSet<object>()):
+     try {
+       // A getter can throw (e.g. a lazily-computed property backed by a
+       // resource that is no longer available). Logging happens on the error
+       // path, so a hostile or broken getter must not crash the logger and
+       // hide the real failure.
+       item = (value as Record<string, unknown>)[key];
+     } catch {
+       output[key] = '[unreadable]';
+       continue;
+     }
++    // An own-enumerable function survives redaction unchanged (it isn't a
++    // string or a plain object), but if it happens to be named `toJSON`,
++    // JSON.stringify calls it during serialisation and uses whatever it
++    // returns *instead of* this already-redacted object — silently
++    // resurrecting the original, unredacted value at serialisation time,
++    // including under a key that matched the denylist. Dropped outright:
++    // a prototype-based `toJSON` (Date, URL, class methods) is untouched
++    // since `Object.keys` never sees it, and JSON serialisation already
++    // drops a top-level function property, so nothing legitimate is lost.
++    if (typeof item === 'function') continue;
+     output[key] = keyIsSecret(key) ? REDACTED : redact(item, depth + 1, seen);
+   }
+   return output;
+ }

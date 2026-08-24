@@ -1,0 +1,524 @@
+# Review package: bf4ebc4..HEAD
+
+## Commits
+3bc78b3 feat(db): idempotent seed for system roles and permissions
+
+## Files changed
+ eslint.config.js                         |  10 +++
+ package.json                             |   2 +-
+ packages/db/package.json                 |   4 +-
+ packages/db/src/seed.integration.spec.ts |  59 +++++++++++++++++
+ packages/db/src/seed.ts                  | 107 +++++++++++++++++++++++++++++++
+ pnpm-lock.yaml                           |  38 ++++++++---
+ 6 files changed, 208 insertions(+), 12 deletions(-)
+
+## Diff
+diff --git a/eslint.config.js b/eslint.config.js
+index 5b79fd9..3e0ff63 100644
+--- a/eslint.config.js
++++ b/eslint.config.js
+@@ -86,20 +86,30 @@ export default tseslint.config(
+     files: ['*.config.js', '*.config.mjs', '*.config.ts', 'vitest.workspace.ts'],
+     extends: [tseslint.configs.disableTypeChecked],
+     languageOptions: { globals: globals.node },
+     rules: js.configs.recommended.rules,
+   },
+   // packages/config is the one place allowed to touch process.env
+   {
+     files: ['packages/config/src/**/*.ts'],
+     rules: { 'no-restricted-properties': 'off' },
+   },
++  // packages/db/src/seed.ts is a CLI script (`pnpm db:seed`), not a request
++  // handler — it reads DIRECT_DATABASE_URL/DATABASE_URL directly to build its
++  // own Prisma connection before any application code (including
++  // packages/config's loader) would otherwise run. One of the three
++  // documented exemptions in coding-standards.md §6/database.md §8 alongside
++  // migrations and platform admin.
++  {
++    files: ['packages/db/src/seed.ts'],
++    rules: { 'no-restricted-properties': 'off' },
++  },
+   // seeds, migrations, and the tenant client itself may use the unscoped client.
+   // tenant-transaction.ts only ever imports unscoped's `PrismaClient` as a
+   // *type* (it needs it to type `base`/`tx`; it never calls
+   // createUnscopedPrismaClient), but the base `no-restricted-imports` rule
+   // does not distinguish type-only imports from value ones, so it needs the
+   // same exemption. Chose the file-exemption route over a rule-level
+   // "allow type-only imports of unscoped" carve-out because only this one
+   // file needs it — a blanket type-import allowance would be a wider hole
+   // than the one problem it's fixing.
+   {
+diff --git a/package.json b/package.json
+index e07c5ef..8d1889d 100644
+--- a/package.json
++++ b/package.json
+@@ -13,21 +13,21 @@
+     "lint": "turbo run lint",
+     "typecheck": "turbo run typecheck",
+     "test": "vitest run --project unit --passWithNoTests",
+     "test:integration": "vitest run --project integration --passWithNoTests",
+     "format": "prettier --write .",
+     "format:check": "prettier --check .",
+     "db:migrate": "dotenv -e .env -- pnpm --filter @sentinel/db exec prisma migrate dev",
+     "db:migrate:create": "dotenv -e .env -- pnpm --filter @sentinel/db exec prisma migrate dev --create-only",
+     "db:reset": "dotenv -e .env -- pnpm --filter @sentinel/db exec prisma migrate reset --force",
+     "db:studio": "dotenv -e .env -- pnpm --filter @sentinel/db exec prisma studio",
+-    "db:seed": "pnpm --filter @sentinel/db db:seed"
++    "db:seed": "dotenv -e .env -- pnpm --filter @sentinel/db db:seed"
+   },
+   "devDependencies": {
+     "@eslint/js": "^9.0.0",
+     "@types/node": "^22.0.0",
+     "dotenv-cli": "^7.4.0",
+     "eslint": "^9.0.0",
+     "eslint-import-resolver-typescript": "^4.0.0",
+     "eslint-plugin-import": "^2.31.0",
+     "globals": "^15.0.0",
+     "prettier": "^3.3.0",
+diff --git a/packages/db/package.json b/packages/db/package.json
+index 60518ff..1fe7d78 100644
+--- a/packages/db/package.json
++++ b/packages/db/package.json
+@@ -12,23 +12,25 @@
+   "scripts": {
+     "build": "prisma generate && tsc -p tsconfig.build.json",
+     "typecheck": "tsc -p tsconfig.json --noEmit",
+     "lint": "eslint src",
+     "db:generate": "prisma generate",
+     "db:migrate": "prisma migrate dev",
+     "db:migrate:create": "prisma migrate dev --create-only",
+     "db:migrate:deploy": "prisma migrate deploy",
+     "db:reset": "prisma migrate reset --force",
+     "db:studio": "prisma studio",
+-    "db:seed": "node --experimental-strip-types src/seed.ts"
++    "db:seed": "tsx src/seed.ts"
+   },
+   "dependencies": {
+     "@prisma/client": "^6.3.0",
++    "@sentinel/contracts": "workspace:*",
+     "uuidv7": "^1.0.2"
+   },
+   "devDependencies": {
+     "@sentinel/config": "workspace:*",
+     "@testcontainers/postgresql": "^10.16.0",
+     "prisma": "^6.3.0",
++    "tsx": "^4.19.0",
+     "typescript": "^5.7.0"
+   }
+ }
+diff --git a/packages/db/src/seed.integration.spec.ts b/packages/db/src/seed.integration.spec.ts
+new file mode 100644
+index 0000000..a062d71
+--- /dev/null
++++ b/packages/db/src/seed.integration.spec.ts
+@@ -0,0 +1,59 @@
++import { afterAll, beforeAll, describe, expect, it } from 'vitest';
++import { PERMISSIONS, ROLE_PERMISSIONS, SYSTEM_ROLES } from '@sentinel/contracts';
++import { createUnscopedPrismaClient, type PrismaClient } from './unscoped.js';
++import { startPostgresHarness, type PostgresHarness } from './testing/postgres-harness.js';
++import { seedReferenceData } from './seed.js';
++
++let harness: PostgresHarness;
++let prisma: PrismaClient;
++
++beforeAll(async () => {
++  harness = await startPostgresHarness();
++  prisma = createUnscopedPrismaClient(harness.ownerUrl);
++}, 180_000);
++
++afterAll(async () => {
++  await prisma?.$disconnect();
++  await harness?.stop();
++});
++
++describe('seedReferenceData', () => {
++  it('creates every system role and every permission', async () => {
++    const result = await seedReferenceData(prisma);
++    expect(result.roles).toBe(SYSTEM_ROLES.length);
++    expect(result.permissions).toBe(PERMISSIONS.length);
++    expect(await prisma.role.count()).toBe(SYSTEM_ROLES.length);
++    expect(await prisma.permission.count()).toBe(PERMISSIONS.length);
++  });
++
++  it('grants each role exactly the permissions the matrix says', async () => {
++    for (const roleKey of SYSTEM_ROLES) {
++      const role = await prisma.role.findUniqueOrThrow({
++        where: { key: roleKey },
++        select: { permissions: { select: { permission: { select: { key: true } } } } },
++      });
++      const granted = role.permissions.map((row) => row.permission.key).sort();
++      expect(granted, roleKey).toEqual([...ROLE_PERMISSIONS[roleKey]].sort());
++    }
++  });
++
++  it('is idempotent — a second run changes nothing', async () => {
++    const before = {
++      roles: await prisma.role.count(),
++      permissions: await prisma.permission.count(),
++      grants: await prisma.rolePermission.count(),
++    };
++    await seedReferenceData(prisma);
++    expect({
++      roles: await prisma.role.count(),
++      permissions: await prisma.permission.count(),
++      grants: await prisma.rolePermission.count(),
++    }).toEqual(before);
++  });
++
++  it('creates no organisations, users, or audit events — an empty product must look empty', async () => {
++    expect(await prisma.organization.count()).toBe(0);
++    expect(await prisma.user.count()).toBe(0);
++    expect(await prisma.auditEvent.count()).toBe(0);
++  });
++});
+diff --git a/packages/db/src/seed.ts b/packages/db/src/seed.ts
+new file mode 100644
+index 0000000..4a41549
+--- /dev/null
++++ b/packages/db/src/seed.ts
+@@ -0,0 +1,107 @@
++/* eslint-disable no-console */
++// Justification: the seed is a CLI script, not application code. Its output is
++// for a human running `pnpm db:seed`, and routing it through the structured
++// logger would make it strictly less readable at a terminal.
++
++import { PERMISSIONS, ROLE_PERMISSIONS, SYSTEM_ROLES, type SystemRole } from '@sentinel/contracts';
++import { createUnscopedPrismaClient, type PrismaClient } from './unscoped.js';
++import { newId } from './id.js';
++
++const ROLE_DESCRIPTIONS: Record<SystemRole, { name: string; description: string }> = {
++  OWNER: { name: 'Owner', description: 'Owns the organisation. Full control, including billing.' },
++  ADMIN: { name: 'Admin', description: 'Runs the organisation. Cannot change what it costs.' },
++  SECURITY_LEAD: {
++    name: 'Security lead',
++    description: 'Leads testing. Accepts risk and authorises aggressive scanning.',
++  },
++  MEMBER: { name: 'Member', description: 'Day-to-day testing and triage.' },
++  VIEWER: { name: 'Viewer', description: 'Read-only access to findings and reports.' },
++  AUDITOR: {
++    name: 'Auditor',
++    description: 'Compliance review. Reads the audit log; deliberately cannot read evidence.',
++  },
++  GUEST: { name: 'Guest', description: 'Read-only, and only for explicitly shared projects.' },
++};
++
++/**
++ * Loads REFERENCE DATA ONLY: system roles, permissions, and the grants between
++ * them. It never creates organisations, users, findings, or scans.
++ *
++ * Seeding fake tenants would make an empty product look populated, which is
++ * exactly the illusion this codebase exists to avoid. E2E fixtures are created
++ * through the real API instead, so the tests exercise real code paths.
++ *
++ * CWE, OWASP, plan definitions, and the engine registry are seeded in the
++ * phases that create their tables. See architecture/database.md §8.
++ */
++export async function seedReferenceData(
++  prisma: PrismaClient,
++): Promise<{ roles: number; permissions: number; grants: number }> {
++  const permissionIds = new Map<string, string>();
++
++  for (const key of PERMISSIONS) {
++    const row = await prisma.permission.upsert({
++      where: { key },
++      update: {},
++      create: { id: newId('prm'), key, description: key },
++      select: { id: true },
++    });
++    permissionIds.set(key, row.id);
++  }
++
++  let grants = 0;
++
++  for (const key of SYSTEM_ROLES) {
++    const meta = ROLE_DESCRIPTIONS[key];
++    const role = await prisma.role.upsert({
++      where: { key },
++      update: { name: meta.name, description: meta.description },
++      create: { id: newId('rol'), key, name: meta.name, description: meta.description },
++      select: { id: true },
++    });
++
++    const wantedIds = ROLE_PERMISSIONS[key].map((permission) => {
++      const id = permissionIds.get(permission);
++      if (id === undefined) throw new Error(`Unknown permission in matrix: ${permission}`);
++      return id;
++    });
++
++    // Remove grants the matrix no longer contains, so editing the matrix and
++    // re-seeding converges rather than accumulating.
++    await prisma.rolePermission.deleteMany({
++      where: { roleId: role.id, permissionId: { notIn: wantedIds } },
++    });
++
++    await prisma.rolePermission.createMany({
++      data: wantedIds.map((permissionId) => ({ roleId: role.id, permissionId })),
++      skipDuplicates: true,
++    });
++
++    grants += wantedIds.length;
++  }
++
++  return { roles: SYSTEM_ROLES.length, permissions: PERMISSIONS.length, grants };
++}
++
++async function main(): Promise<void> {
++  const url = process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL;
++  if (url === undefined) throw new Error('DIRECT_DATABASE_URL or DATABASE_URL must be set.');
++
++  const prisma = createUnscopedPrismaClient(url);
++  try {
++    const result = await seedReferenceData(prisma);
++    console.log(
++      `Seeded ${String(result.roles)} roles, ${String(result.permissions)} permissions, ` +
++        `${String(result.grants)} grants. No tenant data created.`,
++    );
++  } finally {
++    await prisma.$disconnect();
++  }
++}
++
++// Only run when invoked directly, so the integration test can import
++// seedReferenceData without opening a database connection on import.
++const invokedPath = process.argv[1] ?? '';
++if (invokedPath.endsWith('seed.ts') || invokedPath.endsWith('seed.js')) {
++  await main();
++}
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 09fb537..5b12ab8 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -36,21 +36,21 @@ importers:
+         specifier: ^2.5.0
+         version: 2.10.11
+       typescript:
+         specifier: ^5.7.0
+         version: 5.9.3
+       typescript-eslint:
+         specifier: ^8.20.0
+         version: 8.67.0(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3)
+       vitest:
+         specifier: ^3.0.0
+-        version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(yaml@2.9.0)
++        version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0)
+ 
+   packages/config:
+     dependencies:
+       zod:
+         specifier: ^3.24.0
+         version: 3.25.76
+     devDependencies:
+       typescript:
+         specifier: ^5.7.0
+         version: 5.9.3
+@@ -63,33 +63,39 @@ importers:
+     devDependencies:
+       typescript:
+         specifier: ^5.7.0
+         version: 5.9.3
+ 
+   packages/db:
+     dependencies:
+       '@prisma/client':
+         specifier: ^6.3.0
+         version: 6.19.3(prisma@6.19.3(typescript@5.9.3))(typescript@5.9.3)
++      '@sentinel/contracts':
++        specifier: workspace:*
++        version: link:../contracts
+       uuidv7:
+         specifier: ^1.0.2
+         version: 1.2.1
+     devDependencies:
+       '@sentinel/config':
+         specifier: workspace:*
+         version: link:../config
+       '@testcontainers/postgresql':
+         specifier: ^10.16.0
+         version: 10.28.0
+       prisma:
+         specifier: ^6.3.0
+         version: 6.19.3(typescript@5.9.3)
++      tsx:
++        specifier: ^4.19.0
++        version: 4.23.12
+       typescript:
+         specifier: ^5.7.0
+         version: 5.9.3
+ 
+   packages/observability:
+     dependencies:
+       pino:
+         specifier: ^9.5.0
+         version: 9.14.0
+       pino-pretty:
+@@ -2336,20 +2342,25 @@ packages:
+     engines: {node: '>=18.12'}
+     peerDependencies:
+       typescript: '>=4.8.4'
+ 
+   tsconfig-paths@3.15.0:
+     resolution: {integrity: sha512-2Ac2RgzDe/cn48GvOe3M+o82pEFewD3UPbyoUHHdKasHwJKjds4fLXWf/Ux5kATBKN20oaFGu+jbElp1pos0mg==}
+ 
+   tslib@2.8.1:
+     resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
+ 
++  tsx@4.23.12:
++    resolution: {integrity: sha512-FDf4L4sYzKtzWYhU/Xm0AQFdTjdIxNo9ElTf2mxXM6k8YMHXzYUe4yODVaXP4V9uMFbVg8c0qyBccK2OOxb45Q==}
++    engines: {node: '>=18.0.0'}
++    hasBin: true
++
+   turbo@2.10.11:
+     resolution: {integrity: sha512-yQfwQVoRXwOuyX1LxiJFBFNg6VfuYh+/RyZLd82+isgyLkBXw3S5XRRzvcck1FAjSCG5sVyLd+O1eDMvYa3J7g==}
+     hasBin: true
+ 
+   tweetnacl@0.14.5:
+     resolution: {integrity: sha512-KXXFFdAbFXY4geFIwoyNK+f5Z1b7swfXABfL7HXCmoIWMKU3dmS26672A4EeQtDzLKy7SXmfBu51JolvEKwtGA==}
+ 
+   type-check@0.4.0:
+     resolution: {integrity: sha512-XleUoc9uwGXqjWwXaUTZAmzMcFZ5858QA2vvx1Ur5xIcixXIP+8LnFDgRplU30us6teqdlskFfu+ae4K79Ooew==}
+     engines: {node: '>= 0.8.0'}
+@@ -3138,27 +3149,27 @@ snapshots:
+     optional: true
+ 
+   '@vitest/expect@3.2.7':
+     dependencies:
+       '@types/chai': 5.2.3
+       '@vitest/spy': 3.2.7
+       '@vitest/utils': 3.2.7
+       chai: 5.3.3
+       tinyrainbow: 2.0.0
+ 
+-  '@vitest/mocker@3.2.7(vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(yaml@2.9.0))':
++  '@vitest/mocker@3.2.7(vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))':
+     dependencies:
+       '@vitest/spy': 3.2.7
+       estree-walker: 3.0.3
+       magic-string: 0.30.21
+     optionalDependencies:
+-      vite: 7.3.6(@types/node@22.20.1)(jiti@2.7.0)(yaml@2.9.0)
++      vite: 7.3.6(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0)
+ 
+   '@vitest/pretty-format@3.2.7':
+     dependencies:
+       tinyrainbow: 2.0.0
+ 
+   '@vitest/runner@3.2.7':
+     dependencies:
+       '@vitest/utils': 3.2.7
+       pathe: 2.0.3
+       strip-literal: 3.1.0
+@@ -4927,20 +4938,26 @@ snapshots:
+   tsconfig-paths@3.15.0:
+     dependencies:
+       '@types/json5': 0.0.29
+       json5: 1.0.2
+       minimist: 1.2.8
+       strip-bom: 3.0.0
+ 
+   tslib@2.8.1:
+     optional: true
+ 
++  tsx@4.23.12:
++    dependencies:
++      esbuild: 0.28.2
++    optionalDependencies:
++      fsevents: 2.3.3
++
+   turbo@2.10.11:
+     optionalDependencies:
+       '@turbo/darwin-64': 2.10.11
+       '@turbo/darwin-arm64': 2.10.11
+       '@turbo/linux-64': 2.10.11
+       '@turbo/linux-arm64': 2.10.11
+       '@turbo/windows-64': 2.10.11
+       '@turbo/windows-arm64': 2.10.11
+ 
+   tweetnacl@0.14.5: {}
+@@ -5040,79 +5057,80 @@ snapshots:
+   uri-js@4.4.1:
+     dependencies:
+       punycode: 2.3.1
+ 
+   util-deprecate@1.0.2: {}
+ 
+   uuid@10.0.0: {}
+ 
+   uuidv7@1.2.1: {}
+ 
+-  vite-node@3.2.4(@types/node@22.20.1)(jiti@2.7.0)(yaml@2.9.0):
++  vite-node@3.2.4(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0):
+     dependencies:
+       cac: 6.7.14
+       debug: 4.4.3
+       es-module-lexer: 1.7.0
+       pathe: 2.0.3
+-      vite: 7.3.6(@types/node@22.20.1)(jiti@2.7.0)(yaml@2.9.0)
++      vite: 7.3.6(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0)
+     transitivePeerDependencies:
+       - '@types/node'
+       - jiti
+       - less
+       - lightningcss
+       - sass
+       - sass-embedded
+       - stylus
+       - sugarss
+       - supports-color
+       - terser
+       - tsx
+       - yaml
+ 
+-  vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(yaml@2.9.0):
++  vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0):
+     dependencies:
+       esbuild: 0.28.2
+       fdir: 6.5.0(picomatch@4.0.5)
+       picomatch: 4.0.5
+       postcss: 8.5.26
+       rollup: 4.62.4
+       tinyglobby: 0.2.17
+     optionalDependencies:
+       '@types/node': 22.20.1
+       fsevents: 2.3.3
+       jiti: 2.7.0
++      tsx: 4.23.12
+       yaml: 2.9.0
+ 
+-  vitest@3.2.7(@types/node@22.20.1)(jiti@2.7.0)(yaml@2.9.0):
++  vitest@3.2.7(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0):
+     dependencies:
+       '@types/chai': 5.2.3
+       '@vitest/expect': 3.2.7
+-      '@vitest/mocker': 3.2.7(vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(yaml@2.9.0))
++      '@vitest/mocker': 3.2.7(vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
+       '@vitest/pretty-format': 3.2.7
+       '@vitest/runner': 3.2.7
+       '@vitest/snapshot': 3.2.7
+       '@vitest/spy': 3.2.7
+       '@vitest/utils': 3.2.7
+       chai: 5.3.3
+       debug: 4.4.3
+       expect-type: 1.4.0
+       magic-string: 0.30.21
+       pathe: 2.0.3
+       picomatch: 4.0.5
+       std-env: 3.10.0
+       tinybench: 2.9.0
+       tinyexec: 0.3.2
+       tinyglobby: 0.2.17
+       tinypool: 1.1.1
+       tinyrainbow: 2.0.0
+-      vite: 7.3.6(@types/node@22.20.1)(jiti@2.7.0)(yaml@2.9.0)
+-      vite-node: 3.2.4(@types/node@22.20.1)(jiti@2.7.0)(yaml@2.9.0)
++      vite: 7.3.6(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0)
++      vite-node: 3.2.4(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0)
+       why-is-node-running: 2.3.0
+     optionalDependencies:
+       '@types/node': 22.20.1
+     transitivePeerDependencies:
+       - jiti
+       - less
+       - lightningcss
+       - msw
+       - sass
+       - sass-embedded

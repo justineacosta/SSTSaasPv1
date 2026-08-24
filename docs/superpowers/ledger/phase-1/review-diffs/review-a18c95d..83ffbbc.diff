@@ -1,0 +1,985 @@
+diff --git a/.claude/development/coding-standards.md b/.claude/development/coding-standards.md
+index 88b6a61..90194e7 100644
+--- a/.claude/development/coding-standards.md
++++ b/.claude/development/coding-standards.md
+@@ -71,7 +71,10 @@ path has a considered failure behaviour.
+ These have ESLint rules, not just good intentions:
+ 
+ - No `process.env` outside `packages/config`.
+-- No import of the unscoped Prisma client outside migrations, seeds, and platform admin.
++- No import of the unscoped Prisma client outside migrations, seeds, and platform admin. This
++  covers both the `unscoped` module and the generated client path it wraps
++  (`packages/db/generated/client`) — fencing only the former left the direct import clean, which
++  a Task 14 review demonstrated with a probe file.
+ - No `dangerouslySetInnerHTML` outside the reviewed markdown renderer.
+ - No raw hex colours in `packages/ui` or `apps/web` components — reference a design token
+   custom property instead (Task 12). Arbitrary spacing values are not yet lint-enforced.
+diff --git a/.claude/development/testing.md b/.claude/development/testing.md
+index 075d386..6f430a6 100644
+--- a/.claude/development/testing.md
++++ b/.claude/development/testing.md
+@@ -110,24 +110,41 @@ install -> format -> lint -> typecheck -> unit -> check:specs -> stack up -> int
+ `security` and `container scan` are not in it: the security suites are Phase 2/3 (there is no
+ authorization matrix to generate and no tenant-owned REST resource to assert over), and no
+ container is built yet. `check:specs`, `check:openapi` and `check:registry` are the three
+-mechanical checks Task 14 added — respectively that every `*.spec.*` file is claimed by exactly
+-one Vitest project, that the committed OpenAPI document matches what the contracts generate, and
++mechanical checks Task 14 added — respectively that every spec file is claimed by exactly one
++Vitest project, that the committed OpenAPI document matches what the contracts generate, and
+ that the tenant resource registry has not rotted
+ ([`migrations.md`](migrations.md) §5).
+ 
++**Spec files are named `*.spec.*`, never `*.test.*`, and `check:specs` enforces that.** Vitest's
++default `include` covers both spellings, but every project in `vitest.workspace.ts` overrides
++that default with `.spec.` patterns only — so a `.test.ts` file matches no project and executes
++nothing while `pnpm test` prints green. A review proved it with a file asserting `1 === 2`. The
++check now sweeps both spellings and fails on `.test.*` with a rename instruction; the fix is
++always to rename the file, never to widen a project include, because two spellings for one
++concept is how the trap regrows.
++
+ `check:specs` sits immediately after the unit tests because it is the check that says whether
+ they ran anything: a spec matching no project executes nothing while `--passWithNoTests` prints
+ green.
+ 
+ Security suites run on every pull request, not nightly. The full E2E suite runs on pull
+-requests to `main`; a smoke subset runs on every push. Flaky tests are quarantined and fixed,
+-never retried into passing — a retried test is a test that no longer tells you anything.
+-
+-**One live exception to that last sentence, recorded rather than hidden:**
+-`apps/web/playwright.config.ts` sets `retries: 2` under CI. That was Task 13's decision and it
+-predates this stage existing anywhere but one developer's machine; now that the E2E stage runs
+-on every push, it is a real conflict with the rule above and it belongs in front of a reviewer
+-rather than in a config file nobody re-reads. The argument for keeping it is that a cold Linux
+-runner starting a fresh production build has startup races a developer's warm machine does not;
+-the argument against is the rule above, which exists because a retried test stops telling you
+-anything. Unresolved.
++requests to `main`; a smoke subset runs on every push.
++
++**Retries.** Flaky tests are quarantined and fixed, not retried into passing. Concretely:
++
++- **Unit and integration run with zero retries, and a failure there is a failure.** Verified
++  behaviourally rather than by reading a default: a probe test that only passes on a second
++  attempt fails under both the `unit` and `integration` projects, so each test body executes
++  exactly once.
++- **The E2E lane may retry, and only the E2E lane.** `apps/web/playwright.config.ts` sets
++  `retries: 2` under CI. What that absorbs is *infrastructure* flake — port binding, a cold
++  production server start, network — not test flake, and that distinction is the whole
++  justification.
++- **A red-then-green retry is triaged, not ignored.** `trace: 'on-first-retry'` means the first
++  failure always leaves a trace behind, and `ci.yml` uploads it on failure. A retry that hid the
++  evidence would be exactly what this rule forbids; a retry that preserves it is a lead.
++
++This paragraph used to end on the flat absolute "never retried into passing". That was written
++about unit and integration tests, where it is right, and over-generalised to a browser lane that
++did not exist when it was written — a contradiction that only became live when Task 14 added the
++E2E stage to CI. Resolved in favour of amending the rule, not the config.
+diff --git a/.claude/security/tenant-isolation.md b/.claude/security/tenant-isolation.md
+index c826c49..3405cd8 100644
+--- a/.claude/security/tenant-isolation.md
++++ b/.claude/security/tenant-isolation.md
+@@ -85,6 +85,16 @@ must get isolation right on their own, reviewed accordingly.
+ The unscoped client lives in one module. An ESLint rule forbids importing it outside
+ `packages/db/migrations`, seeds, and the platform-admin module, and CI fails on violation.
+ 
++The rule fences **two** specifiers, and it took a review to notice the second was missing: the
++`unscoped` wrapper module, *and* the generated Prisma client path it wraps
++(`packages/db/generated/client`). Fencing only the wrapper left
++`import { PrismaClient } from '../generated/client/index.js'` linting clean from any file — a
++non-exempt probe proved it — which meant this paragraph, and
++[`../development/coding-standards.md`](../development/coding-standards.md) §6, described a
++control that did not cover the shorter road to the same object. Both specifiers are now in the
++restricted group; the only exemptions on the generated path are `unscoped.ts` itself and
++`datamodel.ts`, which reads schema metadata and can issue no query.
++
+ ### Layer 2 — PostgreSQL Row-Level Security (defence in depth)
+ 
+ RLS is enabled and **forced** on every tenant table and on the tenant root, with a policy
+diff --git a/apps/api/package.json b/apps/api/package.json
+index 6c316b0..0e69bce 100644
+--- a/apps/api/package.json
++++ b/apps/api/package.json
+@@ -8,7 +8,7 @@
+     "build": "tsc -p tsconfig.build.json",
+     "dev": "dotenv -e ../../.env -- node scripts/dev.ts",
+     "typecheck": "tsc -p tsconfig.json --noEmit",
+-    "lint": "eslint src",
++    "lint": "eslint src scripts",
+     "openapi:generate": "tsc -p tsconfig.build.json && dotenv -e ../../.env -- node dist/openapi/cli.js",
+     "start": "node dist/main.js"
+   },
+diff --git a/apps/api/tsconfig.build.json b/apps/api/tsconfig.build.json
+index fa05a70..f567618 100644
+--- a/apps/api/tsconfig.build.json
++++ b/apps/api/tsconfig.build.json
+@@ -1,5 +1,13 @@
+ {
+   "extends": "./tsconfig.json",
++  "compilerOptions": {
++    "rootDir": "src",
++    "outDir": "dist",
++    "noEmit": false
++  },
++  // Emission is `src` only: `scripts/` is developer tooling run through Node's
++  // type stripping, and shipping it in the runtime image would be noise.
++  "include": ["src/**/*.ts"],
+   // `src/testing` is harness, not product: it is imported only by specs, and
+   // emitting it would ship dotenv and the test bootstrap in the runtime image.
+   "exclude": ["src/**/*.spec.ts", "src/**/*.integration.spec.ts", "src/testing/**/*.ts"]
+diff --git a/apps/api/tsconfig.json b/apps/api/tsconfig.json
+index f1de9c8..6a31099 100644
+--- a/apps/api/tsconfig.json
++++ b/apps/api/tsconfig.json
+@@ -1,8 +1,6 @@
+ {
+   "extends": "../../tsconfig.base.json",
+   "compilerOptions": {
+-    "rootDir": "src",
+-    "outDir": "dist",
+     // NestJS is decorator-driven. `emitDecoratorMetadata` is deliberately NOT
+     // enabled: esbuild — which Vitest uses to transform TypeScript — does not
+     // implement it, so any DI that relied on `design:paramtypes` would resolve
+@@ -11,7 +9,16 @@
+     // reflected type metadata and behaves identically in both toolchains.
+     "experimentalDecorators": true,
+     "useDefineForClassFields": false,
+-    "types": ["node"]
++    "types": ["node"],
++    // This project is for checking, not emitting. `rootDir`/`outDir` live in
++    // tsconfig.build.json, which is the only thing that emits — that split is
++    // what lets `include` below reach `scripts/`, which sits outside `src` and
++    // could not be added while `rootDir` was `src`.
++    "noEmit": true
+   },
+-  "include": ["src/**/*.ts"]
++  // `scripts/**` is not optional here. A review put a blatant type error AND a
++  // banned `console.log` in `scripts/dev.ts` and both `pnpm typecheck` and
++  // `pnpm lint` exited 0 — the same blind spot the root `tsconfig.json` was
++  // added to close for root `scripts/`, recreated one directory over.
++  "include": ["src/**/*.ts", "scripts/**/*.ts"]
+ }
+diff --git a/eslint.config.js b/eslint.config.js
+index a0ab766..8f3c004 100644
+--- a/eslint.config.js
++++ b/eslint.config.js
+@@ -68,6 +68,24 @@ export default tseslint.config(
+               group: ['**/unscoped', '**/unscoped.js', '@sentinel/db/unscoped'],
+               message: 'Use the tenant-scoped client. See security/tenant-isolation.md.',
+             },
++            // The generated client itself, not just the `unscoped.ts` wrapper
++            // around it (Task 14 review, I3). The wrapper was fenced; the path
++            // it wraps was not, so `import { PrismaClient } from
++            // '../generated/client/index.js'` sailed straight past the rule.
++            // Proved with a non-exempt probe file importing PrismaClient that
++            // way: eslint exited 0, zero errors.
++            //
++            // This matters beyond the hole itself: coding-standards.md §6
++            // asserts as FACT that lint enforces "no import of the unscoped
++            // Prisma client outside migrations, seeds, and platform admin", and
++            // that claim was false for the direct path. A security document
++            // describing a control that does not exist is the defect class this
++            // branch keeps re-introducing.
++            {
++              group: ['**/generated/client', '**/generated/client/*'],
++              message:
++                'Import the tenant-scoped client from @sentinel/db. The generated Prisma client is unscoped. See security/tenant-isolation.md §2.',
++            },
+           ],
+         },
+       ],
+@@ -140,6 +158,10 @@ export default tseslint.config(
+   {
+     files: [
+       'packages/db/src/unscoped.ts',
++      // datamodel.ts reads Prisma.dmmf — schema shape only. It exports no
++      // PrismaClient, does not re-export `Prisma`, and nothing it exports can
++      // issue a query; the review verified that specifically.
++      'packages/db/src/datamodel.ts',
+       'packages/db/src/seed.ts',
+       'packages/db/src/tenant-client.ts',
+       'packages/db/src/tenant-transaction.ts',
+diff --git a/packages/db/src/datamodel.ts b/packages/db/src/datamodel.ts
+index f07cf2b..ed7ae45 100644
+--- a/packages/db/src/datamodel.ts
++++ b/packages/db/src/datamodel.ts
+@@ -6,12 +6,26 @@
+  * defines it, rather than from a list someone remembered to update. Prisma
+  * publishes exactly that as `Prisma.dmmf.datamodel`.
+  *
+- * This module exists so the check can read it **without** importing
+- * `./unscoped.js`. That module exports a real `PrismaClient` and is fenced off
+- * by an ESLint `no-restricted-imports` rule with a short, deliberate exemption
+- * list (security/tenant-isolation.md §2, Layer 1). Widening that list so a CI
+- * script can read metadata would trade a security fence for a convenience.
+- * Nothing exported here can issue a query.
++ * This module exists so the check can read that metadata without going through
++ * `./unscoped.js`, which exports a real `PrismaClient`. Nothing exported here
++ * can issue a query: no `PrismaClient`, no re-export of `Prisma`, only plain
++ * data describing the schema's shape.
++ *
++ * An earlier version of this comment justified the file by claiming it avoided
++ * widening the `no-restricted-imports` fence around the unscoped client. That
++ * was **false**, and a review proved it: at the time the fence matched only the
++ * `unscoped` and `unscoped.js` module specifiers plus `@sentinel/db/unscoped`,
++ * so the `../generated/client/index.js` import below was never covered by it
++ * and nothing would have been widened. The reviewer demonstrated the hole with
++ * a non-exempt probe file importing `PrismaClient` from that path directly:
++ * lint exited 0. The fence has since been widened to cover the generated client
++ * path too (see `eslint.config.js`), with this file and `unscoped.ts` as its
++ * only exemptions — so the justification is now true, but it was written before
++ * it was, and it is recorded that way on purpose.
++ *
++ * The real reason to keep this module is narrower and was always sound: a CI
++ * script that needs the schema's shape should not be handed something that can
++ * open a connection. See security/tenant-isolation.md §2, Layer 1.
+  *
+  * Measured with Prisma 6.19.3 (`Prisma.prismaVersion.client`): when a relation
+  * in `schema.prisma` omits `onDelete`, the DMMF field carries **no**
+@@ -19,7 +33,14 @@
+  * the DMMF. `onDelete` is therefore `undefined` for those, and the caller must
+  * decide what that means rather than assume a default.
+  */
++import { readFileSync } from 'node:fs';
+ import { Prisma } from '../generated/client/index.js';
++import {
++  decideSchemaStaleness,
++  GENERATED_SCHEMA_PATH,
++  SCHEMA_PATH,
++  type SchemaStaleness,
++} from './schema-hash.js';
+ 
+ /** One foreign key, as seen from the child model that owns the column. */
+ export interface DatamodelRelation {
+@@ -69,3 +90,28 @@ export function datamodelModels(): readonly DatamodelModel[] {
+ 
+ /** The Prisma client version the datamodel above was read from. */
+ export const PRISMA_CLIENT_VERSION: string = Prisma.prismaVersion.client;
++
++/**
++ * Whether the generated DMMF above can be trusted to describe `schema.prisma`
++ * as it exists on disk right now, or `undefined` when it can.
++ *
++ * Every caller of `datamodelModels()` that is making a security decision must
++ * consult this first. `Prisma.prismaVersion.client` answers a different and much
++ * weaker question — which client library is installed — and reads like a
++ * provenance claim while saying nothing at all about whether the model matches
++ * the schema.
++ *
++ * Fails closed: an unreadable schema or an unreadable hash file is reported as
++ * stale rather than swallowed.
++ */
++export function schemaStaleness(): SchemaStaleness | undefined {
++  const read = (path: string): string | undefined => {
++    try {
++      return readFileSync(path, 'utf8');
++    } catch {
++      return undefined;
++    }
++  };
++
++  return decideSchemaStaleness(read(GENERATED_SCHEMA_PATH), read(SCHEMA_PATH));
++}
+diff --git a/packages/db/src/index.ts b/packages/db/src/index.ts
+index 4862348..1e3207f 100644
+--- a/packages/db/src/index.ts
++++ b/packages/db/src/index.ts
+@@ -15,5 +15,7 @@ export {
+   isDeliberatelyGlobalModel,
+ } from './tenant-resources.js';
+ export type { DeliberatelyGlobalModel } from './tenant-resources.js';
+-export { datamodelModels, PRISMA_CLIENT_VERSION } from './datamodel.js';
++export { datamodelModels, PRISMA_CLIENT_VERSION, schemaStaleness } from './datamodel.js';
+ export type { DatamodelModel, DatamodelRelation } from './datamodel.js';
++export { computeSchemaHash, decideSchemaStaleness, normaliseSchema } from './schema-hash.js';
++export type { SchemaStaleness } from './schema-hash.js';
+diff --git a/packages/db/src/schema-hash.spec.ts b/packages/db/src/schema-hash.spec.ts
+new file mode 100644
+index 0000000..2cec385
+--- /dev/null
++++ b/packages/db/src/schema-hash.spec.ts
+@@ -0,0 +1,81 @@
++import { describe, expect, it } from 'vitest';
++import { computeSchemaHash, decideSchemaStaleness, normaliseSchema } from './schema-hash.js';
++
++const SOURCE = `model Membership {
++  id             String @id
++  organizationId String
++
++  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
++}
++`;
++
++/** How Prisma actually writes its own copy: column-aligned, blank lines kept. */
++const PRISMA_FORMATTED = `model Membership {
++  id             String @id
++  organizationId String
++
++  user         User         @relation(fields: [userId], references: [id], onDelete: Restrict)
++}
++`;
++
++describe('normaliseSchema', () => {
++  it('collapses exactly what Prisma reformats and nothing else', () => {
++    expect(normaliseSchema(PRISMA_FORMATTED)).toBe(normaliseSchema(SOURCE));
++  });
++
++  it('drops blank lines and trims', () => {
++    expect(normaliseSchema('a\n\n   b   \n')).toBe('a\nb');
++  });
++
++  it('does not merge separate lines', () => {
++    expect(normaliseSchema('a\nb')).toBe('a\nb');
++    expect(normaliseSchema('a b')).not.toBe('a\nb');
++  });
++});
++
++describe('computeSchemaHash', () => {
++  it('is stable for identical content', () => {
++    expect(computeSchemaHash(SOURCE)).toBe(computeSchemaHash(SOURCE));
++  });
++
++  it('ignores line endings', () => {
++    // A working tree can hold CRLF while git stores LF. A guard that cried wolf
++    // over that is a guard people route around.
++    expect(computeSchemaHash('model A {\r\n}\r\n')).toBe(computeSchemaHash('model A {\n}\n'));
++  });
++
++  it('changes when a referential action changes', () => {
++    expect(computeSchemaHash('onDelete: Restrict')).not.toBe(
++      computeSchemaHash('onDelete: Cascade'),
++    );
++  });
++});
++
++describe('decideSchemaStaleness', () => {
++  it('accepts Prisma’s reformatted copy of the same schema', () => {
++    // The whole mechanism rests on this: the generated copy is never
++    // byte-equal to the source, only semantically equal.
++    expect(decideSchemaStaleness(PRISMA_FORMATTED, SOURCE)).toBeUndefined();
++  });
++
++  it('reports a mismatch when the schema moved since generate', () => {
++    // The exact scenario a review reproduced: Membership.userId put back to
++    // onDelete: Cascade without regenerating, and check:registry printed OK.
++    const edited = SOURCE.replace('onDelete: Restrict', 'onDelete: Cascade');
++    expect(decideSchemaStaleness(PRISMA_FORMATTED, edited)).toBe('schema-mismatch');
++  });
++
++  it('treats a missing generated copy as stale, not as fine', () => {
++    // Unknown provenance has to read as stale. The alternative is the false
++    // green this guard exists to stop.
++    expect(decideSchemaStaleness(undefined, SOURCE)).toBe('no-generated-schema');
++  });
++
++  it('reports an unreadable source schema rather than passing', () => {
++    expect(decideSchemaStaleness(PRISMA_FORMATTED, undefined)).toBe('no-source-schema');
++  });
++
++  it('checks the source before the generated copy when both are missing', () => {
++    expect(decideSchemaStaleness(undefined, undefined)).toBe('no-source-schema');
++  });
++});
+diff --git a/packages/db/src/schema-hash.ts b/packages/db/src/schema-hash.ts
+new file mode 100644
+index 0000000..3d68b28
+--- /dev/null
++++ b/packages/db/src/schema-hash.ts
+@@ -0,0 +1,89 @@
++/**
++ * SCHEMA PROVENANCE — does the generated Prisma client actually describe
++ * `schema.prisma` as it exists on disk right now?
++ *
++ * `pnpm check:registry` answers every one of its questions from the generated
++ * DMMF. Nothing otherwise ties that artefact to the schema file: edit the schema
++ * without regenerating and the check reports on a model nobody has any more. A
++ * review proved it by reintroducing Task 6's live `Membership.userId` cascade
++ * defect without regenerating and watching the check print `OK`, exit 0. A check
++ * whose whole premise is refusing to answer from an unverified artefact cannot
++ * itself answer from one.
++ *
++ * WHAT IS COMPARED, AND WHY THIS FORM. `prisma generate` writes its own copy of
++ * the schema to `generated/client/schema.prisma`, in the same invocation that
++ * writes the DMMF and into the same directory. That copy therefore *cannot*
++ * drift from the DMMF — anything that restores, deletes or refreshes one does
++ * the same to the other.
++ *
++ * The first attempt recorded a hash of `schema.prisma` at generate time instead.
++ * That was the reviewer's suggested form, and it has a defect found by
++ * measurement: `@sentinel/db`'s build is a cached turbo task, so a cache hit
++ * replays its logs without re-running the recorder, and the hash file was simply
++ * never written. `pnpm build && pnpm check:registry` then failed for a reason
++ * that had nothing to do with the schema. Comparing against an artefact Prisma
++ * itself writes has no such coupling: there is no separate step to skip.
++ *
++ * NORMALISATION. Prisma's copy is *reformatted* — measured: field names are
++ * column-aligned, so it is never byte-equal to the source. Runs of horizontal
++ * whitespace are collapsed and blank lines dropped before hashing, which makes
++ * the two match exactly today while still detecting a real change: verified that
++ * flipping `onDelete: Restrict` to `Cascade` is still caught.
++ *
++ * This does assume Prisma's formatter only ever differs from the source by
++ * horizontal whitespace. If a future Prisma reorders or rewrites anything, this
++ * reports stale — the red direction, with an instruction that resolves it.
++ */
++import { createHash } from 'node:crypto';
++import { fileURLToPath } from 'node:url';
++
++/**
++ * Both paths resolve identically from `src/` (vitest, tsx) and from `dist/`
++ * (compiled), because each is one directory below `packages/db`.
++ */
++export const SCHEMA_PATH = fileURLToPath(new URL('../prisma/schema.prisma', import.meta.url));
++export const GENERATED_SCHEMA_PATH = fileURLToPath(
++  new URL('../generated/client/schema.prisma', import.meta.url),
++);
++
++/**
++ * Collapses the differences that are pure presentation.
++ *
++ * Line endings, because a working tree can hold CRLF while git stores LF, and a
++ * guard that cries wolf over that is a guard people route around. Horizontal
++ * whitespace and blank lines, because that is precisely and only what Prisma's
++ * formatter changes.
++ */
++export function normaliseSchema(text: string): string {
++  return text
++    .replace(/\r\n/g, '\n')
++    .split('\n')
++    .map((line) => line.replace(/[ \t]+/g, ' ').trim())
++    .filter((line) => line.length > 0)
++    .join('\n');
++}
++
++/** sha256 of the normalised schema text. Pure. */
++export function computeSchemaHash(text: string): string {
++  return createHash('sha256').update(normaliseSchema(text), 'utf8').digest('hex');
++}
++
++/** Why the generated client cannot be trusted, or `undefined` when it can. */
++export type SchemaStaleness = 'no-source-schema' | 'no-generated-schema' | 'schema-mismatch';
++
++/**
++ * The decision, as a pure function so both directions are unit-testable without
++ * touching the filesystem.
++ *
++ * Every ambiguous case resolves to stale. An absent generated copy means the
++ * client's provenance is simply unknown — and "unknown" has to read as "stale",
++ * because the alternative is the false green this exists to stop.
++ */
++export function decideSchemaStaleness(
++  generated: string | undefined,
++  source: string | undefined,
++): SchemaStaleness | undefined {
++  if (source === undefined) return 'no-source-schema';
++  if (generated === undefined) return 'no-generated-schema';
++  return computeSchemaHash(generated) === computeSchemaHash(source) ? undefined : 'schema-mismatch';
++}
+diff --git a/scripts/check-openapi-diff.spec.ts b/scripts/check-openapi-diff.spec.ts
+index da03967..56ffc65 100644
+--- a/scripts/check-openapi-diff.spec.ts
++++ b/scripts/check-openapi-diff.spec.ts
+@@ -3,6 +3,7 @@ import {
+   diffJsonValues,
+   formatDifferences,
+   hasBreakingDifference,
++  isProseOnlyPath,
+   type JsonDifference,
+ } from './check-openapi-diff.js';
+ 
+@@ -102,3 +103,56 @@ describe('formatDifferences', () => {
+     ).toEqual(['  ~ a\n      committed: 1\n      generated: 2']);
+   });
+ });
++
++describe('isProseOnlyPath', () => {
++  it('treats every info.* field as prose', () => {
++    // A review edited info.description — free text no client consumes — and got
++    // the full "this needs /api/v2" banner. A banner that fires on every
++    // docstring tweak is a banner people learn to skim past.
++    expect(isProseOnlyPath('info.description')).toBe(true);
++    expect(isProseOnlyPath('info.title')).toBe(true);
++    expect(isProseOnlyPath('info.version')).toBe(true);
++  });
++
++  it('treats description and summary as prose at any depth', () => {
++    expect(isProseOnlyPath('paths./health/live.get.description')).toBe(true);
++    expect(isProseOnlyPath('paths./health/live.get.summary')).toBe(true);
++  });
++
++  it('does not treat contract-bearing fields as prose', () => {
++    expect(isProseOnlyPath('paths./health/live.get.operationId')).toBe(false);
++    expect(isProseOnlyPath('components.schemas.Error.required[0]')).toBe(false);
++    expect(isProseOnlyPath('openapi')).toBe(false);
++  });
++
++  it('is not fooled by a field whose name merely ends in the word', () => {
++    expect(isProseOnlyPath('paths./x.get.responses.200.contentDescription')).toBe(false);
++  });
++});
++
++describe('hasBreakingDifference, prose exemption', () => {
++  it('does not call a docstring edit breaking', () => {
++    expect(
++      hasBreakingDifference([
++        { path: 'info.description', kind: 'changed', committed: '"A"', generated: '"B"' },
++      ]),
++    ).toBe(false);
++  });
++
++  it('still calls an operationId rename breaking', () => {
++    expect(
++      hasBreakingDifference([
++        { path: 'paths./x.get.operationId', kind: 'changed', committed: '"a"', generated: '"b"' },
++      ]),
++    ).toBe(true);
++  });
++
++  it('still calls a removal breaking even on a prose path sibling', () => {
++    expect(
++      hasBreakingDifference([
++        { path: 'info.description', kind: 'changed', committed: '"A"', generated: '"B"' },
++        { path: 'paths./x', kind: 'removed', committed: '{}' },
++      ]),
++    ).toBe(true);
++  });
++});
+diff --git a/scripts/check-openapi-diff.ts b/scripts/check-openapi-diff.ts
+index 0162863..874cf96 100644
+--- a/scripts/check-openapi-diff.ts
++++ b/scripts/check-openapi-diff.ts
+@@ -108,16 +108,38 @@ export function diffJsonValues(
+   ];
+ }
+ 
++/**
++ * Free prose that no client can depend on, so a change to it is never breaking.
++ *
++ * `description` and `summary` are human documentation at any depth, and every
++ * `info.*` field (title, version, description) describes the document rather
++ * than the contract. Adding a field is still additive per §8, so only `removed`
++ * and `changed` are ever candidates in the first place.
++ */
++export function isProseOnlyPath(path: string): boolean {
++  if (path.startsWith('info.') || path === 'info') return true;
++  const leaf = path.split('.').pop() ?? '';
++  return leaf === 'description' || leaf === 'summary';
++}
++
+ /**
+  * True when a difference removes or renames something a client may depend on.
+  *
+  * Renames show up as one `removed` plus one `added`, so `removed` is the signal
+  * either way. `api/conventions.md` §8: removing a field, renaming, changing a
+  * type, tightening validation, or changing a status code needs `/api/v2`.
++ *
++ * Prose-only paths are excluded. The check still FAILS on them — the committed
++ * document must match what the code generates either way — but it stops
++ * printing a "this needs /api/v2" banner over a typo fix in a docstring. A
++ * banner that appears on every cosmetic edit is a banner people learn to skim
++ * past, and then it is not there when it matters.
+  */
+ export function hasBreakingDifference(differences: readonly JsonDifference[]): boolean {
+   return differences.some(
+-    (difference) => difference.kind === 'removed' || difference.kind === 'changed',
++    (difference) =>
++      (difference.kind === 'removed' || difference.kind === 'changed') &&
++      !isProseOnlyPath(difference.path),
+   );
+ }
+ 
+@@ -167,6 +189,12 @@ function report(lines: readonly string[]): void {
+   console.error(lines.join('\n'));
+ }
+ 
++/** Success goes to stdout; only failures belong on stderr. */
++function reportOk(lines: readonly string[]): void {
++  // eslint-disable-next-line no-console
++  console.log(lines.join('\n'));
++}
++
+ function main(): void {
+   try {
+     try {
+@@ -189,11 +217,31 @@ function main(): void {
+       return;
+     }
+ 
+-    const committedText = readFileSync(COMMITTED, 'utf8');
++    let committedText: string;
++    try {
++      committedText = readFileSync(COMMITTED, 'utf8');
++    } catch {
++      // Without this the reader gets a raw ENOENT stack from Node. It already
++      // failed closed, but a stack trace does not tell anyone what to do.
++      report([
++        'check:openapi FAILED — apps/api/openapi.json is missing.',
++        '',
++        'The committed OpenAPI document is the contract; there is nothing to',
++        'compare the generated one against. If it was deleted by accident,',
++        'restore it from git. If this is a fresh checkout that never had one:',
++        '',
++        '  pnpm --filter @sentinel/api openapi:generate',
++        '',
++        'then commit the result.',
++      ]);
++      process.exitCode = 1;
++      return;
++    }
++
+     const generatedText = readFileSync(GENERATED, 'utf8');
+ 
+     if (committedText === generatedText) {
+-      report([
++      reportOk([
+         'check:openapi OK — apps/api/openapi.json is byte-identical to what the contracts generate.',
+       ]);
+       return;
+diff --git a/scripts/check-tenant-registry.ts b/scripts/check-tenant-registry.ts
+index 73ea8c8..1e13db1 100644
+--- a/scripts/check-tenant-registry.ts
++++ b/scripts/check-tenant-registry.ts
+@@ -205,6 +205,12 @@ function report(lines: readonly string[]): void {
+   console.error(lines.join('\n'));
+ }
+ 
++/** Success goes to stdout; only failures belong on stderr. */
++function reportOk(lines: readonly string[]): void {
++  // eslint-disable-next-line no-console
++  console.log(lines.join('\n'));
++}
++
+ export function runChecks(
+   models: readonly ModelInfo[],
+   registries: Registries,
+@@ -354,16 +360,55 @@ export function runChecks(
+  * be imported — by the spec, or by anything else — without loading Prisma's
+  * generated client and its query engine into the process.
+  */
++/** The stale-DMMF refusal. Its own function so the message stays readable. */
++function reportStale(reason: string): void {
++  report([
++    'check:registry REFUSED TO ANSWER — the generated Prisma client does not',
++    'match packages/db/prisma/schema.prisma.',
++    '',
++    `Reason: ${reason}`,
++    '',
++    'Every rule this check applies is read from the generated DMMF. If that',
++    'artefact is older than the schema, the check reports on a model nobody has',
++    'any more — and it reports OK, which is the one answer it must never give',
++    'without grounds. This is not hypothetical: a review reintroduced the exact',
++    'live cascade defect Task 6 fixed, did not regenerate, and watched this',
++    'check print OK and exit 0.',
++    '',
++    'Run:  pnpm --filter @sentinel/db db:generate',
++    '',
++    'The comparison is against generated/client/schema.prisma — the copy Prisma',
++    'writes in the same invocation that writes the DMMF, so the two can never',
++    'disagree with each other about which schema they came from.',
++  ]);
++  process.exitCode = 1;
++}
++
+ async function main(): Promise<void> {
+   const {
+     datamodelModels,
+     DELIBERATELY_GLOBAL_MODEL_NAMES,
+     DELIBERATELY_GLOBAL_MODELS,
+-    PRISMA_CLIENT_VERSION,
++    schemaStaleness,
+     TENANT_OWNED_MODELS,
+     TENANT_ROOT_MODEL,
+   } = await import('@sentinel/db');
+ 
++  // Before anything else. A check that reasons from an unverified artefact is
++  // the thing this check exists to prevent elsewhere.
++  const staleness = schemaStaleness();
++  if (staleness !== undefined) {
++    reportStale(
++      {
++        'no-source-schema': 'packages/db/prisma/schema.prisma could not be read at all.',
++        'no-generated-schema':
++          'the generated client carries no copy of the schema it was built from, so its provenance is unknown.',
++        'schema-mismatch': 'schema.prisma has changed since the client was generated.',
++      }[staleness],
++    );
++    return;
++  }
++
+   const models = datamodelModels();
+   const registries: Registries = {
+     tenantOwned: [...TENANT_OWNED_MODELS],
+@@ -383,11 +428,14 @@ async function main(): Promise<void> {
+     return;
+   }
+ 
+-  report([
++  // The provenance clause is the point of this line. It used to print the
++  // Prisma *client version*, which reads like a provenance claim while saying
++  // nothing whatever about whether the DMMF matches the schema on disk.
++  reportOk([
+     `check:registry OK — ${String(models.length)} models, ` +
+       `${String(registries.tenantOwned.length)} tenant-owned, ` +
+-      `1 tenant root, ${String(registries.deliberatelyGlobal.length)} deliberately global ` +
+-      `(Prisma client ${PRISMA_CLIENT_VERSION}).`,
++      `1 tenant root, ${String(registries.deliberatelyGlobal.length)} deliberately global. ` +
++      `DMMF verified against packages/db/prisma/schema.prisma.`,
+   ]);
+ }
+ 
+diff --git a/scripts/check-vitest-projects.spec.ts b/scripts/check-vitest-projects.spec.ts
+index 71b08ae..293d606 100644
+--- a/scripts/check-vitest-projects.spec.ts
++++ b/scripts/check-vitest-projects.spec.ts
+@@ -1,8 +1,14 @@
+-import { describe, expect, it } from 'vitest';
++import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+ import {
++  findBannedSpellings,
++  findCandidateSpecFiles,
+   findSpecCoverageViolations,
+   isExcludedSpecPath,
+   normalisePath,
++  toCanonicalSpelling,
+   type ProjectFiles,
+ } from './check-vitest-projects.js';
+ 
+@@ -103,3 +109,93 @@ describe('findSpecCoverageViolations', () => {
+     ).toEqual({ unclaimed: [], contested: [] });
+   });
+ });
++
++// ---------------------------------------------------------------------------
++// C1 regression — the `.test.*` spelling.
++//
++// A review put `packages/db/src/__probe__.test.ts` containing
++// `expect(1).toBe(2)` in the tree. `pnpm test` printed 375 passed and
++// `check:specs` printed OK: both green, the failing test never executed. The
++// sweep only looked for `.spec.*`, so the guard built to end the silent-skip
++// trap was blind to the most natural filename in the ecosystem.
++// ---------------------------------------------------------------------------
++
++describe('findBannedSpellings', () => {
++  it('flags the exact file the review used', () => {
++    expect(findBannedSpellings(['/r/packages/db/src/__probe__.test.ts'])).toEqual([
++      '/r/packages/db/src/__probe__.test.ts',
++    ]);
++  });
++
++  it('flags every .test extension, not just .ts', () => {
++    expect(findBannedSpellings(['/r/a.test.tsx', '/r/b.test.js', '/r/c.test.mts'])).toHaveLength(3);
++  });
++
++  it('leaves canonical .spec files alone', () => {
++    expect(findBannedSpellings(['/r/a.spec.ts', '/r/b.integration.spec.tsx'])).toEqual([]);
++  });
++
++  it('does not flag a file merely containing the word test', () => {
++    expect(
++      findBannedSpellings(['/r/test-setup.ts', '/r/latest.spec.ts', '/r/tests/a.spec.ts']),
++    ).toEqual([]);
++  });
++});
++
++describe('toCanonicalSpelling', () => {
++  it('renders the rename instruction the failure message prints', () => {
++    expect(toCanonicalSpelling('/r/packages/db/src/auth.test.ts')).toBe(
++      '/r/packages/db/src/auth.spec.ts',
++    );
++  });
++
++  it('preserves the extension', () => {
++    expect(toCanonicalSpelling('/r/a.test.tsx')).toBe('/r/a.spec.tsx');
++  });
++});
++
++describe('the candidate sweep itself, against a real directory tree', () => {
++  // A fixture tree rather than the repository itself: this must keep pinning
++  // the glob even once the repo contains no `.test.*` file, which is exactly
++  // the state the ban is meant to maintain.
++  let fixtureRoot: string;
++
++  beforeAll(() => {
++    fixtureRoot = normalisePath(mkdtempSync(join(tmpdir(), 'sentinel-specs-')));
++    const src = join(fixtureRoot, 'packages', 'db', 'src');
++    mkdirSync(src, { recursive: true });
++    writeFileSync(join(src, '__fixture__.spec.ts'), '', 'utf8');
++    writeFileSync(join(src, '__fixture__.test.ts'), '', 'utf8');
++    const excluded = join(fixtureRoot, 'packages', 'db', 'node_modules');
++    mkdirSync(excluded, { recursive: true });
++    writeFileSync(join(excluded, 'dep.spec.ts'), '', 'utf8');
++  });
++
++  afterAll(() => {
++    rmSync(fixtureRoot, { recursive: true, force: true });
++  });
++
++  const relative = (root: string): string[] =>
++    findCandidateSpecFiles(root).map((file) => file.replace(`${root}/`, ''));
++
++  it('finds a real .test.* file on disk, not only .spec.*', () => {
++    // Pins the SEARCH_GLOBS widening. Narrow the glob back to `*.spec.*` and
++    // this fails — which is the point, because narrowing it is invisible
++    // everywhere else, including to `pnpm test`.
++    expect(relative(fixtureRoot)).toContain('packages/db/src/__fixture__.test.ts');
++  });
++
++  it('finds .spec.* files in the same sweep', () => {
++    expect(relative(fixtureRoot)).toContain('packages/db/src/__fixture__.spec.ts');
++  });
++
++  it('still applies the exclusion list', () => {
++    expect(relative(fixtureRoot)).not.toContain('packages/db/node_modules/dep.spec.ts');
++  });
++
++  it('classifies exactly the .test.* one as banned', () => {
++    expect(
++      findBannedSpellings(findCandidateSpecFiles(fixtureRoot)).map((f) => f.split('/').pop()),
++    ).toEqual(['__fixture__.test.ts']);
++  });
++});
+diff --git a/scripts/check-vitest-projects.ts b/scripts/check-vitest-projects.ts
+index 943a7a4..8ade28e 100644
+--- a/scripts/check-vitest-projects.ts
++++ b/scripts/check-vitest-projects.ts
+@@ -36,9 +36,9 @@ import { fileURLToPath } from 'node:url';
+ 
+ /** Where a spec file may live and still be expected to run under Vitest. */
+ const SEARCH_GLOBS = [
+-  'packages/*/**/*.spec.*',
+-  'apps/*/**/*.spec.*',
+-  'scripts/**/*.spec.*',
++  'packages/*/**/*.{spec,test}.*',
++  'apps/*/**/*.{spec,test}.*',
++  'scripts/**/*.{spec,test}.*',
+ ] as const;
+ 
+ /**
+@@ -87,6 +87,32 @@ export function isExcludedSpecPath(relativePath: string): boolean {
+   return segments[0] === 'apps' && segments[2] === E2E_DIRECTORY;
+ }
+ 
++/**
++ * The `.test.*` spelling, which this repository bans.
++ *
++ * Vitest's DEFAULT `include` covers both `.test.` and `.spec.` — but every
++ * project in `vitest.workspace.ts` overrides that default with `.spec.`
++ * patterns only. So a `.test.ts` file matches no project and executes nothing
++ * while `pnpm test` prints green. A review proved it end to end: a
++ * `packages/db/src/__probe__.test.ts` asserting `1 === 2` sat in the tree and
++ * both `pnpm test` and this check reported OK, exit 0. The sweep only looked
++ * for `.spec.*`, so the guard built to end the silent-skip trap was blind to
++ * the most natural filename in the ecosystem.
++ *
++ * The fix is a RENAME, not a wider project include. Two spellings for one
++ * concept is how this trap regrows: Task 12 hit three separate spellings and
++ * the third was created by the fix round for the second. All 41 spec files in
++ * this repository are already `.spec.*`, so the ban costs nothing.
++ */
++export function findBannedSpellings(candidates: readonly string[]): string[] {
++  return candidates.filter((candidate) => /\.test\.[^./]+$/.test(normalisePath(candidate)));
++}
++
++/** `a/b/foo.test.ts` -> `a/b/foo.spec.ts`, for the rename instruction. */
++export function toCanonicalSpelling(path: string): string {
++  return normalisePath(path).replace(/\.test\.([^./]+)$/, '.spec.$1');
++}
++
+ /** One Vitest project and the files it claims, as the project itself reports them. */
+ export interface ProjectFiles {
+   readonly project: string;
+@@ -149,6 +175,12 @@ function report(lines: readonly string[]): void {
+   console.error(lines.join('\n'));
+ }
+ 
++/** Success goes to stdout; only failures belong on stderr. */
++function reportOk(lines: readonly string[]): void {
++  // eslint-disable-next-line no-console
++  console.log(lines.join('\n'));
++}
++
+ /** Every spec file on disk that Vitest is expected to claim. */
+ export function findCandidateSpecFiles(root: string): string[] {
+   const found = SEARCH_GLOBS.flatMap((pattern) => globSync(pattern, { cwd: root }));
+@@ -162,6 +194,12 @@ async function main(): Promise<void> {
+   const { createVitest } = await import('vitest/node');
+   const vitest = await createVitest('test', { watch: false });
+ 
++  // Globbed exactly once and reused (M6): the disk sweep and the report must
++  // describe the same set, and calling it twice invited them to diverge.
++  const candidates = findCandidateSpecFiles(REPO_ROOT);
++  const banned = findBannedSpellings(candidates);
++  const claimable = candidates.filter((candidate) => !banned.includes(candidate));
++
+   let result: CoverageResult;
+   let projectNames: string[];
+   try {
+@@ -172,13 +210,36 @@ async function main(): Promise<void> {
+       })),
+     );
+     projectNames = projects.map((project) => project.project);
+-    result = findSpecCoverageViolations(findCandidateSpecFiles(REPO_ROOT), projects);
++    result = findSpecCoverageViolations(claimable, projects);
+   } finally {
+     await vitest.close();
+   }
+ 
+   const lines: string[] = [];
+ 
++  if (banned.length > 0) {
++    lines.push(
++      'These files use the `.test.*` spelling, which this repository does not use:',
++      '',
++      ...banned.map(
++        (file) =>
++          `  ${file.replace(`${REPO_ROOT}/`, '')}` +
++          `
++      rename to  ${toCanonicalSpelling(file).replace(`${REPO_ROOT}/`, '')}`,
++      ),
++      '',
++      "Vitest's default include covers both `.test.` and `.spec.`, but every",
++      'project in vitest.workspace.ts overrides that default with `.spec.`',
++      'patterns only — so a `.test.*` file matches no project and executes',
++      'nothing while `pnpm test` prints green.',
++      '',
++      'RENAME the file. Do not teach a project to claim `.test.*`: two spellings',
++      'for one concept is how this trap regrows, and Task 12 hit three of them,',
++      'the third created by the fix round for the second.',
++      '',
++    );
++  }
++
+   if (result.unclaimed.length > 0) {
+     lines.push(
+       'These spec files are claimed by NO Vitest project, so they execute nothing:',
+@@ -217,10 +278,25 @@ async function main(): Promise<void> {
+     return;
+   }
+ 
+-  const candidates = findCandidateSpecFiles(REPO_ROOT);
+-  report([
+-    `check:specs OK — ${String(candidates.length)} spec files, each claimed by exactly one of: ` +
+-      `${projectNames.join(', ')}.`,
++  // A floor assertion (M3). `OK — 0 spec files` would be a green answer from a
++  // check whose entire premise is distrusting silent zeros: a broken glob, a
++  // wrong cwd, or a renamed directory would all present as success.
++  if (claimable.length === 0) {
++    report([
++      'check:specs FAILED — the sweep found no spec files at all.',
++      '',
++      'That is not a repository with no tests; it is a broken sweep. Something',
++      'about SEARCH_GLOBS, the exclusion list, or the working directory is wrong.',
++      'Reporting OK here would be exactly the silent zero this check exists to',
++      'refuse.',
++    ]);
++    process.exitCode = 1;
++    return;
++  }
++
++  reportOk([
++    `check:specs OK — ${String(claimable.length)} spec files, each claimed by exactly one of: ` +
++      `${projectNames.join(', ')}. No banned .test.* spellings.`,
+   ]);
+ }
+ 

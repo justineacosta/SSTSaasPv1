@@ -1,0 +1,666 @@
+diff --git a/.claude/product/roadmap.md b/.claude/product/roadmap.md
+index 34f2ca3..0161789 100644
+--- a/.claude/product/roadmap.md
++++ b/.claude/product/roadmap.md
+@@ -46,9 +46,9 @@ yet, so the access decorators are metadata nothing reads.
+ 
+ Rate limiting is built and globally registered — a Redis sliding window over the table in
+ `security/abuse-prevention.md` §1 — but it limits **nothing today**, and that distinction
+-matters more than the checkmark. Every class in the table is keyed by an account, a principal
+-or an organisation, and none of those exist before authentication ships in Phase 2; the only
+-routes that exist are the probes, and liveness is deliberately exempt. What Phase 1 delivers
++matters more than the checkmark. No route carries any limit class: the only routes that exist
++are the health probes, and liveness is deliberately exempt from the limiter so that it depends
++on no backing service. What Phase 1 delivers
+ is a control that is correct and tested in advance of the endpoints it will govern, not a
+ control that is currently governing anything.
+ 
+diff --git a/.claude/security/abuse-prevention.md b/.claude/security/abuse-prevention.md
+index 2e2cf4c..9bc58be 100644
+--- a/.claude/security/abuse-prevention.md
++++ b/.claude/security/abuse-prevention.md
+@@ -5,8 +5,10 @@
+ > `apps/api/src/common/guards/rate-limit.guard.ts` — over a Redis sorted-set window in
+ > `sliding-window.ts`, with the table below transcribed into `rate-limit.config.ts` and that
+ > transcription asserted value by value. It limits no endpoint today: every class is keyed by
+-> an account, a principal or an organisation, none of which exist before Phase 2, and the only
+-> routes that exist are the health probes. The control is correct ahead of the endpoints it
++> no route carries any of these classes: the only routes that exist are the health probes, and
++> liveness is deliberately exempt. (Some scopes *would* resolve today — `registration` is keyed
++> per IP, and the per-IP halves of `login` and `passwordReset` need no authentication — so the
++> reason nothing is governed is the absence of endpoints, not the absence of identifiers.) The control is correct ahead of the endpoints it
+ > will govern — which is the point of building it now — but "Implemented" here means built and
+ > tested, not currently in force.
+ 
+@@ -25,7 +27,7 @@ configuration, not constants, and are overridable per plan.
+ | Login | 5 / 15 min per account, 20 / 15 min per IP |
+ | Registration | 3 / hour per IP |
+ | Password reset | 3 / hour per address, 10 / hour per IP |
+-| Email verification resend | 3 / hour per account |
++| Email verification resend | 3 / hour per account, 10 / hour per IP |
+ | Invitations | 50 / day per organisation |
+ | Scan creation | Per plan (`maxScansPerMonth`), plus 10 / min burst |
+ | Evidence upload | 100 / hour per organisation |
+@@ -39,7 +41,7 @@ Responses carry `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`, and
+ read-only endpoints if Redis is unavailable — an outage should not lock everyone out of
+ reading their own data, but it must not become a window for credential stuffing either.
+ 
+-Three properties of the shipped implementation are worth stating, because each is a way this
++Five properties of the shipped implementation are worth stating, because each is a way this
+ control is commonly built wrong:
+ 
+ - **A refused request is not charged against the window.** A limiter that records refusals
+@@ -56,10 +58,12 @@ control is commonly built wrong:
+ - **The per-account rows are keyed off the request body, not an authenticated principal.**
+   Login, password reset and email verification resend are unauthenticated by definition — a
+   failed login carries no principal, and "5 / 15 min per account" means the account being
+-  *attempted*. Reading a session principal there resolves nothing, and since those classes also
+-  declare a per-IP scope that *does* resolve, the miss would be skipped in silence: a route
+-  that refuses at the IP limit, advertises a limit in its headers, and never applies the
+-  control that actually stops credential stuffing. The body value is hashed before it becomes
++  *attempted*. Reading a session principal there resolves nothing, and because those classes
++  also carry a per-IP scope that *does* resolve, the miss would be skipped in silence: a route
++  that refuses at the IP limit, advertises that limit in its headers, and never applies the
++  control that actually stops credential stuffing. A declared scope that resolves to nothing on
++  a fail-closed class now logs at `warn` naming the scope, so the next one is loud rather than
++  invisible. The body value is hashed before it becomes
+   part of a key, so an email address never lands in Redis in plaintext.
+ - **A refusal stops the evaluation.** Scopes are consumed in order and the first refusal ends
+   it. Otherwise a request already being rejected would still be charged against every remaining
+@@ -144,7 +148,9 @@ defines liveness as depending on none), and that a request refused by one scope
+ other scope's window unspent.
+ 
+ Guards run after routing, so a request that matches no route is not rate limited — it is
+-answered by the framework's 404 before any guard sees it. That is inherent to the mechanism and
++answered by the framework's 404 before any guard sees it. The same is true of a request whose
++body fails to parse: the parser answers 400 first. Both are cheap to serve and neither reaches
++a handler, but neither is metered either. That is inherent to the mechanism and
+ differs from the middleware in the same pipeline table, which covers every response.
+ 
+ Not yet covered: per-plan overrides, concurrency, quotas, and everything in §4 — all of which
+diff --git a/apps/api/src/common/decorators/rate-limit.decorator.ts b/apps/api/src/common/decorators/rate-limit.decorator.ts
+index d6f523f..c013d3f 100644
+--- a/apps/api/src/common/decorators/rate-limit.decorator.ts
++++ b/apps/api/src/common/decorators/rate-limit.decorator.ts
+@@ -39,6 +39,14 @@ export const RATE_LIMIT_EXEMPT_KEY = 'sentinel:rate-limit-exempt';
+  *
+  * Do not reach for this to make a route cheaper. Every other route, including
+  * readiness, stays on the normal path.
++ *
++ * **`MethodDecorator` only, deliberately.** As a class decorator this would be
++ * a one-line kill switch for the platform's only abuse control: the guard reads
++ * the handler and the class and takes the first *defined* value, and
++ * `SetMetadata` offers no way to say "not exempt", so a `@RateLimit()` on a
++ * handler underneath could not opt back in. One line at the top of a controller
++ * would silently disable every limit in it. Narrowing the type makes that a
++ * compile error.
+  */
+-export const RateLimitExempt = (): MethodDecorator & ClassDecorator =>
++export const RateLimitExempt = (): MethodDecorator =>
+   SetMetadata<string, true>(RATE_LIMIT_EXEMPT_KEY, true);
+diff --git a/apps/api/src/common/guards/rate-limit.config.spec.ts b/apps/api/src/common/guards/rate-limit.config.spec.ts
+index 67c9ef1..e650bc1 100644
+--- a/apps/api/src/common/guards/rate-limit.config.spec.ts
++++ b/apps/api/src/common/guards/rate-limit.config.spec.ts
+@@ -93,4 +93,47 @@ describe('RATE_LIMIT_CLASSES', () => {
+       expect(['open', 'closed'], name).toContain(config.failMode);
+     }
+   });
++
++  it('bounds every unauthenticated class by IP, not only by account', () => {
++    // An unauthenticated class keyed ONLY by an account identifier the caller
++    // supplies has no upper bound at all: the caller names a fresh account each
++    // time and every request is the first in its own window. For
++    // emailVerificationResend that is an outbound-email amplifier aimed at
++    // people who are not our customers, plus unbounded Redis keys. §1's opening
++    // sentence — per IP AND per principal — is the rule; the table's per-class
++    // rows are the figures.
++    for (const name of [
++      'login',
++      'registration',
++      'passwordReset',
++      'emailVerificationResend',
++    ] as const) {
++      expect(RATE_LIMIT_CLASSES[name].perIp, `${name} must declare a per-IP bound`).toBeDefined();
++    }
++  });
++
++  it('names a principal source for every class that limits per principal', () => {
++    // The type already makes this a compile error. Asserted at runtime too,
++    // because the type is the thing a future refactor might loosen, and this is
++    // the defect that shipped once already: a per-account class silently
++    // keyed off an authenticated principal that unauthenticated endpoints
++    // never have.
++    for (const [name, config] of Object.entries<RateLimitClassConfig>(RATE_LIMIT_CLASSES)) {
++      if (config.perPrincipal === undefined) continue;
++      expect(
++        config.principalSource,
++        `${name} must say where its principal comes from`,
++      ).toBeDefined();
++    }
++  });
++
++  it('keys the unauthenticated per-account classes off the request body', () => {
++    for (const name of ['login', 'passwordReset', 'emailVerificationResend'] as const) {
++      expect(RATE_LIMIT_CLASSES[name].principalSource, name).toEqual({ bodyField: 'email' });
++    }
++    // And the authenticated ones off the principal, which is the whole
++    // distinction.
++    expect(RATE_LIMIT_CLASSES.generalSession.principalSource).toBe('authenticated');
++    expect(RATE_LIMIT_CLASSES.generalApiKey.principalSource).toBe('authenticated');
++  });
+ });
+diff --git a/apps/api/src/common/guards/rate-limit.config.ts b/apps/api/src/common/guards/rate-limit.config.ts
+index f1c095a..8144659 100644
+--- a/apps/api/src/common/guards/rate-limit.config.ts
++++ b/apps/api/src/common/guards/rate-limit.config.ts
+@@ -36,12 +36,9 @@ export interface Window {
+  */
+ export type PrincipalSource = 'authenticated' | { readonly bodyField: string };
+ 
+-export interface RateLimitClassConfig {
++interface BaseRateLimitClassConfig {
+   readonly perIp?: Window;
+-  readonly perPrincipal?: Window;
+   readonly perOrganization?: Window;
+-  /** Required whenever `perPrincipal` is declared. */
+-  readonly principalSource?: PrincipalSource;
+   /**
+    * What to do when the limiter cannot reach a decision — Redis is unavailable,
+    * or no declared scope could be resolved.
+@@ -54,6 +51,24 @@ export interface RateLimitClassConfig {
+   readonly failMode: 'open' | 'closed';
+ }
+ 
++/**
++ * `principalSource` is **mandatory** whenever `perPrincipal` is declared, and
++ * that is enforced by the type rather than by a comment.
++ *
++ * A comment saying "required" is what allowed the original defect: a class
++ * declaring `perPrincipal` with no source silently defaulted to the
++ * authenticated principal, which resolves to nothing on an unauthenticated
++ * endpoint — and because such classes also declare `perIp`, the miss was
++ * skipped without a signal. MFA verification, magic links and phone OTP are all
++ * Phase 2 classes of exactly that shape, so this has to be a compile error
++ * before they are written, not a review finding afterwards.
++ */
++export type RateLimitClassConfig = BaseRateLimitClassConfig &
++  (
++    | { readonly perPrincipal: Window; readonly principalSource: PrincipalSource }
++    | { readonly perPrincipal?: undefined; readonly principalSource?: undefined }
++  );
++
+ export const RATE_LIMIT_CLASSES = {
+   login: {
+     perPrincipal: { limit: 5, windowSeconds: 900 },
+@@ -72,6 +87,15 @@ export const RATE_LIMIT_CLASSES = {
+   },
+   emailVerificationResend: {
+     perPrincipal: { limit: 3, windowSeconds: 3600 },
++    // §1's table names only the per-account figure, but §1's opening sentence
++    // says limits are applied per IP **and** per principal, and this class needs
++    // the IP half more than most: it is unauthenticated, it names a third-party
++    // address, and it makes us send mail. Without a per-IP bound one client can
++    // name unlimited fresh addresses — an outbound-email amplifier aimed at
++    // people who are not our customers, which is the case this document opens
++    // by saying we limit abuse to prevent. The figure matches password reset,
++    // the closest analogue in the table.
++    perIp: { limit: 10, windowSeconds: 3600 },
+     principalSource: { bodyField: 'email' },
+     failMode: 'closed',
+   },
+diff --git a/apps/api/src/common/guards/rate-limit.guard.spec.ts b/apps/api/src/common/guards/rate-limit.guard.spec.ts
+index ad008c8..f34e7c8 100644
+--- a/apps/api/src/common/guards/rate-limit.guard.spec.ts
++++ b/apps/api/src/common/guards/rate-limit.guard.spec.ts
+@@ -1,5 +1,6 @@
+ import { describe, expect, it } from 'vitest';
+-import { normaliseIp } from './rate-limit.guard.js';
++import { normaliseAccountIdentifier, normaliseIp, resolveIdentifier } from './rate-limit.guard.js';
++import { RATE_LIMIT_CLASSES } from './rate-limit.config.js';
+ 
+ describe('normaliseIp', () => {
+   it('treats an IPv4-mapped IPv6 address as the IPv4 address it is', () => {
+@@ -20,3 +21,112 @@ describe('normaliseIp', () => {
+     expect(normaliseIp('2001:db8::ffff:1.2.3.4')).toBe('2001:db8::ffff:1.2.3.4');
+   });
+ });
++
++describe('resolveIdentifier', () => {
++  const login = RATE_LIMIT_CLASSES.login;
++
++  it('normalises the IP it returns, not merely the helper in isolation', () => {
++    // `normaliseIp` had a unit test and no caller test, so deleting the call
++    // site left the suite green. This asserts the wiring.
++    expect(resolveIdentifier('perIp', { ip: '::ffff:10.0.0.7' }, login)).toBe('10.0.0.7');
++  });
++
++  it('falls back to the socket address when Express has no view of the IP', () => {
++    expect(resolveIdentifier('perIp', { socket: { remoteAddress: '10.0.0.9' } }, login)).toBe(
++      '10.0.0.9',
++    );
++  });
++
++  it('reads the account from the body for a body-keyed class, hashed', () => {
++    const resolved = resolveIdentifier('perPrincipal', { body: { email: 'a@example.com' } }, login);
++    expect(resolved).toBeDefined();
++    expect(resolved).not.toContain('a@example.com');
++    expect(resolved).not.toContain('@');
++  });
++
++  it('gives the same bucket for the same account written differently', () => {
++    const shapes = ['a@example.com', 'A@Example.COM', '  a@example.com  '];
++    const resolved = shapes.map((email) =>
++      resolveIdentifier('perPrincipal', { body: { email } }, login),
++    );
++    expect(new Set(resolved).size).toBe(1);
++  });
++
++  it('gives different buckets for different accounts', () => {
++    const a = resolveIdentifier('perPrincipal', { body: { email: 'a@example.com' } }, login);
++    const b = resolveIdentifier('perPrincipal', { body: { email: 'b@example.com' } }, login);
++    expect(a).not.toBe(b);
++  });
++
++  it('resolves nothing rather than sharing one bucket for every malformed body', () => {
++    // A shared "undefined" bucket would be worse than no limit: every caller
++    // with a malformed body would exhaust one window and lock out the rest.
++    const login_ = login;
++    for (const body of [
++      undefined,
++      null,
++      'text',
++      [],
++      { email: 42 },
++      { email: null },
++      { email: [] },
++      { email: '   ' },
++      {},
++    ]) {
++      expect(
++        resolveIdentifier('perPrincipal', { body }, login_),
++        JSON.stringify(body),
++      ).toBeUndefined();
++    }
++  });
++
++  it('reads the authenticated principal for an authenticated class', () => {
++    expect(
++      resolveIdentifier(
++        'perPrincipal',
++        { principalId: 'usr_1', body: { email: 'attacker@example.com' } },
++        RATE_LIMIT_CLASSES.generalSession,
++      ),
++    ).toBe('usr_1');
++  });
++});
++
++describe('normaliseAccountIdentifier', () => {
++  it('folds the same address written in NFC and NFD into one bucket', () => {
++    const nfc = 'caf\u00e9@example.com';
++    const nfd = 'cafe\u0301@example.com';
++    expect(nfc).not.toBe(nfd);
++    expect(normaliseAccountIdentifier(nfc)).toBe(normaliseAccountIdentifier(nfd));
++  });
++
++  it('is stable, so a restart does not hand everyone a fresh window', () => {
++    expect(normaliseAccountIdentifier('A@Example.com')).toBe('a@example.com');
++  });
++});
++
++describe('the account bucket digest', () => {
++  it('is pinned: same input, same bucket, in every process and every instance', () => {
++    // A per-process or per-instance salt would split one account's window
++    // across instances and multiply the effective limit by the instance count —
++    // a security defect dressed as hardening, and invisible to a test that only
++    // checks stability within one process. Pinning the digest catches it, and
++    // catches a truncation that would make collisions likely at the same time.
++    const bucket = resolveIdentifier(
++      'perPrincipal',
++      { body: { email: 'pinned@example.com' } },
++      RATE_LIMIT_CLASSES.login,
++    );
++    expect(bucket).toBe('drEi8prkvL9JOKpp7hx2HW');
++  });
++
++  it('keeps enough width that unrelated accounts do not share a window', () => {
++    // Two accounts colliding means one is limited by the other's traffic — a
++    // lockout the victim cannot see or avoid.
++    const bucket = resolveIdentifier(
++      'perPrincipal',
++      { body: { email: 'width@example.com' } },
++      RATE_LIMIT_CLASSES.login,
++    );
++    expect(bucket?.length).toBeGreaterThanOrEqual(22);
++  });
++});
+diff --git a/apps/api/src/common/guards/rate-limit.guard.ts b/apps/api/src/common/guards/rate-limit.guard.ts
+index 405f2b7..589a5f0 100644
+--- a/apps/api/src/common/guards/rate-limit.guard.ts
++++ b/apps/api/src/common/guards/rate-limit.guard.ts
+@@ -47,14 +47,40 @@ export function normaliseIp(address: string): string {
+ }
+ 
+ /**
+- * Hashed, never raw. An email address is the identifier for the three
+- * per-account classes, and a raw one would sit in a Redis key — visible to
+- * anything that can run `KEYS`, and to anyone reading a slow-log or a memory
+- * dump. The hash is truncated because a rate-limit bucket needs distinctness,
+- * not preimage resistance at full width.
++ * Hashed, never raw. An email address is the identifier for the per-account
++ * classes, and a raw one would sit in a Redis key — visible to anything that
++ * can run `KEYS`, and to anyone reading a slow-log or a memory dump. Truncated
++ * because a rate-limit bucket needs distinctness, not preimage resistance.
++ *
++ * What this does **not** do, stated plainly so nobody over-reads it: an
++ * unsalted digest is a confirmation oracle. Someone who can list the keys and
++ * guesses an address can check the guess in one hash. It keeps addresses out of
++ * plaintext; it does not keep them secret from an attacker who already has a
++ * candidate list. An HMAC under a server secret would close that, at the cost
++ * of making every bucket unrecoverable across a secret rotation and requiring
++ * the secret in a code path that must not fail. Deliberately not taken for a
++ * rate-limit bucket; revisit if the key space ever holds something more
++ * sensitive than an address.
++ *
++ * The digest is deliberately *unsalted per process*: a per-instance salt would
++ * split one account's window across instances and multiply the effective limit
++ * by the instance count, which is a security defect rather than a hardening.
+  */
++export function normaliseAccountIdentifier(value: string): string {
++  // NFKC before case folding, so the same address written in NFC and NFD is one
++  // bucket rather than two. **This must stay identical to whatever the Phase 2
++  // account lookup does.** If the lookup normalises more aggressively than the
++  // guard, two spellings the lookup treats as one account get two limit buckets
++  // and the per-account limit is halved — silently, which is this defect
++  // class's signature. One function, used by both, with a test.
++  return value.normalize('NFKC').trim().toLowerCase();
++}
++
+ function hashIdentifier(value: string): string {
+-  return createHash('sha256').update(value.trim().toLowerCase()).digest('base64url').slice(0, 22);
++  return createHash('sha256')
++    .update(normaliseAccountIdentifier(value))
++    .digest('base64url')
++    .slice(0, 22);
+ }
+ 
+ interface HeaderResponse {
+@@ -75,7 +101,7 @@ interface HeaderResponse {
+  * guarantee that the proxy *overwrites* rather than appends to the header, or
+  * the same bypass returns through the front door. See abuse-prevention.md §1.
+  */
+-function resolveIdentifier(
++export function resolveIdentifier(
+   scope: RateLimitScope,
+   request: KeyableRequest,
+   config: RateLimitClassConfig,
+@@ -105,18 +131,23 @@ function resolveIdentifier(
+ }
+ 
+ /**
+- * The window closest to refusing, which is the one whose numbers a client needs.
++ * The window whose numbers a client needs: the refusal if there is one,
++ * otherwise the one with the least room left.
+  *
+- * Among refusals the tie-break is the **longest** reset, not the first one
+- * found: if two scopes have both closed, a client told to retry after the
+- * shorter of them retries early and is refused again. Among allowed windows it
+- * is the smallest remaining, which is the one it will hit first.
++ * There is at most one refusal to choose between, because evaluation stops at
++ * the first — so `Retry-After` describes **the scope that refused**, not
++ * necessarily the longest wait the request faces. A client refused by a nearly
++ * expired IP window can obey that header, arrive, and be refused again by an
++ * account window it never reached. Making the header describe the true worst
++ * case would mean evaluating every scope read-only and committing only if all
++ * allowed — a real design, and a different one, since it also changes what
++ * "charged" means. Recorded here rather than half-built: an unreachable
++ * tie-break branch pretending to solve it is worse than an honest limitation.
+  */
+ function tightest(decisions: readonly WindowDecision[]): WindowDecision | undefined {
+   return decisions.reduce<WindowDecision | undefined>((worst, decision) => {
+     if (worst === undefined) return decision;
+     if (decision.allowed !== worst.allowed) return decision.allowed ? worst : decision;
+-    if (!decision.allowed) return decision.resetSeconds > worst.resetSeconds ? decision : worst;
+     return decision.remaining < worst.remaining ? decision : worst;
+   }, undefined);
+ }
+@@ -161,6 +192,7 @@ export class RateLimitGuard implements CanActivate {
+     const now = Date.now();
+ 
+     const decisions: WindowDecision[] = [];
++    const unresolved: RateLimitScope[] = [];
+     let declared = 0;
+ 
+     try {
+@@ -170,7 +202,10 @@ export class RateLimitGuard implements CanActivate {
+         declared += 1;
+ 
+         const identifier = resolveIdentifier(scope, request, config);
+-        if (identifier === undefined) continue;
++        if (identifier === undefined) {
++          unresolved.push(scope);
++          continue;
++        }
+ 
+         const decision = await consumeSlidingWindow(
+           this.redis,
+@@ -206,11 +241,33 @@ export class RateLimitGuard implements CanActivate {
+       return this.applyFailMode(config.failMode, className);
+     }
+ 
+-    if (this.backendDown) {
++    // Cleared only when a command actually reached Redis. Resetting on any
++    // request that got this far would clear it on requests that issued no
++    // command at all — every unauthenticated request to a `generalSession`
++    // route, which is most traffic today — and produce a stream of "recovered"
++    // lines during an outage that is still ongoing. A false all-clear is worse
++    // than the per-request warn this replaced: it closes incidents that are
++    // open.
++    if (this.backendDown && decisions.length > 0) {
+       this.backendDown = false;
+       this.logger.warn({ rateLimitClass: className }, 'Rate limit backend recovered');
+     }
+ 
++    if (unresolved.length > 0 && decisions.length > 0 && config.failMode === 'closed') {
++      // A declared scope that resolved to nothing, on a class whose failMode
++      // says it would rather refuse than guess. Silence here is precisely the
++      // defect that let the per-account limits go missing while the per-IP one
++      // kept answering: the route refused at the wrong limit, advertised that
++      // limit in its headers, and nothing said the other control was absent.
++      // Not a refusal — a sibling scope did apply, and refusing every login
++      // whose body shape the guard cannot read would be its own outage — but it
++      // must never again be invisible.
++      this.logger.warn(
++        { rateLimitClass: className, unresolvedScopes: unresolved },
++        'Rate limit scope declared but not resolvable; that limit is not being applied',
++      );
++    }
++
+     if (declared > 0 && decisions.length === 0) {
+       // Every declared scope was unresolvable. Skipping them silently would
+       // leave a fail-closed class — `invitations` and `scanCreate` declare only
+diff --git a/apps/api/src/common/guards/rate-limit.integration.spec.ts b/apps/api/src/common/guards/rate-limit.integration.spec.ts
+index 769bf5f..c23571f 100644
+--- a/apps/api/src/common/guards/rate-limit.integration.spec.ts
++++ b/apps/api/src/common/guards/rate-limit.integration.spec.ts
+@@ -11,7 +11,12 @@ import type { NextFunction, Request, Response } from 'express';
+ import { Redis } from 'ioredis';
+ import { errorEnvelopeSchema } from '@sentinel/contracts';
+ import { Public } from '../decorators/access.decorator.js';
+-import { RateLimit } from '../decorators/rate-limit.decorator.js';
++import {
++  RATE_LIMIT_EXEMPT_KEY,
++  RateLimit,
++  RateLimitExempt,
++} from '../decorators/rate-limit.decorator.js';
++import { HealthController } from '../../modules/health/health.controller.js';
+ import { AppModule } from '../../app.module.js';
+ import { configureApp } from '../../app-setup.js';
+ 
+@@ -64,6 +69,21 @@ class FixtureController {
+     return { ok: true };
+   }
+ 
++  /**
++   * Exempt at the HANDLER, on a class whose per-IP scope resolves. If the guard
++   * ever read only the controller's metadata and ignored the handler's, this
++   * route would start being limited and start creating keys — which the
++   * liveness tests cannot detect, because the default class resolves nothing
++   * on an unauthenticated request either way.
++   */
++  @Public()
++  @RateLimit('registration')
++  @RateLimitExempt()
++  @Post('exempt')
++  exempt(): { ok: true } {
++    return { ok: true };
++  }
++
+   /** `invitations`: per organisation only, fails CLOSED — the unresolvable-scope case. */
+   @Public()
+   @RateLimit('invitations')
+@@ -118,7 +138,7 @@ afterAll(async () => {
+   await app.close();
+ });
+ 
+-/** Only the classes this suite drives, so a developer's running app keeps its state. */
++/** Only the classes this suite drives, so it cannot clobber another suite's keys. */
+ const FIXTURE_CLASSES = [
+   'registration',
+   'login',
+@@ -131,7 +151,9 @@ beforeEach(async () => {
+   // Every request in this suite arrives from the same loopback address, so the
+   // per-IP buckets would otherwise carry over between tests. Scanned rather
+   // than KEYS, and narrowed to this suite's own classes: the compose Redis is
+-  // shared with the developer's session and with every other integration suite.
++  // shared with every other integration suite. Note this does NOT protect a
++  // developer's running app — these are exactly the classes it would populate —
++  // it protects other suites, and keeps the scan bounded.
+   for (const className of FIXTURE_CLASSES) {
+     let cursor = '0';
+     do {
+@@ -340,12 +362,32 @@ describe('rate limiting — the account-keyed classes', () => {
+       .expect(429);
+   });
+ 
+-  it('applies the class fail mode when the body names no account at all', async () => {
+-    // `emailVerificationResend` declares only the account scope and fails
+-    // closed, so a request that names nothing must be refused rather than
+-    // waved through on an unresolvable scope.
++  it('still bounds a request that names no account, by IP', async () => {
++    // Naming no account used to mean "no scope resolves", which the fail-closed
++    // rule refused outright. Now that the class carries a per-IP bound, an
++    // anonymous request is allowed but counted — and the IP bound is what stops
++    // a caller who names a fresh address every time from sending unlimited
++    // verification mail to third parties.
++    for (let i = 0; i < 10; i += 1) {
++      await request(server).post('/api/v1/fixture/resend').send({}).expect(201);
++    }
+     await request(server).post('/api/v1/fixture/resend').send({}).expect(429);
+   });
++
++  it('caps a caller naming a fresh account every time, which the account window cannot', async () => {
++    // The amplifier case. Each address is the first in its own account window,
++    // so the per-account limit never triggers; only the per-IP bound does.
++    for (let i = 0; i < 10; i += 1) {
++      await request(server)
++        .post('/api/v1/fixture/resend')
++        .send({ email: `fresh${i}@example.com` })
++        .expect(201);
++    }
++    await request(server)
++      .post('/api/v1/fixture/resend')
++      .send({ email: 'fresh-one-more@example.com' })
++      .expect(429);
++  });
+ });
+ 
+ describe('rate limiting — a refusal must not spend another scope', () => {
+@@ -404,6 +446,57 @@ describe('liveness is never rate limited', () => {
+     expect(commands.filter((c) => c.toLowerCase().startsWith('eval'))).toEqual([]);
+   });
+ 
++  it('sees Redis traffic for a limited route, so the absence above means something', async () => {
++    // The positive control the previous version of this test lacked. Without
++    // it, a watcher that silently failed to attach — or a guard that never
++    // reaches Redis for any route — would satisfy the assertion above while
++    // proving nothing at all.
++    const watcher = new Redis(process.env.REDIS_URL ?? 'redis://127.0.0.1:6379');
++    const monitor = await watcher.monitor();
++    const commands: string[] = [];
++    monitor.on('monitor', (_time: string, args: string[]) => {
++      commands.push(args.join(' '));
++    });
++
++    try {
++      await request(server).post('/api/v1/fixture/registration');
++      await new Promise((resolve) => setTimeout(resolve, 250));
++    } finally {
++      monitor.disconnect();
++      watcher.disconnect();
++    }
++
++    expect(commands.filter((c) => c.toLowerCase().startsWith('eval')).length).toBeGreaterThan(0);
++  });
++
++  it('honours an exemption declared on the handler of an otherwise-limited class', () => {
++    // `registration` is 3 per IP and its scope resolves, so without a
++    // handler-level exemption this route would refuse on the fourth request and
++    // leave a key behind.
++    return (async () => {
++      for (let i = 0; i < 8; i += 1) {
++        await request(server).post('/api/v1/fixture/exempt').expect(201);
++      }
++      expect(await redis.keys('ratelimit:registration:*')).toEqual([]);
++    })();
++  });
++
++  it('pins the exemption to the liveness handler itself', () => {
++    // The behavioural tests above pass with or without the decorator, because
++    // the default class happens to resolve no scope on an unauthenticated
++    // request — the very accident `@RateLimitExempt()` was added to replace.
++    // Deleting the decorator has to fail something, so it fails this.
++    // Read through a descriptor rather than `Controller.prototype.method`: the
++    // latter is an unbound method reference, which the lint rules reject.
++    const handler = (name: string): object =>
++      Object.getOwnPropertyDescriptor(HealthController.prototype, name)?.value as object;
++
++    expect(Reflect.getMetadata(RATE_LIMIT_EXEMPT_KEY, handler('live'))).toBe(true);
++    // And it must not have spread: readiness stays on the normal path.
++    expect(Reflect.getMetadata(RATE_LIMIT_EXEMPT_KEY, handler('ready'))).toBeUndefined();
++    expect(Reflect.getMetadata(RATE_LIMIT_EXEMPT_KEY, HealthController)).toBeUndefined();
++  });
++
+   it('carries no RateLimit headers on the liveness probe', async () => {
+     const { headers } = await request(server).get('/health/live').expect(200);
+     expect(headers['ratelimit-limit']).toBeUndefined();
+diff --git a/apps/api/src/common/guards/sliding-window.integration.spec.ts b/apps/api/src/common/guards/sliding-window.integration.spec.ts
+index e608002..336f526 100644
+--- a/apps/api/src/common/guards/sliding-window.integration.spec.ts
++++ b/apps/api/src/common/guards/sliding-window.integration.spec.ts
+@@ -131,6 +131,25 @@ describe('consumeSlidingWindow', () => {
+     expect(refused.resetSeconds).toBeGreaterThanOrEqual(1);
+   });
+ 
++  it('never reports a reset longer than the window, even against a future entry', async () => {
++    // An instance whose clock runs fast writes a future score. Without the clamp
++    // a correct instance would advertise `skew + window` — for an hour-fast
++    // clock, an hour-long wait presented as if it were policy. The clamp bounds
++    // what is REPORTED; the lockout itself is real and lasts as long as the
++    // skew, which is why the docblock says so rather than calling skew
++    // immaterial.
++    const key = freshKey();
++    const window = { limit: 1, windowSeconds: 60 };
++    const now = Date.now();
++
++    await consumeSlidingWindow(redis, key, window, now + 3_600_000);
++    const refused = await consumeSlidingWindow(redis, key, window, now);
++
++    expect(refused.allowed).toBe(false);
++    expect(refused.resetSeconds).toBeLessThanOrEqual(window.windowSeconds);
++    expect(refused.resetSeconds).toBeGreaterThanOrEqual(1);
++  });
++
+   it('expires the key so an idle bucket cannot leak memory forever', async () => {
+     const key = freshKey();
+     await consumeSlidingWindow(redis, key, { limit: 5, windowSeconds: 60 }, Date.now());

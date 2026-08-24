@@ -122,9 +122,16 @@ them were". Two rules follow, and they are review-blocking:
 
 ### 4. The ledger is committed, in full
 
-`docs/superpowers/ledger/phase-2/` is **tracked in git**, unlike Phase 1's, which lives in
-`.superpowers/` (excluded at `.gitignore:81`) and therefore exists only on the machine that built
-it — every ruling and review finding from 16 tasks, one disk failure from gone.
+**Ledgers are tracked in git and never gitignored**, one folder per phase under
+`docs/superpowers/ledger/` — conventions for all of them in that directory's `README.md`. Phase 2's
+is `phase-2/`. Phase 1's was recovered out of gitignored `.superpowers/` on 2026-08-24 and now sits
+beside it at `phase-1/`.
+
+`.superpowers/` stays ignored as the subagent tooling's scratch space. **Anything written there
+that belongs in the record is moved into `phase-2/` as part of the task**, not left behind. Phase
+1's ledger is what happens otherwise, and the audit performed during that move is the argument:
+16 tasks of record invisible to git, review documents preserved for only three of them, and no
+entry at all for Task 16.
 
 One entry per task: the brief, the implementer's report, the review findings, every ruling with
 its cost if wrong, and the fix rounds. `progress.md` is the index and ends with the current pause

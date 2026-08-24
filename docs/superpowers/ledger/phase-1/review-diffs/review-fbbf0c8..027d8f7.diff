@@ -1,0 +1,208 @@
+# Review package: fbbf0c8..HEAD
+
+## Commits
+027d8f7 fix(observability): widen C3 guard - the crash moved, not closed
+
+## Files changed
+ packages/observability/src/logger.spec.ts | 63 +++++++++++++++++++++++++++++++
+ packages/observability/src/logger.ts      | 40 ++++++++++++++++----
+ packages/observability/src/redaction.ts   | 13 +++++--
+ 3 files changed, 105 insertions(+), 11 deletions(-)
+
+## Diff
+diff --git a/packages/observability/src/logger.spec.ts b/packages/observability/src/logger.spec.ts
+index 6f6e65d..741ebd8 100644
+--- a/packages/observability/src/logger.spec.ts
++++ b/packages/observability/src/logger.spec.ts
+@@ -273,11 +273,74 @@ describe('createLogger', () => {
+ 
+   it('does not let a log-call field shadow the ambient request context (M9)', () => {
+     const { logger, lines } = captureLogger();
+     runWithRequestContext({ requestId: 'req_real', organizationId: 'org_real' }, () => {
+       logger.info({ requestId: 'attacker-controlled' }, 'x');
+     });
+     const out = lines[0] as { requestId: string; organizationId: string };
+     expect(out.requestId).toBe('req_real');
+     expect(out.organizationId).toBe('org_real');
+   });
++
++  // C3, continued: a Symbol message, or a message whose `toString` throws,
++  // makes pino-std-serializers' own `isErrorLike` check false, so
++  // `stdSerializers.err` hands back the raw Error unchanged rather than
++  // throwing itself — the crash then happened one line later, in this
++  // package's own destructuring, reading `.stack` for the first time and
++  // triggering `Error.prototype.toString()` -> `ToString(message)`. A
++  // narrower try/catch around only the `stdSerializers.err` call did not
++  // catch this; these four tests are what proved that.
++
++  it('does not crash on a Symbol Error.message via a bare Error (C3)', () => {
++    const { logger, lines } = captureLogger();
++    const err = new Error('placeholder');
++    (err as unknown as { message: unknown }).message = Symbol('sekrit');
++    expect(() => logger.error(err)).not.toThrow();
++    const out = lines[0] as { err: { type: string; message: string; stack: string } };
++    expect(out.err.type).toBe('Error');
++    expect(out.err.message).toBe(REDACTED);
++    expect(out.err.stack).toBe(REDACTED);
++  });
++
++  it('does not crash on a Symbol Error.message via { err } (C3)', () => {
++    const { logger, lines } = captureLogger();
++    const err = new Error('placeholder');
++    (err as unknown as { message: unknown }).message = Symbol('sekrit');
++    expect(() => logger.error({ err }, 'context msg')).not.toThrow();
++    const out = lines[0] as { msg: string; err: { type: string; message: string; stack: string } };
++    expect(out.msg).toBe('context msg');
++    expect(out.err.type).toBe('Error');
++    expect(out.err.message).toBe(REDACTED);
++    expect(out.err.stack).toBe(REDACTED);
++  });
++
++  it('does not crash on a hostile-toString Error.message via a bare Error (C3)', () => {
++    const { logger, lines } = captureLogger();
++    const err = new Error('placeholder');
++    (err as unknown as { message: unknown }).message = {
++      toString() {
++        throw new Error('hostile toString');
++      },
++    };
++    expect(() => logger.error(err)).not.toThrow();
++    const out = lines[0] as { err: { type: string; message: string; stack: string } };
++    expect(out.err.type).toBe('Error');
++    expect(out.err.message).toBe(REDACTED);
++    expect(out.err.stack).toBe(REDACTED);
++  });
++
++  it('does not crash on a hostile-toString Error.message via { err } (C3)', () => {
++    const { logger, lines } = captureLogger();
++    const err = new Error('placeholder');
++    (err as unknown as { message: unknown }).message = {
++      toString() {
++        throw new Error('hostile toString');
++      },
++    };
++    expect(() => logger.error({ err }, 'context msg')).not.toThrow();
++    const out = lines[0] as { msg: string; err: { type: string; message: string; stack: string } };
++    expect(out.msg).toBe('context msg');
++    expect(out.err.type).toBe('Error');
++    expect(out.err.message).toBe(REDACTED);
++    expect(out.err.stack).toBe(REDACTED);
++  });
+ });
+diff --git a/packages/observability/src/logger.ts b/packages/observability/src/logger.ts
+index 63c73cd..273b7b3 100644
+--- a/packages/observability/src/logger.ts
++++ b/packages/observability/src/logger.ts
+@@ -1,19 +1,19 @@
+ import type { Writable } from 'node:stream';
+ import pino, {
+   type Bindings,
+   type ChildLoggerOptions,
+   type Logger,
+   type LoggerOptions,
+ } from 'pino';
+ import { getRequestContext } from './context.js';
+-import { redact, redactSecretsInText } from './redaction.js';
++import { REDACTED, redact, redactSecretsInText } from './redaction.js';
+ 
+ export type { Logger };
+ 
+ export interface CreateLoggerOptions {
+   readonly service: string;
+   readonly level: string;
+   readonly pretty: boolean;
+   readonly silent?: boolean;
+   /** Test seam. Production and development both write to stdout. */
+   readonly stream?: Writable;
+@@ -70,27 +70,51 @@ function redactInterpolationArg(value: unknown): unknown {
+  * Residual (not fixed — see the coverage list in task-3-report.md, item I5):
+  * this only runs because `serializers.err` is set to this function below. A
+  * caller who registers their *own* `err` serializer via `logger.child(...,
+  * { serializers: { err: ... } })` (or an equivalent pino API) overrides this
+  * one entirely — `formatters.log` still hands the raw, untouched `Error`
+  * downstream on the assumption that *some* `err` serializer will run, and if
+  * a caller's replaces this one, nothing redacts it.
+  */
+ function redactError(error: unknown): unknown {
+   if (!(error instanceof Error)) return error;
+-  const serialized = pino.stdSerializers.err(error);
+-  const { message, stack, ...extra } = serialized;
+-  return {
+-    ...(redact(extra) as Record<string, unknown>),
+-    message: redactSecretsInText(message),
+-    stack: redactSecretsInText(stack),
+-  };
++
++  try {
++    const serialized = pino.stdSerializers.err(error);
++    const { message, stack, ...extra } = serialized;
++    return {
++      ...(redact(extra) as Record<string, unknown>),
++      message: redactSecretsInText(message),
++      stack: redactSecretsInText(stack),
++    };
++  } catch {
++    // Fails closed around the whole conversion, not just the
++    // `stdSerializers.err` call: a Symbol `message` or a `message` whose
++    // `toString` throws makes pino-std-serializers' own `isErrorLike` check
++    // (`typeof err.message === 'string'`) false, so `stdSerializers.err`
++    // *itself* does not throw — it short-circuits and hands back the raw,
++    // unmodified `error`, `.stack` still an unresolved lazy V8 accessor.
++    // The throw then happens one line later, in the destructuring above
++    // (`const { message, stack, ... } = serialized`), which reads that
++    // `.stack` for the first time — that access runs
++    // `Error.prepareStackTrace`, which calls `Error.prototype.toString()`,
++    // which does `ToString(this.message)`, which throws for a Symbol (per
++    // spec) or propagates a hostile `toString`. A narrower try/catch around
++    // only the `stdSerializers.err` call verified empirically not to catch
++    // this — confirmed by reproducing the crash with that narrower guard in
++    // place and reading the resulting stack trace, not by reasoning about
++    // pino-std-serializers' source alone. Wrapping the whole conversion
++    // catches this regardless of which specific step throws. Only literals
++    // are used in the fallback — `error.name` or `error.constructor.name`
++    // could themselves be hostile getters.
++    return { type: 'Error', message: REDACTED, stack: REDACTED };
++  }
+ }
+ 
+ /**
+  * Pino resets a child's bindings formatter to an identity function before
+  * applying the bindings it was given — confirmed by reading
+  * `lib/proto.js`: both branches of `child()` assign
+  * `resetChildingsFormatter` before calling `asChindings(instance, bindings)`.
+  * A root-level `formatters.bindings` can never see child bindings, by
+  * construction, not by omission — there is no configuration-only way to
+  * close this. Intercepting `.child()` itself is the only place left.
+diff --git a/packages/observability/src/redaction.ts b/packages/observability/src/redaction.ts
+index 8e3c861..dbc2500 100644
+--- a/packages/observability/src/redaction.ts
++++ b/packages/observability/src/redaction.ts
+@@ -133,18 +133,25 @@ export function redact(value: unknown, depth = 0, seen = new WeakSet<object>()):
+     } catch {
+       output[key] = '[unreadable]';
+       continue;
+     }
+     // An own-enumerable function survives redaction unchanged (it isn't a
+     // string or a plain object), but if it happens to be named `toJSON`,
+     // JSON.stringify calls it during serialisation and uses whatever it
+     // returns *instead of* this already-redacted object — silently
+     // resurrecting the original, unredacted value at serialisation time,
+     // including under a key that matched the denylist. Dropped outright:
+-    // a prototype-based `toJSON` (Date, URL, class methods) is untouched
+-    // since `Object.keys` never sees it, and JSON serialisation already
+-    // drops a top-level function property, so nothing legitimate is lost.
++    // a *prototype*-based `toJSON` (a class instance method, not an own
++    // property) is untouched, since `Object.keys` never sees it, and JSON
++    // serialisation already drops a top-level function property regardless,
++    // so nothing legitimate is lost by dropping it here too. This does NOT
++    // mean every prototype-`toJSON` type round-trips cleanly through this
++    // walk: `Date` is special-cased above specifically because it does not;
++    // `URL` is not special-cased and still collapses to `{}` here for the
++    // same underlying reason `Date` used to — a pre-existing gap, unrelated
++    // to dropping functions, not fixed by this change (see the coverage
++    // list in task-3-report.md).
+     if (typeof item === 'function') continue;
+     output[key] = keyIsSecret(key) ? REDACTED : redact(item, depth + 1, seen);
+   }
+   return output;
+ }

@@ -1,0 +1,406 @@
+diff --git a/.claude/security/abuse-prevention.md b/.claude/security/abuse-prevention.md
+index 9bc58be..21384ed 100644
+--- a/.claude/security/abuse-prevention.md
++++ b/.claude/security/abuse-prevention.md
+@@ -4,12 +4,13 @@
+ > the enforcement ladder in §4 Phase 11. The limiter is a global Nest guard —
+ > `apps/api/src/common/guards/rate-limit.guard.ts` — over a Redis sorted-set window in
+ > `sliding-window.ts`, with the table below transcribed into `rate-limit.config.ts` and that
+-> transcription asserted value by value. It limits no endpoint today: every class is keyed by
+-> no route carries any of these classes: the only routes that exist are the health probes, and
+-> liveness is deliberately exempt. (Some scopes *would* resolve today — `registration` is keyed
+-> per IP, and the per-IP halves of `login` and `passwordReset` need no authentication — so the
+-> reason nothing is governed is the absence of endpoints, not the absence of identifiers.) The control is correct ahead of the endpoints it
+-> will govern — which is the point of building it now — but "Implemented" here means built and
++> transcription asserted value by value. It limits no endpoint today, because no route carries
++> any of these classes: the only routes that exist are the health probes, and liveness is
++> deliberately exempt. (Some scopes *would* resolve today — `registration` is keyed per IP, and
++> the per-IP halves of `login` and `passwordReset` need no authentication — so the reason
++> nothing is governed is the absence of endpoints, not the absence of identifiers.) The control
++> is correct ahead of the endpoints it will govern — which is the point of building it now — but
++> "Implemented" here means built and
+ > tested, not currently in force.
+ 
+ Ordinary SaaS limits abuse to protect its own capacity. We also limit it to protect people
+diff --git a/apps/api/src/common/guards/rate-limit.config.spec.ts b/apps/api/src/common/guards/rate-limit.config.spec.ts
+index e650bc1..3413b08 100644
+--- a/apps/api/src/common/guards/rate-limit.config.spec.ts
++++ b/apps/api/src/common/guards/rate-limit.config.spec.ts
+@@ -62,6 +62,14 @@ describe('RATE_LIMIT_CLASSES', () => {
+       limit: 3,
+       windowSeconds: 3600,
+     });
++    // Not transcribed from the table's per-class row — added from §1's opening
++    // rule that limits apply per IP AND per principal, because without it one
++    // caller naming a fresh address each time has no bound at all. Asserted
++    // here so the figure and the table row stay in step.
++    expect(RATE_LIMIT_CLASSES.emailVerificationResend.perIp).toEqual({
++      limit: 10,
++      windowSeconds: 3600,
++    });
+     expect(RATE_LIMIT_CLASSES.invitations.perOrganization).toEqual({
+       limit: 50,
+       windowSeconds: 86_400,
+diff --git a/apps/api/src/common/guards/rate-limit.guard.spec.ts b/apps/api/src/common/guards/rate-limit.guard.spec.ts
+index f34e7c8..e6664b2 100644
+--- a/apps/api/src/common/guards/rate-limit.guard.spec.ts
++++ b/apps/api/src/common/guards/rate-limit.guard.spec.ts
+@@ -12,13 +12,16 @@ describe('normaliseIp', () => {
+     expect(normaliseIp('::FFFF:10.0.0.7')).toBe('10.0.0.7');
+   });
+ 
+-  it('leaves a genuine IPv6 address alone, lowercased', () => {
+-    expect(normaliseIp('2001:DB8::1')).toBe('2001:db8::1');
+-    expect(normaliseIp('::1')).toBe('::1');
++  it('reduces a genuine IPv6 address to its /64, case-insensitively', () => {
++    expect(normaliseIp('2001:DB8::1')).toBe(normaliseIp('2001:db8::1'));
++    expect(normaliseIp('2001:DB8::1')).toContain('/64');
+   });
+ 
+   it('does not mistake an address that merely contains the mapped prefix', () => {
+-    expect(normaliseIp('2001:db8::ffff:1.2.3.4')).toBe('2001:db8::ffff:1.2.3.4');
++    // `::ffff:1.2.3.4` is a mapped IPv4 address; `2001:db8::ffff:1.2.3.4` is
++    // not, and must not collapse to the bare v4 bucket.
++    expect(normaliseIp('2001:db8::ffff:1.2.3.4')).not.toBe('1.2.3.4');
++    expect(normaliseIp('2001:db8::ffff:1.2.3.4')).toContain('/64');
+   });
+ });
+ 
+@@ -130,3 +133,57 @@ describe('the account bucket digest', () => {
+     expect(bucket?.length).toBeGreaterThanOrEqual(22);
+   });
+ });
++
++describe('normaliseIp — IPv6 is bucketed by /64', () => {
++  it('puts every address in one /64 into one bucket', () => {
++    // A host is routinely delegated a whole /64 — 1.8e19 addresses. Bucketing
++    // per address would make every per-IP figure in the table free to bypass
++    // for anyone with a v6 allocation, which is the bound the resend class now
++    // depends on.
++    const a = normaliseIp('2001:db8:abcd:1234::1');
++    const b = normaliseIp('2001:db8:abcd:1234::2');
++    const c = normaliseIp('2001:db8:abcd:1234:dead:beef:1:2');
++    expect(a).toBe(b);
++    expect(a).toBe(c);
++  });
++
++  it('keeps different /64s apart', () => {
++    expect(normaliseIp('2001:db8:abcd:1234::1')).not.toBe(normaliseIp('2001:db8:abcd:1235::1'));
++    expect(normaliseIp('2001:db8:abcd:1234::1')).not.toBe(normaliseIp('2001:db9:abcd:1234::1'));
++  });
++
++  it('expands :: correctly rather than truncating the wrong hextets', () => {
++    // `2001:db8::1` is 2001:0db8:0000:0000:...:0001, so its /64 must be
++    // 2001:db8:0:0 — not 2001:db8:1 read off the literal text.
++    expect(normaliseIp('2001:db8::1')).toBe(normaliseIp('2001:db8:0:0:ffff::9'));
++    expect(normaliseIp('2001:db8::1')).not.toBe(normaliseIp('2001:db8:1::1'));
++  });
++
++  it('still treats loopback and mapped IPv4 the way the rest of the suite expects', () => {
++    expect(normaliseIp('::ffff:127.0.0.1')).toBe('127.0.0.1');
++    expect(normaliseIp('127.0.0.1')).toBe('127.0.0.1');
++    expect(normaliseIp('::1')).toBe(normaliseIp('::1'));
++  });
++
++  it('ignores a zone index, which is local to the host and not part of identity', () => {
++    expect(normaliseIp('fe80::1%eth0')).toBe(normaliseIp('fe80::1%eth1'));
++  });
++});
++
++describe('normaliseAccountIdentifier — the form is pinned, not just its presence', () => {
++  it('applies NFKC, not merely NFC', () => {
++    // The docblock says this must stay identical to the Phase 2 account lookup.
++    // Which normalisation form it *is* was the one thing no test pinned, so
++    // switching NFKC to NFC changed behaviour silently. Fullwidth and ligature
++    // forms fold under NFKC and survive under NFC.
++    expect(normaliseAccountIdentifier('\uff41@example.com')).toBe('a@example.com');
++    expect(normaliseAccountIdentifier('\ufb01n@example.com')).toBe('fin@example.com');
++  });
++
++  it('does not merge characters that are genuinely distinct letters', () => {
++    // NFKC is aggressive; this is the boundary worth pinning, because an
++    // over-merge lets one account consume another's window.
++    expect(normaliseAccountIdentifier('\u0131@example.com')).not.toBe('i@example.com');
++    expect(normaliseAccountIdentifier('a\u200bb@example.com')).not.toBe('ab@example.com');
++  });
++});
+diff --git a/apps/api/src/common/guards/rate-limit.guard.ts b/apps/api/src/common/guards/rate-limit.guard.ts
+index 589a5f0..4ca5f3c 100644
+--- a/apps/api/src/common/guards/rate-limit.guard.ts
++++ b/apps/api/src/common/guards/rate-limit.guard.ts
+@@ -43,7 +43,36 @@ interface KeyableRequest {
+  */
+ export function normaliseIp(address: string): string {
+   const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/iu.exec(address);
+-  return mapped?.[1] ?? address.toLowerCase();
++  if (mapped?.[1] !== undefined) return mapped[1];
++
++  const lower = address.toLowerCase();
++  if (!lower.includes(':')) return lower;
++
++  // IPv6 is bucketed by /64, not by full address. A single host is routinely
++  // given a whole /64 — that is 1.8e19 addresses, so a per-address bucket is no
++  // bound at all, and every per-IP limit in the table would be bypassable at
++  // zero cost by anyone with a v6 allocation. The /64 is the smallest unit an
++  // operator is normally delegated, so it is the smallest unit that behaves
++  // like "one client". A shared /64 (some mobile carriers, some hosting) means
++  // neighbours share a bucket; that is the same trade IPv4 NAT already forces,
++  // and the wrong side of it is unbounded.
++  const zoneless = lower.split('%')[0] ?? lower;
++  return `${expandIpv6Prefix(zoneless)}::/64`;
++}
++
++/** The first four hextets of an IPv6 address, `::`-expansion included. */
++function expandIpv6Prefix(address: string): string {
++  const [head = '', tail = ''] = address.split('::', 2);
++  const headParts = head === '' ? [] : head.split(':');
++  const tailParts = tail === '' ? [] : tail.split(':');
++  const missing = Math.max(0, 8 - headParts.length - tailParts.length);
++  const full = address.includes('::')
++    ? [...headParts, ...Array<string>(missing).fill('0'), ...tailParts]
++    : headParts;
++  return full
++    .slice(0, 4)
++    .map((part) => (part === '' ? '0' : part.replace(/^0+(?=.)/u, '')))
++    .join(':');
+ }
+ 
+ /**
+@@ -154,9 +183,26 @@ function tightest(decisions: readonly WindowDecision[]): WindowDecision | undefi
+ 
+ @Injectable()
+ export class RateLimitGuard implements CanActivate {
+-  /** Whether the last attempt to reach Redis failed; drives state-change logging. */
++  /**
++   * The last **observed** state of the backend, driving state-change logging.
++   *
++   * "Observed" is load-bearing: it only changes when a command actually reached
++   * Redis, or actually failed to. A request that resolved no scope issues no
++   * command and therefore learns nothing, so it must not clear the flag — doing
++   * so produced alternating "unavailable"/"recovered" lines during a single
++   * ongoing outage, and a false all-clear closes incidents that are open.
++   *
++   * The cost of that correctness, stated because it is not obvious: a recovery
++   * no request observed is never logged, so an outage → unobserved recovery →
++   * second outage sequence emits one "unavailable" and no "recovered". The log
++   * describes what this process saw, not what happened. Today that is most of
++   * the traffic, because nothing resolves a scope before Phase 2.
++   */
+   private backendDown = false;
+ 
++  /** Classes already warned about an unresolvable scope; see the warn below. */
++  private readonly unresolvedWarned = new Set<RateLimitClass>();
++
+   constructor(
+     @Inject(Reflector) private readonly reflector: Reflector,
+     @Inject(REDIS) private readonly redis: Redis,
+@@ -168,10 +214,16 @@ export class RateLimitGuard implements CanActivate {
+ 
+     // Checked before anything else, and before any Redis call: see
+     // `RateLimitExempt`. Liveness must reach no backing service.
+-    const exempt = this.reflector.getAllAndOverride<true>(RATE_LIMIT_EXEMPT_KEY, [
+-      context.getHandler(),
+-      context.getClass(),
+-    ]);
++    //
++    // **The handler only, deliberately.** Narrowing the decorator's type stopped
++    // `@RateLimitExempt()` being written on a class, but it did not stop the
++    // guard from *honouring* class-level metadata — and `RATE_LIMIT_EXEMPT_KEY`
++    // is exported, so one `@SetMetadata(RATE_LIMIT_EXEMPT_KEY, true)` on a
++    // controller still disabled every limit beneath it, including a fail-closed
++    // class during a Redis outage. Since no supported decorator can set this at
++    // class level, reading the class was dead for legitimate use and live only
++    // for the bypass. An exemption is a per-route decision and nothing else.
++    const exempt = this.reflector.get<true>(RATE_LIMIT_EXEMPT_KEY, context.getHandler());
+     if (exempt === true) return true;
+ 
+     const className =
+@@ -255,17 +307,28 @@ export class RateLimitGuard implements CanActivate {
+ 
+     if (unresolved.length > 0 && decisions.length > 0 && config.failMode === 'closed') {
+       // A declared scope that resolved to nothing, on a class whose failMode
+-      // says it would rather refuse than guess. Silence here is precisely the
+-      // defect that let the per-account limits go missing while the per-IP one
+-      // kept answering: the route refused at the wrong limit, advertised that
+-      // limit in its headers, and nothing said the other control was absent.
+-      // Not a refusal — a sibling scope did apply, and refusing every login
+-      // whose body shape the guard cannot read would be its own outage — but it
+-      // must never again be invisible.
+-      this.logger.warn(
+-        { rateLimitClass: className, unresolvedScopes: unresolved },
+-        'Rate limit scope declared but not resolvable; that limit is not being applied',
+-      );
++      // says it would rather refuse than guess. Silence here is what let the
++      // per-account limits go missing while the per-IP one kept answering: the
++      // route refused at the wrong limit, advertised that limit in its headers,
++      // and nothing said the other control was absent.
++      //
++      // Once per class per process, not once per request. This condition cannot
++      // distinguish a **wiring defect** — a class keyed off something nothing
++      // ever populates, which is what it exists to catch and which is permanent
++      // — from a **client that sent a body without the field**, which is
++      // ordinary traffic anyone can generate at will. Warning on every
++      // occurrence would let any unauthenticated caller flood the channel and
++      // bury the wiring defect underneath, which is the same anti-pattern the
++      // fail-open branch below is written to avoid. The first occurrence
++      // carries the whole signal: the class and the scope are all an operator
++      // needs to find it.
++      if (!this.unresolvedWarned.has(className)) {
++        this.unresolvedWarned.add(className);
++        this.logger.warn(
++          { rateLimitClass: className, unresolvedScopes: unresolved },
++          'Rate limit scope declared but not resolvable; that limit is not being applied',
++        );
++      }
+     }
+ 
+     if (declared > 0 && decisions.length === 0) {
+diff --git a/apps/api/src/common/guards/rate-limit.integration.spec.ts b/apps/api/src/common/guards/rate-limit.integration.spec.ts
+index c23571f..0a8cb5f 100644
+--- a/apps/api/src/common/guards/rate-limit.integration.spec.ts
++++ b/apps/api/src/common/guards/rate-limit.integration.spec.ts
+@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
+ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+ import request from 'supertest';
+ import { config as loadDotenv } from 'dotenv';
+-import { Controller, Get, type INestApplication, Module, Post } from '@nestjs/common';
++import { Controller, Get, type INestApplication, Module, Post, SetMetadata } from '@nestjs/common';
+ import { Test } from '@nestjs/testing';
+ import type { NestExpressApplication } from '@nestjs/platform-express';
+ import type { NextFunction, Request, Response } from 'express';
+@@ -19,6 +19,7 @@ import {
+ import { HealthController } from '../../modules/health/health.controller.js';
+ import { AppModule } from '../../app.module.js';
+ import { configureApp } from '../../app-setup.js';
++import { LOGGER } from '../../infrastructure/tokens.js';
+ 
+ loadDotenv({ path: fileURLToPath(new URL('../../../../../.env', import.meta.url)) });
+ process.env.NODE_ENV = 'test';
+@@ -61,7 +62,7 @@ class FixtureController {
+     return { ok: true };
+   }
+ 
+-  /** `emailVerificationResend`: body-keyed principal ONLY, no perIp scope. */
++  /** `emailVerificationResend`: body-keyed account (3/hour) AND a 10/hour IP bound. */
+   @Public()
+   @RateLimit('emailVerificationResend')
+   @Post('resend')
+@@ -93,7 +94,27 @@ class FixtureController {
+   }
+ }
+ 
+-@Module({ imports: [AppModule], controllers: [FixtureController] })
++/**
++ * The class-level bypass, attempted the only way it can still be written.
++ * `@RateLimitExempt()` is `MethodDecorator`, so this uses the raw key — which is
++ * exported from the same module and was, until this was closed, honoured by the
++ * guard. One line here disabled every limit beneath it.
++ */
++@SetMetadata(RATE_LIMIT_EXEMPT_KEY, true)
++@Controller({ path: 'bypass', version: '1' })
++class BypassAttemptController {
++  @Public()
++  @RateLimit('registration')
++  @Post('limited')
++  limited(): { ok: true } {
++    return { ok: true };
++  }
++}
++
++@Module({
++  imports: [AppModule],
++  controllers: [FixtureController, BypassAttemptController],
++})
+ class FixtureModule {}
+ 
+ /**
+@@ -503,3 +524,89 @@ describe('liveness is never rate limited', () => {
+     expect(headers['ratelimit-remaining']).toBeUndefined();
+   });
+ });
++
++describe('the exemption is a per-route decision and cannot be taken class-wide', () => {
++  it('ignores exempt metadata set on a controller, even on a fail-closed class', () => {
++    // Narrowing the decorator's TYPE stopped `@RateLimitExempt()` being written
++    // on a class; it did not stop the guard from honouring class-level metadata,
++    // and the key is exported. One `@SetMetadata` on a controller was still a
++    // kill switch for every limit beneath it — measured at 6/6 allowed on a
++    // fail-closed class during a Redis outage. `registration` is 3 per IP, so
++    // an honoured bypass shows up as the fourth request succeeding.
++    return (async () => {
++      for (let i = 0; i < 3; i += 1) {
++        await request(server).post('/api/v1/bypass/limited').expect(201);
++      }
++      await request(server).post('/api/v1/bypass/limited').expect(429);
++    })();
++  });
++});
++
++describe('headers describe the window closest to refusing', () => {
++  it('reports the account window when it is tighter than the IP window', async () => {
++    // `login` is 5 per account and 20 per IP. A client with 4 account slots left
++    // must be told 4, not 19 — the headers exist so a caller can pace itself
++    // before it is cut off, and the loosest window tells it the opposite of what
++    // it needs. Every other header assertion in this suite uses a single-scope
++    // class or the 429 path, so this is the only cover for the multi-scope
++    // allowed path.
++    const first = await request(server)
++      .post('/api/v1/fixture/login')
++      .send({ email: 'tightest@example.com' })
++      .expect(201);
++    expect(first.headers['ratelimit-limit']).toBe('5');
++    expect(first.headers['ratelimit-remaining']).toBe('4');
++
++    const second = await request(server)
++      .post('/api/v1/fixture/login')
++      .send({ email: 'tightest@example.com' })
++      .expect(201);
++    expect(second.headers['ratelimit-remaining']).toBe('3');
++  });
++});
++
++describe('an unresolvable declared scope is reported once, not once per request', () => {
++  it('does not let an ordinary client flood the channel it warns on', async () => {
++    // The condition cannot tell a wiring defect from a client that simply sent
++    // no `email`, and the latter is free to generate. Warning every time would
++    // bury the defect it exists to surface — the same anti-pattern the
++    // fail-open branch of this guard is written to avoid.
++    //
++    // Counted through an injected recorder, not by capturing stdout: the test
++    // environment's logger deliberately writes nowhere, so a stdout-based
++    // version of this test passes whether the guard warns once or every time.
++    const lines: string[] = [];
++    const recorder = {
++      warn: (_bindings: unknown, message?: string) => lines.push(message ?? ''),
++      debug: () => undefined,
++      info: () => undefined,
++      error: () => undefined,
++      fatal: () => undefined,
++      trace: () => undefined,
++      child: () => recorder,
++    };
++
++    const moduleRef = await Test.createTestingModule({ imports: [FixtureModule] })
++      .overrideProvider(LOGGER)
++      .useValue(recorder)
++      .compile();
++    const loggedApp = moduleRef.createNestApplication<NestExpressApplication>();
++    configureApp(loggedApp);
++    await loggedApp.init();
++
++    try {
++      for (let i = 0; i < 6; i += 1) {
++        await request(loggedApp.getHttpServer())
++          .post('/api/v1/fixture/login')
++          .send({ password: 'x' });
++      }
++    } finally {
++      await loggedApp.close();
++    }
++
++    const warnings = lines.filter((line) => line.includes('declared but not resolvable'));
++    // Exactly one: it must warn (the control being absent is worth knowing) and
++    // must not warn again (six requests is six lines an attacker chose).
++    expect(warnings.length).toBe(1);
++  });
++});

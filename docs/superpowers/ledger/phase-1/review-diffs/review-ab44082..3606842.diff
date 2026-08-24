@@ -1,0 +1,734 @@
+diff --git a/.claude/product/roadmap.md b/.claude/product/roadmap.md
+index 3433932..34f2ca3 100644
+--- a/.claude/product/roadmap.md
++++ b/.claude/product/roadmap.md
+@@ -40,9 +40,17 @@ security-header and CSP middleware, the global error-envelope filter, the struct
+ interceptor, the Zod validation pipe, the `@Public()`/`@RequirePermission()` access
+ decorators, and a `health` module answering `/health/live`, `/health/ready` and
+ `/health/detailed` against the live Postgres, Redis and MinIO stack. It has **no
+-authentication, no authorization guard, no rate limiting, and no business endpoint**: the
+-only routes are the health probes. The boot-time assertion that every route declares its
+-access is not written yet, so the access decorators are metadata nothing reads.
++authentication, no authorization guard, and no business endpoint**: the only routes are the
++health probes. The boot-time assertion that every route declares its access is not written
++yet, so the access decorators are metadata nothing reads.
++
++Rate limiting is built and globally registered — a Redis sliding window over the table in
++`security/abuse-prevention.md` §1 — but it limits **nothing today**, and that distinction
++matters more than the checkmark. Every class in the table is keyed by an account, a principal
++or an organisation, and none of those exist before authentication ships in Phase 2; the only
++routes that exist are the probes, and liveness is deliberately exempt. What Phase 1 delivers
++is a control that is correct and tested in advance of the endpoints it will govern, not a
++control that is currently governing anything.
+ 
+ There is no `apps/web`, nothing is deployed, and no request reaches this code from outside a
+ test or a developer's own machine — so Phase 1 is Partially Implemented, not Implemented.
+diff --git a/.claude/security/abuse-prevention.md b/.claude/security/abuse-prevention.md
+index 9a03880..2e2cf4c 100644
+--- a/.claude/security/abuse-prevention.md
++++ b/.claude/security/abuse-prevention.md
+@@ -1,10 +1,14 @@
+ # Abuse prevention and rate limiting
+ 
+-> **Status: Rate limiting Implemented (Phase 1).** Quotas Phase 10; anomaly detection Phase 11;
++> **Status: Rate limiting Implemented (Phase 1), governing nothing yet.** Quotas Phase 10; anomaly detection Phase 11;
+ > the enforcement ladder in §4 Phase 11. The limiter is a global Nest guard —
+ > `apps/api/src/common/guards/rate-limit.guard.ts` — over a Redis sorted-set window in
+ > `sliding-window.ts`, with the table below transcribed into `rate-limit.config.ts` and that
+-> transcription asserted value by value.
++> transcription asserted value by value. It limits no endpoint today: every class is keyed by
++> an account, a principal or an organisation, none of which exist before Phase 2, and the only
++> routes that exist are the health probes. The control is correct ahead of the endpoints it
++> will govern — which is the point of building it now — but "Implemented" here means built and
++> tested, not currently in force.
+ 
+ Ordinary SaaS limits abuse to protect its own capacity. We also limit it to protect people
+ who are not our customers. See [`scope-controls.md`](scope-controls.md) for the controls
+@@ -49,6 +53,19 @@ control is commonly built wrong:
+   Putting a load balancer in front of this API therefore requires more than enabling
+   `trust proxy`: the deployment must also guarantee the proxy **overwrites** the header rather
+   than appending to it, or the bypass returns through the front door.
++- **The per-account rows are keyed off the request body, not an authenticated principal.**
++  Login, password reset and email verification resend are unauthenticated by definition — a
++  failed login carries no principal, and "5 / 15 min per account" means the account being
++  *attempted*. Reading a session principal there resolves nothing, and since those classes also
++  declare a per-IP scope that *does* resolve, the miss would be skipped in silence: a route
++  that refuses at the IP limit, advertises a limit in its headers, and never applies the
++  control that actually stops credential stuffing. The body value is hashed before it becomes
++  part of a key, so an email address never lands in Redis in plaintext.
++- **A refusal stops the evaluation.** Scopes are consumed in order and the first refusal ends
++  it. Otherwise a request already being rejected would still be charged against every remaining
++  window — so one address, *after* its own per-IP limit had closed, could go on burning the
++  per-account budget of every account it named and lock out arbitrarily many of them. Bounding
++  the damage a single address can do is the reason both scopes exist.
+ - **An unresolvable scope is not a free pass.** `invitations` and `scanCreate` are keyed only
+   per organisation, and there is no tenant context before Phase 2. If the guard simply skipped
+   a scope it could not resolve, those fail-closed classes would carry no limit at all. When
+@@ -120,5 +137,15 @@ now; scope and class isolation; a forged `X-Forwarded-For` failing to mint a buc
+ fail modes with Redis genuinely unreachable. Redis-outage tests point a second application at a
+ dead port rather than stopping the shared container.
+ 
++Two further properties are asserted because each held only by accident before it was: that the
++liveness probe issues **no Redis command at all** (watched on a live `MONITOR` connection, not
++reasoned about — the rate limiter is a backing-service dependency, and `monitoring.md` §5
++defines liveness as depending on none), and that a request refused by one scope leaves the
++other scope's window unspent.
++
++Guards run after routing, so a request that matches no route is not rate limited — it is
++answered by the framework's 404 before any guard sees it. That is inherent to the mechanism and
++differs from the middleware in the same pipeline table, which covers every response.
++
+ Not yet covered: per-plan overrides, concurrency, quotas, and everything in §4 — all of which
+ belong to the phases that build them.
+diff --git a/apps/api/src/common/decorators/rate-limit.decorator.ts b/apps/api/src/common/decorators/rate-limit.decorator.ts
+index 72843d1..d6f523f 100644
+--- a/apps/api/src/common/decorators/rate-limit.decorator.ts
++++ b/apps/api/src/common/decorators/rate-limit.decorator.ts
+@@ -15,3 +15,30 @@ export const RATE_LIMIT_METADATA_KEY = 'sentinel:rate-limit';
+  */
+ export const RateLimit = (className: RateLimitClass): MethodDecorator & ClassDecorator =>
+   SetMetadata<string, RateLimitClass>(RATE_LIMIT_METADATA_KEY, className);
++
++export const RATE_LIMIT_EXEMPT_KEY = 'sentinel:rate-limit-exempt';
++
++/**
++ * Declares a route the limiter must not touch at all.
++ *
++ * This exists for exactly one reason and should keep only one user: the
++ * liveness probe. `monitoring.md` §5 requires liveness to check the process and
++ * nothing else, because a liveness probe that depends on a backing service
++ * restarts every instance at once during a blip and turns a hiccup into an
++ * outage. A rate-limit guard is a backing-service dependency — it reaches
++ * Redis — so a limited liveness route would acquire exactly the dependency the
++ * probe is defined not to have.
++ *
++ * Without this the property held only by accident: `generalSession` happens to
++ * declare no scope that resolves on an unauthenticated request, so the guard
++ * returned before touching Redis. Adding `perIp` to that class — which §1's own
++ * rationale ("an unauthenticated flood [caught] by the IP limit") arguably
++ * calls for — would silently give liveness a Redis dependency with no test
++ * failing. `rate-limit.integration.spec.ts` asserts the probe issues no
++ * Redis command at all.
++ *
++ * Do not reach for this to make a route cheaper. Every other route, including
++ * readiness, stays on the normal path.
++ */
++export const RateLimitExempt = (): MethodDecorator & ClassDecorator =>
++  SetMetadata<string, true>(RATE_LIMIT_EXEMPT_KEY, true);
+diff --git a/apps/api/src/common/guards/rate-limit.config.ts b/apps/api/src/common/guards/rate-limit.config.ts
+index 5ca9453..f1c095a 100644
+--- a/apps/api/src/common/guards/rate-limit.config.ts
++++ b/apps/api/src/common/guards/rate-limit.config.ts
+@@ -18,10 +18,30 @@ export interface Window {
+   readonly windowSeconds: number;
+ }
+ 
++/**
++ * Where the `perPrincipal` scope's identifier comes from.
++ *
++ * The three per-*account* rows of §1 — login, password reset, email
++ * verification resend — are unauthenticated by definition: a failed login
++ * carries no authenticated principal, and "5 / 15 min per account" means the
++ * account being *attempted*, which lives in the request body. Reading
++ * `request.principalId` for those classes resolves nothing, and because their
++ * `perIp` scope does resolve, the miss would be skipped silently — a route that
++ * looks limited, advertises a limit in its headers, and does not apply the
++ * control that actually stops credential stuffing.
++ *
++ * `'authenticated'` is the session/API-key principal. `{ bodyField }` names the
++ * field to read instead; its value is hashed before it becomes part of a key,
++ * so an email address never lands in Redis or in a `KEYS` listing in plaintext.
++ */
++export type PrincipalSource = 'authenticated' | { readonly bodyField: string };
++
+ export interface RateLimitClassConfig {
+   readonly perIp?: Window;
+   readonly perPrincipal?: Window;
+   readonly perOrganization?: Window;
++  /** Required whenever `perPrincipal` is declared. */
++  readonly principalSource?: PrincipalSource;
+   /**
+    * What to do when the limiter cannot reach a decision — Redis is unavailable,
+    * or no declared scope could be resolved.
+@@ -38,16 +58,21 @@ export const RATE_LIMIT_CLASSES = {
+   login: {
+     perPrincipal: { limit: 5, windowSeconds: 900 },
+     perIp: { limit: 20, windowSeconds: 900 },
++    principalSource: { bodyField: 'email' },
+     failMode: 'closed',
+   },
+   registration: { perIp: { limit: 3, windowSeconds: 3600 }, failMode: 'closed' },
+   passwordReset: {
+     perPrincipal: { limit: 3, windowSeconds: 3600 },
+     perIp: { limit: 10, windowSeconds: 3600 },
++    // §1 reads "3 / hour per address". The address is the one being reset, not
++    // a logged-in user — nobody is logged in on this endpoint.
++    principalSource: { bodyField: 'email' },
+     failMode: 'closed',
+   },
+   emailVerificationResend: {
+     perPrincipal: { limit: 3, windowSeconds: 3600 },
++    principalSource: { bodyField: 'email' },
+     failMode: 'closed',
+   },
+   invitations: { perOrganization: { limit: 50, windowSeconds: 86_400 }, failMode: 'closed' },
+@@ -57,8 +82,16 @@ export const RATE_LIMIT_CLASSES = {
+   scanCreate: { perOrganization: { limit: 10, windowSeconds: 60 }, failMode: 'closed' },
+   evidenceUpload: { perOrganization: { limit: 100, windowSeconds: 3600 }, failMode: 'closed' },
+   reportGeneration: { perOrganization: { limit: 10, windowSeconds: 3600 }, failMode: 'closed' },
+-  generalSession: { perPrincipal: { limit: 1000, windowSeconds: 60 }, failMode: 'open' },
+-  generalApiKey: { perPrincipal: { limit: 600, windowSeconds: 60 }, failMode: 'open' },
++  generalSession: {
++    perPrincipal: { limit: 1000, windowSeconds: 60 },
++    principalSource: 'authenticated',
++    failMode: 'open',
++  },
++  generalApiKey: {
++    perPrincipal: { limit: 600, windowSeconds: 60 },
++    principalSource: 'authenticated',
++    failMode: 'open',
++  },
+ } as const satisfies Record<string, RateLimitClassConfig>;
+ 
+ export type RateLimitClass = keyof typeof RATE_LIMIT_CLASSES;
+diff --git a/apps/api/src/common/guards/rate-limit.guard.spec.ts b/apps/api/src/common/guards/rate-limit.guard.spec.ts
+new file mode 100644
+index 0000000..ad008c8
+--- /dev/null
++++ b/apps/api/src/common/guards/rate-limit.guard.spec.ts
+@@ -0,0 +1,22 @@
++import { describe, expect, it } from 'vitest';
++import { normaliseIp } from './rate-limit.guard.js';
++
++describe('normaliseIp', () => {
++  it('treats an IPv4-mapped IPv6 address as the IPv4 address it is', () => {
++    // Two spellings of one client must be one bucket. They start arriving
++    // together the moment `trust proxy` is enabled and forwarded addresses show
++    // up in plain v4 form alongside directly-connected mapped-v6 ones.
++    expect(normaliseIp('::ffff:127.0.0.1')).toBe('127.0.0.1');
++    expect(normaliseIp('::ffff:127.0.0.1')).toBe(normaliseIp('127.0.0.1'));
++    expect(normaliseIp('::FFFF:10.0.0.7')).toBe('10.0.0.7');
++  });
++
++  it('leaves a genuine IPv6 address alone, lowercased', () => {
++    expect(normaliseIp('2001:DB8::1')).toBe('2001:db8::1');
++    expect(normaliseIp('::1')).toBe('::1');
++  });
++
++  it('does not mistake an address that merely contains the mapped prefix', () => {
++    expect(normaliseIp('2001:db8::ffff:1.2.3.4')).toBe('2001:db8::ffff:1.2.3.4');
++  });
++});
+diff --git a/apps/api/src/common/guards/rate-limit.guard.ts b/apps/api/src/common/guards/rate-limit.guard.ts
+index 4075d6f..405f2b7 100644
+--- a/apps/api/src/common/guards/rate-limit.guard.ts
++++ b/apps/api/src/common/guards/rate-limit.guard.ts
+@@ -1,10 +1,14 @@
++import { createHash } from 'node:crypto';
+ import { type CanActivate, type ExecutionContext, Inject, Injectable } from '@nestjs/common';
+ import { Reflector } from '@nestjs/core';
+ import { ERROR_CODES } from '@sentinel/contracts';
+ import type { Logger } from '@sentinel/observability';
+ import type { Redis } from 'ioredis';
+ import { LOGGER, REDIS } from '../../infrastructure/tokens.js';
+-import { RATE_LIMIT_METADATA_KEY } from '../decorators/rate-limit.decorator.js';
++import {
++  RATE_LIMIT_EXEMPT_KEY,
++  RATE_LIMIT_METADATA_KEY,
++} from '../decorators/rate-limit.decorator.js';
+ import { DomainError } from '../errors/domain-error.js';
+ import {
+   RATE_LIMIT_CLASSES,
+@@ -28,6 +32,29 @@ interface KeyableRequest {
+   socket?: { remoteAddress?: string | undefined } | undefined;
+   principalId?: string | undefined;
+   organizationId?: string | undefined;
++  body?: unknown;
++}
++
++/**
++ * IPv4-mapped IPv6 (`::ffff:1.2.3.4`) and plain `1.2.3.4` are the same client
++ * and must be the same bucket. They arrive as different strings the moment
++ * `trust proxy` is enabled and forwarded addresses start showing up in v4 form
++ * alongside directly-connected mapped-v6 ones.
++ */
++export function normaliseIp(address: string): string {
++  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/iu.exec(address);
++  return mapped?.[1] ?? address.toLowerCase();
++}
++
++/**
++ * Hashed, never raw. An email address is the identifier for the three
++ * per-account classes, and a raw one would sit in a Redis key — visible to
++ * anything that can run `KEYS`, and to anyone reading a slow-log or a memory
++ * dump. The hash is truncated because a rate-limit bucket needs distinctness,
++ * not preimage resistance at full width.
++ */
++function hashIdentifier(value: string): string {
++  return createHash('sha256').update(value.trim().toLowerCase()).digest('base64url').slice(0, 22);
+ }
+ 
+ interface HeaderResponse {
+@@ -48,29 +75,57 @@ interface HeaderResponse {
+  * guarantee that the proxy *overwrites* rather than appends to the header, or
+  * the same bypass returns through the front door. See abuse-prevention.md §1.
+  */
+-function resolveIdentifier(scope: RateLimitScope, request: KeyableRequest): string | undefined {
++function resolveIdentifier(
++  scope: RateLimitScope,
++  request: KeyableRequest,
++  config: RateLimitClassConfig,
++): string | undefined {
+   switch (scope) {
+-    case 'perIp':
+-      return request.ip ?? request.socket?.remoteAddress;
+-    case 'perPrincipal':
+-      return request.principalId;
++    case 'perIp': {
++      const address = request.ip ?? request.socket?.remoteAddress;
++      return address === undefined ? undefined : normaliseIp(address);
++    }
++    case 'perPrincipal': {
++      const source = config.principalSource ?? 'authenticated';
++      if (source === 'authenticated') return request.principalId;
++
++      // Guards run after the body parser, so the field is available here. A
++      // non-string, an empty string, or a missing body resolves to nothing
++      // rather than to a shared `"undefined"` bucket that every malformed
++      // request would pile into.
++      const body: unknown = request.body;
++      if (typeof body !== 'object' || body === null) return undefined;
++      const raw = (body as Record<string, unknown>)[source.bodyField];
++      if (typeof raw !== 'string' || raw.trim() === '') return undefined;
++      return hashIdentifier(raw);
++    }
+     case 'perOrganization':
+       return request.organizationId;
+   }
+ }
+ 
+-/** The window closest to refusing, which is the one whose numbers a client needs. */
++/**
++ * The window closest to refusing, which is the one whose numbers a client needs.
++ *
++ * Among refusals the tie-break is the **longest** reset, not the first one
++ * found: if two scopes have both closed, a client told to retry after the
++ * shorter of them retries early and is refused again. Among allowed windows it
++ * is the smallest remaining, which is the one it will hit first.
++ */
+ function tightest(decisions: readonly WindowDecision[]): WindowDecision | undefined {
+   return decisions.reduce<WindowDecision | undefined>((worst, decision) => {
+     if (worst === undefined) return decision;
+-    if (!decision.allowed && worst.allowed) return decision;
+-    if (decision.allowed !== worst.allowed) return worst;
++    if (decision.allowed !== worst.allowed) return decision.allowed ? worst : decision;
++    if (!decision.allowed) return decision.resetSeconds > worst.resetSeconds ? decision : worst;
+     return decision.remaining < worst.remaining ? decision : worst;
+   }, undefined);
+ }
+ 
+ @Injectable()
+ export class RateLimitGuard implements CanActivate {
++  /** Whether the last attempt to reach Redis failed; drives state-change logging. */
++  private backendDown = false;
++
+   constructor(
+     @Inject(Reflector) private readonly reflector: Reflector,
+     @Inject(REDIS) private readonly redis: Redis,
+@@ -80,6 +135,14 @@ export class RateLimitGuard implements CanActivate {
+   async canActivate(context: ExecutionContext): Promise<boolean> {
+     if (context.getType() !== 'http') return true;
+ 
++    // Checked before anything else, and before any Redis call: see
++    // `RateLimitExempt`. Liveness must reach no backing service.
++    const exempt = this.reflector.getAllAndOverride<true>(RATE_LIMIT_EXEMPT_KEY, [
++      context.getHandler(),
++      context.getClass(),
++    ]);
++    if (exempt === true) return true;
++
+     const className =
+       this.reflector.getAllAndOverride<RateLimitClass>(RATE_LIMIT_METADATA_KEY, [
+         context.getHandler(),
+@@ -106,29 +169,48 @@ export class RateLimitGuard implements CanActivate {
+         if (window === undefined) continue;
+         declared += 1;
+ 
+-        const identifier = resolveIdentifier(scope, request);
++        const identifier = resolveIdentifier(scope, request, config);
+         if (identifier === undefined) continue;
+ 
+-        decisions.push(
+-          await consumeSlidingWindow(
+-            this.redis,
+-            slidingWindowKey(className, scope, identifier),
+-            window,
+-            now,
+-          ),
++        const decision = await consumeSlidingWindow(
++          this.redis,
++          slidingWindowKey(className, scope, identifier),
++          window,
++          now,
+         );
++        decisions.push(decision);
++
++        // Stop at the first refusal. Continuing would charge the request
++        // against every remaining scope's window even though it is already
++        // being rejected — so a single IP, once its own per-IP limit had
++        // closed, could go on burning the per-account budget of any account it
++        // named, and lock out arbitrarily many of them. The per-IP cap exists
++        // precisely to bound the damage one address can do.
++        if (!decision.allowed) break;
+       }
+     } catch (error) {
+       // A limiter that has silently stopped limiting is worth knowing about,
+-      // whichever way it fails — so this logs at warn in both directions, not
+-      // only when it refuses.
+-      this.logger.warn(
+-        { err: error, rateLimitClass: className, failMode: config.failMode },
+-        'Rate limit backend unavailable',
+-      );
++      // whichever way it fails — so this logs in both directions, not only when
++      // it refuses. On the state CHANGE, though, not per request: during an
++      // outage this guard runs on every request, and ioredis is already
++      // emitting its own reconnect warnings underneath. A line per request
++      // would bury the one line that matters and train an operator to filter
++      // the channel out.
++      if (!this.backendDown) {
++        this.backendDown = true;
++        this.logger.warn(
++          { err: error, rateLimitClass: className, failMode: config.failMode },
++          'Rate limit backend unavailable; limits are now applying their fail mode',
++        );
++      }
+       return this.applyFailMode(config.failMode, className);
+     }
+ 
++    if (this.backendDown) {
++      this.backendDown = false;
++      this.logger.warn({ rateLimitClass: className }, 'Rate limit backend recovered');
++    }
++
+     if (declared > 0 && decisions.length === 0) {
+       // Every declared scope was unresolvable. Skipping them silently would
+       // leave a fail-closed class — `invitations` and `scanCreate` declare only
+diff --git a/apps/api/src/common/guards/rate-limit.integration.spec.ts b/apps/api/src/common/guards/rate-limit.integration.spec.ts
+index d33df21..769bf5f 100644
+--- a/apps/api/src/common/guards/rate-limit.integration.spec.ts
++++ b/apps/api/src/common/guards/rate-limit.integration.spec.ts
+@@ -56,6 +56,14 @@ class FixtureController {
+     return { ok: true };
+   }
+ 
++  /** `emailVerificationResend`: body-keyed principal ONLY, no perIp scope. */
++  @Public()
++  @RateLimit('emailVerificationResend')
++  @Post('resend')
++  resend(): { ok: true } {
++    return { ok: true };
++  }
++
+   /** `invitations`: per organisation only, fails CLOSED — the unresolvable-scope case. */
+   @Public()
+   @RateLimit('invitations')
+@@ -110,11 +118,34 @@ afterAll(async () => {
+   await app.close();
+ });
+ 
++/** Only the classes this suite drives, so a developer's running app keeps its state. */
++const FIXTURE_CLASSES = [
++  'registration',
++  'login',
++  'generalSession',
++  'emailVerificationResend',
++  'invitations',
++] as const;
++
+ beforeEach(async () => {
+   // Every request in this suite arrives from the same loopback address, so the
+-  // per-IP buckets would otherwise carry over between tests.
+-  const keys = await redis.keys('ratelimit:*');
+-  if (keys.length > 0) await redis.del(...keys);
++  // per-IP buckets would otherwise carry over between tests. Scanned rather
++  // than KEYS, and narrowed to this suite's own classes: the compose Redis is
++  // shared with the developer's session and with every other integration suite.
++  for (const className of FIXTURE_CLASSES) {
++    let cursor = '0';
++    do {
++      const [next, found] = await redis.scan(
++        cursor,
++        'MATCH',
++        `ratelimit:${className}:*`,
++        'COUNT',
++        500,
++      );
++      if (found.length > 0) await redis.del(...found);
++      cursor = next;
++    } while (cursor !== '0');
++  }
+ });
+ 
+ describe('rate limiting', () => {
+@@ -153,24 +184,24 @@ describe('rate limiting', () => {
+     expect(Number(headers['retry-after'])).toBeGreaterThanOrEqual(1);
+   });
+ 
+-  it('counts per IP and per principal independently', async () => {
+-    // `login` is 5 per principal and 20 per IP. Exhausting one principal must
+-    // not exhaust another's budget from the same address — otherwise the two
+-    // scopes are one scope wearing two names.
++  it('counts per IP and per account independently', async () => {
++    // `login` is 5 per account and 20 per IP. Exhausting one account must not
++    // exhaust another's budget from the same address — otherwise the two scopes
++    // are one scope wearing two names.
+     for (let i = 0; i < 5; i += 1) {
+       await request(server)
+         .post('/api/v1/fixture/login')
+-        .set('x-test-principal', 'user_a')
++        .send({ email: 'user_a@example.com' })
+         .expect(201);
+     }
+     await request(server)
+       .post('/api/v1/fixture/login')
+-      .set('x-test-principal', 'user_a')
++      .send({ email: 'user_a@example.com' })
+       .expect(429);
+ 
+     await request(server)
+       .post('/api/v1/fixture/login')
+-      .set('x-test-principal', 'user_b')
++      .send({ email: 'user_b@example.com' })
+       .expect(201);
+   });
+ 
+@@ -181,7 +212,7 @@ describe('rate limiting', () => {
+ 
+     await request(server)
+       .post('/api/v1/fixture/login')
+-      .set('x-test-principal', 'user_c')
++      .send({ email: 'user_c@example.com' })
+       .expect(201);
+   });
+ 
+@@ -234,7 +265,7 @@ describe('rate limiting when Redis is unavailable', () => {
+     await request(deadServer).post('/api/v1/fixture/registration').expect(429);
+     await request(deadServer)
+       .post('/api/v1/fixture/login')
+-      .set('x-test-principal', 'user_d')
++      .send({ email: 'user_d@example.com' })
+       .expect(429);
+   });
+ 
+@@ -246,3 +277,136 @@ describe('rate limiting when Redis is unavailable', () => {
+       .expect(200);
+   });
+ });
++
++describe('rate limiting — the account-keyed classes', () => {
++  it('keys the per-account window off the body, not an authenticated principal', async () => {
++    // The three per-account rows of abuse-prevention.md §1 are unauthenticated
++    // by definition: a failed login carries no principal, and "5 / 15 min per
++    // account" means the account being attempted. Reading `principalId` here
++    // resolves nothing — and because `perIp` (20) does resolve, the miss would
++    // be skipped in silence, leaving a route that 429s at 20, advertises
++    // `limit: 20`, and does not apply the control that stops credential
++    // stuffing at all.
++    for (let i = 0; i < 5; i += 1) {
++      await request(server)
++        .post('/api/v1/fixture/login')
++        .send({ email: 'victim@example.com' })
++        .expect(201);
++    }
++
++    const { status, headers } = await request(server)
++      .post('/api/v1/fixture/login')
++      .send({ email: 'victim@example.com' });
++
++    // Refused at 5 by the account window, well before the per-IP window's 20.
++    expect(status).toBe(429);
++    expect(headers['ratelimit-limit']).toBe('5');
++  });
++
++  it('leaves a different account untouched when one is exhausted', async () => {
++    for (let i = 0; i < 5; i += 1) {
++      await request(server).post('/api/v1/fixture/login').send({ email: 'a@example.com' });
++    }
++    await request(server)
++      .post('/api/v1/fixture/login')
++      .send({ email: 'a@example.com' })
++      .expect(429);
++    await request(server)
++      .post('/api/v1/fixture/login')
++      .send({ email: 'b@example.com' })
++      .expect(201);
++  });
++
++  it('never puts the raw account identifier in a Redis key', async () => {
++    // The key would otherwise expose an email address to anything that can run
++    // KEYS, read a slow-log, or dump memory.
++    await request(server).post('/api/v1/fixture/login').send({ email: 'secret@example.com' });
++
++    const keys = await redis.keys('ratelimit:login:perPrincipal:*');
++    expect(keys.length).toBeGreaterThan(0);
++    for (const key of keys) {
++      expect(key).not.toContain('secret@example.com');
++      expect(key).not.toContain('secret');
++    }
++  });
++
++  it('normalises the account identifier so case and padding are one bucket', async () => {
++    for (let i = 0; i < 5; i += 1) {
++      await request(server).post('/api/v1/fixture/login').send({ email: 'Case@Example.com' });
++    }
++    await request(server)
++      .post('/api/v1/fixture/login')
++      .send({ email: '  case@example.COM  ' })
++      .expect(429);
++  });
++
++  it('applies the class fail mode when the body names no account at all', async () => {
++    // `emailVerificationResend` declares only the account scope and fails
++    // closed, so a request that names nothing must be refused rather than
++    // waved through on an unresolvable scope.
++    await request(server).post('/api/v1/fixture/resend').send({}).expect(429);
++  });
++});
++
++describe('rate limiting — a refusal must not spend another scope', () => {
++  it('does not charge the account window for a request the IP window refused', async () => {
++    // Exhaust the per-IP window (20) using 20 distinct accounts, then attack a
++    // 21st. Without the break, those refused attempts would still burn the
++    // victim's 5-per-15-minutes budget — so one address, *after* its own limit
++    // had closed, could lock out arbitrarily many accounts. The per-IP cap
++    // exists precisely to bound the damage one address can do.
++    for (let i = 0; i < 20; i += 1) {
++      await request(server)
++        .post('/api/v1/fixture/login')
++        .send({ email: `filler${i}@example.com` });
++    }
++
++    for (let i = 0; i < 6; i += 1) {
++      await request(server)
++        .post('/api/v1/fixture/login')
++        .send({ email: 'victim2@example.com' })
++        .expect(429);
++    }
++
++    const accountKeys = await redis.keys('ratelimit:login:perPrincipal:*');
++    let worst = 0;
++    for (const key of accountKeys) worst = Math.max(worst, await redis.zcard(key));
++    // Each filler account spent exactly one slot; the victim spent none, so no
++    // account window may hold more than one entry.
++    expect(worst).toBe(1);
++  });
++});
++
++describe('liveness is never rate limited', () => {
++  it('issues no Redis command at all while probing /health/live', async () => {
++    // monitoring.md §5: liveness checks the process and nothing else. The
++    // rate-limit guard reaches Redis, so a limited liveness route would acquire
++    // exactly the backing-service dependency the probe is defined not to have.
++    // Watched on a real connection rather than reasoned about, because before
++    // `@RateLimitExempt()` this property held only by accident — no scope of
++    // the default class happened to resolve.
++    const watcher = new Redis(process.env.REDIS_URL ?? 'redis://127.0.0.1:6379');
++    const monitor = await watcher.monitor();
++    const commands: string[] = [];
++    monitor.on('monitor', (_time: string, args: string[]) => {
++      commands.push(args.join(' '));
++    });
++
++    try {
++      for (let i = 0; i < 5; i += 1) await request(server).get('/health/live').expect(200);
++      await new Promise((resolve) => setTimeout(resolve, 250));
++    } finally {
++      monitor.disconnect();
++      watcher.disconnect();
++    }
++
++    expect(commands.filter((c) => c.toLowerCase().includes('ratelimit'))).toEqual([]);
++    expect(commands.filter((c) => c.toLowerCase().startsWith('eval'))).toEqual([]);
++  });
++
++  it('carries no RateLimit headers on the liveness probe', async () => {
++    const { headers } = await request(server).get('/health/live').expect(200);
++    expect(headers['ratelimit-limit']).toBeUndefined();
++    expect(headers['ratelimit-remaining']).toBeUndefined();
++  });
++});
+diff --git a/apps/api/src/common/guards/sliding-window.ts b/apps/api/src/common/guards/sliding-window.ts
+index f63896d..4791855 100644
+--- a/apps/api/src/common/guards/sliding-window.ts
++++ b/apps/api/src/common/guards/sliding-window.ts
+@@ -48,10 +48,14 @@ export function slidingWindowKey(
+  *
+  * `now` is supplied by the caller rather than read from Redis. That makes the
+  * script deterministic and testable at arbitrary points in a window, at the
+- * cost of depending on the API instances' clocks agreeing to within a fraction
+- * of the window. For the shortest window in the table — 60 seconds — ordinary
+- * NTP skew of a few milliseconds is immaterial. If a future window is short
+- * enough for skew to matter, this should read Redis's own `TIME` instead.
++ * cost of depending on the API instances' clocks agreeing. Ordinary NTP skew of
++ * a few milliseconds is immaterial against the shortest window in the table (60
++ * seconds), but the failure mode at the other end is worth naming: an instance
++ * whose clock runs fast writes a future score, and that entry keeps a bucket
++ * closed for the duration of the skew, not of the window. `resetSeconds` is
++ * clamped to the window so the number reported to a client stays honest, but
++ * the lockout itself is real. If clock discipline cannot be relied on, this
++ * should read Redis's own `TIME` instead.
+  */
+ const CONSUME_SCRIPT = `
+ local key = KEYS[1]
+@@ -115,7 +119,15 @@ export async function consumeSlidingWindow(
+   // invites an immediate retry that is certain to fail.
+   const resetMs = oldestScore < 0 ? 0 : oldestScore + windowMs - now;
+   const allowed = allowedFlag === 1;
+-  const resetSeconds = Math.max(allowed ? 0 : 1, Math.ceil(Math.max(resetMs, 0) / 1000));
++  // Clamped to the window at the top end. An entry written by an instance whose
++  // clock runs fast carries a future score, and without the clamp a correct
++  // instance would advertise a Retry-After of `skew + window` — for an hour-fast
++  // clock, an hour-long lockout reported as if it were policy. Nothing can
++  // legitimately need to wait longer than the window itself.
++  const resetSeconds = Math.min(
++    window.windowSeconds,
++    Math.max(allowed ? 0 : 1, Math.ceil(Math.max(resetMs, 0) / 1000)),
++  );
+ 
+   return {
+     allowed,
+diff --git a/apps/api/src/modules/health/health.controller.ts b/apps/api/src/modules/health/health.controller.ts
+index 0eac58e..4de2166 100644
+--- a/apps/api/src/modules/health/health.controller.ts
++++ b/apps/api/src/modules/health/health.controller.ts
+@@ -1,12 +1,9 @@
+ import { Controller, Get, Inject, VERSION_NEUTRAL } from '@nestjs/common';
+ import { ERROR_CODES } from '@sentinel/contracts';
+ import { Public } from '../../common/decorators/access.decorator.js';
++import { RateLimitExempt } from '../../common/decorators/rate-limit.decorator.js';
+ import { DomainError } from '../../common/errors/domain-error.js';
+-import {
+-  type DetailedReport,
+-  HealthService,
+-  type ReadinessReport,
+-} from './health.service.js';
++import { type DetailedReport, HealthService, type ReadinessReport } from './health.service.js';
+ 
+ /**
+  * `VERSION_NEUTRAL`, and excluded from the global `api` prefix in `main.ts`, so
+@@ -25,8 +22,15 @@ export class HealthController {
+    * A liveness probe that checks Postgres restarts every application instance
+    * simultaneously during a database blip, turning a hiccup into a full
+    * outage. monitoring.md §5.
++   *
++   * `@RateLimitExempt()` is part of that guarantee, not an optimisation: the
++   * rate-limit guard reaches Redis, so a limited liveness route would depend on
++   * a backing service. The exemption is asserted by a test that watches for
++   * Redis traffic while probing, because the property previously held only
++   * because no scope of the default class happened to resolve.
+    */
+   @Public()
++  @RateLimitExempt()
+   @Get('live')
+   live(): { status: 'ok' } {
+     return { status: 'ok' };

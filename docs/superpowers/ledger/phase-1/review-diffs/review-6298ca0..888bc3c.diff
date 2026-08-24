@@ -1,0 +1,4722 @@
+diff --git a/.claude/api/errors.md b/.claude/api/errors.md
+index a28a2fa..b88f45c 100644
+--- a/.claude/api/errors.md
++++ b/.claude/api/errors.md
+@@ -1,6 +1,9 @@
+ # API errors
+ 
+-> **Status: Designed. Not Implemented.** Phase 1.
++> **Status: Partially Implemented (Phase 1).** §1, §2, §5 and §6 are enforced by
++> `AllExceptionsFilter` and `ZodValidationPipe` in `apps/api`. §3's codes exist in
++> `@sentinel/contracts`. §7's "every documented code has at least one test that produces it"
++> is **not** met: most codes have no endpoint that can raise them yet.
+ 
+ ## 1. Envelope
+ 
+@@ -94,6 +97,19 @@ exists. Whether an email address is registered (on login, registration, and rese
+ Internal errors return `INTERNAL_ERROR`, a generic message, and the request ID. Everything else
+ goes to the server log.
+ 
++Two implementation rules that are easy to get wrong, both covered by tests:
++
++- **Status decides, not exception class.** A framework `HttpException` at 5xx — including
++  `new InternalServerErrorException(err.message)`, an ordinary Nest idiom — has its message
++  replaced with the generic one. A `DomainError` is the one exception, because its text is
++  authored here: `DEPENDENCY_UNAVAILABLE` at 503 exists precisely so `/health/ready` can name
++  the dependency that is down. The duty that creates: never build a `DomainError` out of
++  driver output.
++- **Client-visible text passes through the logger's `redactSecretsInText`,** and `details`
++  through its structural `redact()`. Authored 4xx messages quote user input — a rejected
++  callback URL, a bad enum value — and a credentialed URL is exactly the shape that arrives
++  that way.
++
+ ## 6. Logging
+ 
+ Client errors (4xx) log at `warn` with the code, path, principal, and tenant — not the body,
+diff --git a/.claude/architecture/backend.md b/.claude/architecture/backend.md
+index e70fc7d..67f7a54 100644
+--- a/.claude/architecture/backend.md
++++ b/.claude/architecture/backend.md
+@@ -1,6 +1,9 @@
+ # Backend architecture
+ 
+-> **Status: Designed. Not Implemented.** Phase 1 onward.
++> **Status: Partially Implemented (Phase 1).** The application bootstrap, the request-ID and
++> security-header middleware, the Zod validation pipe, the global exception filter, the logging
++> interceptor, and the `health` module are built and tested (`apps/api`). Every other module in
++> §1 and every stage in §3 marked *Not Implemented* below is still Designed only.
+ 
+ NestJS modular monolith. One deployable, many bounded modules, explicit dependencies.
+ 
+@@ -44,24 +47,29 @@ must be testable without a database. Where that becomes hard, the layering has s
+ 
+ Order matters and is asserted by a test.
+ 
+-| Stage | Mechanism |
+-|---|---|
+-| Request ID + trace | Middleware; `x-request-id` propagated everywhere including into jobs |
+-| Rate limit | Guard, Redis-backed, per IP then per principal |
+-| Authenticate | Guard, session cookie or API key -> `Principal` |
+-| Tenant resolve | Guard, membership + org state -> `TenantContext` |
+-| CSRF | Guard, cookie-authenticated unsafe methods only |
+-| Validate | Zod pipe against `packages/contracts` schemas |
+-| Authorize | Guard reading `@RequirePermission` |
+-| Entitlement | Guard reading `@RequireEntitlement` |
+-| Handle | Controller -> service |
+-| Serialise | Interceptor, explicit DTO |
+-| Errors | Global filter -> shared error envelope |
+-| Audit | Service-level, in the mutation's transaction |
+-| Logging | Interceptor, structured, redacted |
++| Stage | Mechanism | Status |
++|---|---|---|
++| Request ID + trace | Middleware; `x-request-id` propagated everywhere including into jobs | Implemented (`traceId` in Phase 4) |
++| Security headers | Middleware; [`../security/transport-and-headers.md`](../security/transport-and-headers.md) §2–§3 | Implemented |
++| Rate limit | Guard, Redis-backed, per IP then per principal | Not Implemented |
++| Authenticate | Guard, session cookie or API key -> `Principal` | Not Implemented (Phase 2) |
++| Tenant resolve | Guard, membership + org state -> `TenantContext` | Not Implemented (Phase 2) |
++| CSRF | Guard, cookie-authenticated unsafe methods only | Not Implemented (Phase 2) |
++| Validate | Zod pipe against `packages/contracts` schemas | Implemented; no consumer until Phase 2 |
++| Authorize | Guard reading `@RequirePermission` | Decorator implemented, guard Not Implemented |
++| Entitlement | Guard reading `@RequireEntitlement` | Not Implemented (Phase 10) |
++| Handle | Controller -> service | Implemented |
++| Serialise | Interceptor, explicit DTO | Not Implemented |
++| Errors | Global filter -> shared error envelope | Implemented |
++| Audit | Service-level, in the mutation's transaction | Not Implemented (Phase 3) |
++| Logging | Interceptor, structured, redacted | Implemented |
+ 
+ A route without an explicit access declaration **fails a startup assertion**. Missing
+-authorization is a boot crash, not a production discovery.
++authorization is a boot crash, not a production discovery. The declaration itself —
++`@Public()` and `@RequirePermission()`, both keyed on `ACCESS_METADATA_KEY` — lives in
++`apps/api/src/common/decorators/access.decorator.ts`. **The startup assertion that reads it
++does not exist yet**, so today an undeclared route is simply undeclared; the assertion is the
++next task's work.
+ 
+ ## 4. Transactions
+ 
+@@ -107,6 +115,16 @@ in review rather than by a customer.
+ `/health/detailed` (authenticated: queue depth, worker heartbeats, migration state).
+ Readiness gates deployment; liveness restarts a wedged process.
+ 
++**Status: Implemented, with `/health/detailed` deliberately reduced.** All three routes are
++excluded from the `/api` global prefix and are version-neutral, so a probe URL does not move
++when the API version does. `/health/ready` returns 503 carrying a per-dependency verdict in
++the shared error envelope, and never the driver's error text. `/health/detailed` currently
++returns readiness plus a per-probe latency and nothing else: the queue, worker-heartbeat and
++migration-state fields are authenticated-only per
++[`../operations/monitoring.md`](../operations/monitoring.md) §5, authentication does not exist
++until Phase 2, and shipping an operator payload behind a decorator that no guard reads would
++be an unauthenticated infrastructure map. Those fields arrive with the guard.
++
+ ## 9. Performance
+ 
+ Every list endpoint paginates (cursor by default, offset only where a jump-to-page UI needs
+diff --git a/.claude/development/folder-structure.md b/.claude/development/folder-structure.md
+index 1887707..686ffd4 100644
+--- a/.claude/development/folder-structure.md
++++ b/.claude/development/folder-structure.md
+@@ -22,8 +22,9 @@ SSTSaasPv1/
+ │   ├── api/                     NestJS modular monolith
+ │   │   └── src/
+ │   │       ├── common/          guards, interceptors, filters, decorators, pipes
+-│   │       ├── infrastructure/  prisma, redis, queue, mail, stripe
++│   │       ├── infrastructure/  config+logger, prisma, redis, storage, queue, mail, stripe
+ │   │       └── modules/         one folder per bounded module
++│   │           ├── health/      live / ready / detailed probes (Phase 1)
+ │   │           └── findings/    controller, service, repository, dto/, tests
+ │   │
+ │   ├── worker-node/             BullMQ consumer + TypeScript engines
+@@ -84,3 +85,15 @@ requires editing the worker, the queue, or the UI, the contract has leaked.
+ **The storage adapter is a package, not API infrastructure.** Workers upload evidence from
+ Phase 5 onward, and no app may import another app, so the adapter has to live where both
+ can reach it.
++
++**`apps/api/src/infrastructure/prisma` is the only place in an app that may import the
++unscoped Prisma client.** It constructs the single base client the process owns, so that
++`createTenantClient` can wrap it per request and a handler can only ever receive a
++tenant-scoped one. The exemption is scoped to that directory in `eslint.config.js`; anywhere
++else the import fails the build.
++
++**`apps/api/src/app-setup.ts` holds `configureApp`, not `main.ts`.** Everything that shapes
++the HTTP surface — global prefix and its health exclusion, URI versioning, the global filter
++and interceptor, the Nest logger bridge — lives in a module the integration test can import
++without also running `bootstrap()` and binding a port. A bootstrap that only exists inside
++`bootstrap()` is a bootstrap no test has ever seen.
+diff --git a/.claude/operations/environments.md b/.claude/operations/environments.md
+index 9e92331..547a1de 100644
+--- a/.claude/operations/environments.md
++++ b/.claude/operations/environments.md
+@@ -51,6 +51,12 @@ defaults, log verbosity, whether the scanning deny list includes our own staging
+ `.env.example` documents every variable with a safe placeholder and a comment saying what it is
+ for. It is committed. `.env` is not, and never will be.
+ 
++**Implemented in `apps/api`:** `loadEnv(apiEnvSchema)` runs before anything binds a port, and
++the CSP mode in §4 below is derived from `APP_ENV` once, in `infrastructure/config`, so
++"enforcing everywhere but development" cannot drift per call site. `APP_ENV=test` enforces the
++policy deliberately: a policy that is only ever report-only where it is asserted is a policy
++no test has seen block anything.
++
+ ## 4. Production configuration that differs from development
+ 
+ Development defaults are not production defaults, and assuming otherwise is a common way to
+diff --git a/.claude/operations/monitoring.md b/.claude/operations/monitoring.md
+index bc2f52e..4b9d3ee 100644
+--- a/.claude/operations/monitoring.md
++++ b/.claude/operations/monitoring.md
+@@ -1,7 +1,9 @@
+ # Monitoring and observability
+ 
+-> **Status: Designed. Not Implemented.** Logging in Phase 1; metrics and tracing in Phase 4;
+-> full alerting in Phase 11.
++> **Status: Partially Implemented.** §2 (structured JSON logging with redaction) and §5 (health
++> checks) are built and tested — `packages/observability` and `apps/api`. §1's `traceId`, §3
++> (metrics), §4 (tracing), §6 (alerting), §7 (Sentry) and §8 (dashboards) are Designed only:
++> metrics and tracing in Phase 4, full alerting in Phase 11.
+ 
+ ## 1. Three signals, one correlation ID
+ 
+@@ -70,7 +72,15 @@ always sampled; successful requests are sampled at a rate.
+ 
+ Liveness must not check dependencies. A liveness check that fails when Postgres is briefly
+ unavailable restarts every application instance simultaneously, turning a database blip into a
+-full outage.
++full outage. Verified rather than asserted: with the Redis container stopped, `/health/live`
++answers 200 while `/health/ready` answers 503 naming `redis`.
++
++**Implemented, with one deliberate gap.** `/health/detailed` is **not yet authenticated** —
++there is no authentication until Phase 2 — so it currently returns only what `/health/ready`
++does plus a per-probe latency, and names no host, port, bucket, driver, or version. Queue
++depth, worker heartbeats, and migration state land in the same change as the guard that
++protects them. No probe ever returns a driver's error text: that text is where the connection
++string, the internal host, and the database role live.
+ 
+ ## 6. Alerting
+ 
+diff --git a/.claude/product/roadmap.md b/.claude/product/roadmap.md
+index c515e8f..3433932 100644
+--- a/.claude/product/roadmap.md
++++ b/.claude/product/roadmap.md
+@@ -26,23 +26,33 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
+ | 11 | Enterprise | **Not Implemented** |
+ | 12 | Additional engines | **Not Implemented** |
+ 
+-**Four Phase 1 packages exist and are verified working**, per the honesty rule in
+-`CLAUDE.md` (run and verified, not just written): `packages/config` (validated env loading),
+-`packages/observability` (structured logging with redaction), `packages/contracts` (error
+-envelope, pagination, IDs, permission matrix), and `packages/db` (Prisma schema, migrations,
+-the mandatory tenant-scoped client, and PostgreSQL row-level security — the two-layer tenant
+-isolation control the whole roadmap depends on, covered by 40+ integration tests and 20+ unit
+-tests against a real Postgres 16). There is no `apps/web` or `apps/api` yet, nothing is
+-deployed, and no request ever reaches this code from outside a test — so Phase 1 is Partially
+-Implemented, not Implemented: the foundation packages are real, but the application built on
+-top of them is not. Nothing in this product runs, scans, stores, bills, or authenticates for
+-an actual user today.
++**Five Phase 1 packages and the API skeleton exist and are verified working**, per the
++honesty rule in `CLAUDE.md` (run and verified, not just written): `packages/config` (validated
++env loading), `packages/observability` (structured logging with redaction),
++`packages/contracts` (error envelope, pagination, IDs, permission matrix), `packages/storage`
++(S3-compatible adapter with mandatory tenant key prefixes), and `packages/db` (Prisma schema,
++migrations, the mandatory tenant-scoped client, and PostgreSQL row-level security — the
++two-layer tenant isolation control the whole roadmap depends on, covered by 40+ integration
++tests and 20+ unit tests against a real Postgres 16).
++
++**`apps/api` now boots.** A NestJS application with the request-ID middleware, the
++security-header and CSP middleware, the global error-envelope filter, the structured logging
++interceptor, the Zod validation pipe, the `@Public()`/`@RequirePermission()` access
++decorators, and a `health` module answering `/health/live`, `/health/ready` and
++`/health/detailed` against the live Postgres, Redis and MinIO stack. It has **no
++authentication, no authorization guard, no rate limiting, and no business endpoint**: the
++only routes are the health probes. The boot-time assertion that every route declares its
++access is not written yet, so the access decorators are metadata nothing reads.
++
++There is no `apps/web`, nothing is deployed, and no request reaches this code from outside a
++test or a developer's own machine — so Phase 1 is Partially Implemented, not Implemented.
++Nothing in this product runs, scans, stores, bills, or authenticates for an actual user
++today.
+ 
+ ### Blocked items
+ 
+ | Item | Blocker | Owner |
+ |---|---|---|
+-| Local stack verification (Postgres, Redis, MinIO) | **Docker daemon not running** on the dev host | Operator |
+ | Go worker engines | **Go toolchain not installed**; deferred by [ADR-0010](../decisions/ADR-0010-engine-contract.md) | Operator, if Go is wanted |
+ | Terraform IaC execution | **Terraform not installed**; Phase 11 anyway | Operator |
+ 
+diff --git a/.claude/security/transport-and-headers.md b/.claude/security/transport-and-headers.md
+index d5171a7..30e313c 100644
+--- a/.claude/security/transport-and-headers.md
++++ b/.claude/security/transport-and-headers.md
+@@ -1,6 +1,10 @@
+ # Transport security, headers, and frontend hardening
+ 
+-> **Status: Designed. Not Implemented.** Phase 1.
++> **Status: §2 and §3 Implemented for the API origin (Phase 1)** —
++> `apps/api/src/common/middleware/security-headers.middleware.ts`, asserted header by header in
++> `apps/api/src/app.integration.spec.ts`. §1 (edge TLS), §4 (CORS), §5 (cookies) and §6
++> (frontend hardening) are Designed only: there is no edge, no authentication, and no
++> `apps/web` yet.
+ 
+ ## 1. Transport
+ 
+@@ -48,6 +52,14 @@ Nonces are generated per request. `report-uri` is wired from day one and the rep
+ actually read — a CSP nobody monitors is decoration. The evidence-viewer origin gets its own,
+ even tighter policy (`default-src 'none'; img-src 'self'; style-src 'nonce-…'`).
+ 
++As shipped on the API origin, `connect-src` is `'self'`: the example hosts above name the
++*web* origin's API and Sentry endpoints, and the API initiates no browser connections of its
++own. The `/api/v1/csp-report` collector named by `report-uri` **does not exist yet** — it
++arrives with `apps/web`, and until then a violation report gets a 404. `Cache-Control:
++no-store` is sent on every API response rather than only authenticated ones, and Express's
++default `ETag` is disabled: a revalidation token for a response the client was told not to
++store is a contradiction, and computing it means hashing tenant data on every request.
++
+ ## 4. CORS
+ 
+ The application API is same-origin, so CORS is not a general permission. A narrow allowlist
+diff --git a/apps/api/nest-cli.json b/apps/api/nest-cli.json
+new file mode 100644
+index 0000000..2f068a1
+--- /dev/null
++++ b/apps/api/nest-cli.json
+@@ -0,0 +1,9 @@
++{
++  "$schema": "https://json.schemastore.org/nest-cli",
++  "collection": "@nestjs/schematics",
++  "sourceRoot": "src",
++  "compilerOptions": {
++    "deleteOutDir": true,
++    "tsConfigPath": "tsconfig.build.json"
++  }
++}
+diff --git a/apps/api/package.json b/apps/api/package.json
+new file mode 100644
+index 0000000..4fa47ca
+--- /dev/null
++++ b/apps/api/package.json
+@@ -0,0 +1,35 @@
++{
++  "name": "@sentinel/api",
++  "version": "0.0.0",
++  "private": true,
++  "type": "module",
++  "main": "./dist/main.js",
++  "scripts": {
++    "build": "tsc -p tsconfig.build.json",
++    "typecheck": "tsc -p tsconfig.json --noEmit",
++    "lint": "eslint src",
++    "start": "node dist/main.js"
++  },
++  "dependencies": {
++    "@nestjs/common": "^11.2.1",
++    "@nestjs/core": "^11.2.1",
++    "@nestjs/platform-express": "^11.2.1",
++    "@sentinel/config": "workspace:*",
++    "@sentinel/contracts": "workspace:*",
++    "@sentinel/db": "workspace:*",
++    "@sentinel/observability": "workspace:*",
++    "@sentinel/storage": "workspace:*",
++    "ioredis": "^5.11.1",
++    "reflect-metadata": "^0.2.2",
++    "rxjs": "^7.8.2",
++    "zod": "^3.25.76"
++  },
++  "devDependencies": {
++    "@nestjs/testing": "^11.2.1",
++    "@types/express": "^5.0.6",
++    "@types/supertest": "^7.2.1",
++    "dotenv": "^16.6.1",
++    "supertest": "^7.2.2",
++    "typescript": "^5.9.3"
++  }
++}
+diff --git a/apps/api/src/app-setup.ts b/apps/api/src/app-setup.ts
+new file mode 100644
+index 0000000..49113d2
+--- /dev/null
++++ b/apps/api/src/app-setup.ts
+@@ -0,0 +1,56 @@
++import { RequestMethod, VersioningType } from '@nestjs/common';
++import type { NestExpressApplication } from '@nestjs/platform-express';
++import type { Logger } from '@sentinel/observability';
++import { AllExceptionsFilter } from './common/filters/all-exceptions.filter.js';
++import { LoggingInterceptor } from './common/interceptors/logging.interceptor.js';
++import { NestLoggerBridge } from './infrastructure/config/nest-logger.js';
++import { LOGGER } from './infrastructure/tokens.js';
++
++/**
++ * Applies everything that is a property of the HTTP surface rather than of a
++ * module, so the integration test can build the same application the process
++ * does and assert against it. A bootstrap that only exists inside `bootstrap()`
++ * is a bootstrap no test has ever seen.
++ */
++export function configureApp(app: NestExpressApplication): NestExpressApplication {
++  // Express advertises itself by default. Removed at the app level as well as
++  // per-response, so it is gone even on a response that never reaches the
++  // middleware chain. transport-and-headers.md §2.
++  app.disable('x-powered-by');
++  // `Cache-Control: no-store` and an `ETag` are a contradiction: the API tells
++  // the client never to store the response, then hands it a revalidation token
++  // for the copy it was told not to keep. Express computes the tag by hashing
++  // every response body, which for this service means hashing tenant data on
++  // every request for no benefit. transport-and-headers.md §2.
++  app.set('etag', false);
++
++  app.setGlobalPrefix('api', {
++    // Health probes are deliberately outside `/api/v1`: monitoring.md §5 and
++    // backend.md §8 both write the unprefixed paths, and a probe URL that moves
++    // when the API version moves breaks a deployment on the day it changes.
++    //
++    // `{*splat}` is path-to-regexp v8 syntax, matching the `*splat` used for
++    // middleware in app.module.ts. Measured on this stack (Nest 11.2 / Express
++    // 5.2 / path-to-regexp 8.4), the Express 4 form `health/(.*)` also works
++    // here — Nest evaluates prefix exclusions with its own matcher rather than
++    // through Express's router, so v8's stricter syntax does not reach it. The
++    // v8 form is used anyway so both wildcard sites read the same way. A bare
++    // `health` does NOT work: it excludes only the exact path, and
++    // /health/live goes back under the prefix. app.integration.spec.ts asserts
++    // both directions.
++    exclude: [{ path: 'health/{*splat}', method: RequestMethod.ALL }],
++  });
++
++  app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });
++
++  const logger = app.get<Logger>(LOGGER);
++  // Nest's own bootstrap and ExceptionsHandler output is human-formatted, which
++  // would make this process emit two log formats and would put an unredacted
++  // stack on stdout. monitoring.md §2.
++  app.useLogger(new NestLoggerBridge(logger));
++  app.useGlobalFilters(new AllExceptionsFilter(logger));
++  app.useGlobalInterceptors(new LoggingInterceptor(logger));
++  app.enableShutdownHooks();
++
++  return app;
++}
+diff --git a/apps/api/src/app.integration.spec.ts b/apps/api/src/app.integration.spec.ts
+new file mode 100644
+index 0000000..6a5ece7
+--- /dev/null
++++ b/apps/api/src/app.integration.spec.ts
+@@ -0,0 +1,364 @@
++import 'reflect-metadata';
++import type { Server } from 'node:http';
++import { fileURLToPath } from 'node:url';
++import { afterAll, beforeAll, describe, expect, it } from 'vitest';
++import request from 'supertest';
++import { config as loadDotenv } from 'dotenv';
++import { Controller, Get, type INestApplication } from '@nestjs/common';
++import { Test } from '@nestjs/testing';
++import type { NestExpressApplication } from '@nestjs/platform-express';
++import { errorEnvelopeSchema } from '@sentinel/contracts';
++import { Public } from './common/decorators/access.decorator.js';
++import { AppModule } from './app.module.js';
++import { configureApp } from './app-setup.js';
++
++// The live compose stack is the system under test. `.env` is the same file the
++// developer's own `pnpm dev` reads, so drift between the two is caught here
++// rather than in production.
++loadDotenv({ path: fileURLToPath(new URL('../../../.env', import.meta.url)) });
++// environments.md §1: the test environment logs nothing unless a test asks for
++// it, and enforces CSP rather than merely reporting it — a policy that is only
++// ever report-only where it is asserted is a policy no test has seen block
++// anything.
++process.env.NODE_ENV = 'test';
++process.env.APP_ENV = 'test';
++
++/**
++ * A handler that fails the way real code fails, so the 500 path is exercised
++ * against a realistic payload rather than `new Error('x')`. Carries a
++ * constraint name, an internal host, a database role, and a credential.
++ */
++class RealisticInternalError extends Error {
++  readonly code = 'P2002';
++  readonly meta = { target: ['Finding_organizationId_fingerprint_key'] };
++  readonly clientVersion = '6.19.3';
++}
++
++@Controller({ path: 'boom', version: '1' })
++class BoomController {
++  @Public()
++  @Get('prisma')
++  prisma(): never {
++    throw new RealisticInternalError(
++      'Invalid prisma.finding.create() at db-primary.internal:5432 as role sentinel_app: Unique constraint failed on the fields: (Finding_organizationId_fingerprint_key)',
++    );
++  }
++
++  @Public()
++  @Get('econnrefused')
++  econnrefused(): never {
++    throw new Error('connect ECONNREFUSED 10.42.0.7:5432');
++  }
++
++  @Public()
++  @Get('secret')
++  secret(): never {
++    throw new Error('upstream rejected redis://sentinel:hunter2@10.42.0.9:6379');
++  }
++}
++
++async function buildApp(): Promise<NestExpressApplication> {
++  const moduleRef = await Test.createTestingModule({
++    imports: [AppModule],
++    controllers: [BoomController],
++  }).compile();
++
++  const app = moduleRef.createNestApplication<NestExpressApplication>();
++  configureApp(app);
++  await app.init();
++  return app;
++}
++
++const serverOf = (app: INestApplication): Server => app.getHttpServer() as Server;
++
++/** `supertest`'s `body` is `any`. One cast, in one place, with a name. */
++const jsonOf = (response: { body: unknown }): Record<string, unknown> =>
++  response.body as Record<string, unknown>;
++
++interface DetailedBody {
++  status: string;
++  checkedAt: string;
++  dependencies: Record<string, { status: string; latencyMs: number }>;
++}
++
++let app: NestExpressApplication;
++let server: Server;
++
++beforeAll(async () => {
++  app = await buildApp();
++  server = serverOf(app);
++}, 60_000);
++
++afterAll(async () => {
++  await app.close();
++});
++
++describe('API surface', () => {
++  it('GET /health/live returns 200 and touches no dependency', async () => {
++    await request(server).get('/health/live').expect(200, { status: 'ok' });
++  });
++
++  it('GET /health/ready reports postgres, redis and storage individually', async () => {
++    const response = await request(server).get('/health/ready').expect(200);
++    expect(jsonOf(response).dependencies).toMatchObject({
++      postgres: 'ok',
++      redis: 'ok',
++      storage: 'ok',
++    });
++  });
++
++  it('echoes a supplied x-request-id', async () => {
++    const response = await request(server)
++      .get('/health/live')
++      .set('x-request-id', 'req_supplied')
++      .expect(200);
++    expect(response.headers['x-request-id']).toBe('req_supplied');
++  });
++
++  it('generates a request id when none is supplied', async () => {
++    const response = await request(server).get('/health/live').expect(200);
++    expect(response.headers['x-request-id']).toMatch(/^req_/);
++  });
++
++  it('refuses a client-supplied request id that is not well-formed', async () => {
++    const response = await request(server)
++      .get('/health/live')
++      .set('x-request-id', 'not a valid id <script>')
++      .expect(200);
++    expect(response.headers['x-request-id']).not.toContain('<script>');
++    expect(response.headers['x-request-id']).toMatch(/^req_[0-9A-HJKMNP-TV-Z]{26}$/);
++  });
++
++  it('sets every header in transport-and-headers.md §2', async () => {
++    const { headers } = await request(server).get('/health/live').expect(200);
++    expect(headers['strict-transport-security']).toBe(
++      'max-age=31536000; includeSubDomains; preload',
++    );
++    expect(headers['x-content-type-options']).toBe('nosniff');
++    expect(headers['x-frame-options']).toBe('DENY');
++    expect(headers['referrer-policy']).toBe('strict-origin-when-cross-origin');
++    expect(headers['permissions-policy']).toBe(
++      'camera=(), microphone=(), geolocation=(), payment=()',
++    );
++    expect(headers['cross-origin-opener-policy']).toBe('same-origin');
++    expect(headers['cross-origin-resource-policy']).toBe('same-origin');
++    expect(headers['cross-origin-embedder-policy']).toBe('require-corp');
++    expect(headers['cache-control']).toBe('no-store');
++    expect(headers['x-powered-by']).toBeUndefined();
++    // An ETag alongside `no-store` is a contradiction, and Express emits one by
++    // default.
++    expect(headers.etag).toBeUndefined();
++  });
++
++  it('sets the same headers on an error response, not only on a success', async () => {
++    // A response that skipped the middleware chain is a response with no
++    // headers. An unmatched route is the easiest way to reach one.
++    const { headers } = await request(server).get('/api/v1/does-not-exist').expect(404);
++    expect(headers['x-content-type-options']).toBe('nosniff');
++    expect(headers['cache-control']).toBe('no-store');
++    expect(headers['x-request-id']).toMatch(/^req_/);
++  });
++
++  it('sets a nonce-based CSP with no unsafe-inline and no unsafe-eval', async () => {
++    const { headers } = await request(server).get('/health/live').expect(200);
++    const csp =
++      headers['content-security-policy'] ?? headers['content-security-policy-report-only'];
++    expect(csp).toBeDefined();
++    expect(csp).not.toContain('unsafe-inline');
++    expect(csp).not.toContain('unsafe-eval');
++    expect(csp).toMatch(/script-src [^;]*'nonce-[A-Za-z0-9+/=]+'/);
++    expect(csp).toContain("frame-ancestors 'none'");
++    expect(csp).toContain("object-src 'none'");
++  });
++
++  it('enforces the policy outside development rather than only reporting it', async () => {
++    const { headers } = await request(server).get('/health/live').expect(200);
++    expect(headers['content-security-policy']).toBeDefined();
++    expect(headers['content-security-policy-report-only']).toBeUndefined();
++  });
++
++  it('issues a different nonce on every request', async () => {
++    const cspOf = async (): Promise<string> => {
++      const { headers } = await request(server).get('/health/live');
++      return (headers['content-security-policy'] ??
++        headers['content-security-policy-report-only']) as string;
++    };
++    expect(await cspOf()).not.toBe(await cspOf());
++  });
++
++  it('returns the error envelope for an unmatched route', async () => {
++    const response = await request(server).get('/api/v1/does-not-exist').expect(404);
++    const parsed = errorEnvelopeSchema.parse(response.body);
++    expect(parsed.error.code).toBe('RESOURCE_NOT_FOUND');
++    expect(parsed.error.requestId).toMatch(/^req_/);
++  });
++
++  it('keeps health outside the /api/v1 prefix', async () => {
++    // The exclusion is the thing under test: if it silently stopped applying,
++    // /health/live would 404 and the prefixed paths would 200. Both directions
++    // are asserted so a change that moves the routes cannot pass.
++    await request(server).get('/health/live').expect(200);
++    await request(server).get('/api/v1/health/live').expect(404);
++    await request(server).get('/api/health/live').expect(404);
++  });
++
++  it('serves versioned routes under /api/v1', async () => {
++    await request(server).get('/api/v1/boom/prisma').expect(500);
++    await request(server).get('/boom/prisma').expect(404);
++  });
++});
++
++describe('The 500 path leaks nothing', () => {
++  it.each(['/api/v1/boom/prisma', '/api/v1/boom/econnrefused', '/api/v1/boom/secret'])(
++    '%s returns a generic envelope and no internal detail',
++    async (path) => {
++      const response = await request(server).get(path).expect(500);
++      const parsed = errorEnvelopeSchema.parse(response.body);
++      expect(parsed.error.code).toBe('INTERNAL_ERROR');
++      expect(parsed.error.requestId).toMatch(/^req_/);
++
++      const body = JSON.stringify(response.body);
++      for (const forbidden of [
++        'stack',
++        'at Object',
++        'node_modules',
++        'P2002',
++        'Finding_organizationId_fingerprint_key',
++        'prisma',
++        'db-primary.internal',
++        'sentinel_app',
++        'ECONNREFUSED',
++        '10.42.0.7',
++        '10.42.0.9',
++        'hunter2',
++        '6.19.3',
++        'RealisticInternalError',
++      ]) {
++        expect(body).not.toContain(forbidden);
++      }
++      // Exactly the envelope, nothing more.
++      const json = jsonOf(response);
++      expect(Object.keys(json)).toEqual(['error']);
++      expect(Object.keys(json.error as object).sort()).toEqual(['code', 'message', 'requestId']);
++    },
++  );
++
++  it('still sets the security headers on a 500', async () => {
++    const { headers } = await request(server).get('/api/v1/boom/prisma').expect(500);
++    expect(headers['x-content-type-options']).toBe('nosniff');
++    expect(headers['content-security-policy']).toBeDefined();
++  });
++});
++
++describe('What Nest itself puts in an HttpException message', () => {
++  it("a router 404's message reflects only the caller's own request line", async () => {
++    // Recorded rather than assumed: Nest's NotFoundException for an unmatched
++    // route carries "Cannot GET <path>". That echoes the caller's own input and
++    // nothing internal — no handler name, no file path, no framework version.
++    const response = await request(server).get('/api/v1/does-not-exist').expect(404);
++    const message = errorEnvelopeSchema.parse(response.body).error.message;
++    expect(message).toBe('Cannot GET /api/v1/does-not-exist');
++    for (const forbidden of ['node_modules', 'apps/api', 'src/', 'Nest', 'express']) {
++      expect(message).not.toContain(forbidden);
++    }
++  });
++
++  it('does not reflect a request path back with control characters intact', async () => {
++    const response = await request(server).get('/api/v1/%0d%0aX-Evil:%201').expect(404);
++    const message = errorEnvelopeSchema.parse(response.body).error.message;
++    expect(response.headers['x-evil']).toBeUndefined();
++    expect(message).not.toMatch(/[\r\n]/);
++  });
++});
++
++describe('/health/detailed', () => {
++  it('adds timings and nothing an unauthenticated caller could map infrastructure with', async () => {
++    const response = await request(server).get('/health/detailed').expect(200);
++    const body = jsonOf(response) as unknown as DetailedBody;
++    expect(Object.keys(body).sort()).toEqual(['checkedAt', 'dependencies', 'status']);
++    expect(Object.keys(body.dependencies).sort()).toEqual(['postgres', 'redis', 'storage']);
++    for (const entry of Object.values(body.dependencies)) {
++      expect(Object.keys(entry).sort()).toEqual(['latencyMs', 'status']);
++    }
++
++    const serialised = JSON.stringify(response.body).toLowerCase();
++    // monitoring.md §5 puts this endpoint behind authentication, which does not
++    // exist yet. Until it does, nothing here may name a host, a port, a bucket,
++    // a driver, or a version.
++    for (const forbidden of [
++      'localhost',
++      '127.0.0.1',
++      '5432',
++      '6379',
++      '9000',
++      'postgres://',
++      'postgresql',
++      'redis://',
++      'minio',
++      'evidence',
++      'prisma',
++      'version',
++    ]) {
++      expect(serialised).not.toContain(forbidden.toLowerCase());
++    }
++  });
++});
++
++describe('A dependency outage', () => {
++  // Not a mock: a second, real application whose Redis URL points at a port
++  // nothing is listening on. The proof that liveness touches no dependency has
++  // to come from a dependency that is genuinely gone.
++  let brokenApp: NestExpressApplication;
++  let brokenServer: Server;
++
++  beforeAll(async () => {
++    const original = process.env.REDIS_URL;
++    process.env.REDIS_URL = 'redis://127.0.0.1:6399';
++    try {
++      brokenApp = await buildApp();
++    } finally {
++      process.env.REDIS_URL = original;
++    }
++    brokenServer = serverOf(brokenApp);
++  }, 60_000);
++
++  afterAll(async () => {
++    await brokenApp.close();
++  });
++
++  it('leaves /health/live answering 200', async () => {
++    // monitoring.md §5: a liveness check that fails when a dependency is
++    // briefly unavailable restarts every instance at once, turning a blip into
++    // an outage.
++    await request(brokenServer).get('/health/live').expect(200, { status: 'ok' });
++  });
++
++  it('makes /health/ready return 503 naming the dependency that is down', async () => {
++    const response = await request(brokenServer).get('/health/ready').expect(503);
++    const parsed = errorEnvelopeSchema.parse(response.body);
++    expect(parsed.error.code).toBe('DEPENDENCY_UNAVAILABLE');
++    expect(parsed.error.details).toEqual({
++      dependencies: { postgres: 'ok', redis: 'error', storage: 'ok' },
++    });
++  });
++
++  it('names the dependency without naming the host, port, or driver error', async () => {
++    const response = await request(brokenServer).get('/health/ready').expect(503);
++    const body = JSON.stringify(response.body);
++    for (const forbidden of ['127.0.0.1', '6399', 'ECONNREFUSED', 'redis://', 'ioredis']) {
++      expect(body).not.toContain(forbidden);
++    }
++  });
++
++  it('reports the outage in /health/detailed too, still without infrastructure detail', async () => {
++    const response = await request(brokenServer).get('/health/detailed').expect(200);
++    const body = jsonOf(response) as unknown as DetailedBody;
++    expect(body.status).toBe('degraded');
++    expect(body.dependencies.redis?.status).toBe('error');
++    expect(body.dependencies.postgres?.status).toBe('ok');
++    const serialised = JSON.stringify(response.body);
++    for (const forbidden of ['127.0.0.1', '6399', 'ECONNREFUSED', 'redis://']) {
++      expect(serialised).not.toContain(forbidden);
++    }
++  });
++});
+diff --git a/apps/api/src/app.module.spec.ts b/apps/api/src/app.module.spec.ts
+new file mode 100644
+index 0000000..9247389
+--- /dev/null
++++ b/apps/api/src/app.module.spec.ts
+@@ -0,0 +1,48 @@
++import { describe, expect, it } from 'vitest';
++import { RequestMethod, type MiddlewareConsumer } from '@nestjs/common';
++import { AppModule } from './app.module.js';
++import { RequestIdMiddleware } from './common/middleware/request-id.middleware.js';
++import { SecurityHeadersMiddleware } from './common/middleware/security-headers.middleware.js';
++
++interface Registration {
++  readonly middleware: unknown[];
++  readonly routes: unknown[];
++}
++
++function recordMiddleware(): { consumer: MiddlewareConsumer; registrations: Registration[] } {
++  const registrations: Registration[] = [];
++  const consumer = {
++    apply: (...middleware: unknown[]) => ({
++      forRoutes: (...routes: unknown[]) => {
++        registrations.push({ middleware, routes });
++        return consumer;
++      },
++      exclude: () => ({ forRoutes: () => consumer }),
++    }),
++  } as unknown as MiddlewareConsumer;
++  return { consumer, registrations };
++}
++
++describe('AppModule middleware pipeline', () => {
++  // architecture/backend.md §3: "Order matters and is asserted by a test." This
++  // is that test for the two stages that exist. Each guard stage added later
++  // extends the expected sequence here, so a stage inserted in the wrong place
++  // — authentication after authorization, say — cannot land quietly.
++  it('runs the request ID middleware before the security headers middleware', () => {
++    const { consumer, registrations } = recordMiddleware();
++    new AppModule().configure(consumer);
++
++    const order = registrations.flatMap((registration) => registration.middleware);
++    expect(order).toEqual([RequestIdMiddleware, SecurityHeadersMiddleware]);
++  });
++
++  it('applies both to every route and method, not to a subset', () => {
++    const { consumer, registrations } = recordMiddleware();
++    new AppModule().configure(consumer);
++
++    expect(registrations).toHaveLength(1);
++    // A path filter here is how a security header quietly stops covering an
++    // endpoint added later.
++    expect(registrations[0]!.routes).toEqual([{ path: '*splat', method: RequestMethod.ALL }]);
++  });
++});
+diff --git a/apps/api/src/app.module.ts b/apps/api/src/app.module.ts
+new file mode 100644
+index 0000000..6c84b6d
+--- /dev/null
++++ b/apps/api/src/app.module.ts
+@@ -0,0 +1,29 @@
++import { Module, type MiddlewareConsumer, type NestModule, RequestMethod } from '@nestjs/common';
++import { ConfigModule } from './infrastructure/config/config.module.js';
++import { PrismaModule } from './infrastructure/prisma/prisma.module.js';
++import { RedisModule } from './infrastructure/redis/redis.module.js';
++import { StorageModule } from './infrastructure/storage/storage.module.js';
++import { RequestIdMiddleware } from './common/middleware/request-id.middleware.js';
++import { SecurityHeadersMiddleware } from './common/middleware/security-headers.middleware.js';
++import { HealthModule } from './modules/health/health.module.js';
++
++/**
++ * The composition root.
++ *
++ * Middleware order is the first two rows of architecture/backend.md §3 and is
++ * asserted by `app.integration.spec.ts`: the request ID is established before
++ * anything else so that every later stage — including a failure inside the
++ * security-headers middleware itself — has something to correlate by. Security
++ * headers come next so they are present on a response even when a later stage
++ * throws.
++ */
++@Module({
++  imports: [ConfigModule, PrismaModule, RedisModule, StorageModule, HealthModule],
++})
++export class AppModule implements NestModule {
++  configure(consumer: MiddlewareConsumer): void {
++    consumer
++      .apply(RequestIdMiddleware, SecurityHeadersMiddleware)
++      .forRoutes({ path: '*splat', method: RequestMethod.ALL });
++  }
++}
+diff --git a/apps/api/src/common/decorators/access.decorator.ts b/apps/api/src/common/decorators/access.decorator.ts
+new file mode 100644
+index 0000000..4e92fa0
+--- /dev/null
++++ b/apps/api/src/common/decorators/access.decorator.ts
+@@ -0,0 +1,37 @@
++import { SetMetadata } from '@nestjs/common';
++import type { Permission } from '@sentinel/contracts';
++
++/**
++ * The single metadata key under which every route declares how it is reached.
++ *
++ * One key, not two, and one shape, not a boolean plus a string: a route either
++ * declares itself public or names the permission it requires, and "neither" is
++ * a third state that a boot-time assertion refuses to start on. Two independent
++ * keys would make "public AND permission-guarded" and "no declaration at all"
++ * indistinguishable from each other at the point where it matters — see
++ * architecture/backend.md §3, "a route without an explicit access declaration
++ * fails a startup assertion".
++ */
++export const ACCESS_METADATA_KEY = 'sentinel:access';
++
++export type AccessDeclaration =
++  | { readonly kind: 'public' }
++  | { readonly kind: 'permission'; readonly permission: Permission };
++
++/**
++ * Declares a route reachable without authentication.
++ *
++ * Deliberately explicit rather than a default: the boot assertion that Task 11
++ * adds treats an undeclared route as a defect, so forgetting the decorator
++ * crashes startup instead of quietly shipping an open endpoint.
++ */
++export const Public = (): MethodDecorator & ClassDecorator =>
++  SetMetadata<string, AccessDeclaration>(ACCESS_METADATA_KEY, { kind: 'public' });
++
++/**
++ * Declares the permission a caller must hold. The permission string is typed
++ * against `PERMISSIONS` in `@sentinel/contracts`, so a typo is a compile error
++ * rather than a guard that silently never matches.
++ */
++export const RequirePermission = (permission: Permission): MethodDecorator & ClassDecorator =>
++  SetMetadata<string, AccessDeclaration>(ACCESS_METADATA_KEY, { kind: 'permission', permission });
+diff --git a/apps/api/src/common/errors/domain-error.ts b/apps/api/src/common/errors/domain-error.ts
+new file mode 100644
+index 0000000..b06f5bd
+--- /dev/null
++++ b/apps/api/src/common/errors/domain-error.ts
+@@ -0,0 +1,21 @@
++import type { ErrorCode } from '@sentinel/contracts';
++
++/**
++ * The base class for every error the domain raises.
++ *
++ * Domain code never throws a bare Error: a bare Error carries no code, so the
++ * filter can only map it to INTERNAL_ERROR, and the client learns nothing it
++ * can act on. A refusal that does not say how to succeed generates a support
++ * ticket. See api/errors.md §4.
++ */
++export class DomainError extends Error {
++  constructor(
++    readonly code: ErrorCode,
++    message: string,
++    readonly status: number,
++    readonly details?: Record<string, unknown>,
++  ) {
++    super(message);
++    this.name = 'DomainError';
++  }
++}
+diff --git a/apps/api/src/common/filters/all-exceptions.filter.spec.ts b/apps/api/src/common/filters/all-exceptions.filter.spec.ts
+new file mode 100644
+index 0000000..9b526ec
+--- /dev/null
++++ b/apps/api/src/common/filters/all-exceptions.filter.spec.ts
+@@ -0,0 +1,238 @@
++import { describe, expect, it, vi } from 'vitest';
++import {
++  BadRequestException,
++  HttpException,
++  HttpStatus,
++  InternalServerErrorException,
++  ServiceUnavailableException,
++} from '@nestjs/common';
++import { ERROR_CODES, errorEnvelopeSchema } from '@sentinel/contracts';
++import { AllExceptionsFilter, type ErrorLogger } from './all-exceptions.filter.js';
++import { DomainError } from '../errors/domain-error.js';
++
++interface LogCall {
++  readonly level: 'error' | 'warn';
++  readonly bindings: Record<string, unknown>;
++  readonly message: string;
++}
++
++function recordingLogger(): { logger: ErrorLogger; calls: LogCall[] } {
++  const calls: LogCall[] = [];
++  return {
++    calls,
++    logger: {
++      error: (bindings, message) =>
++        calls.push({ level: 'error', bindings: bindings as Record<string, unknown>, message }),
++      warn: (bindings, message) =>
++        calls.push({ level: 'warn', bindings: bindings as Record<string, unknown>, message }),
++    },
++  };
++}
++
++function invokeWith(
++  exception: unknown,
++  logger?: ErrorLogger,
++  request: Record<string, unknown> = { id: 'req_01J', url: '/api/v1/x', method: 'GET' },
++): { status: number; body: unknown } {
++  const json = vi.fn();
++  const status = vi.fn().mockReturnValue({ json });
++  const host = {
++    switchToHttp: () => ({
++      getResponse: () => ({ status }),
++      getRequest: () => request,
++    }),
++  };
++  new AllExceptionsFilter(logger).catch(exception, host as never);
++  return { status: status.mock.calls[0]?.[0] as number, body: json.mock.calls[0]?.[0] };
++}
++
++function invoke(exception: unknown): { status: number; body: unknown } {
++  return invokeWith(exception);
++}
++
++describe('AllExceptionsFilter', () => {
++  it('maps a domain error to its own code and status', () => {
++    const { status, body } = invoke(
++      new DomainError(ERROR_CODES.SCOPE_VIOLATION, 'Target is not permitted.', 422, {
++        target: 'admin.example.com',
++      }),
++    );
++    expect(status).toBe(422);
++    const parsed = errorEnvelopeSchema.parse(body);
++    expect(parsed.error.code).toBe('SCOPE_VIOLATION');
++    expect(parsed.error.details).toEqual({ target: 'admin.example.com' });
++  });
++
++  it('maps a 404 HttpException to RESOURCE_NOT_FOUND', () => {
++    const { status, body } = invoke(new HttpException('nope', HttpStatus.NOT_FOUND));
++    expect(status).toBe(404);
++    expect(errorEnvelopeSchema.parse(body).error.code).toBe('RESOURCE_NOT_FOUND');
++  });
++
++  it('maps an unknown throwable to a generic INTERNAL_ERROR', () => {
++    const { status, body } = invoke(new Error('connect ECONNREFUSED 10.0.0.5:5432'));
++    expect(status).toBe(500);
++    const parsed = errorEnvelopeSchema.parse(body);
++    expect(parsed.error.code).toBe('INTERNAL_ERROR');
++    // errors.md §5: no internal hosts, no database detail, no stack.
++    expect(parsed.error.message).not.toContain('ECONNREFUSED');
++    expect(parsed.error.message).not.toContain('10.0.0.5');
++  });
++
++  it('always includes the request id', () => {
++    expect(errorEnvelopeSchema.parse(invoke(new Error('x')).body).error.requestId).toBe('req_01J');
++  });
++
++  it('never emits a stack property', () => {
++    expect(JSON.stringify(invoke(new Error('x')).body)).not.toContain('stack');
++  });
++});
++
++describe('AllExceptionsFilter — what must never reach the client', () => {
++  it('does not pass a 5xx HttpException message through to the client', () => {
++    // `new InternalServerErrorException(err.message)` is a common way to wrap an
++    // internal failure, and it would otherwise ride the HttpException branch with
++    // its message intact. errors.md §5: an internal error returns a generic
++    // message and the request ID, whatever class it arrived as.
++    const { status, body } = invoke(
++      new InternalServerErrorException(
++        'Invalid prisma.finding.create(): Unique constraint failed on the fields: (Finding_organizationId_fingerprint_key)',
++      ),
++    );
++    expect(status).toBe(500);
++    const parsed = errorEnvelopeSchema.parse(body);
++    expect(parsed.error.code).toBe('INTERNAL_ERROR');
++    expect(parsed.error.message).not.toContain('prisma');
++    expect(parsed.error.message).not.toContain('Finding_organizationId_fingerprint_key');
++    expect(parsed.error.message).not.toContain('constraint');
++  });
++
++  it('does not pass a 503 HttpException message through to the client', () => {
++    const { status, body } = invoke(
++      new ServiceUnavailableException('redis://user:hunter2@10.0.0.7:6379 is unreachable'),
++    );
++    expect(status).toBe(503);
++    const parsed = errorEnvelopeSchema.parse(body);
++    expect(parsed.error.code).toBe('SERVICE_UNAVAILABLE');
++    expect(parsed.error.message).not.toContain('10.0.0.7');
++    expect(parsed.error.message).not.toContain('hunter2');
++  });
++
++  it('redacts a secret-shaped substring from a client-visible 4xx message', () => {
++    const { body } = invoke(
++      new BadRequestException('Webhook URL https://svc:hunter2@internal.example/hook was rejected'),
++    );
++    const parsed = errorEnvelopeSchema.parse(body);
++    expect(parsed.error.message).not.toContain('hunter2');
++    expect(parsed.error.message).toContain('was rejected');
++  });
++
++  it('redacts secret-shaped content from a domain error message and its details', () => {
++    const { body } = invoke(
++      new DomainError(
++        ERROR_CODES.VALIDATION_ERROR,
++        'Callback https://u:hunter2@example.com/cb was rejected',
++        400,
++        {
++          callbackUrl: 'https://u:hunter2@example.com/cb',
++          apiKey: 'sk_live_0123456789abcdefghij',
++        },
++      ),
++    );
++    const parsed = errorEnvelopeSchema.parse(body);
++    const serialised = JSON.stringify(parsed);
++    expect(serialised).not.toContain('hunter2');
++    expect(serialised).not.toContain('sk_live_0123456789abcdefghij');
++    expect(parsed.error.message).toContain('was rejected');
++  });
++
++  it('emits no property of the original error other than the envelope fields', () => {
++    class PrismaLikeError extends Error {
++      readonly code = 'P2002';
++      readonly meta = { target: ['Finding_organizationId_fingerprint_key'] };
++      readonly clientVersion = '6.19.3';
++    }
++    const { body } = invoke(new PrismaLikeError('Unique constraint failed'));
++    expect(Object.keys(body as object)).toEqual(['error']);
++    expect(Object.keys((body as { error: object }).error).sort()).toEqual([
++      'code',
++      'message',
++      'requestId',
++    ]);
++    const serialised = JSON.stringify(body);
++    expect(serialised).not.toContain('P2002');
++    expect(serialised).not.toContain('Finding_organizationId_fingerprint_key');
++    expect(serialised).not.toContain('6.19.3');
++  });
++
++  it('keeps an authored 5xx domain error intact, because that is the readiness contract', () => {
++    // The one deliberate exception to "no 5xx carries a message". /health/ready
++    // returns 503 and an operator has to learn *which* dependency is down from
++    // it — a generic body would make the endpoint useless for the one job
++    // monitoring.md §5 gives it.
++    const { status, body } = invoke(
++      new DomainError(
++        ERROR_CODES.DEPENDENCY_UNAVAILABLE,
++        'One or more dependencies are unavailable.',
++        503,
++        { dependencies: { postgres: 'ok', redis: 'error', storage: 'ok' } },
++      ),
++    );
++    expect(status).toBe(503);
++    const parsed = errorEnvelopeSchema.parse(body);
++    expect(parsed.error.code).toBe('DEPENDENCY_UNAVAILABLE');
++    expect(parsed.error.details).toEqual({
++      dependencies: { postgres: 'ok', redis: 'error', storage: 'ok' },
++    });
++  });
++
++  it('falls back to req_unknown when the request carries no id', () => {
++    const { body } = invokeWith(new Error('x'), undefined, { url: '/x', method: 'GET' });
++    expect(errorEnvelopeSchema.parse(body).error.requestId).toBe('req_unknown');
++  });
++});
++
++describe('AllExceptionsFilter — what must reach the log', () => {
++  it('logs a 5xx at error with the error, the request id, and a redacted message', () => {
++    const { logger, calls } = recordingLogger();
++    invokeWith(new Error('connect to redis://user:hunter2@10.0.0.7:6379 refused'), logger);
++    expect(calls).toHaveLength(1);
++    const call = calls[0]!;
++    expect(call.level).toBe('error');
++    expect(call.bindings.requestId).toBe('req_01J');
++    expect(call.bindings.statusCode).toBe(500);
++    expect(call.bindings.err).toBeInstanceOf(Error);
++    // The logger's own `err` serialiser redacts the Error; the `msg` string is
++    // redacted here because pino's msg-from-error fallback is preempted by
++    // observability/logger.ts's logMethod hook only when a string msg is absent —
++    // once this filter supplies one, this filter owns its redaction.
++    expect(call.message).not.toContain('hunter2');
++    expect(call.message).toContain('refused');
++  });
++
++  it('logs a 4xx at warn with the code and path but never the exception body', () => {
++    const { logger, calls } = recordingLogger();
++    invokeWith(new DomainError(ERROR_CODES.SCOPE_VIOLATION, 'Nope.', 422), logger);
++    expect(calls).toHaveLength(1);
++    const call = calls[0]!;
++    expect(call.level).toBe('warn');
++    expect(call.bindings.code).toBe('SCOPE_VIOLATION');
++    expect(call.bindings.path).toBe('/api/v1/x');
++    expect(call.bindings.statusCode).toBe(422);
++    expect(call.bindings.err).toBeUndefined();
++  });
++
++  it('still answers the client when the logger itself throws', () => {
++    const exploding: ErrorLogger = {
++      error: () => {
++        throw new Error('log transport down');
++      },
++      warn: () => {
++        throw new Error('log transport down');
++      },
++    };
++    const { status, body } = invokeWith(new Error('boom'), exploding);
++    expect(status).toBe(500);
++    expect(errorEnvelopeSchema.parse(body).error.code).toBe('INTERNAL_ERROR');
++  });
++});
+diff --git a/apps/api/src/common/filters/all-exceptions.filter.ts b/apps/api/src/common/filters/all-exceptions.filter.ts
+new file mode 100644
+index 0000000..a4f4b09
+--- /dev/null
++++ b/apps/api/src/common/filters/all-exceptions.filter.ts
+@@ -0,0 +1,167 @@
++import { type ArgumentsHost, Catch, type ExceptionFilter, HttpException } from '@nestjs/common';
++import { ERROR_CODES, type ErrorCode, type ErrorEnvelope } from '@sentinel/contracts';
++import { redact, redactSecretsInText } from '@sentinel/observability';
++import { DomainError } from '../errors/domain-error.js';
++
++interface ResponseLike {
++  status(code: number): { json(body: unknown): void };
++}
++
++/**
++ * The narrow slice of the structured logger this filter uses. Declared here
++ * rather than importing pino's `Logger` so a test can supply a recorder without
++ * standing up a real transport — pino's `Logger` is structurally assignable to
++ * it, so the production wiring passes the real thing unchanged.
++ */
++export interface ErrorLogger {
++  error(bindings: object, message: string): void;
++  warn(bindings: object, message: string): void;
++}
++
++const STATUS_TO_CODE: Readonly<Record<number, ErrorCode>> = {
++  400: ERROR_CODES.VALIDATION_ERROR,
++  401: ERROR_CODES.UNAUTHENTICATED,
++  403: ERROR_CODES.PERMISSION_DENIED,
++  404: ERROR_CODES.RESOURCE_NOT_FOUND,
++  409: ERROR_CODES.DUPLICATE_RESOURCE,
++  422: ERROR_CODES.INVALID_STATE_TRANSITION,
++  429: ERROR_CODES.RATE_LIMITED,
++  503: ERROR_CODES.SERVICE_UNAVAILABLE,
++};
++
++const GENERIC_MESSAGE =
++  'Something went wrong on our side. Quote the request ID if you contact support.';
++
++interface RequestLike {
++  id?: string;
++  url?: string;
++  originalUrl?: string;
++  method?: string;
++}
++
++/**
++ * One envelope for every error, without exception. api/errors.md §1.
++ *
++ * Three properties this file exists to hold, each covered by a test that goes
++ * red if the corresponding line is removed:
++ *
++ * 1. **No 5xx that this codebase did not author carries a message.** Not just
++ *    the unrecognised-throwable branch: `new InternalServerErrorException(
++ *    err.message)` and `new ServiceUnavailableException(...)` are ordinary Nest
++ *    idioms that would otherwise ride the `HttpException` branch with an
++ *    internal message intact, so status decides there, not exception class.
++ *    A `DomainError` is the deliberate exception — `DEPENDENCY_UNAVAILABLE` at
++ *    503 exists precisely to name the dependency that is down (errors.md §3),
++ *    and its text is written here, not by a driver. errors.md §5.
++ * 2. **Client-visible 4xx text passes through `redactSecretsInText`.** A 4xx
++ *    message is authored, so this is a backstop rather than the primary
++ *    control — but the authored text sometimes quotes user input (a rejected
++ *    callback URL), and a credentialed URL is exactly the shape that arrives
++ *    that way. `details` goes through the structural `redact()` for the same
++ *    reason.
++ * 3. **Nothing but `code`/`message`/`requestId`/`details` is serialised.** The
++ *    envelope is built field by field; the exception is never spread. A Prisma
++ *    error's `code`, `meta`, and `clientVersion` therefore cannot leak by
++ *    accident when a new error class turns up.
++ *
++ * Everything withheld from the client goes to the log instead, correlated by
++ * the request ID: 5xx at `error` with the full `Error` (the logger's own `err`
++ * serialiser redacts its message and stack), 4xx at `warn` with the code and
++ * path only — never the request body, which on an auth endpoint is a
++ * credential. errors.md §6.
++ */
++@Catch()
++export class AllExceptionsFilter implements ExceptionFilter {
++  /**
++   * `logger` is optional so a unit test can construct the filter bare. In the
++   * application it is always supplied; see `app.module.ts`.
++   */
++  constructor(private readonly logger?: ErrorLogger) {}
++
++  catch(exception: unknown, host: ArgumentsHost): void {
++    const http = host.switchToHttp();
++    const request = http.getRequest<RequestLike>();
++    const requestId = request.id ?? 'req_unknown';
++    const response = http.getResponse<ResponseLike>();
++
++    const { status, code, message, details } = this.classify(exception);
++
++    this.log(exception, { requestId, status, code, request });
++
++    const envelope: ErrorEnvelope = {
++      error: {
++        code,
++        message,
++        requestId,
++        ...(details === undefined ? {} : { details }),
++      },
++    };
++    response.status(status).json(envelope);
++  }
++
++  private classify(exception: unknown): {
++    status: number;
++    code: ErrorCode;
++    message: string;
++    details?: Record<string, unknown>;
++  } {
++    if (exception instanceof DomainError) {
++      // A DomainError is authored, including the 5xx ones — DEPENDENCY_UNAVAILABLE
++      // and SERVICE_UNAVAILABLE are documented codes in errors.md §3 that exist
++      // precisely so a caller learns which dependency is down. Its message and
++      // details are therefore returned, not replaced. The residual duty that
++      // creates: never construct a DomainError out of driver output. The
++      // redaction below is a backstop for that, not a licence.
++      return {
++        status: exception.status,
++        code: exception.code,
++        message: redactSecretsInText(exception.message),
++        ...(exception.details === undefined
++          ? {}
++          : { details: redact(exception.details) as Record<string, unknown> }),
++      };
++    }
++
++    if (exception instanceof HttpException) {
++      const status = exception.getStatus();
++      const code = STATUS_TO_CODE[status] ?? ERROR_CODES.INTERNAL_ERROR;
++      return {
++        status,
++        code,
++        message: status >= 500 ? GENERIC_MESSAGE : redactSecretsInText(exception.message),
++      };
++    }
++
++    return { status: 500, code: ERROR_CODES.INTERNAL_ERROR, message: GENERIC_MESSAGE };
++  }
++
++  private log(
++    exception: unknown,
++    context: { requestId: string; status: number; code: ErrorCode; request: RequestLike },
++  ): void {
++    const logger = this.logger;
++    if (logger === undefined) return;
++
++    const bindings = {
++      requestId: context.requestId,
++      statusCode: context.status,
++      code: context.code,
++      method: context.request.method,
++      path: context.request.originalUrl ?? context.request.url,
++    };
++
++    // A logger that throws while reporting a failure hides the real one, and
++    // would here also abort the response the client is waiting for. Failing to
++    // log is bad; failing to answer is worse.
++    try {
++      if (context.status >= 500) {
++        const raw = exception instanceof Error ? exception.message : 'Unhandled exception';
++        logger.error({ ...bindings, err: exception }, redactSecretsInText(raw));
++        return;
++      }
++      logger.warn(bindings, `Request failed with ${context.code}`);
++    } catch {
++      // Deliberately swallowed. Nothing here can be reported anywhere.
++    }
++  }
++}
+diff --git a/apps/api/src/common/interceptors/logging.interceptor.spec.ts b/apps/api/src/common/interceptors/logging.interceptor.spec.ts
+new file mode 100644
+index 0000000..f90f4ba
+--- /dev/null
++++ b/apps/api/src/common/interceptors/logging.interceptor.spec.ts
+@@ -0,0 +1,106 @@
++import { describe, expect, it } from 'vitest';
++import { firstValueFrom, lastValueFrom, of, throwError } from 'rxjs';
++import type { CallHandler, ExecutionContext } from '@nestjs/common';
++import { LoggingInterceptor, type RequestLogger } from './logging.interceptor.js';
++
++interface LogCall {
++  readonly bindings: Record<string, unknown>;
++  readonly message: string;
++}
++
++function recordingLogger(): { logger: RequestLogger; calls: LogCall[] } {
++  const calls: LogCall[] = [];
++  return {
++    calls,
++    logger: {
++      info: (bindings, message) =>
++        calls.push({ bindings: bindings as Record<string, unknown>, message }),
++    },
++  };
++}
++
++function contextFor(request: Record<string, unknown>, statusCode = 200): ExecutionContext {
++  return {
++    switchToHttp: () => ({
++      getRequest: () => request,
++      getResponse: () => ({ statusCode }),
++    }),
++  } as unknown as ExecutionContext;
++}
++
++const handlerOf = (value: unknown): CallHandler => ({ handle: () => of(value) });
++
++describe('LoggingInterceptor', () => {
++  it('logs one structured line per completed request', async () => {
++    const { logger, calls } = recordingLogger();
++    await firstValueFrom(
++      new LoggingInterceptor(logger).intercept(
++        contextFor({ method: 'GET', originalUrl: '/health/live', id: 'req_01J' }, 200),
++        handlerOf({ status: 'ok' }),
++      ),
++    );
++    expect(calls).toHaveLength(1);
++    const call = calls[0]!;
++    expect(call.bindings).toMatchObject({ method: 'GET', path: '/health/live', statusCode: 200 });
++    expect(typeof call.bindings.durationMs).toBe('number');
++  });
++
++  it('strips the query string from the logged path', async () => {
++    // A query string carries invitation tokens, reset tokens, and API keys that
++    // a caller put in the wrong place. The route is what an operator needs;
++    // the arguments are not. monitoring.md §2, errors.md §6.
++    const { logger, calls } = recordingLogger();
++    await firstValueFrom(
++      new LoggingInterceptor(logger).intercept(
++        contextFor({
++          method: 'GET',
++          originalUrl: '/api/v1/invitations/accept?token=SUPER-SECRET-TOKEN',
++          id: 'req_01J',
++        }),
++        handlerOf(null),
++      ),
++    );
++    expect(calls[0]!.bindings.path).toBe('/api/v1/invitations/accept');
++    expect(JSON.stringify(calls[0])).not.toContain('SUPER-SECRET-TOKEN');
++  });
++
++  it('logs neither the request body nor the request headers', async () => {
++    const { logger, calls } = recordingLogger();
++    await firstValueFrom(
++      new LoggingInterceptor(logger).intercept(
++        contextFor({
++          method: 'POST',
++          originalUrl: '/api/v1/auth/login',
++          id: 'req_01J',
++          body: { email: 'a@b.test', password: 'CORRECT-HORSE' },
++          headers: { cookie: '__Host-session=SESSIONVALUE' },
++        }),
++        handlerOf(null),
++      ),
++    );
++    const serialised = JSON.stringify(calls[0]);
++    expect(serialised).not.toContain('CORRECT-HORSE');
++    expect(serialised).not.toContain('SESSIONVALUE');
++    expect(serialised).not.toContain('a@b.test');
++  });
++
++  it('logs nothing on failure and lets the error propagate to the filter', async () => {
++    const { logger, calls } = recordingLogger();
++    const failing = {
++      handle: () => throwError(() => new Error('boom')),
++    } as unknown as CallHandler;
++
++    await expect(
++      lastValueFrom(
++        new LoggingInterceptor(logger).intercept(
++          contextFor({ method: 'GET', originalUrl: '/x', id: 'req_01J' }),
++          failing,
++        ),
++      ),
++    ).rejects.toThrow('boom');
++    // The exception filter owns the failure line, with the status code the
++    // interceptor cannot yet see. Logging here too would double-count every
++    // error in the error-rate metric.
++    expect(calls).toHaveLength(0);
++  });
++});
+diff --git a/apps/api/src/common/interceptors/logging.interceptor.ts b/apps/api/src/common/interceptors/logging.interceptor.ts
+new file mode 100644
+index 0000000..4cfd16d
+--- /dev/null
++++ b/apps/api/src/common/interceptors/logging.interceptor.ts
+@@ -0,0 +1,78 @@
++import {
++  type CallHandler,
++  type ExecutionContext,
++  Inject,
++  Injectable,
++  type NestInterceptor,
++} from '@nestjs/common';
++import { type Observable, tap } from 'rxjs';
++import { LOGGER } from '../../infrastructure/tokens.js';
++
++/**
++ * The slice of the structured logger this interceptor uses. Pino's `Logger` is
++ * structurally assignable to it; a test supplies a recorder instead.
++ */
++export interface RequestLogger {
++  info(bindings: object, message: string): void;
++}
++
++interface RequestLike {
++  method?: string;
++  url?: string;
++  originalUrl?: string;
++  id?: string;
++}
++
++/**
++ * Strips the query string. A query string is where invitation tokens, password
++ * reset tokens, and API keys pasted into the wrong place turn up, and a log
++ * line is exactly the wrong place for those to be durable.
++ * monitoring.md §2, api/errors.md §6.
++ */
++function pathOf(request: RequestLike): string {
++  const raw = request.originalUrl ?? request.url ?? '';
++  const queryStart = raw.indexOf('?');
++  return queryStart === -1 ? raw : raw.slice(0, queryStart);
++}
++
++/**
++ * One structured line per completed request: method, path, status, duration.
++ *
++ * Deliberately narrow. Bodies and headers are never logged — the login endpoint
++ * alone makes that a credential leak — and the correlation IDs are not written
++ * here either, because `runWithRequestContext` already merges them into every
++ * line the logger emits (`packages/observability/src/logger.ts`,
++ * `formatters.log`).
++ *
++ * Failures are not logged here. The exception filter logs them, with the status
++ * code it decided; an interceptor sees the error before the filter has set one,
++ * so a line written here would record every failure as a 200 and would
++ * double-count it against the error rate.
++ */
++@Injectable()
++export class LoggingInterceptor implements NestInterceptor {
++  constructor(@Inject(LOGGER) private readonly logger: RequestLogger) {}
++
++  intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
++    const startedAt = process.hrtime.bigint();
++    const http = context.switchToHttp();
++    const request = http.getRequest<RequestLike>();
++
++    return next.handle().pipe(
++      tap({
++        next: () => {
++          const response = http.getResponse<{ statusCode?: number }>();
++          this.logger.info(
++            {
++              method: request.method,
++              path: pathOf(request),
++              statusCode: response.statusCode,
++              durationMs: Number(process.hrtime.bigint() - startedAt) / 1e6,
++            },
++            'Request completed',
++          );
++        },
++      }),
++    );
++  }
++}
+diff --git a/apps/api/src/common/middleware/request-id.middleware.spec.ts b/apps/api/src/common/middleware/request-id.middleware.spec.ts
+new file mode 100644
+index 0000000..e8e552e
+--- /dev/null
++++ b/apps/api/src/common/middleware/request-id.middleware.spec.ts
+@@ -0,0 +1,76 @@
++import { describe, expect, it } from 'vitest';
++import type { NextFunction, Request, Response } from 'express';
++import { getRequestContext } from '@sentinel/observability';
++import { RequestIdMiddleware } from './request-id.middleware.js';
++
++function run(headers: Record<string, string | string[] | undefined>): {
++  requestId: string;
++  headerValue: unknown;
++  contextIdInsideNext: string | undefined;
++} {
++  const request = { headers } as unknown as Request;
++  const written: Record<string, unknown> = {};
++  const response = {
++    setHeader: (name: string, value: unknown) => {
++      written[name.toLowerCase()] = value;
++    },
++  } as unknown as Response;
++
++  let contextIdInsideNext: string | undefined;
++  const next: NextFunction = () => {
++    contextIdInsideNext = getRequestContext()?.requestId;
++  };
++
++  new RequestIdMiddleware().use(request, response, next);
++
++  return {
++    requestId: (request as unknown as { id: string }).id,
++    headerValue: written['x-request-id'],
++    contextIdInsideNext,
++  };
++}
++
++describe('RequestIdMiddleware', () => {
++  it('generates a prefixed id when the client supplies none', () => {
++    const { requestId, headerValue } = run({});
++    expect(requestId).toMatch(/^req_[0-9A-HJKMNP-TV-Z]{26}$/);
++    expect(headerValue).toBe(requestId);
++  });
++
++  it('echoes a well-formed client-supplied id', () => {
++    const { requestId, headerValue } = run({ 'x-request-id': 'req_supplied' });
++    expect(requestId).toBe('req_supplied');
++    expect(headerValue).toBe('req_supplied');
++  });
++
++  it.each([
++    ['a newline, which would forge a second log line', 'req_a\nlevel=fatal msg=owned'],
++    ['a carriage return', 'req_a\r\nX-Evil: 1'],
++    ['characters outside the safe alphabet', 'req_<script>alert(1)</script>'],
++    ['an oversized value', `req_${'a'.repeat(400)}`],
++    ['an empty value', ''],
++    ['whitespace only', '   '],
++  ])('refuses a client-supplied id containing %s and generates its own', (_why, supplied) => {
++    // The request ID is written into structured logs and reflected in a response
++    // header. It is client-controlled input and is validated like any other.
++    const { requestId, headerValue } = run({ 'x-request-id': supplied });
++    expect(requestId).not.toBe(supplied);
++    expect(requestId).toMatch(/^req_[0-9A-HJKMNP-TV-Z]{26}$/);
++    expect(headerValue).toBe(requestId);
++  });
++
++  it('refuses a repeated header, which Express surfaces as an array', () => {
++    const { requestId } = run({ 'x-request-id': ['req_one', 'req_two'] });
++    expect(requestId).toMatch(/^req_[0-9A-HJKMNP-TV-Z]{26}$/);
++  });
++
++  it('makes the id ambient for the rest of the request', () => {
++    const { requestId, contextIdInsideNext } = run({ 'x-request-id': 'req_supplied' });
++    expect(contextIdInsideNext).toBe(requestId);
++  });
++
++  it('leaves no ambient context behind once the request is over', () => {
++    run({});
++    expect(getRequestContext()).toBeUndefined();
++  });
++});
+diff --git a/apps/api/src/common/middleware/request-id.middleware.ts b/apps/api/src/common/middleware/request-id.middleware.ts
+new file mode 100644
+index 0000000..f2ca7a2
+--- /dev/null
++++ b/apps/api/src/common/middleware/request-id.middleware.ts
+@@ -0,0 +1,47 @@
++import { Injectable, type NestMiddleware } from '@nestjs/common';
++import type { NextFunction, Request, Response } from 'express';
++import { newId } from '@sentinel/db';
++import { runWithRequestContext } from '@sentinel/observability';
++
++export const REQUEST_ID_HEADER = 'x-request-id';
++
++/**
++ * A client-supplied request ID is accepted only in this shape.
++ *
++ * The value is written into structured JSON logs and reflected back in a
++ * response header, so it is untrusted input with two sinks. A newline forges a
++ * second log line; an unbounded value is a cheap way to bloat every log record
++ * for a request. Anything outside this alphabet is discarded and replaced with
++ * a generated ID rather than sanitised — a half-honoured correlation ID is
++ * worse than an honest new one, because the caller believes it can correlate.
++ */
++const SAFE_REQUEST_ID = /^[A-Za-z0-9_-]{1,64}$/;
++
++declare module 'express' {
++  interface Request {
++    /** Set by `RequestIdMiddleware`, first in the pipeline. */
++    id?: string;
++  }
++}
++
++/**
++ * Stage one of the cross-cutting pipeline (architecture/backend.md §3).
++ *
++ * Accepts an upstream `x-request-id` when it is well-formed so a trace that
++ * started at the edge stays one trace, generates one otherwise, echoes it, and
++ * runs the remainder of the request inside `runWithRequestContext` so every log
++ * line correlates without the ID being threaded through call signatures.
++ */
++@Injectable()
++export class RequestIdMiddleware implements NestMiddleware {
++  use(request: Request, response: Response, next: NextFunction): void {
++    const supplied = request.headers[REQUEST_ID_HEADER];
++    const requestId =
++      typeof supplied === 'string' && SAFE_REQUEST_ID.test(supplied) ? supplied : newId('req');
++
++    request.id = requestId;
++    response.setHeader(REQUEST_ID_HEADER, requestId);
++
++    runWithRequestContext({ requestId }, next);
++  }
++}
+diff --git a/apps/api/src/common/middleware/security-headers.middleware.spec.ts b/apps/api/src/common/middleware/security-headers.middleware.spec.ts
+new file mode 100644
+index 0000000..3d7bf49
+--- /dev/null
++++ b/apps/api/src/common/middleware/security-headers.middleware.spec.ts
+@@ -0,0 +1,97 @@
++import { describe, expect, it } from 'vitest';
++import type { NextFunction, Request, Response } from 'express';
++import { SecurityHeadersMiddleware } from './security-headers.middleware.js';
++
++function run(enforceCsp: boolean): {
++  headers: Record<string, string>;
++  removed: string[];
++  nonce: unknown;
++  nextCalled: boolean;
++} {
++  const headers: Record<string, string> = {};
++  const removed: string[] = [];
++  const locals: Record<string, unknown> = {};
++  const response = {
++    locals,
++    setHeader: (name: string, value: string) => {
++      headers[name.toLowerCase()] = value;
++    },
++    removeHeader: (name: string) => {
++      removed.push(name.toLowerCase());
++    },
++  } as unknown as Response;
++
++  let nextCalled = false;
++  const next: NextFunction = () => {
++    nextCalled = true;
++  };
++
++  new SecurityHeadersMiddleware(enforceCsp).use({} as Request, response, next);
++  return { headers, removed, nonce: locals.cspNonce, nextCalled };
++}
++
++describe('SecurityHeadersMiddleware', () => {
++  // security/transport-and-headers.md §2, cell for cell.
++  it.each([
++    ['strict-transport-security', 'max-age=31536000; includeSubDomains; preload'],
++    ['x-content-type-options', 'nosniff'],
++    ['x-frame-options', 'DENY'],
++    ['referrer-policy', 'strict-origin-when-cross-origin'],
++    ['permissions-policy', 'camera=(), microphone=(), geolocation=(), payment=()'],
++    ['cross-origin-opener-policy', 'same-origin'],
++    ['cross-origin-resource-policy', 'same-origin'],
++    ['cross-origin-embedder-policy', 'require-corp'],
++    ['cache-control', 'no-store'],
++  ])('sets %s to the documented value', (header, value) => {
++    expect(run(true).headers[header]).toBe(value);
++  });
++
++  it('removes X-Powered-By rather than relying on the framework not to set it', () => {
++    expect(run(true).removed).toContain('x-powered-by');
++  });
++
++  it('enforces CSP outside development and only reports in development', () => {
++    const enforcing = run(true).headers;
++    expect(enforcing['content-security-policy']).toBeDefined();
++    expect(enforcing['content-security-policy-report-only']).toBeUndefined();
++
++    const reporting = run(false).headers;
++    expect(reporting['content-security-policy-report-only']).toBeDefined();
++    expect(reporting['content-security-policy']).toBeUndefined();
++  });
++
++  it('builds a nonce-based policy with no unsafe-inline and no unsafe-eval', () => {
++    const csp = run(true).headers['content-security-policy'] ?? '';
++    expect(csp).not.toContain('unsafe-inline');
++    expect(csp).not.toContain('unsafe-eval');
++    expect(csp).toMatch(/script-src [^;]*'nonce-[A-Za-z0-9+/=]{16,}'/);
++    expect(csp).toMatch(/style-src [^;]*'nonce-[A-Za-z0-9+/=]{16,}'/);
++    for (const directive of [
++      "default-src 'self'",
++      "frame-ancestors 'none'",
++      "object-src 'none'",
++      "base-uri 'self'",
++      "form-action 'self'",
++      'upgrade-insecure-requests',
++      'report-uri /api/v1/csp-report',
++    ]) {
++      expect(csp).toContain(directive);
++    }
++  });
++
++  it('exposes the nonce on response.locals so a renderer can use the same one', () => {
++    const { nonce, headers } = run(true);
++    expect(typeof nonce).toBe('string');
++    expect(headers['content-security-policy']).toContain(`'nonce-${String(nonce)}'`);
++  });
++
++  it('mints a fresh nonce for every request', () => {
++    const seen = new Set<unknown>();
++    for (let i = 0; i < 25; i += 1) seen.add(run(true).nonce);
++    expect(seen.size).toBe(25);
++  });
++
++  it('calls next', () => {
++    expect(run(true).nextCalled).toBe(true);
++  });
++});
+diff --git a/apps/api/src/common/middleware/security-headers.middleware.ts b/apps/api/src/common/middleware/security-headers.middleware.ts
+new file mode 100644
+index 0000000..e8bfec5
+--- /dev/null
++++ b/apps/api/src/common/middleware/security-headers.middleware.ts
+@@ -0,0 +1,70 @@
++import { randomBytes } from 'node:crypto';
++import { Inject, Injectable, type NestMiddleware } from '@nestjs/common';
++import type { NextFunction, Request, Response } from 'express';
++import { CSP_ENFORCE } from '../../infrastructure/tokens.js';
++
++/**
++ * Applies security/transport-and-headers.md §2 to every response, and §3's
++ * nonce-based CSP.
++ *
++ * A note on why the API sends a CSP at all, since it serves JSON: the policy is
++ * what stops a response that is somehow rendered as a document — a browser
++ * navigated straight at an endpoint, a content-type confusion — from executing
++ * anything. `object-src 'none'` and `frame-ancestors 'none'` cost nothing here
++ * and close that case.
++ *
++ * `connect-src` is `'self'` rather than the example hosts listed in §3: those
++ * name the *web* origin's API and Sentry endpoints and are placeholders in the
++ * document. This origin is the API itself and initiates no browser connections.
++ */
++@Injectable()
++export class SecurityHeadersMiddleware implements NestMiddleware {
++  constructor(@Inject(CSP_ENFORCE) private readonly enforceCsp: boolean) {}
++
++  use(_request: Request, response: Response, next: NextFunction): void {
++    // 128 bits from the CSPRNG, minted per request. A nonce reused across
++    // responses is a nonce an attacker can read from one page and reuse on the
++    // next, which is the same as having no nonce at all.
++    const nonce = randomBytes(16).toString('base64');
++    response.locals.cspNonce = nonce;
++
++    response.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
++    response.setHeader('X-Content-Type-Options', 'nosniff');
++    response.setHeader('X-Frame-Options', 'DENY');
++    response.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
++    response.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
++    response.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
++    response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
++    response.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
++    // The API serves nothing cacheable; every response may contain tenant data.
++    response.setHeader('Cache-Control', 'no-store');
++    response.removeHeader('X-Powered-By');
++
++    const policy = [
++      "default-src 'self'",
++      `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`,
++      `style-src 'self' 'nonce-${nonce}'`,
++      "img-src 'self' data: blob:",
++      "font-src 'self'",
++      "connect-src 'self'",
++      "frame-ancestors 'none'",
++      "form-action 'self'",
++      "base-uri 'self'",
++      "object-src 'none'",
++      'upgrade-insecure-requests',
++      // The collector arrives with the web app. Wired from day one because a
++      // policy nobody monitors is decoration — transport-and-headers.md §3.
++      'report-uri /api/v1/csp-report',
++    ].join('; ');
++
++    // operations/environments.md §4: report-only while iterating locally,
++    // enforcing everywhere else. The flag is derived from APP_ENV once, in
++    // infrastructure/config, so "everywhere else" cannot drift per call site.
++    response.setHeader(
++      this.enforceCsp ? 'Content-Security-Policy' : 'Content-Security-Policy-Report-Only',
++      policy,
++    );
++
++    next();
++  }
++}
+diff --git a/apps/api/src/common/pipes/zod-validation.pipe.spec.ts b/apps/api/src/common/pipes/zod-validation.pipe.spec.ts
+new file mode 100644
+index 0000000..5372564
+--- /dev/null
++++ b/apps/api/src/common/pipes/zod-validation.pipe.spec.ts
+@@ -0,0 +1,101 @@
++import { describe, expect, it } from 'vitest';
++import { z } from 'zod';
++import { ERROR_CODES, fieldErrorSchema } from '@sentinel/contracts';
++import { DomainError } from '../errors/domain-error.js';
++import { ZodValidationPipe } from './zod-validation.pipe.js';
++
++const schema = z.object({
++  name: z.string().min(3),
++  port: z.coerce.number().int(),
++  targets: z.array(z.string().url()),
++  scope: z.object({ rules: z.array(z.object({ value: z.string().min(1) })) }),
++});
++
++function failWith(input: unknown): DomainError {
++  try {
++    new ZodValidationPipe(schema).transform(input);
++  } catch (error) {
++    return error as DomainError;
++  }
++  throw new Error('Expected the pipe to reject this input, but it accepted it.');
++}
++
++function fieldsOf(error: DomainError): { path: string; code: string; message: string }[] {
++  return z.array(fieldErrorSchema).parse((error.details as { fields: unknown }).fields);
++}
++
++describe('ZodValidationPipe', () => {
++  it('returns the parsed value, with the schema transforms applied', () => {
++    const parsed = new ZodValidationPipe(schema).transform({
++      name: 'abc',
++      port: '8080',
++      targets: ['https://example.com'],
++      scope: { rules: [{ value: 'x' }] },
++    });
++    // Coercion is the point: the handler must receive a number, not the string
++    // the query string actually carried.
++    expect(parsed).toEqual({
++      name: 'abc',
++      port: 8080,
++      targets: ['https://example.com'],
++      scope: { rules: [{ value: 'x' }] },
++    });
++  });
++
++  it('throws a 400 VALIDATION_ERROR domain error', () => {
++    const error = failWith({ name: 'ab', port: 'x', targets: [], scope: { rules: [] } });
++    expect(error).toBeInstanceOf(DomainError);
++    expect(error.code).toBe(ERROR_CODES.VALIDATION_ERROR);
++    expect(error.status).toBe(400);
++  });
++
++  it('reports one entry per failing field, in the FieldError shape', () => {
++    const error = failWith({ name: 'ab', port: 'x', targets: [], scope: { rules: [] } });
++    const fields = fieldsOf(error);
++    expect(fields.map((field) => field.path).sort()).toEqual(['name', 'port']);
++    for (const field of fields) {
++      expect(field.code.length).toBeGreaterThan(0);
++      expect(field.message.length).toBeGreaterThan(0);
++    }
++  });
++
++  it('uses dotted/bracketed paths that match the request body', () => {
++    const error = failWith({
++      name: 'abc',
++      port: 1,
++      targets: ['not-a-url'],
++      scope: { rules: [{ value: 'ok' }, { value: '' }] },
++    });
++    const paths = fieldsOf(error).map((field) => field.path);
++    // errors.md §2 — the client attaches these to inputs without guessing.
++    expect(paths).toContain('targets[0]');
++    expect(paths).toContain('scope.rules[1].value');
++  });
++
++  it('describes a root-level failure with an empty path rather than inventing one', () => {
++    const error = failWith('not an object at all');
++    expect(fieldsOf(error).map((field) => field.path)).toEqual(['']);
++  });
++
++  it('never echoes secret-shaped content out of a Zod message', () => {
++    // Zod's `invalid_enum_value` message quotes the received value verbatim.
++    // The pipe's output is client-visible, so it goes through the same
++    // substring redaction the logger uses. errors.md §5.
++    const enumSchema = z.object({ mode: z.enum(['fast', 'deep']) });
++    let caught: DomainError | undefined;
++    try {
++      new ZodValidationPipe(enumSchema).transform({
++        mode: 'https://user:hunter2@internal.example/cb',
++      });
++    } catch (error) {
++      caught = error as DomainError;
++    }
++    expect(caught).toBeDefined();
++    expect(JSON.stringify(caught?.details)).not.toContain('hunter2');
++  });
++
++  it('carries nothing but fields in details', () => {
++    const error = failWith({ name: 'ab', port: 1, targets: [], scope: { rules: [] } });
++    expect(Object.keys(error.details ?? {})).toEqual(['fields']);
++  });
++});
+diff --git a/apps/api/src/common/pipes/zod-validation.pipe.ts b/apps/api/src/common/pipes/zod-validation.pipe.ts
+new file mode 100644
+index 0000000..79d82de
+--- /dev/null
++++ b/apps/api/src/common/pipes/zod-validation.pipe.ts
+@@ -0,0 +1,65 @@
++import { Injectable, type PipeTransform } from '@nestjs/common';
++import type { TypeOf, ZodIssue, ZodTypeAny } from 'zod';
++import { ERROR_CODES, type FieldError } from '@sentinel/contracts';
++import { redactSecretsInText } from '@sentinel/observability';
++import { DomainError } from '../errors/domain-error.js';
++
++/**
++ * Renders a Zod issue path as the dotted/bracketed notation the client sees in
++ * its own request body: `targets[0]`, `scope.rules[2].value`. A root-level
++ * failure — the whole body was the wrong type — has an empty path, because
++ * there is no input to attach it to and inventing a name like `(root)` would
++ * have a client hunting for a field that does not exist. errors.md §2.
++ */
++function formatPath(path: readonly (string | number)[]): string {
++  return path.reduce<string>((accumulator, segment) => {
++    if (typeof segment === 'number') return `${accumulator}[${String(segment)}]`;
++    return accumulator === '' ? segment : `${accumulator}.${segment}`;
++  }, '');
++}
++
++function toFieldError(issue: ZodIssue): FieldError {
++  return {
++    path: formatPath(issue.path),
++    code: issue.code,
++    // Zod's message text quotes the received value for some issue codes
++    // (`invalid_enum_value`, `invalid_literal`). That value is the caller's own
++    // input, so echoing it is not a cross-tenant leak — but a caller who pasted
++    // a credentialed URL into the wrong field would get it mirrored back into a
++    // response that may be logged or screenshotted. Substring redaction costs
++    // nothing and closes that. errors.md §5.
++    message: redactSecretsInText(issue.message),
++  };
++}
++
++/**
++ * Validates one HTTP input against a `packages/contracts` schema.
++ *
++ * The schema is the source of truth and the same one the frontend uses, so
++ * client and server cannot drift (architecture/backend.md §6). The pipe returns
++ * the *parsed* value, not the input, so coercions and defaults declared in the
++ * contract actually reach the handler.
++ *
++ * Phase 1 has no consumer — health takes no input. It exists now so Phase 2's
++ * first endpoint inherits a validated boundary rather than inventing its own,
++ * and its unit test drives it directly.
++ */
++@Injectable()
++export class ZodValidationPipe<TSchema extends ZodTypeAny> implements PipeTransform {
++  constructor(private readonly schema: TSchema) {}
++
++  transform(value: unknown): TypeOf<TSchema> {
++    const result = this.schema.safeParse(value);
++    // `safeParse` on a `ZodTypeAny` widens `data` to `any`; the schema's own
++    // inferred output type is the honest one.
++    if (result.success) return result.data as TypeOf<TSchema>;
++
++    const fields = result.error.issues.map(toFieldError);
++    throw new DomainError(
++      ERROR_CODES.VALIDATION_ERROR,
++      'The request contains invalid fields.',
++      400,
++      { fields },
++    );
++  }
++}
+diff --git a/apps/api/src/infrastructure/config/config.module.ts b/apps/api/src/infrastructure/config/config.module.ts
+new file mode 100644
+index 0000000..21a19a2
+--- /dev/null
++++ b/apps/api/src/infrastructure/config/config.module.ts
+@@ -0,0 +1,49 @@
++import { Global, Module } from '@nestjs/common';
++import { type ApiEnv, apiEnvSchema, loadEnv } from '@sentinel/config';
++import { createLogger, type Logger } from '@sentinel/observability';
++import { CSP_ENFORCE, ENV, LOGGER } from '../tokens.js';
++
++/**
++ * Configuration and the logger, the two things every other provider needs.
++ *
++ * Global because threading an imports array for these through fifteen future
++ * modules produces no isolation benefit and a great deal of noise. Nothing else
++ * in this codebase is global.
++ *
++ * `loadEnv` reads `process.env` — the one permitted place, via
++ * `packages/config` — and throws naming the offending variables. Because this
++ * factory runs during module initialisation, a misconfigured service crashes at
++ * boot rather than failing confusingly on its first request.
++ * operations/environments.md §3.
++ */
++@Global()
++@Module({
++  providers: [
++    { provide: ENV, useFactory: (): ApiEnv => loadEnv(apiEnvSchema) },
++    {
++      provide: LOGGER,
++      inject: [ENV],
++      useFactory: (env: ApiEnv): Logger =>
++        createLogger({
++          service: 'api',
++          level: env.LOG_LEVEL,
++          // Pretty printing runs through a worker-thread transport. Development
++          // only: staging and production ship JSON, and the test environment is
++          // silent unless a test asks for a stream. environments.md §1.
++          pretty: env.APP_ENV === 'development',
++          silent: env.APP_ENV === 'test',
++        }),
++    },
++    {
++      provide: CSP_ENFORCE,
++      inject: [ENV],
++      // environments.md §4: report-only while iterating in development,
++      // enforcing in test, staging and production. Test enforces deliberately —
++      // a policy that is only ever report-only where it is asserted is a policy
++      // no test has actually seen block anything.
++      useFactory: (env: ApiEnv): boolean => env.APP_ENV !== 'development',
++    },
++  ],
++  exports: [ENV, LOGGER, CSP_ENFORCE],
++})
++export class ConfigModule {}
+diff --git a/apps/api/src/infrastructure/config/nest-logger.spec.ts b/apps/api/src/infrastructure/config/nest-logger.spec.ts
+new file mode 100644
+index 0000000..e958642
+--- /dev/null
++++ b/apps/api/src/infrastructure/config/nest-logger.spec.ts
+@@ -0,0 +1,76 @@
++import { describe, expect, it } from 'vitest';
++import { NestLoggerBridge, type BridgeableLogger } from './nest-logger.js';
++
++interface Line {
++  readonly level: string;
++  readonly bindings: Record<string, unknown>;
++  readonly message: string;
++}
++
++function recorder(): { logger: BridgeableLogger; lines: Line[] } {
++  const lines: Line[] = [];
++  const record =
++    (level: string) =>
++    (bindings: object, message: string): void => {
++      lines.push({ level, bindings: bindings as Record<string, unknown>, message });
++    };
++  return {
++    lines,
++    logger: {
++      debug: record('debug'),
++      info: record('info'),
++      warn: record('warn'),
++      error: record('error'),
++      fatal: record('fatal'),
++    },
++  };
++}
++
++describe('NestLoggerBridge', () => {
++  it.each([
++    ['log', 'info'],
++    ['warn', 'warn'],
++    ['error', 'error'],
++    ['debug', 'debug'],
++    ['verbose', 'debug'],
++    ['fatal', 'fatal'],
++  ])('maps Nest %s onto the structured logger at %s', (nestLevel, pinoLevel) => {
++    const { logger, lines } = recorder();
++    const bridge = new NestLoggerBridge(logger);
++    bridge[nestLevel as 'log']('Nest says hello', 'RoutesResolver');
++    expect(lines).toEqual([
++      { level: pinoLevel, bindings: { nestContext: 'RoutesResolver' }, message: 'Nest says hello' },
++    ]);
++  });
++
++  it('never emits a plain string — every line carries structured bindings', () => {
++    // monitoring.md §2: structured JSON, never plain strings. Nest's own
++    // bootstrap output is the one source of unstructured lines in this process,
++    // which is exactly why it is bridged rather than left alone.
++    const { logger, lines } = recorder();
++    new NestLoggerBridge(logger).log('No context supplied');
++    expect(lines[0]!.bindings).toEqual({});
++    expect(lines[0]!.message).toBe('No context supplied');
++  });
++
++  it('renders a non-string message without calling toString on hostile input', () => {
++    const { logger, lines } = recorder();
++    const hostile = {
++      get toString() {
++        throw new Error('nope');
++      },
++    };
++    expect(() => {
++      new NestLoggerBridge(logger).error(hostile);
++    }).not.toThrow();
++    expect(typeof lines[0]!.message).toBe('string');
++  });
++
++  it('passes an Error through as `err` so the redacting serialiser sees it', () => {
++    const { logger, lines } = recorder();
++    const error = new Error('connect to redis://user:hunter2@10.0.0.7:6379 failed');
++    new NestLoggerBridge(logger).error(error, 'ExceptionsHandler');
++    expect(lines[0]!.bindings.err).toBe(error);
++    expect(lines[0]!.message).not.toContain('hunter2');
++  });
++});
+diff --git a/apps/api/src/infrastructure/config/nest-logger.ts b/apps/api/src/infrastructure/config/nest-logger.ts
+new file mode 100644
+index 0000000..760cff0
+--- /dev/null
++++ b/apps/api/src/infrastructure/config/nest-logger.ts
+@@ -0,0 +1,82 @@
++import type { LoggerService } from '@nestjs/common';
++import { redactSecretsInText } from '@sentinel/observability';
++
++/** The slice of the structured logger this bridge writes to. */
++export interface BridgeableLogger {
++  debug(bindings: object, message: string): void;
++  info(bindings: object, message: string): void;
++  warn(bindings: object, message: string): void;
++  error(bindings: object, message: string): void;
++  fatal(bindings: object, message: string): void;
++}
++
++/**
++ * Renders a value Nest handed us as a message string, without ever invoking a
++ * `toString` we do not control — the same failure mode
++ * `redactSecretsInText` guards against, for the same reason: a logger that
++ * throws while reporting a failure hides the failure.
++ */
++function messageOf(value: unknown): string {
++  if (typeof value === 'string') return redactSecretsInText(value);
++  if (value instanceof Error) return redactSecretsInText(value.message);
++  try {
++    return redactSecretsInText(JSON.stringify(value) ?? '[unserialisable]');
++  } catch {
++    return '[unserialisable]';
++  }
++}
++
++/**
++ * Routes NestJS's own output through the structured logger.
++ *
++ * Without this, a process emits two kinds of line: Nest's human-formatted
++ * bootstrap and exception output, and everything else as JSON. monitoring.md §2
++ * is unambiguous — "Structured JSON. Never plain strings" — and a log shipper
++ * that has to parse two formats parses one of them badly. It also matters for
++ * redaction: Nest's `ExceptionsHandler` logs the errors it catches, and left to
++ * itself it would write an unredacted stack straight to stdout.
++ *
++ * `optionalParams` is where Nest puts its context tag (`RoutesResolver`,
++ * `NestApplication`, …). It becomes a binding rather than part of the message,
++ * so it is filterable.
++ */
++export class NestLoggerBridge implements LoggerService {
++  constructor(private readonly logger: BridgeableLogger) {}
++
++  private write(
++    level: 'debug' | 'info' | 'warn' | 'error' | 'fatal',
++    message: unknown,
++    optionalParams: unknown[],
++  ): void {
++    const context = optionalParams.find((param) => typeof param === 'string');
++    const bindings: Record<string, unknown> = {};
++    if (context !== undefined) bindings.nestContext = context;
++    if (message instanceof Error) bindings.err = message;
++    this.logger[level](bindings, messageOf(message));
++  }
++
++  log(message: unknown, ...optionalParams: unknown[]): void {
++    this.write('info', message, optionalParams);
++  }
++
++  error(message: unknown, ...optionalParams: unknown[]): void {
++    this.write('error', message, optionalParams);
++  }
++
++  warn(message: unknown, ...optionalParams: unknown[]): void {
++    this.write('warn', message, optionalParams);
++  }
++
++  debug(message: unknown, ...optionalParams: unknown[]): void {
++    this.write('debug', message, optionalParams);
++  }
++
++  /** Nest's `verbose` sits below `debug`; pino has no level below it. */
++  verbose(message: unknown, ...optionalParams: unknown[]): void {
++    this.write('debug', message, optionalParams);
++  }
++
++  fatal(message: unknown, ...optionalParams: unknown[]): void {
++    this.write('fatal', message, optionalParams);
++  }
++}
+diff --git a/apps/api/src/infrastructure/prisma/prisma.module.ts b/apps/api/src/infrastructure/prisma/prisma.module.ts
+new file mode 100644
+index 0000000..a09798b
+--- /dev/null
++++ b/apps/api/src/infrastructure/prisma/prisma.module.ts
+@@ -0,0 +1,69 @@
++import {
++  Inject,
++  Injectable,
++  Module,
++  type OnApplicationBootstrap,
++  type OnApplicationShutdown,
++} from '@nestjs/common';
++import type { ApiEnv } from '@sentinel/config';
++// The unscoped client, imported here and nowhere else in apps/api. See the
++// class docblock below and the matching directory exemption in
++// eslint.config.js.
++import { createUnscopedPrismaClient, type PrismaClient } from '@sentinel/db/unscoped';
++import { ENV, PRISMA } from '../tokens.js';
++
++/**
++ * Owns the process-wide database connection pool.
++ *
++ * This is the one module in `apps/api` permitted to import the unscoped client,
++ * and it exports it under a token that only infrastructure consumes.
++ * `createTenantClient` wraps this base client per request, which is the client
++ * handlers actually receive — see security/tenant-isolation.md §2 and ADR-0006.
++ * Handing this token to a controller or a repository is the defect the lint
++ * rule exists to catch; the exemption is scoped to this file alone.
++ */
++@Injectable()
++export class PrismaLifecycle implements OnApplicationBootstrap, OnApplicationShutdown {
++  constructor(@Inject(PRISMA) private readonly prisma: PrismaClient) {}
++
++  /**
++   * Opens the pool before the process starts serving.
++   *
++   * Prisma connects lazily, and its *first* query pays for spawning the query
++   * engine — measured at 2.1s cold against the local compose stack, which is
++   * longer than the readiness probe's own timeout. Left lazy, the first
++   * `/health/ready` after every deploy would report Postgres down and the
++   * rollout would stall on a database that was fine.
++   *
++   * A failure here is swallowed on purpose: the service must still start when
++   * the database is down, so that `/health/live` answers (the process is fine)
++   * while `/health/ready` reports which dependency is not. Crashing here would
++   * turn a database outage into a crash-loop across every instance, which is
++   * the same failure mode monitoring.md §5 gives for liveness probes that check
++   * dependencies.
++   */
++  async onApplicationBootstrap(): Promise<void> {
++    try {
++      await this.prisma.$connect();
++    } catch {
++      // Intentionally ignored. `/health/ready` is what reports this.
++    }
++  }
++
++  async onApplicationShutdown(): Promise<void> {
++    await this.prisma.$disconnect();
++  }
++}
++
++@Module({
++  providers: [
++    {
++      provide: PRISMA,
++      inject: [ENV],
++      useFactory: (env: ApiEnv): PrismaClient => createUnscopedPrismaClient(env.DATABASE_URL),
++    },
++    PrismaLifecycle,
++  ],
++  exports: [PRISMA],
++})
++export class PrismaModule {}
+diff --git a/apps/api/src/infrastructure/redis/redis.module.ts b/apps/api/src/infrastructure/redis/redis.module.ts
+new file mode 100644
+index 0000000..0144cb3
+--- /dev/null
++++ b/apps/api/src/infrastructure/redis/redis.module.ts
+@@ -0,0 +1,61 @@
++import { Inject, Injectable, Module, type OnApplicationShutdown } from '@nestjs/common';
++import type { ApiEnv } from '@sentinel/config';
++import type { Logger } from '@sentinel/observability';
++import { Redis } from 'ioredis';
++import { ENV, LOGGER, REDIS } from '../tokens.js';
++
++@Injectable()
++export class RedisLifecycle implements OnApplicationShutdown {
++  constructor(@Inject(REDIS) private readonly redis: Redis) {}
++
++  async onApplicationShutdown(): Promise<void> {
++    // `quit()` rejects if the socket is already gone, which is the normal case
++    // when the process is shutting down *because* Redis went away. Shutdown
++    // must not itself throw.
++    try {
++      await this.redis.quit();
++    } catch {
++      this.redis.disconnect();
++    }
++  }
++}
++
++@Module({
++  providers: [
++    {
++      provide: REDIS,
++      inject: [ENV, LOGGER],
++      useFactory: (env: ApiEnv, logger: Logger): Redis => {
++        const redis = new Redis(env.REDIS_URL, {
++          // The connection opens on first use rather than at construction, so
++          // building the application never blocks on a dependency — which is
++          // what lets `/health/live` answer while Redis is down.
++          lazyConnect: true,
++          connectTimeout: 2_000,
++          // A readiness probe wants a fast, honest failure, not a command that
++          // sits in the retry queue until the probe itself times out. One retry,
++          // then report unavailable; `retryStrategy` keeps reconnecting in the
++          // background so the service recovers without an operator.
++          maxRetriesPerRequest: 1,
++          retryStrategy: (attempt) => Math.min(attempt * 200, 2_000),
++        });
++
++        // ioredis emits `error` on an EventEmitter. Node terminates the process
++        // for an `error` event with no listener, so an unreachable Redis would
++        // take down an API that is otherwise perfectly able to serve — the
++        // opposite of what the liveness/readiness split exists to achieve.
++        // The error object goes through the logger's redacting `err`
++        // serialiser, which matters because ioredis puts the connection URL,
++        // credentials and all, into its own error text.
++        redis.on('error', (error: unknown) => {
++          logger.warn({ err: error }, 'Redis connection error');
++        });
++
++        return redis;
++      },
++    },
++    RedisLifecycle,
++  ],
++  exports: [REDIS],
++})
++export class RedisModule {}
+diff --git a/apps/api/src/infrastructure/storage/storage.module.ts b/apps/api/src/infrastructure/storage/storage.module.ts
+new file mode 100644
+index 0000000..47e3e55
+--- /dev/null
++++ b/apps/api/src/infrastructure/storage/storage.module.ts
+@@ -0,0 +1,23 @@
++import { Module } from '@nestjs/common';
++import type { ApiEnv } from '@sentinel/config';
++import { createS3StorageAdapter, type StorageAdapter } from '@sentinel/storage';
++import { ENV, STORAGE } from '../tokens.js';
++
++@Module({
++  providers: [
++    {
++      provide: STORAGE,
++      inject: [ENV],
++      useFactory: (env: ApiEnv): StorageAdapter =>
++        createS3StorageAdapter({
++          endpoint: env.STORAGE_ENDPOINT,
++          region: env.STORAGE_REGION,
++          accessKeyId: env.STORAGE_ACCESS_KEY_ID,
++          secretAccessKey: env.STORAGE_SECRET_ACCESS_KEY,
++          forcePathStyle: env.STORAGE_FORCE_PATH_STYLE,
++        }),
++    },
++  ],
++  exports: [STORAGE],
++})
++export class StorageModule {}
+diff --git a/apps/api/src/infrastructure/tokens.ts b/apps/api/src/infrastructure/tokens.ts
+new file mode 100644
+index 0000000..3849b04
+--- /dev/null
++++ b/apps/api/src/infrastructure/tokens.ts
+@@ -0,0 +1,16 @@
++/**
++ * Injection tokens for everything that is not a class.
++ *
++ * Strings rather than symbols so an unresolved dependency names itself in
++ * Nest's error output instead of printing `Symbol(...)`, which is the
++ * difference between a five-second and a five-minute diagnosis at boot.
++ */
++export const ENV = 'SENTINEL_ENV';
++export const LOGGER = 'SENTINEL_LOGGER';
++export const CSP_ENFORCE = 'SENTINEL_CSP_ENFORCE';
++export const PRISMA = 'SENTINEL_PRISMA';
++export const REDIS = 'SENTINEL_REDIS';
++export const STORAGE = 'SENTINEL_STORAGE';
++
++/** The evidence bucket name, so a consumer that needs only that cannot reach a credential. */
++export const EVIDENCE_BUCKET = 'SENTINEL_EVIDENCE_BUCKET';
+diff --git a/apps/api/src/main.ts b/apps/api/src/main.ts
+new file mode 100644
+index 0000000..29639c8
+--- /dev/null
++++ b/apps/api/src/main.ts
+@@ -0,0 +1,38 @@
++import 'reflect-metadata';
++import { NestFactory } from '@nestjs/core';
++import type { NestExpressApplication } from '@nestjs/platform-express';
++import { type ApiEnv, apiEnvSchema, loadEnv } from '@sentinel/config';
++import { createLogger, type Logger } from '@sentinel/observability';
++import { AppModule } from './app.module.js';
++import { configureApp } from './app-setup.js';
++import { ENV, LOGGER } from './infrastructure/tokens.js';
++
++async function bootstrap(): Promise<void> {
++  // First, before anything binds a port or opens a pool: a missing or malformed
++  // variable must crash startup naming the variable, not surface later as a
++  // confusing runtime failure. environments.md §3.
++  loadEnv(apiEnvSchema);
++
++  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true });
++  configureApp(app);
++
++  const env = app.get<ApiEnv>(ENV);
++  const logger = app.get<Logger>(LOGGER);
++  await app.listen(env.API_PORT);
++  logger.info({ port: env.API_PORT, appEnv: env.APP_ENV }, 'API listening');
++}
++
++// Deliberately not top-level `await`: keeping the entry point free of it is
++// what leaves the CommonJS fallback described in the Phase 1 plan available
++// without a rewrite, and it costs nothing here.
++void bootstrap().catch((error: unknown) => {
++  process.exitCode = 1;
++  // The configured logger may not exist yet — this is the path a bad
++  // environment takes. A minimal one is still the redacting logger, which is
++  // what matters: a boot failure is exactly where a connection string would
++  // otherwise reach stderr in the clear.
++  createLogger({ service: 'api', level: 'fatal', pretty: false }).fatal(
++    { err: error },
++    'API failed to start',
++  );
++});
+diff --git a/apps/api/src/modules/health/health.controller.ts b/apps/api/src/modules/health/health.controller.ts
+new file mode 100644
+index 0000000..0eac58e
+--- /dev/null
++++ b/apps/api/src/modules/health/health.controller.ts
+@@ -0,0 +1,73 @@
++import { Controller, Get, Inject, VERSION_NEUTRAL } from '@nestjs/common';
++import { ERROR_CODES } from '@sentinel/contracts';
++import { Public } from '../../common/decorators/access.decorator.js';
++import { DomainError } from '../../common/errors/domain-error.js';
++import {
++  type DetailedReport,
++  HealthService,
++  type ReadinessReport,
++} from './health.service.js';
++
++/**
++ * `VERSION_NEUTRAL`, and excluded from the global `api` prefix in `main.ts`, so
++ * these answer at `/health/live`, `/health/ready` and `/health/detailed` —
++ * the paths operations/monitoring.md §5 and architecture/backend.md §8 both
++ * write. A probe URL that moves with an API version is a probe URL that breaks
++ * a deployment on the day the version changes.
++ */
++@Controller({ path: 'health', version: VERSION_NEUTRAL })
++export class HealthController {
++  constructor(@Inject(HealthService) private readonly health: HealthService) {}
++
++  /**
++   * Liveness checks the process and NOTHING else.
++   *
++   * A liveness probe that checks Postgres restarts every application instance
++   * simultaneously during a database blip, turning a hiccup into a full
++   * outage. monitoring.md §5.
++   */
++  @Public()
++  @Get('live')
++  live(): { status: 'ok' } {
++    return { status: 'ok' };
++  }
++
++  /**
++   * Readiness gates traffic and deploys. A degraded result is a 503 carrying the
++   * per-dependency verdict in the shared error envelope, so the same body shape
++   * serves an operator reading it by hand and a client parsing it.
++   */
++  @Public()
++  @Get('ready')
++  async ready(): Promise<ReadinessReport> {
++    const report = await this.health.checkDependencies();
++    if (report.status !== 'ok') {
++      throw new DomainError(
++        ERROR_CODES.DEPENDENCY_UNAVAILABLE,
++        'One or more dependencies are unavailable.',
++        503,
++        { dependencies: report.dependencies },
++      );
++    }
++    return report;
++  }
++
++  /**
++   * Operator detail — currently readiness plus per-probe timings, and nothing
++   * more.
++   *
++   * monitoring.md §5 specifies this endpoint as **authenticated**, carrying
++   * queue depth, worker heartbeats, and migration state. None of those exist in
++   * Phase 1, and neither does authentication. Shipping the operator payload
++   * behind a decorator that no guard yet reads would be an open infrastructure
++   * map with a comment claiming otherwise, so the endpoint deliberately ships
++   * with the narrowest possible superset of `/health/ready`: which dependency,
++   * how long it took. The queue, worker, and migration fields arrive in the
++   * same change as the guard that protects them, not before.
++   */
++  @Public()
++  @Get('detailed')
++  detailed(): Promise<DetailedReport> {
++    return this.health.detailed();
++  }
++}
+diff --git a/apps/api/src/modules/health/health.module.ts b/apps/api/src/modules/health/health.module.ts
+new file mode 100644
+index 0000000..41ff739
+--- /dev/null
++++ b/apps/api/src/modules/health/health.module.ts
+@@ -0,0 +1,22 @@
++import { Module } from '@nestjs/common';
++import type { ApiEnv } from '@sentinel/config';
++import { PrismaModule } from '../../infrastructure/prisma/prisma.module.js';
++import { RedisModule } from '../../infrastructure/redis/redis.module.js';
++import { StorageModule } from '../../infrastructure/storage/storage.module.js';
++import { ENV, EVIDENCE_BUCKET } from '../../infrastructure/tokens.js';
++import { HealthController } from './health.controller.js';
++import { HealthService } from './health.service.js';
++
++@Module({
++  imports: [PrismaModule, RedisModule, StorageModule],
++  controllers: [HealthController],
++  providers: [
++    HealthService,
++    {
++      provide: EVIDENCE_BUCKET,
++      inject: [ENV],
++      useFactory: (env: ApiEnv): string => env.STORAGE_BUCKET_EVIDENCE,
++    },
++  ],
++})
++export class HealthModule {}
+diff --git a/apps/api/src/modules/health/health.service.spec.ts b/apps/api/src/modules/health/health.service.spec.ts
+new file mode 100644
+index 0000000..9b61e9b
+--- /dev/null
++++ b/apps/api/src/modules/health/health.service.spec.ts
+@@ -0,0 +1,133 @@
++import { afterEach, describe, expect, it, vi } from 'vitest';
++import type { StorageAdapter } from '@sentinel/storage';
++import {
++  type DatabaseProbe,
++  HealthService,
++  PROBE_TIMEOUT_MS,
++  type RedisProbe,
++} from './health.service.js';
++
++const okDatabase: DatabaseProbe = { $queryRaw: () => Promise.resolve([{ ok: 1 }]) };
++const okRedis: RedisProbe = { ping: () => Promise.resolve('PONG') };
++const okStorage = { head: () => Promise.resolve(null) } as unknown as StorageAdapter;
++
++function serviceWith(overrides: {
++  database?: DatabaseProbe;
++  redis?: RedisProbe;
++  storage?: StorageAdapter;
++}): HealthService {
++  return new HealthService(
++    overrides.database ?? okDatabase,
++    overrides.redis ?? okRedis,
++    overrides.storage ?? okStorage,
++    'evidence',
++  );
++}
++
++const rejecting = (message: string): (() => Promise<never>) => {
++  return () => Promise.reject(new Error(message));
++};
++
++afterEach(() => {
++  vi.useRealTimers();
++});
++
++describe('HealthService.checkDependencies', () => {
++  it('reports every dependency ok when every dependency answers', async () => {
++    const report = await serviceWith({}).checkDependencies();
++    expect(report).toEqual({
++      status: 'ok',
++      dependencies: { postgres: 'ok', redis: 'ok', storage: 'ok' },
++    });
++  });
++
++  it.each([
++    ['postgres', { database: { $queryRaw: rejecting('db down') } }],
++    ['redis', { redis: { ping: rejecting('redis down') } }],
++    ['storage', { storage: { head: rejecting('storage down') } as unknown as StorageAdapter }],
++  ])('names %s specifically when only it is down', async (name, overrides) => {
++    // An operator needs to know *which* dependency failed. A single boolean
++    // sends them to look at all three. monitoring.md §5.
++    const report = await serviceWith(overrides).checkDependencies();
++    expect(report.status).toBe('degraded');
++    expect(report.dependencies[name as 'postgres']).toBe('error');
++    const stillOk = Object.entries(report.dependencies).filter(([key]) => key !== name);
++    expect(stillOk.every(([, value]) => value === 'ok')).toBe(true);
++  });
++
++  it('checks every dependency even when the first one fails', async () => {
++    const redisPing = vi.fn(() => Promise.resolve('PONG'));
++    const report = await serviceWith({
++      database: { $queryRaw: rejecting('db down') },
++      redis: { ping: redisPing },
++    }).checkDependencies();
++    // Sequential short-circuiting would hide a second, worse failure behind
++    // the first one every time.
++    expect(redisPing).toHaveBeenCalledTimes(1);
++    expect(report.dependencies.redis).toBe('ok');
++  });
++
++  it('leaks no error text, host, or credential into the report', async () => {
++    const report = await serviceWith({
++      database: { $queryRaw: rejecting('connect ECONNREFUSED 10.0.0.5:5432 as sentinel_app') },
++      redis: { ping: rejecting('redis://user:hunter2@10.0.0.7:6379 unreachable') },
++    }).checkDependencies();
++    const serialised = JSON.stringify(report);
++    expect(serialised).not.toContain('10.0.0.5');
++    expect(serialised).not.toContain('10.0.0.7');
++    expect(serialised).not.toContain('hunter2');
++    expect(serialised).not.toContain('ECONNREFUSED');
++    expect(serialised).not.toContain('sentinel_app');
++  });
++
++  it('gives up on a dependency that never answers rather than hanging the probe', async () => {
++    vi.useFakeTimers();
++    const service = serviceWith({ redis: { ping: () => new Promise<string>(() => {}) } });
++    const pending = service.checkDependencies();
++    await vi.advanceTimersByTimeAsync(PROBE_TIMEOUT_MS + 1);
++    const report = await pending;
++    // A readiness probe that hangs is indistinguishable from a wedged process,
++    // and the orchestrator's own timeout is the only thing left to save it.
++    expect(report.dependencies.redis).toBe('error');
++    expect(report.status).toBe('degraded');
++  });
++
++  it('probes storage without listing or writing anything', async () => {
++    const head = vi.fn(() => Promise.resolve(null));
++    const list = vi.fn();
++    const put = vi.fn();
++    await serviceWith({ storage: { head, list, put } as unknown as StorageAdapter })
++      .checkDependencies();
++    expect(head).toHaveBeenCalledTimes(1);
++    expect(list).not.toHaveBeenCalled();
++    expect(put).not.toHaveBeenCalled();
++  });
++});
++
++describe('HealthService.detailed', () => {
++  it('adds timings and a timestamp, and nothing else', async () => {
++    const report = await serviceWith({}).detailed();
++    expect(Object.keys(report).sort()).toEqual(['checkedAt', 'dependencies', 'status']);
++    expect(Date.parse(report.checkedAt)).not.toBeNaN();
++    expect(Object.keys(report.dependencies).sort()).toEqual(['postgres', 'redis', 'storage']);
++    for (const entry of Object.values(report.dependencies)) {
++      expect(Object.keys(entry).sort()).toEqual(['latencyMs', 'status']);
++      expect(typeof entry.latencyMs).toBe('number');
++    }
++  });
++
++  it('exposes no hostname, URL, version, driver, or error text', async () => {
++    // monitoring.md §5 places /health/detailed behind authentication, which does
++    // not exist until Phase 2. Until the guard exists, this endpoint may expose
++    // nothing an unauthenticated caller could use to map the infrastructure —
++    // so it is ready() plus timings, and no more.
++    const report = await serviceWith({
++      database: { $queryRaw: rejecting('connect ECONNREFUSED 10.0.0.5:5432') },
++      storage: { head: rejecting('https://minio.internal:9000 refused') } as unknown as StorageAdapter,
++    }).detailed();
++    const serialised = JSON.stringify(report);
++    for (const forbidden of ['10.0.0.5', 'minio', '9000', 'ECONNREFUSED', 'evidence', 'postgresql']) {
++      expect(serialised).not.toContain(forbidden);
++    }
++  });
++});
+diff --git a/apps/api/src/modules/health/health.service.ts b/apps/api/src/modules/health/health.service.ts
+new file mode 100644
+index 0000000..f7f8685
+--- /dev/null
++++ b/apps/api/src/modules/health/health.service.ts
+@@ -0,0 +1,145 @@
++import { Inject, Injectable } from '@nestjs/common';
++import type { StorageAdapter } from '@sentinel/storage';
++import { EVIDENCE_BUCKET, PRISMA, REDIS, STORAGE } from '../../infrastructure/tokens.js';
++
++/** The slice of Prisma this service uses. A test supplies a stub instead. */
++export interface DatabaseProbe {
++  $queryRaw(query: TemplateStringsArray, ...values: unknown[]): Promise<unknown>;
++}
++
++/** The slice of ioredis this service uses. */
++export interface RedisProbe {
++  ping(): Promise<string>;
++}
++
++export const DEPENDENCY_NAMES = ['postgres', 'redis', 'storage'] as const;
++export type DependencyName = (typeof DEPENDENCY_NAMES)[number];
++
++export type DependencyStatus = 'ok' | 'error';
++
++export interface ReadinessReport {
++  readonly status: 'ok' | 'degraded';
++  readonly dependencies: Record<DependencyName, DependencyStatus>;
++}
++
++export interface DetailedReport {
++  readonly status: 'ok' | 'degraded';
++  readonly checkedAt: string;
++  readonly dependencies: Record<DependencyName, { status: DependencyStatus; latencyMs: number }>;
++}
++
++/**
++ * A readiness probe answers within the orchestrator's timeout or it is
++ * indistinguishable from a wedged process. Two seconds is well inside a typical
++ * one-second-interval, three-failure readiness gate and well outside any healthy
++ * round trip to a container on the same network.
++ */
++export const PROBE_TIMEOUT_MS = 2_000;
++
++/**
++ * The key `head()` is called against. Absent by construction — it lives outside
++ * every tenant prefix (`packages/storage/src/keys.ts`), so it can never collide
++ * with real evidence and can never be created by ordinary operation.
++ */
++const PROBE_KEY = '_healthcheck/probe';
++
++async function withTimeout<T>(operation: Promise<T>, ms: number): Promise<T> {
++  let timer: NodeJS.Timeout | undefined;
++  try {
++    return await Promise.race([
++      operation,
++      new Promise<never>((_resolve, reject) => {
++        timer = setTimeout(() => {
++          reject(new Error('Dependency probe timed out.'));
++        }, ms);
++      }),
++    ]);
++  } finally {
++    if (timer !== undefined) clearTimeout(timer);
++  }
++}
++
++interface ProbeResult {
++  readonly status: DependencyStatus;
++  readonly latencyMs: number;
++}
++
++async function probe(run: () => Promise<unknown>): Promise<ProbeResult> {
++  const startedAt = process.hrtime.bigint();
++  try {
++    await withTimeout(run(), PROBE_TIMEOUT_MS);
++    return { status: 'ok', latencyMs: elapsedMs(startedAt) };
++  } catch {
++    // The caught error is deliberately dropped rather than reported. A driver
++    // error message is where the connection string, the internal host, the
++    // database role, and occasionally the password live — and these endpoints
++    // answer an unauthenticated caller. api/errors.md §5.
++    return { status: 'error', latencyMs: elapsedMs(startedAt) };
++  }
++}
++
++function elapsedMs(startedAt: bigint): number {
++  return Math.round(Number(process.hrtime.bigint() - startedAt) / 1e5) / 10;
++}
++
++/**
++ * Runs the dependency probes behind `/health/ready` and `/health/detailed`.
++ *
++ * Every probe runs concurrently and every result is reported, so one failure
++ * never hides another — sequential short-circuiting would report "postgres is
++ * down" during an outage that had taken out all three, and the operator would
++ * fix one thing and wonder why nothing recovered.
++ *
++ * Nothing about *why* a dependency failed leaves this class. Which dependency
++ * is enough to route an operator to the right runbook; the reason is in the
++ * server log, which the request ID correlates to.
++ */
++@Injectable()
++export class HealthService {
++  constructor(
++    @Inject(PRISMA) private readonly database: DatabaseProbe,
++    @Inject(REDIS) private readonly redis: RedisProbe,
++    @Inject(STORAGE) private readonly storage: StorageAdapter,
++    @Inject(EVIDENCE_BUCKET) private readonly evidenceBucket: string,
++  ) {}
++
++  private async runProbes(): Promise<Record<DependencyName, ProbeResult>> {
++    const [postgres, redis, storage] = await Promise.all([
++      probe(() => this.database.$queryRaw`SELECT 1`),
++      probe(() => this.redis.ping()),
++      // A HEAD on a key that does not exist. It proves the endpoint is
++      // reachable and the credential is accepted (a rejected credential is a
++      // 403, which the adapter rethrows rather than reporting as "absent"),
++      // without listing or writing anything.
++      //
++      // LIMITATION: S3 answers HEAD on a missing *bucket* with the same 404 as
++      // a missing key, so this probe cannot tell those apart. Bucket existence
++      // is a deploy-time invariant rather than something that flaps at runtime,
++      // and the alternative — a prefixed `list()` — needs `s3:ListBucket`,
++      // which the production evidence credential is not guaranteed to hold.
++      probe(() => this.storage.head(this.evidenceBucket, PROBE_KEY)),
++    ]);
++    return { postgres, redis, storage };
++  }
++
++  async checkDependencies(): Promise<ReadinessReport> {
++    const results = await this.runProbes();
++    return {
++      status: Object.values(results).every((result) => result.status === 'ok') ? 'ok' : 'degraded',
++      dependencies: {
++        postgres: results.postgres.status,
++        redis: results.redis.status,
++        storage: results.storage.status,
++      },
++    };
++  }
++
++  async detailed(): Promise<DetailedReport> {
++    const results = await this.runProbes();
++    return {
++      status: Object.values(results).every((result) => result.status === 'ok') ? 'ok' : 'degraded',
++      checkedAt: new Date().toISOString(),
++      dependencies: results,
++    };
++  }
++}
+diff --git a/apps/api/tsconfig.build.json b/apps/api/tsconfig.build.json
+new file mode 100644
+index 0000000..43f7ed3
+--- /dev/null
++++ b/apps/api/tsconfig.build.json
+@@ -0,0 +1,4 @@
++{
++  "extends": "./tsconfig.json",
++  "exclude": ["src/**/*.spec.ts", "src/**/*.integration.spec.ts"]
++}
+diff --git a/apps/api/tsconfig.json b/apps/api/tsconfig.json
+new file mode 100644
+index 0000000..f1de9c8
+--- /dev/null
++++ b/apps/api/tsconfig.json
+@@ -0,0 +1,17 @@
++{
++  "extends": "../../tsconfig.base.json",
++  "compilerOptions": {
++    "rootDir": "src",
++    "outDir": "dist",
++    // NestJS is decorator-driven. `emitDecoratorMetadata` is deliberately NOT
++    // enabled: esbuild — which Vitest uses to transform TypeScript — does not
++    // implement it, so any DI that relied on `design:paramtypes` would resolve
++    // under `tsc` and silently fail under test. Every injected constructor
++    // parameter therefore carries an explicit `@Inject(TOKEN)`, which needs no
++    // reflected type metadata and behaves identically in both toolchains.
++    "experimentalDecorators": true,
++    "useDefineForClassFields": false,
++    "types": ["node"]
++  },
++  "include": ["src/**/*.ts"]
++}
+diff --git a/eslint.config.js b/eslint.config.js
+index 3e0ff63..f09705b 100644
+--- a/eslint.config.js
++++ b/eslint.config.js
+@@ -121,6 +121,16 @@ export default tseslint.config(
+     ],
+     rules: { 'no-restricted-imports': 'off' },
+   },
++  // apps/api/src/infrastructure/prisma is the API's composition root for the
++  // database connection: it constructs the one base client the process owns, so
++  // that createTenantClient can wrap it per request and a handler can only ever
++  // receive a tenant-scoped client. Exempted at the directory level rather than
++  // by an inline directive so the exemption is visible in one place next to the
++  // others, and so it cannot silently spread to a sibling module.
++  {
++    files: ['apps/api/src/infrastructure/prisma/**/*.ts'],
++    rules: { 'no-restricted-imports': 'off' },
++  },
+   // tests may assert on console, use the unscoped client to set up fixtures, and
+   // read process.env directly to build child-process environments for Prisma
+   // migrations and Testcontainers — a test harness is not application code.
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 3c54bd3..c1cd39d 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -45,6 +45,64 @@ importers:
+         specifier: ^3.0.0
+         version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0)
+ 
++  apps/api:
++    dependencies:
++      '@nestjs/common':
++        specifier: ^11.2.1
++        version: 11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)
++      '@nestjs/core':
++        specifier: ^11.2.1
++        version: 11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/platform-express@11.2.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)
++      '@nestjs/platform-express':
++        specifier: ^11.2.1
++        version: 11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.2.1)
++      '@sentinel/config':
++        specifier: workspace:*
++        version: link:../../packages/config
++      '@sentinel/contracts':
++        specifier: workspace:*
++        version: link:../../packages/contracts
++      '@sentinel/db':
++        specifier: workspace:*
++        version: link:../../packages/db
++      '@sentinel/observability':
++        specifier: workspace:*
++        version: link:../../packages/observability
++      '@sentinel/storage':
++        specifier: workspace:*
++        version: link:../../packages/storage
++      ioredis:
++        specifier: ^5.11.1
++        version: 5.11.1
++      reflect-metadata:
++        specifier: ^0.2.2
++        version: 0.2.2
++      rxjs:
++        specifier: ^7.8.2
++        version: 7.8.2
++      zod:
++        specifier: ^3.25.76
++        version: 3.25.76
++    devDependencies:
++      '@nestjs/testing':
++        specifier: ^11.2.1
++        version: 11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.2.1)(@nestjs/platform-express@11.2.1)
++      '@types/express':
++        specifier: ^5.0.6
++        version: 5.0.6
++      '@types/supertest':
++        specifier: ^7.2.1
++        version: 7.2.1
++      dotenv:
++        specifier: ^16.6.1
++        version: 16.6.1
++      supertest:
++        specifier: ^7.2.2
++        version: 7.2.2
++      typescript:
++        specifier: ^5.9.3
++        version: 5.9.3
++
+   packages/config:
+     dependencies:
+       zod:
+@@ -206,6 +264,9 @@ packages:
+   '@balena/dockerignore@1.0.2':
+     resolution: {integrity: sha512-wMue2Sy4GAVTk6Ic4tJVcnfdau+gx2EnG7S+uAEe+TWJFqE4YoWN4/H8MSLj4eYJKxGg26lZwboEniNiNwZQ6Q==}
+ 
++  '@borewit/text-codec@0.2.2':
++    resolution: {integrity: sha512-DDaRehssg1aNrH4+2hnj1B7vnUGEjU6OIlyRdkMd0aUdIUvKXrJfXsy8LVtXAy7DRvYVluWbMspsRhz2lcW0mQ==}
++
+   '@emnapi/core@1.10.0':
+     resolution: {integrity: sha512-yq6OkJ4p82CAfPl0u9mQebQHKPJkY7WrIuk205cTYnYe+k2Z8YBh11FrbRG/H6ihirqcacOgl2BIO8oyMQLeXw==}
+ 
+@@ -447,6 +508,9 @@ packages:
+     resolution: {integrity: sha512-bV0Tgo9K4hfPCek+aMAn81RppFKv2ySDQeMoSZuvTASywNTnVJCArCZE2FWqpvIatKu7VMRLWlR1EazvVhDyhQ==}
+     engines: {node: '>=18.18'}
+ 
++  '@ioredis/commands@1.10.0':
++    resolution: {integrity: sha512-UmeW7z4LfctwoQ5wkhVzgq8tXkreED2xZGpX+Bg+zA+WJFZCT6c062AfCK/Dfk81xZnnwdhJCUMkitihRaoC2Q==}
++
+   '@isaacs/cliui@8.0.2':
+     resolution: {integrity: sha512-O8jcjabXaleOG9DQ0+ARXWZBTfnP4WNAqzuiJK7ll44AmxGKv/J2M4TPjxjY3znBCfvBXFzucm1twdyFybFqEA==}
+     engines: {node: '>=12'}
+@@ -457,6 +521,10 @@ packages:
+   '@js-sdsl/ordered-map@4.4.2':
+     resolution: {integrity: sha512-iUKgm52T8HOE/makSxjqoWhe95ZJA1/G1sYsGev2JDKUSS14KAgg1LHb+Ba+IPow0xflbnSkOsZcO08C7w1gYw==}
+ 
++  '@lukeed/csprng@1.1.0':
++    resolution: {integrity: sha512-Z7C/xXCiGWsg0KuKsHTKJxbWhpI3Vs5GwLfOean7MGyVFGqdRgBbAjOCh6u4bbjPc/8MJ2pZmK/0DLdCbivLDA==}
++    engines: {node: '>=8'}
++
+   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
+     resolution: {integrity: sha512-oTXEIha4SsuXdTA4Iyskj0kpdx2yVXdhd75c2v3xGrHFfVMsbhTPZU/nMPL4sWKo4pBHm3aucLaqGlF696dTyQ==}
+     engines: {node: ^22.20 || ^24.12 || >=25}
+@@ -471,6 +539,63 @@ packages:
+       '@emnapi/core': ^1.7.1 || ^2.0.0-alpha.4
+       '@emnapi/runtime': ^1.7.1 || ^2.0.0-alpha.4
+ 
++  '@nestjs/common@11.2.1':
++    resolution: {integrity: sha512-SEgtP+M9DqNhQkgJIlJ3oTp3gemo/8owySovzMGmJj2kcfIH1G6QP45AAb8dE4a3IpVicpUvdDAy7Syk7ebjBw==}
++    peerDependencies:
++      class-transformer: '>=0.4.1'
++      class-validator: '>=0.13.2'
++      reflect-metadata: ^0.1.12 || ^0.2.0
++      rxjs: ^7.1.0
++    peerDependenciesMeta:
++      class-transformer:
++        optional: true
++      class-validator:
++        optional: true
++
++  '@nestjs/core@11.2.1':
++    resolution: {integrity: sha512-M5PWFU8NdRTgX9Po49d7TQKg7f5t8GAVUa/Esy4tmaMWcKugTzg3ZzpJfD3LEPMuRHjfs6+8pQYgtuP2uz3rDw==}
++    engines: {node: '>= 20'}
++    peerDependencies:
++      '@nestjs/common': ^11.0.0
++      '@nestjs/microservices': ^11.0.0
++      '@nestjs/platform-express': ^11.0.0
++      '@nestjs/websockets': ^11.0.0
++      reflect-metadata: ^0.1.12 || ^0.2.0
++      rxjs: ^7.1.0
++    peerDependenciesMeta:
++      '@nestjs/microservices':
++        optional: true
++      '@nestjs/platform-express':
++        optional: true
++      '@nestjs/websockets':
++        optional: true
++
++  '@nestjs/platform-express@11.2.1':
++    resolution: {integrity: sha512-lbaVW94s1u8AJfgmBtdMPi16MEuFBiLrnflUIA9tZ9e5eoUsGTN7XXXRjU5kTTLgjnTCM53qgBXXGmTqmyfoQA==}
++    peerDependencies:
++      '@nestjs/common': ^11.0.0
++      '@nestjs/core': ^11.0.0
++
++  '@nestjs/testing@11.2.1':
++    resolution: {integrity: sha512-3mdABjqFafW+ix6fGJMPHvnj/9Or6kAPiszN8zt9bHGPuHYdkkp+9zsBDDUVuP59BcbzBqNBa5fXHBaeMzVvog==}
++    peerDependencies:
++      '@nestjs/common': ^11.0.0
++      '@nestjs/core': ^11.0.0
++      '@nestjs/microservices': ^11.0.0
++      '@nestjs/platform-express': ^11.0.0
++    peerDependenciesMeta:
++      '@nestjs/microservices':
++        optional: true
++      '@nestjs/platform-express':
++        optional: true
++
++  '@noble/hashes@1.8.0':
++    resolution: {integrity: sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A==}
++    engines: {node: ^14.21.3 || >=16}
++
++  '@paralleldrive/cuid2@2.3.1':
++    resolution: {integrity: sha512-XO7cAxhnTZl0Yggq6jOgjiOHhbgcO4NqFqwSmQpjK3b6TEE6Uj/jfSk6wzYyemh3+I0sHirKSetjQwn5cZktFw==}
++
+   '@pinojs/redact@0.4.0':
+     resolution: {integrity: sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg==}
+ 
+@@ -706,6 +831,13 @@ packages:
+   '@testcontainers/postgresql@10.28.0':
+     resolution: {integrity: sha512-NN25rruG5D4Q7pCNIJuHwB+G85OSeJ3xHZ2fWx0O6sPoPEfCYwvpj8mq99cyn68nxFkFYZeyrZJtSFO+FnydiA==}
+ 
++  '@tokenizer/inflate@0.4.1':
++    resolution: {integrity: sha512-2mAv+8pkG6GIZiF1kNg1jAjh27IDxEPKwdGul3snfztFerfPGI1LjDezZp3i7BElXompqEtPmoPx6c2wgtWsOA==}
++    engines: {node: '>=18'}
++
++  '@tokenizer/token@0.3.0':
++    resolution: {integrity: sha512-OvjF+z51L3ov0OyAU0duzsYuvO01PH7x4t6DJx+guahgTnBHkhJdG7soQeTSFLWN3efnHyibZ4Z8l2EuWwJN3A==}
++
+   '@turbo/darwin-64@2.10.11':
+     resolution: {integrity: sha512-v3R+1R/Ysozyo+p7Ri8MCIbndOvYt3DgPFrGLhrhQHfvyvbxyH3WyJj+A/2JTNmNleuAlh3JUyCV0iSVHIONTA==}
+     cpu: [x64]
+@@ -739,9 +871,18 @@ packages:
+   '@tybys/wasm-util@0.10.3':
+     resolution: {integrity: sha512-F3fo1MYrRJYL3zER0OUOmkutjr1Vp23m7OsSgp7nq4SP6OqX6C/56XFIPAl5bt3zaBRjmW7SGz3u/6LwFpYcOg==}
+ 
++  '@types/body-parser@1.19.6':
++    resolution: {integrity: sha512-HLFeCYgz89uk22N5Qg3dvGvsv46B8GLvKKo1zKG4NybA8U2DiEO3w9lqGg29t/tfLRJpJ6iQxnVw4OnB7MoM9g==}
++
+   '@types/chai@5.2.3':
+     resolution: {integrity: sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA==}
+ 
++  '@types/connect@3.4.38':
++    resolution: {integrity: sha512-K6uROf1LD88uDQqJCktA4yzL1YYAK6NgfsI0v/mTgyPKWsX1CnJ0XPSDhViejru1GcRkLWb8RlzFYJRqGUbaug==}
++
++  '@types/cookiejar@2.1.5':
++    resolution: {integrity: sha512-he+DHOWReW0nghN24E1WUqM0efK4kI9oTqDm6XmK8ZPe2djZ90BSNdGnIyCLzCPw7/pogPlGbzI2wHGGmi4O/Q==}
++
+   '@types/deep-eql@4.0.2':
+     resolution: {integrity: sha512-c9h9dVVMigMPc4bwTvC5dxqtqJZwQPePsWjPlpSOnojbor6pGqdk541lfA7AqFQr5pB1BRdq0juY9db81BwyFw==}
+ 
+@@ -754,18 +895,42 @@ packages:
+   '@types/estree@1.0.9':
+     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
+ 
++  '@types/express-serve-static-core@5.1.3':
++    resolution: {integrity: sha512-dPfW8NFiOF4wOHc7+N/QSxlY9cfSsenewGbAz8C8U/MULPd/YZ27LvJUIlzaXie7e6Ove9YunJGgC9tbHD2cKw==}
++
++  '@types/express@5.0.6':
++    resolution: {integrity: sha512-sKYVuV7Sv9fbPIt/442koC7+IIwK5olP1KWeD88e/idgoJqDm3JV/YUiPwkoKK92ylff2MGxSz1CSjsXelx0YA==}
++
++  '@types/http-errors@2.0.5':
++    resolution: {integrity: sha512-r8Tayk8HJnX0FztbZN7oVqGccWgw98T/0neJphO91KkmOzug1KkofZURD4UaD5uH8AqcFLfdPErnBod0u71/qg==}
++
+   '@types/json-schema@7.0.15':
+     resolution: {integrity: sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==}
+ 
+   '@types/json5@0.0.29':
+     resolution: {integrity: sha512-dRLjCWHYg4oaA77cxO64oO+7JwCwnIzkZPdrrC71jQmQtlhM556pwKo5bUzqvZndkVbeFLIIi+9TC40JNF5hNQ==}
+ 
++  '@types/methods@1.1.4':
++    resolution: {integrity: sha512-ymXWVrDiCxTBE3+RIrrP533E70eA+9qu7zdWoHuOmGujkYtzf4HQF96b8nwHLqhuf4ykX61IGRIB38CC6/sImQ==}
++
+   '@types/node@18.19.130':
+     resolution: {integrity: sha512-GRaXQx6jGfL8sKfaIDD6OupbIHBr9jv7Jnaml9tB7l4v068PAOXqfcujMMo5PhbIs6ggR1XODELqahT2R8v0fg==}
+ 
+   '@types/node@22.20.1':
+     resolution: {integrity: sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q==}
+ 
++  '@types/qs@6.15.1':
++    resolution: {integrity: sha512-GZHUBZR9hckSUhrxmp1nG6NwdpM9fCunJwyThLW1X3AyHgd9IlHb6VANpQQqDr2o/qQp6McZ3y/IA2rVzKzSbw==}
++
++  '@types/range-parser@1.2.7':
++    resolution: {integrity: sha512-hKormJbkJqzQGhziax5PItDUTMAM9uE2XXQmM37dyd4hVM+5aVl7oVxMVUiVQn2oCQFN/LKCZdvSM0pFRqbSmQ==}
++
++  '@types/send@1.2.1':
++    resolution: {integrity: sha512-arsCikDvlU99zl1g69TcAB3mzZPpxgw0UQnaHeC1Nwb015xp8bknZv5rIfri9xTOcMuaVgvabfIRA7PSZVuZIQ==}
++
++  '@types/serve-static@2.2.0':
++    resolution: {integrity: sha512-8mam4H1NHLtu7nmtalF7eyBH14QyOASmcxHhSfEoRyr0nP/YdoesEtU+uSRvMe96TW/HPTtkoKqQLl53N7UXMQ==}
++
+   '@types/ssh2-streams@0.1.13':
+     resolution: {integrity: sha512-faHyY3brO9oLEA0QlcO8N2wT7R0+1sHWZvQ+y3rMLwdY1ZyS1z0W3t65j9PqT4HmQ6ALzNe7RZlNuCNE0wBSWA==}
+ 
+@@ -775,6 +940,12 @@ packages:
+   '@types/ssh2@1.15.5':
+     resolution: {integrity: sha512-N1ASjp/nXH3ovBHddRJpli4ozpk6UdDYIX4RJWFa9L1YKnzdhTlVmiGHm4DZnj/jLbqZpes4aeR30EFGQtvhQQ==}
+ 
++  '@types/superagent@8.1.11':
++    resolution: {integrity: sha512-KA7srSW/HENDtOw9DOqaFLgWuMqN9WgjEw62lh9dpvRaZDkhdOkazASd7X7i2eMUYLHa1U37ZttnePsH5zTDHw==}
++
++  '@types/supertest@7.2.1':
++    resolution: {integrity: sha512-4CbBvoYVLHL7+yhbYrZET0vsvuyXTC05aRe7dNQkwMzm56auceoy6Yu3K50uZmwfHna1os3CMSgM/3QVkUtPTw==}
++
+   '@typescript-eslint/eslint-plugin@8.67.0':
+     resolution: {integrity: sha512-Un7Heoyj65NREbKAyIrFxeM143NZpExWmy1Nep4DLeQOeLlTeumPjoNKnBrU5D5moWXbPJgRa5Uwcdu0faVNGQ==}
+     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+@@ -987,6 +1158,10 @@ packages:
+     resolution: {integrity: sha512-h8lQ8tacZYnR3vNQTgibj+tODHI5/+l06Au2Pcriv/Gmet0eaj4TwWH41sO9wnHDiQsEj19q0drzdWdeAHtweg==}
+     engines: {node: '>=6.5'}
+ 
++  accepts@2.0.0:
++    resolution: {integrity: sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng==}
++    engines: {node: '>= 0.6'}
++
+   acorn-jsx@5.3.2:
+     resolution: {integrity: sha512-rq9s+JNhf0IChjtDXxllJ7g41oZk5SlXtp0LHwyA5cejwn7vKmKp4pPri6YEePv2PU65sAsegbXtIinmDFDXgQ==}
+     peerDependencies:
+@@ -1016,6 +1191,9 @@ packages:
+     resolution: {integrity: sha512-4Dj6M28JB+oAH8kFkTLUo+a2jwOFkuqb3yucU0CANcRRUbxS0cP0nZYCGjcc3BNXwRIsUVmDGgzawme7zvJHvg==}
+     engines: {node: '>=12'}
+ 
++  append-field@1.0.0:
++    resolution: {integrity: sha512-klpgFSWLW1ZEs8svjfb7g4qWY0YS5imI82dTg+QahUvJ8YqAY0P10Uk8tTyh9ZGuYEZEMaeJYCF5BFuX552hsw==}
++
+   archiver-utils@5.0.2:
+     resolution: {integrity: sha512-wuLJMmIBQYCsGZgYLTy5FIB2pF6Lfb6cXMSF8Qywwk3t20zWnAi7zLcQFdKQmIB8wyZpY5ER38x08GbwtR2cLA==}
+     engines: {node: '>= 14'}
+@@ -1051,6 +1229,9 @@ packages:
+     resolution: {integrity: sha512-BNoCY6SXXPQ7gF2opIP4GBE+Xw7U+pHMYKuzjgCN3GwiaIR09UUeKfheyIry77QtrCBlC0KK0q5/TER/tYh3PQ==}
+     engines: {node: '>= 0.4'}
+ 
++  asap@2.0.6:
++    resolution: {integrity: sha512-BSHWgDSAiKs50o2Re8ppvp3seVHXSRM44cdSsT9FfNEUUZLOGWVCsiWaRPWM1Znn+mqZ1OfVZ3z3DWEzSp7hRA==}
++
+   asn1@0.2.6:
+     resolution: {integrity: sha512-ix/FxPn0MDjeyJ7i/yoHGFt/EX6LyNbxSEhPPXODPL+KB0VPk86UYfL0lMdy+KCnv+fmvIzySwaK5COwqVbWTQ==}
+ 
+@@ -1068,6 +1249,9 @@ packages:
+   async@3.2.6:
+     resolution: {integrity: sha512-htCUDlxyyCLMgaM3xXg0C0LW2xqfuQ6p05pCEIsXuyQ+a1koYKTuBMzRNwmybfLgvJDMd0r1LTn4+E0Ti6C2AA==}
+ 
++  asynckit@0.4.0:
++    resolution: {integrity: sha512-Oei9OH4tRh0YqU3GxhX79dM/mwVgvbZJaSNaRk+bshkj0S5cfHcgYakreBjrHwatXKbz+IoIdYLxrKim2MjW0Q==}
++
+   atomic-sleep@1.0.0:
+     resolution: {integrity: sha512-kNOjDqAh7px0XWNI+4QbzoiR/nTkHAWNud2uvnJquD1/x5a7EQZMJT0AczqK0Qn67oY/TTQ1LbUKajZpp3I9tQ==}
+     engines: {node: '>=8.0.0'}
+@@ -1137,6 +1321,10 @@ packages:
+   bl@4.1.0:
+     resolution: {integrity: sha512-1W07cM9gS6DcLperZfFSj+bWLtaPGSOHWhPiGzXmvVJbRLdG82sH/Kn8EtW1VqWVA54AKf2h5k5BbnIbwF3h6w==}
+ 
++  body-parser@2.3.0:
++    resolution: {integrity: sha512-2cGmJupaNgg+QUwVLAucDuWuoMZ6EX9iHDRswZ5lsNYEmwPaRknMPCLZz07yTzVq/83p4o/wzbDZbBrTvGGTIw==}
++    engines: {node: '>=18'}
++
+   bowser@2.14.1:
+     resolution: {integrity: sha512-tzPjzCxygAKWFOJP011oxFHs57HzIhOEracIgAePE4pqB3LikALKnSzUyU4MGs9/iCEUuHlAJTjTc5M+u7YEGg==}
+ 
+@@ -1154,6 +1342,9 @@ packages:
+     resolution: {integrity: sha512-Db1SbgBS/fg/392AblrMJk97KggmvYhr4pB5ZIMTWtaivCPMWLkmb7m21cJvpvgK+J3nsU2CmmixNBZx4vFj/w==}
+     engines: {node: '>=8.0.0'}
+ 
++  buffer-from@1.1.2:
++    resolution: {integrity: sha512-E+XQCRwSbaaiChtv6k6Dwgc+bx+Bs6vuKJHHl5kox/BaKbhiXzqQOwK4cO22yElGp2OCmjwVhT3HmxgyPGnJfQ==}
++
+   buffer@5.7.1:
+     resolution: {integrity: sha512-EHcyIPBQ4BSGlvjB16k5KgAJ27CIsHY/2JBmCRReo48y9rQ3MaUzWX3KVlBa4U7MyX02HdVj0K7C3WaB3ju7FQ==}
+ 
+@@ -1164,10 +1355,18 @@ packages:
+     resolution: {integrity: sha512-lHblz4ahamxpTmnsk+MNTRWsjYKv965MwOrSJyeD588rR3Jcu7swE+0wN5F+PbL5cjgu/9ObkhfzEPuofEMwLA==}
+     engines: {node: '>=10.0.0'}
+ 
++  busboy@1.6.0:
++    resolution: {integrity: sha512-8SFQbg/0hQ9xy3UNTB0YEnsNBbWfhf7RtnzpL7TkBiTBRfrQ9Fxcnz7VJsleJpyp6rVLvXiuORqjlHi5q+PYuA==}
++    engines: {node: '>=10.16.0'}
++
+   byline@5.0.0:
+     resolution: {integrity: sha512-s6webAy+R4SR8XVuJWt2V2rGvhnrhxN+9S15GNuTK3wKPOXFF6RNc+8ug2XhH+2s4f+uudG4kUVYmYOQWL2g0Q==}
+     engines: {node: '>=0.10.0'}
+ 
++  bytes@3.1.2:
++    resolution: {integrity: sha512-/Nf7TyzTx6S3yRJObOAV7956r8cr2+Oj8AC5dt8wSP3BQAoeX58NoHyCU8P8zGkNXStjTSi6fzO6F0pBdcYbEg==}
++    engines: {node: '>= 0.8'}
++
+   c12@3.1.0:
+     resolution: {integrity: sha512-uWoS8OU1MEIsOv8p/5a82c3H31LsWVR5qiyXVfBNOzfffjUWtPnhAb4BYI2uG2HfGmZmFjCtui5XNWaps+iFuw==}
+     peerDependencies:
+@@ -1225,6 +1424,10 @@ packages:
+     resolution: {integrity: sha512-BSeNnyus75C4//NQ9gQt1/csTXyo/8Sb+afLAkzAptFuMsod9HFokGNudZpi/oQV73hnVK+sR+5PVRMd+Dr7YQ==}
+     engines: {node: '>=12'}
+ 
++  cluster-key-slot@1.1.1:
++    resolution: {integrity: sha512-rwHwUfXL40Chm1r08yrhU3qpUvdVlgkKNeyeGPOxnW8/SyVDvgRaed/Uz54AqWNaTCAThlj6QAs3TZcKI0xDEw==}
++    engines: {node: '>=0.10.0'}
++
+   color-convert@2.0.1:
+     resolution: {integrity: sha512-RRECPsj7iu/xb5oKYcsFHSppFNnsj/52OVTRKb4zP5onXwVF3zVmmToNcOfGC+CRDpfK/U584fMg38ZHCaElKQ==}
+     engines: {node: '>=7.0.0'}
+@@ -1235,6 +1438,13 @@ packages:
+   colorette@2.0.20:
+     resolution: {integrity: sha512-IfEDxwoWIjkeXL1eXcDiow4UbKjhLdq6/EuSVR9GMN7KVH3r9gQ83e73hsz1Nd1T3ijd5xv1wcWRYO+D6kCI2w==}
+ 
++  combined-stream@1.0.8:
++    resolution: {integrity: sha512-FQN4MRfuJeHf7cBbBMJFXhKSDq+2kAArBlmRBvcvFE5BB1HZKXtSFASDhdlz9zOYwxh8lDdnvmMOe/+5cdoEdg==}
++    engines: {node: '>= 0.8'}
++
++  component-emitter@1.3.1:
++    resolution: {integrity: sha512-T0+barUSQRTUQASh8bx02dl+DhF54GtIDY13Y3m9oWTklKbb3Wv974meRpeZ3lp1JpLVECWWNHC4vaG2XHXouQ==}
++
+   compress-commons@6.0.2:
+     resolution: {integrity: sha512-6FqVXeETqWPoGcfzrXb37E50NP0LXT8kAMu5ooZayhWWdgEY4lBEEcbQNXtkuKQsGduxiIcI4gOTsxTmuq/bSg==}
+     engines: {node: '>= 14'}
+@@ -1242,6 +1452,10 @@ packages:
+   concat-map@0.0.1:
+     resolution: {integrity: sha512-/Srv4dswyQNBfohGpz9o6Yb3Gz3SrUDqBH5rTuhGR7ahtlbYKnVxw2bCFMRljaA7EXHaXZ8wsHdodFvbkhKmqg==}
+ 
++  concat-stream@2.0.0:
++    resolution: {integrity: sha512-MWufYdFw53ccGjCA+Ol7XJYpAlW6/prSMzuPOTRnJGcGzuhLn4Scrz7qf6o8bROZ514ltazcIFJZevcfbo0x7A==}
++    engines: {'0': node >= 6.0}
++
+   confbox@0.2.4:
+     resolution: {integrity: sha512-ysOGlgTFbN2/Y6Cg3Iye8YKulHw+R2fNXHrgSmXISQdMnomY6eNDprVdW9R5xBguEqI954+S6709UyiO7B+6OQ==}
+ 
+@@ -1249,9 +1463,36 @@ packages:
+     resolution: {integrity: sha512-5IKcdX0nnYavi6G7TtOhwkYzyjfJlatbjMjuLSfE2kYT5pMDOilZ4OvMhi637CcDICTmz3wARPoyhqyX1Y+XvA==}
+     engines: {node: ^14.18.0 || >=16.10.0}
+ 
++  content-disposition@1.1.0:
++    resolution: {integrity: sha512-5jRCH9Z/+DRP7rkvY83B+yGIGX96OYdJmzngqnw2SBSxqCFPd0w2km3s5iawpGX8krnwSGmF0FW5Nhr0Hfai3g==}
++    engines: {node: '>=18'}
++
++  content-type@1.0.5:
++    resolution: {integrity: sha512-nTjqfcBFEipKdXCv4YDQWCfmcLZKm81ldF0pAopTvyrFGVbcR6P/VAAd5G7N+0tTr8QqiU0tFadD6FK4NtJwOA==}
++    engines: {node: '>= 0.6'}
++
++  content-type@2.1.0:
++    resolution: {integrity: sha512-mj7UPXE0jaqaOsukNZRUEfEi2AcL7C/vwmwcHV0O97eO1E1pxBZuyjlZrx5seTaNBg1U6+o35wpa35Qfcc+7ag==}
++    engines: {node: '>=18'}
++
++  cookie-signature@1.2.2:
++    resolution: {integrity: sha512-D76uU73ulSXrD1UXF4KE2TMxVVwhsnCgfAyTg9k8P6KGZjlXKrOLe4dJQKI3Bxi5wjesZoFXJWElNWBjPZMbhg==}
++    engines: {node: '>=6.6.0'}
++
++  cookie@0.7.2:
++    resolution: {integrity: sha512-yki5XnKuf750l50uGTllt6kKILY4nQ1eNIQatoXEByZ5dWgnKqbnqmTrBE5B4N7lrMJKQ2ytWMiTO2o0v6Ew/w==}
++    engines: {node: '>= 0.6'}
++
++  cookiejar@2.1.4:
++    resolution: {integrity: sha512-LDx6oHrK+PhzLKJU9j5S7/Y3jM/mUHvD/DeI1WQmJn652iPC5Y4TBzC9l+5OMOXlyTTA+SmVUPm0HQUwpD5Jqw==}
++
+   core-util-is@1.0.3:
+     resolution: {integrity: sha512-ZQBvi1DcpJ4GDqanjucZ2Hj3wEO5pZDS89BWbkcrvdxksJorwUDDZamX9ldFkp9aw2lmBDLgkObEA4DWNJ9FYQ==}
+ 
++  cors@2.8.6:
++    resolution: {integrity: sha512-tJtZBBHA6vjIAaF6EnIaq6laBBP9aq/Y3ouVJjEfoHbRBcHBAHYcMh/w8LDrk2PvIMMq8gmopa5D4V8RmbrxGw==}
++    engines: {node: '>= 0.10'}
++
+   cpu-features@0.0.10:
+     resolution: {integrity: sha512-9IkYqtX3YHPCzoVg1Py+o9057a3i0fp7S530UWokCSaFVTc7CwXPRiOjRjBQQ18ZCNafx78YfnG+HALxtVmOGA==}
+     engines: {node: '>=10.0.0'}
+@@ -1323,9 +1564,24 @@ packages:
+   defu@6.1.7:
+     resolution: {integrity: sha512-7z22QmUWiQ/2d0KkdYmANbRUVABpZ9SNYyH5vx6PZ+nE5bcC0l7uFvEfHlyld/HcGBFTL536ClDt3DEcSlEJAQ==}
+ 
++  delayed-stream@1.0.0:
++    resolution: {integrity: sha512-ZySD7Nf91aLB0RxL4KGrKHBXl7Eds1DAmEdcoVawXnLD7SDhpNgtuII2aAkg7a7QS41jxPSZ17p4VdGnMHk3MQ==}
++    engines: {node: '>=0.4.0'}
++
++  denque@2.1.0:
++    resolution: {integrity: sha512-HVQE3AAb/pxF8fQAoiqpvg9i3evqug3hoiwakOyZAwJm+6vZehbkYXZ0l4JxS+I3QxM97v5aaRNhj8v5oBhekw==}
++    engines: {node: '>=0.10'}
++
++  depd@2.0.0:
++    resolution: {integrity: sha512-g7nH6P6dyDioJogAAGprGpCtVImJhpPk/roCzdb3fIh61/s/nPsfR6onyMwkCAR/OlC3yBC0lESvUoQEAssIrw==}
++    engines: {node: '>= 0.8'}
++
+   destr@2.0.5:
+     resolution: {integrity: sha512-ugFTXCtDZunbzasqBxrK93Ik/DRYsO6S/fedkWEMKqt04xZ4csmnmwGDBAb07QWNaGMAmnTIemsYZCksjATwsA==}
+ 
++  dezalgo@1.0.4:
++    resolution: {integrity: sha512-rXSP0bf+5n0Qonsb+SVVfNfIsimO4HEtmnIpPHY8Q1UCzKlQrDMfdobr8nJOOsRgWCyMRqeSBQzmWUMq7zvVig==}
++
+   docker-compose@0.24.8:
+     resolution: {integrity: sha512-plizRs/Vf15H+GCVxq2EUvyPK7ei9b/cVesHvjnX4xaXjM9spHe2Ytq0BitndFgvTJ3E3NljPNUEl7BAN43iZw==}
+     engines: {node: '>= 6.0.0'}
+@@ -1361,6 +1617,9 @@ packages:
+   eastasianwidth@0.2.0:
+     resolution: {integrity: sha512-I88TYZWc9XiYHRQ4/3c5rjjfgkjhLyW2luGIheGERbNQ6OY7yTybanSpDXZa8y7VUP9YmDcYa+eyq4ca7iLqWA==}
+ 
++  ee-first@1.1.1:
++    resolution: {integrity: sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==}
++
+   effect@3.21.0:
+     resolution: {integrity: sha512-PPN80qRokCd1f015IANNhrwOnLO7GrrMQfk4/lnZRE/8j7UPWrNNjPV0uBrZutI/nHzernbW+J0hdqQysHiSnQ==}
+ 
+@@ -1374,6 +1633,10 @@ packages:
+     resolution: {integrity: sha512-i6UzDscO/XfAcNYD75CfICkmfLedpyPDdozrLMmQc5ORaQcdMoc21OnlEylMIqI7U8eniKrPMxxtj8k0vhmJhA==}
+     engines: {node: '>=14'}
+ 
++  encodeurl@2.0.0:
++    resolution: {integrity: sha512-Q0n9HRi4m6JuGIV1eFlmvJB7ZEVxu93IrMyiMsGC0lrMJMWzRgx6WGquyfQgZVb31vhGgXnfmPNNXmxnOkRBrg==}
++    engines: {node: '>= 0.8'}
++
+   end-of-stream@1.4.5:
+     resolution: {integrity: sha512-ooEGc6HP26xXq/N+GCGOT0JKCLDGrq2bQUZrQ7gyrJiZANJ/8YDTxTpQBXGMn+WbIQXNVpyWymm7KYVICQnyOg==}
+ 
+@@ -1421,6 +1684,9 @@ packages:
+     resolution: {integrity: sha512-WUj2qlxaQtO4g6Pq5c29GTcWGDyd8itL8zTlipgECz3JesAiiOKotd8JU6otB3PACgG6xkJUyVhboMS+bje/jA==}
+     engines: {node: '>=6'}
+ 
++  escape-html@1.0.3:
++    resolution: {integrity: sha512-NiSupZ4OeuGwr68lGIeym/ksIZMJodUGOSCZ/FSnTxcrekbvqrgdUxlJOMpijaKZVjAJrWrGs/6Jy8OMuyj9ow==}
++
+   escape-string-regexp@4.0.0:
+     resolution: {integrity: sha512-TtpcNJ3XAzx3Gq8sWRzJaVajRs0uVxA2YAkdb1jm2YkPz4G6egUFAyA3n5vtEIZefPk5Wa4UXbKuS5fKkJWdgA==}
+     engines: {node: '>=10'}
+@@ -1530,6 +1796,10 @@ packages:
+     resolution: {integrity: sha512-kVscqXk4OCp68SZ0dkgEKVi6/8ij300KBWTJq32P/dYeWTSwK41WyTxalN1eRmA5Z9UU/LX9D7FWSmV9SAYx6g==}
+     engines: {node: '>=0.10.0'}
+ 
++  etag@1.8.1:
++    resolution: {integrity: sha512-aIL5Fx7mawVa300al2BnEE4iNvo1qETxLrPI/o05L7z6go7fCw1J6EQmbK4FmJ2AS7kgVF/KEZWufBfdClMcPg==}
++    engines: {node: '>= 0.6'}
++
+   event-target-shim@5.0.1:
+     resolution: {integrity: sha512-i/2XbnSz/uxRCU6+NdVJgKWDTM427+MqYbkQzD321DuCQJUqOuJKIA0IM2+W2xtYHdKOmZ4dR6fExsd4SXL+WQ==}
+     engines: {node: '>=6'}
+@@ -1545,6 +1815,10 @@ packages:
+     resolution: {integrity: sha512-KfYbmpRm0VbLjEvVa9yGwCi9GI34xvi7A/HXYWQO65CSD2u3MczUJSuwXKFIxlGsgBQizV9q5J9NHj4VG0n+pA==}
+     engines: {node: '>=12.0.0'}
+ 
++  express@5.2.1:
++    resolution: {integrity: sha512-hIS4idWWai69NezIdRt2xFVofaF4j+6INOpJlVOLDO8zXGpUVEVzIYk12UUi2JzjEzWL3IOAxcTubgz9Po0yXw==}
++    engines: {node: '>= 18'}
++
+   exsolve@1.1.1:
+     resolution: {integrity: sha512-9U/jZUgjnSGyntRr6y5Muu1MJcwFl6kPu7k8qLF0IMNfLqvw0NZ4nnVDq0RVoZ0RvCyumib4Ez3KYrVfilrw+g==}
+ 
+@@ -1583,6 +1857,14 @@ packages:
+     resolution: {integrity: sha512-XXTUwCvisa5oacNGRP9SfNtYBNAMi+RPwBFmblZEF7N7swHYQS6/Zfk7SRwx4D5j3CH211YNRco1DEMNVfZCnQ==}
+     engines: {node: '>=16.0.0'}
+ 
++  file-type@21.3.4:
++    resolution: {integrity: sha512-Ievi/yy8DS3ygGvT47PjSfdFoX+2isQueoYP1cntFW1JLYAuS4GD7NUPGg4zv2iZfV52uDyk5w5Z0TdpRS6Q1g==}
++    engines: {node: '>=20'}
++
++  finalhandler@2.1.1:
++    resolution: {integrity: sha512-S8KoZgRZN+a5rNwqTxlZZePjT/4cnm0ROV70LedRHZ0p8u9fRID0hJUZQpkKLzro8LfmC8sx23bY6tVNxv8pQA==}
++    engines: {node: '>= 18.0.0'}
++
+   find-up@5.0.0:
+     resolution: {integrity: sha512-78/PXT1wlLLDgTzDs7sjq9hzz0vXD+zn+7wypEe4fXQxCmdmqfGsEPQxmiCSQI3ajFV91bVSsvNtrJRiW6nGng==}
+     engines: {node: '>=10'}
+@@ -1602,6 +1884,22 @@ packages:
+     resolution: {integrity: sha512-gIXjKqtFuWEgzFRJA9WCQeSJLZDjgJUOMCMzxtvFq/37KojM1BFGufqsCy0r4qSQmYLsZYMeyRqzIWOMup03sw==}
+     engines: {node: '>=14'}
+ 
++  form-data@4.0.6:
++    resolution: {integrity: sha512-vKatAh4SlVfgbv+YtmhiRjhEMJsYpsG1Y2rMQtR+SVSbytsSD1YGzDIcrAJmdFec88u/+VoGmxnl+80gL1tRCQ==}
++    engines: {node: '>= 6'}
++
++  formidable@3.5.4:
++    resolution: {integrity: sha512-YikH+7CUTOtP44ZTnUhR7Ic2UASBPOqmaRkRKxRbywPTe5VxF7RRCck4af9wutiZ/QKM5nME9Bie2fFaPz5Gug==}
++    engines: {node: '>=14.0.0'}
++
++  forwarded@0.2.0:
++    resolution: {integrity: sha512-buRG0fpBtRHSTCOASe6hD258tEubFoRLb4ZNA6NxMVHNw2gOcwHo9wyablzMzOA5z9xA9L1KNjk/Nt6MT9aYow==}
++    engines: {node: '>= 0.6'}
++
++  fresh@2.0.0:
++    resolution: {integrity: sha512-Rx/WycZ60HOaqLKAi6cHRKKI7zxWbJ31MhntmtwMoaTeF7XFH9hhBp8vITaMidfljRQ6eYWCKkaTK+ykVJHP2A==}
++    engines: {node: '>= 0.8'}
++
+   fs-constants@1.0.0:
+     resolution: {integrity: sha512-y6OAwoSIf7FyjMIv94u+b5rdheZEjzR63GTyZJm5qh4Bi+2YgwLCcI/fPFZkL5PSixOt6ZNKm+w+Hfp/Bciwow==}
+ 
+@@ -1709,6 +2007,14 @@ packages:
+   help-me@5.0.0:
+     resolution: {integrity: sha512-7xgomUX6ADmcYzFik0HzAxh/73YlKR9bmFzf51CZwR+b6YtzU2m0u49hQCqV6SvlqIqsaxovfwdvbnsw3b/zpg==}
+ 
++  http-errors@2.0.1:
++    resolution: {integrity: sha512-4FbRdAX+bSdmo4AUFuS0WNiPz8NgFt+r8ThgNWmlrjQjt1Q7ZR9+zTlce2859x4KSXrwIsaeTqDoKQmtP8pLmQ==}
++    engines: {node: '>= 0.8'}
++
++  iconv-lite@0.7.3:
++    resolution: {integrity: sha512-IKXpvIzjnC9XTAUbVBcMfGS0EPaIXtW6v+zr+RRp+hqULEpo0owZax6wyRwPOJbWbzjYspQwusTsfVr0ifh4uQ==}
++    engines: {node: '>=0.10.0'}
++
+   ieee754@1.2.1:
+     resolution: {integrity: sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA==}
+ 
+@@ -1735,6 +2041,14 @@ packages:
+     resolution: {integrity: sha512-4gd7VpWNQNB4UKKCFFVcp1AVv+FMOgs9NKzjHKusc8jTMhd5eL1NqQqOpE0KzMds804/yHlglp3uxgluOqAPLw==}
+     engines: {node: '>= 0.4'}
+ 
++  ioredis@5.11.1:
++    resolution: {integrity: sha512-ehuGcf94bQXhfagULNXrJdfnWO38v070jxSx/qE87Kjzmu2fU7ro5EFAb+OPituLqgfyuQaym5DlrNydW2sJ9A==}
++    engines: {node: '>=12.22.0'}
++
++  ipaddr.js@1.9.1:
++    resolution: {integrity: sha512-0KI/607xoxSToH7GjN1FfSbLoU0+btTicjsQSWQlh/hZykN8KpmMf7uYwPW3R+akZ6R/w18ZlXSHBYXiYUPO3g==}
++    engines: {node: '>= 0.10'}
++
+   is-array-buffer@3.0.5:
+     resolution: {integrity: sha512-DDfANUiiG2wC1qawP66qlTugJeL5HyzMpfr8lLK+jMQirGzNod0B12cFB/9q838Ru27sBwfw78/rdoU7RERz6A==}
+     engines: {node: '>= 0.4'}
+@@ -1806,6 +2120,9 @@ packages:
+     resolution: {integrity: sha512-lZhclumE1G6VYD8VHe35wFaIif+CTy5SJIi5+3y4psDgWu4wPDoBhF8NxUOinEc7pHgiTsT6MaBb92rKhhD+Xw==}
+     engines: {node: '>= 0.4'}
+ 
++  is-promise@4.0.0:
++    resolution: {integrity: sha512-hvpoI6korhJMnej285dSg6nu1+e6uxs7zG3BYAm5byqDsgJNWwxzM6z6iZiAgQR4TJ30JmBTOwqZUw3WlyH3AQ==}
++
+   is-regex@1.2.1:
+     resolution: {integrity: sha512-MjYsKHO5O7mCsmRGxWcLWheFqN9DJ/2TmngvjKXihe6efViPqc274+Fx/4fYj/r03+ESvBdTXK0V6tA3rgez1g==}
+     engines: {node: '>= 0.4'}
+@@ -1855,6 +2172,10 @@ packages:
+   isexe@2.0.0:
+     resolution: {integrity: sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw==}
+ 
++  iterare@1.2.1:
++    resolution: {integrity: sha512-RKYVTCjAnRthyJes037NX/IiqeidgN1xc3j1RjFfECFp28A1GVwK9nA+i0rJPaHqSZwygLzRnFlzUuHFoWWy+Q==}
++    engines: {node: '>=6'}
++
+   jackspeak@3.4.3:
+     resolution: {integrity: sha512-OGlZQpz2yfahA/Rd1Y8Cd9SIEsqvXkLVoSw/cgwhnhFMDbsQFeZYoJJ7bIZBS9BcamUW96asq/npPWugM+RQBw==}
+ 
+@@ -1897,6 +2218,10 @@ packages:
+     resolution: {integrity: sha512-+bT2uH4E5LGE7h/n3evcS/sQlJXCpIp6ym8OWJ5eV6+67Dsql/LaaT7qJBAt2rzfoa/5QBGBhxDix1dMt2kQKQ==}
+     engines: {node: '>= 0.8.0'}
+ 
++  load-esm@1.0.3:
++    resolution: {integrity: sha512-v5xlu8eHD1+6r8EHTg6hfmO97LN8ugKtiXcy5e6oN72iD2r6u0RPfLl6fxM+7Wnh2ZRq15o0russMst44WauPA==}
++    engines: {node: '>=13.2.0'}
++
+   locate-path@6.0.0:
+     resolution: {integrity: sha512-iPZK6eYjbxRu3uB4/WZ3EsEIMJFMqAoopl3R+zuq0UjcAm/MO6KCweDgPfP3elTztoKP3KtnVHxTn2NHBSDVUw==}
+     engines: {node: '>=10'}
+@@ -1926,6 +2251,43 @@ packages:
+     resolution: {integrity: sha512-/IXtbwEk5HTPyEwyKX6hGkYXxM9nbj64B+ilVJnC/R6B0pH5G4V3b0pVbL7DBj4tkhBAppbQUlf6F6Xl9LHu1g==}
+     engines: {node: '>= 0.4'}
+ 
++  media-typer@0.3.0:
++    resolution: {integrity: sha512-dq+qelQ9akHpcOl/gUVRTxVIOkAJ1wR3QAvb4RsVjS8oVoFjDGTc679wJYmUmknUF5HwMLOgb5O+a3KxfWapPQ==}
++    engines: {node: '>= 0.6'}
++
++  media-typer@1.1.1:
++    resolution: {integrity: sha512-yz3xRaG20c6/BOzvYoDaGtPmGscs7YivItZEEqe6GbwNfHuxu9YNmvnEkMzKldAGY4/80pRcQRZSEnhquk9XuQ==}
++    engines: {node: '>= 0.8'}
++
++  merge-descriptors@2.0.0:
++    resolution: {integrity: sha512-Snk314V5ayFLhp3fkUREub6WtjBfPdCPY1Ln8/8munuLuiYhsABgBVWsozAG+MWMbVEvcdcpbi9R7ww22l9Q3g==}
++    engines: {node: '>=18'}
++
++  methods@1.1.2:
++    resolution: {integrity: sha512-iclAHeNqNm68zFtnZ0e+1L2yUIdvzNoauKU4WBA3VvH/vPFieF7qfRlwUZU+DA9P9bPXIS90ulxoUoCH23sV2w==}
++    engines: {node: '>= 0.6'}
++
++  mime-db@1.52.0:
++    resolution: {integrity: sha512-sPU4uV7dYlvtWJxwwxHD0PuihVNiE7TyAbQ5SWxDCB9mUYvOgroQOwYQQOKPJ8CIbE+1ETVlOoK1UC2nU3gYvg==}
++    engines: {node: '>= 0.6'}
++
++  mime-db@1.54.0:
++    resolution: {integrity: sha512-aU5EJuIN2WDemCcAp2vFBfp/m4EAhWJnUNSSw0ixs7/kXbd6Pg64EmwJkNdFhB8aWt1sH2CTXrLxo/iAGV3oPQ==}
++    engines: {node: '>= 0.6'}
++
++  mime-types@2.1.35:
++    resolution: {integrity: sha512-ZDY+bPm5zTTF+YpCrAU9nK0UgICYPT0QtT1NZWFv4s++TNkcgVaT0g6+4R2uI4MjQjzysHB1zxuWL50hzaeXiw==}
++    engines: {node: '>= 0.6'}
++
++  mime-types@3.0.2:
++    resolution: {integrity: sha512-Lbgzdk0h4juoQ9fCKXW4by0UJqj+nOOrI9MJ1sSj4nI8aI2eo1qmvQEie4VD1glsS250n15LsWsYtCugiStS5A==}
++    engines: {node: '>=18'}
++
++  mime@2.6.0:
++    resolution: {integrity: sha512-USPkMeET31rOMiarsBNIHZKLGgvKc/LrjofAnBlOttf5ajRvqiRA8QsenbcooctK6d6Ts6aqZXBA+XbkKthiQg==}
++    engines: {node: '>=4.0.0'}
++    hasBin: true
++
+   minimatch@10.2.6:
+     resolution: {integrity: sha512-vpLQEs+VLCr1nU0BXS07maYoFwlDAH0gngQuuttxIwutDFEMHq2blX+8vpgxDdK3J1PwjCJiep77OitTZ4Ll1A==}
+     engines: {node: 18 || 20 || >=22}
+@@ -1959,6 +2321,10 @@ packages:
+   ms@2.1.3:
+     resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
+ 
++  multer@2.2.0:
++    resolution: {integrity: sha512-6rdyFg2kLrMh9Jee7/BMPuV9lEAd7lLW2YUpF9/YxR7njyoUwwQ0ZPh3TaIY50Sw6vlyD2HW3wGOkTS4P79xrQ==}
++    engines: {node: '>= 10.16.0'}
++
+   nan@2.28.0:
+     resolution: {integrity: sha512-fTsDz99OTq2sVePhGdp4qQhggZFtKr64ZNVyVajRKtMOkJxYekplBh577PiJB12v/D3s2E5cGtOI45LWp6rnLQ==}
+ 
+@@ -1975,6 +2341,10 @@ packages:
+   natural-compare@1.4.0:
+     resolution: {integrity: sha512-OWND8ei3VtNC9h7V60qff3SVobHr996CTwgxubgyQYEpg290h9J0buyECNNJexkFm5sOajh5G116RYA1c8ZMSw==}
+ 
++  negotiator@1.0.0:
++    resolution: {integrity: sha512-8Ofs/AUQh8MaEcrlq5xOX0CQ9ypTF5dl78mjlMNfOK08fzpgTHQRQPBxcPlEtIw0yRpws+Zo/3r+5WRby7u3Gg==}
++    engines: {node: '>= 0.6'}
++
+   node-exports-info@1.6.2:
+     resolution: {integrity: sha512-kXs9Go0cah0qHVV2v389IXQLdLCeE1xfFtjOAF+iobu0OIoG1pje8At2vMHyaPMiPMnG/LWP50twML21eMcAag==}
+     engines: {node: '>= 0.4'}
+@@ -1991,6 +2361,10 @@ packages:
+     engines: {node: '>=18'}
+     hasBin: true
+ 
++  object-assign@4.1.1:
++    resolution: {integrity: sha512-rJgTQnkUnH1sFw8yT6VSU3zD3sWmu6sZhIseY8VX+GRu3P6F7Fu+JNDoXfklElbLJSnc3FUQHVe4cU5hj+BcUg==}
++    engines: {node: '>=0.10.0'}
++
+   object-inspect@1.13.4:
+     resolution: {integrity: sha512-W67iLl4J2EXEGTbfeHCffrjDfitvLANg0UlX3wFUUSTx92KXRFegMHUVgSqE+wvhAbi4WqjGg9czysTV2Epbew==}
+     engines: {node: '>= 0.4'}
+@@ -2026,6 +2400,10 @@ packages:
+     resolution: {integrity: sha512-0eJJY6hXLGf1udHwfNftBqH+g73EU4B504nZeKpz1sYRKafAghwxEJunB2O7rDZkL4PGfsMVnTXZ2EjibbqcsA==}
+     engines: {node: '>=14.0.0'}
+ 
++  on-finished@2.4.1:
++    resolution: {integrity: sha512-oVlzkg3ENAhCk2zdv7IJwd/QUD4z2RxRwpkcGY8psCVcCYZNq4wYnVWALHM+brtuJjePWiYF/ClmuDr8Ch5+kg==}
++    engines: {node: '>= 0.8'}
++
+   once@1.4.0:
+     resolution: {integrity: sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w==}
+ 
+@@ -2052,6 +2430,10 @@ packages:
+     resolution: {integrity: sha512-GQ2EWRpQV8/o+Aw8YqtfZZPfNRWZYkbidE9k5rpl/hC3vtHHBfGm2Ifi6qWV+coDGkrUKZAxE3Lot5kcsRlh+g==}
+     engines: {node: '>=6'}
+ 
++  parseurl@1.3.3:
++    resolution: {integrity: sha512-CiyeOxFT/JZyN5m0z9PfXw4SCBJ6Sygz1Dpl0wqjlhDEGGBP1GnsUVEL0p63hoG1fcj3fHynXi9NYO4nWOL+qQ==}
++    engines: {node: '>= 0.8'}
++
+   path-exists@4.0.0:
+     resolution: {integrity: sha512-ak9Qy5Q7jYb2Wwcey5Fpvg2KoAc/ZIhLSLOSBmRmygPsGwkVVt0fZa0qrtMz+m6tJTAHfZQ8FnmB4MG4LWy7/w==}
+     engines: {node: '>=8'}
+@@ -2067,6 +2449,9 @@ packages:
+     resolution: {integrity: sha512-Xa4Nw17FS9ApQFJ9umLiJS4orGjm7ZzwUrwamcGQuHSzDyth9boKDaycYdDcZDuqYATXw4HFXgaqWTctW/v1HA==}
+     engines: {node: '>=16 || 14 >=14.18'}
+ 
++  path-to-regexp@8.4.2:
++    resolution: {integrity: sha512-qRcuIdP69NPm4qbACK+aDogI5CBDMi1jKe0ry5rSQJz8JVLsC7jV8XpiJjGRLLol3N+R5ihGYcrPLTno6pAdBA==}
++
+   pathe@2.0.3:
+     resolution: {integrity: sha512-WUjGcAqP1gQacoQe+OBJsFA7Ld4DyXuUIjZ5cc75cLHvJ7dtNsTugphxIADwspS+AraAUePCKrSVtPLFj/F88w==}
+ 
+@@ -2152,6 +2537,10 @@ packages:
+     resolution: {integrity: sha512-/FPD0nUc9jH6rfFjji9IBqOz4pcSE3CsT1m7Ep6Mdb0LxSUMj8hgl6GomOvZzpNpAqqGaXA0P3VSrZLFzIhQrw==}
+     engines: {node: '>=12.0.0'}
+ 
++  proxy-addr@2.0.7:
++    resolution: {integrity: sha512-llQsMLSUDUPT44jdrU/O37qlnifitDP+ZwrmmZcoSKyLKvtZxpyV0n2/bD/N4tBAAZ/gJEdZU7KMraoK1+XYAg==}
++    engines: {node: '>= 0.10'}
++
+   pump@3.0.4:
+     resolution: {integrity: sha512-VS7sjc6KR7e1ukRFhQSY5LM2uBWAUPiOPa/A3mkKmiMwSmRFUITt0xuj+/lesgnCv+dPIEYlkzrcyXgquIHMcA==}
+ 
+@@ -2162,9 +2551,21 @@ packages:
+   pure-rand@6.1.0:
+     resolution: {integrity: sha512-bVWawvoZoBYpp6yIoQtQXHZjmz35RSVHnUOTefl8Vcjr8snTPY1wnpSPMWekcFwbxI6gtmT7rSYPFvz71ldiOA==}
+ 
++  qs@6.15.3:
++    resolution: {integrity: sha512-O9gl3zCl5h5blw1KGUzQKhA5oUXSl8rwUIM5o0S3nCXMliSvy5Dzx7/DJcI+SwgICv+IneSZwhBh1oSyEHA71A==}
++    engines: {node: '>=0.6'}
++
+   quick-format-unescaped@4.0.4:
+     resolution: {integrity: sha512-tYC1Q1hgyRuHgloV/YXs2w15unPVh8qfu/qCTfhTYamaw7fyhumKa2yGpdSo87vY32rIclj+4fWYQXUMs9EHvg==}
+ 
++  range-parser@1.3.0:
++    resolution: {integrity: sha512-hek2mFQpPuI4E1BBKrSto+BU3e3x4xuarsbiwr3+lf7p44juvFMV0XFWQAP3xUyqXA4RrXLIoaSUGbSt056ZMw==}
++    engines: {node: '>= 0.6'}
++
++  raw-body@3.0.2:
++    resolution: {integrity: sha512-K5zQjDllxWkf7Z5xJdV0/B0WTNqx6vxG70zJE4N0kBs4LovmEYWJzQGxC9bS9RAKu3bgM40lrd5zoLJ12MQ5BA==}
++    engines: {node: '>= 0.10'}
++
+   rc9@2.1.2:
+     resolution: {integrity: sha512-btXCnMmRIBINM2LDZoEmOogIZU7Qe7zn4BpomSKZ/ykbLObuBdvG+mFq11DL6fjH1DRwHhrlgtYWG96bJiC7Cg==}
+ 
+@@ -2190,6 +2591,17 @@ packages:
+     resolution: {integrity: sha512-57frrGM/OCTLqLOAh0mhVA9VBMHd+9U7Zb2THMGdBUoZVOtGbJzjxsYGDJ3A9AYYCP4hn6y1TVbaOfzWtm5GFg==}
+     engines: {node: '>= 12.13.0'}
+ 
++  redis-errors@1.2.0:
++    resolution: {integrity: sha512-1qny3OExCf0UvUV/5wpYKf2YwPcOqXzkwKKSmKHiE6ZMQs5heeE/c8eXK+PNllPvmjgAbfnsbpkGZWy8cBpn9w==}
++    engines: {node: '>=4'}
++
++  redis-parser@3.0.0:
++    resolution: {integrity: sha512-DJnGAeenTdpMEH6uAJRK/uiyEIH9WVsUmoLwzudwGJUwZPp80PDBWPHXSAGNPwNvIXAbe7MSUB1zQFugFml66A==}
++    engines: {node: '>=4'}
++
++  reflect-metadata@0.2.2:
++    resolution: {integrity: sha512-urBwgfrvVP/eAyXx4hluJivBKzuEbSQs9rKWCrCkbSxNv8mxPcUZKeuoF3Uy4mJl3Lwprp6yy5/39VWigZ4K6Q==}
++
+   reflect.getprototypeof@1.0.10:
+     resolution: {integrity: sha512-00o4I+DVrefhv+nX0ulyi3biSHCPDe+yLv5o/p6d/UVlirijB8E16FtfwSAi4g3tcqrQ4lRAqQSoFEZJehYEcw==}
+     engines: {node: '>= 0.4'}
+@@ -2223,6 +2635,13 @@ packages:
+     engines: {node: '>=18.0.0', npm: '>=8.0.0'}
+     hasBin: true
+ 
++  router@2.2.0:
++    resolution: {integrity: sha512-nLTrUKm2UyiL7rlhapu/Zl45FwNgkZGaCpZbIHajDYgwlJCOzLSk+cIPAnsEqV955GjILJnKbdQC1nVPz+gAYQ==}
++    engines: {node: '>= 18'}
++
++  rxjs@7.8.2:
++    resolution: {integrity: sha512-dhKf903U/PQZY6boNNtAGdWbG85WAbjT/1xYoZIC7FAY0yWapOBQVsVrDl58W86//e1VpMNBtRV4MaXfdMySFA==}
++
+   safe-array-concat@1.1.4:
+     resolution: {integrity: sha512-wtZlHyOje6OZTGqAoaDKxFkgRtkF9CnHAVnCHKfuj200wAgL+bSJhdsCD2l0Qx/2ekEXjPWcyKkfGb5CPboslg==}
+     engines: {node: '>=0.4'}
+@@ -2260,6 +2679,14 @@ packages:
+     engines: {node: '>=10'}
+     hasBin: true
+ 
++  send@1.2.1:
++    resolution: {integrity: sha512-1gnZf7DFcoIcajTjTwjwuDjzuz4PPcY2StKPlsGAQ1+YH20IRVrBaXSWmdjowTJ6u8Rc01PoYOGHXfP1mYcZNQ==}
++    engines: {node: '>= 18'}
++
++  serve-static@2.2.1:
++    resolution: {integrity: sha512-xRXBn0pPqQTVQiC8wyQrKs2MOlX24zQ0POGaj0kultvoOCstBQM5yvOhAVSUwOMjQtTvsPWoNCHfPGwaaQJhTw==}
++    engines: {node: '>= 18'}
++
+   set-function-length@1.2.2:
+     resolution: {integrity: sha512-pgRc4hJ4/sNjWCSS9AmnS40x3bNMDTknHgL5UaMBTMyJnU90EgWh1Rz+MC9eFu4BuN/UwZjKQuY/1v3rM7HMfg==}
+     engines: {node: '>= 0.4'}
+@@ -2272,6 +2699,9 @@ packages:
+     resolution: {integrity: sha512-RJRdvCo6IAnPdsvP/7m6bsQqNnn1FCBX5ZNtFL98MmFF/4xAIJTIg1YbHW5DC2W5SKZanrC6i4HsJqlajw/dZw==}
+     engines: {node: '>= 0.4'}
+ 
++  setprototypeof@1.2.0:
++    resolution: {integrity: sha512-E5LDX7Wrp85Kil5bhZv46j8jOeboKq5JMmYM3gVGdGH8xFpPWXUMsNrlODCrkoxMEeNi/XZIwuRvY4XNwYMJpw==}
++
+   shebang-command@2.0.0:
+     resolution: {integrity: sha512-kHxr2zZpYtdmrN1qDjrrX/Z1rR1kG8Dx+gkpK1G4eXmvXswmcE1hTWBWYUzlraYw1/yZp6YuDY77YtvbN0dmDA==}
+     engines: {node: '>=8'}
+@@ -2334,6 +2764,13 @@ packages:
+   stackback@0.0.2:
+     resolution: {integrity: sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw==}
+ 
++  standard-as-callback@2.1.0:
++    resolution: {integrity: sha512-qoRRSyROncaz1z0mvYqIE4lCd9p2R90i6GxW3uZv5ucSu8tU7B5HXUP1gG8pVZsYNVaXjk8ClXHPttLyxAL48A==}
++
++  statuses@2.0.2:
++    resolution: {integrity: sha512-DvEy55V3DB7uknRo+4iOGT5fP1slR8wQohVdknigZPMpMstaKJQWhwiYBACJE3Ul2pTnATihhBYnRhZQHGBiRw==}
++    engines: {node: '>= 0.8'}
++
+   std-env@3.10.0:
+     resolution: {integrity: sha512-5GS12FdOZNliM5mAOxFRg7Ir0pWz8MdpYm6AY6VPkGpbA7ZzmbzNcBJQ0GPvvyWgcY7QAhCgf9Uy89I03faLkg==}
+ 
+@@ -2341,6 +2778,10 @@ packages:
+     resolution: {integrity: sha512-eLoXW/DHyl62zxY4SCaIgnRhuMr6ri4juEYARS8E6sCEqzKpOiE521Ucofdx+KnDZl5xmvGYaaKCk5FEOxJCoQ==}
+     engines: {node: '>= 0.4'}
+ 
++  streamsearch@1.1.0:
++    resolution: {integrity: sha512-Mcc5wHehp9aXz1ax6bZUyY5afg9u2rv5cqQI3mRrYkGC8rW2hM02jWuwjtL++LS5qinSyhj2QfLyNsuc+VsExg==}
++    engines: {node: '>=10.0.0'}
++
+   streamx@2.28.0:
+     resolution: {integrity: sha512-1Yowhzjf0ivGMrTIkY9hav5TxobO9qIVqUE41fiCGMGgc3CLlf4MY+9AHmZqBWgDTue0fY9zWjYFVyf6Diuobw==}
+ 
+@@ -2393,6 +2834,18 @@ packages:
+   strip-literal@3.1.0:
+     resolution: {integrity: sha512-8r3mkIM/2+PpjHoOtiAW8Rg3jJLHaV7xPwG+YRGrv6FP0wwk/toTpATxWYOW0BKdWwl82VT2tFYi5DlROa0Mxg==}
+ 
++  strtok3@10.3.5:
++    resolution: {integrity: sha512-ki4hZQfh5rX0QDLLkOCj+h+CVNkqmp/CMf8v8kZpkNVK6jGQooMytqzLZYUVYIZcFZ6yDB70EfD8POcFXiF5oA==}
++    engines: {node: '>=18'}
++
++  superagent@10.3.0:
++    resolution: {integrity: sha512-B+4Ik7ROgVKrQsXTV0Jwp2u+PXYLSlqtDAhYnkkD+zn3yg8s/zjA2MeGayPoY/KICrbitwneDHrjSotxKL+0XQ==}
++    engines: {node: '>=14.18.0'}
++
++  supertest@7.2.2:
++    resolution: {integrity: sha512-oK8WG9diS3DlhdUkcFn4tkNIiIbBx9lI2ClF8K+b2/m8Eyv47LSawxUzZQSNKUrVb2KsqeTDCcjAAVPYaSLVTA==}
++    engines: {node: '>=14.18.0'}
++
+   supports-color@7.2.0:
+     resolution: {integrity: sha512-qpCAvRl9stuOHveKsn7HncJRvv501qIacKzQlO/+Lwxc9+0q2wLyv4Dfvt80/DPn2pqOBsJdDiogXGR9+OvwRw==}
+     engines: {node: '>=8'}
+@@ -2456,6 +2909,14 @@ packages:
+     resolution: {integrity: sha512-e0votIpp4Uo2AJYSzVHV6xCcawuiez3DzqDAbrTc3YxBkplN6e+dM13ZeIcZnDg/QpSuU2zfZ3rzwY8ukEnaXw==}
+     engines: {node: '>=14.14'}
+ 
++  toidentifier@1.0.1:
++    resolution: {integrity: sha512-o5sSPKEkg/DIQNmH43V0/uerLrpzVedkUh8tGNvaeXpfpuwjKenlSox/2O/BTlZUtEe+JG7s5YhEz608PlAHRA==}
++    engines: {node: '>=0.6'}
++
++  token-types@6.1.2:
++    resolution: {integrity: sha512-dRXchy+C0IgK8WPC6xvCHFRIWYUbqqdEIKPaKo/AcTUNzwLTK6AH7RjdLWsEZcAN/TBdtfUw3PYEgPr5VPr6ww==}
++    engines: {node: '>=14.16'}
++
+   ts-api-utils@2.5.0:
+     resolution: {integrity: sha512-OJ/ibxhPlqrMM0UiNHJ/0CKQkoKF243/AEmplt3qpRgkW8VG7IfOS41h7V8TjITqdByHzrjcS/2si+y4lIh8NA==}
+     engines: {node: '>=18.12'}
+@@ -2484,6 +2945,14 @@ packages:
+     resolution: {integrity: sha512-XleUoc9uwGXqjWwXaUTZAmzMcFZ5858QA2vvx1Ur5xIcixXIP+8LnFDgRplU30us6teqdlskFfu+ae4K79Ooew==}
+     engines: {node: '>= 0.8.0'}
+ 
++  type-is@1.6.18:
++    resolution: {integrity: sha512-TkRKr9sUTxEH8MdfuCSP7VizJyzRNMjj2J2do2Jr3Kym598JVdEksuzPQCnlFPW4ky9Q+iA+ma9BGm06XQBy8g==}
++    engines: {node: '>= 0.6'}
++
++  type-is@2.1.0:
++    resolution: {integrity: sha512-faYHw0anBbc/kWF3zFTEnxSFOAGUX9GFbOBthvDdLsIlEoWOFOtS0zgCiQYwIskL9iGXZL3kAXD8OoZ4GmMATA==}
++    engines: {node: '>= 18'}
++
+   typed-array-buffer@1.0.3:
+     resolution: {integrity: sha512-nAYYwfY3qnzX30IkA6AQZjVbtK6duGontcQm1WSG1MD94YLqK0515GNApXkoxKOWMusVssAHWLh9SeaoefYFGw==}
+     engines: {node: '>= 0.4'}
+@@ -2500,6 +2969,9 @@ packages:
+     resolution: {integrity: sha512-phPGCwqr2+Qo0fwniCE8e4pKnGu/yFb5nD5Y8bf0EEeiI5GklnACYA9GFy/DrAeRrKHXvHn+1SUsOWgJp6RO+g==}
+     engines: {node: '>= 0.4'}
+ 
++  typedarray@0.0.6:
++    resolution: {integrity: sha512-/aCDEGatGvZ2BIk+HmLf4ifCJFwvKFNb9/JeZPMulfgFracn9QFcAf5GO8B/mweUjSoblS5In0cWhqpfs/5PQA==}
++
+   typescript-eslint@8.67.0:
+     resolution: {integrity: sha512-S2udFs8tCKEKffuJ4TB1idGUZiXdCPGi3IPBGWXarbLQ5UPXORV8QEVzJ4gCRduURMb5EkpNCdjbk0eDIuI8Yg==}
+     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+@@ -2512,6 +2984,14 @@ packages:
+     engines: {node: '>=14.17'}
+     hasBin: true
+ 
++  uid@2.0.2:
++    resolution: {integrity: sha512-u3xV3X7uzvi5b1MncmZo3i2Aw222Zk1keqLA1YkHldREkAhAqi65wuPfe7lHx8H/Wzy+8CE7S7uS3jekIM5s8g==}
++    engines: {node: '>=8'}
++
++  uint8array-extras@1.5.0:
++    resolution: {integrity: sha512-rvKSBiC5zqCCiDZ9kAOszZcDvdAHwwIKJG33Ykj43OKcWsnmcBRL09YTU4nOeHZ8Y2a7l1MgTd08SBe9A8Qj6A==}
++    engines: {node: '>=18'}
++
+   unbox-primitive@1.1.0:
+     resolution: {integrity: sha512-nWJ91DjeOkej/TA8pXQ3myruKpKEYgqvpw9lz4OPHj/NWFNluYrjbz9j01CJ8yKQd2g4jFoOkINCTW2I5LEEyw==}
+     engines: {node: '>= 0.4'}
+@@ -2526,6 +3006,10 @@ packages:
+     resolution: {integrity: sha512-raqeBD6NQK4SkWhQzeYKd1KmIG6dllBOTt55Rmkt4HtI9mwdWtJljnrXjAFUBLTSN67HWrOIZ3EPF4kjUw80Bg==}
+     engines: {node: '>=14.0'}
+ 
++  unpipe@1.0.0:
++    resolution: {integrity: sha512-pjy2bYhSsufwWlKwPc+l3cN7+wuJlK6uz0YdJEOlQDbl6jo/YlPi4mb8agUkVC8BF7V8NuzeyPNqRksA3hztKQ==}
++    engines: {node: '>= 0.8'}
++
+   unrs-resolver@1.12.2:
+     resolution: {integrity: sha512-dmlRxBJJayXjqTwC+JtF1HhJmgf3ftQ3YejFcZrf4+KKtJv0qDsK1pjqaaVjG7wJ5NJ6UVP1OqRMQ71Z4C3rxQ==}
+ 
+@@ -2544,6 +3028,10 @@ packages:
+     resolution: {integrity: sha512-4kPkK3/XTQW9Hbm4CaqfICn+kY9LJtDVEOfgsRRra/+n2Ofg4NqzRFceAkxvQ/Ud/6BpHOPzj8cirqM7TzTN5Q==}
+     hasBin: true
+ 
++  vary@1.1.2:
++    resolution: {integrity: sha512-BNGbWLfd0eUPabhkXUVm0j8uuvREyTh5ovRa/dyow/BqAbZJyC+5fU+IzQOzmAKzYqYRAISoRhdQr3eIZ/PXqg==}
++    engines: {node: '>= 0.8'}
++
+   vite-node@3.2.4:
+     resolution: {integrity: sha512-EbKSKh+bh1E1IFxeO0pg1n4dvoOTt0UDiXMd/qn++r98+jPO1xtJilvXldeuQ8giIB5IkpjCgMleHMNEsGH6pg==}
+     engines: {node: ^18.0.0 || ^20.0.0 || >=22.0.0}
+@@ -2864,6 +3352,8 @@ snapshots:
+ 
+   '@balena/dockerignore@1.0.2': {}
+ 
++  '@borewit/text-codec@0.2.2': {}
++
+   '@emnapi/core@1.10.0':
+     dependencies:
+       '@emnapi/wasi-threads': 1.2.1
+@@ -3041,6 +3531,8 @@ snapshots:
+ 
+   '@humanwhocodes/retry@0.4.3': {}
+ 
++  '@ioredis/commands@1.10.0': {}
++
+   '@isaacs/cliui@8.0.2':
+     dependencies:
+       string-width: 5.1.2
+@@ -3054,6 +3546,8 @@ snapshots:
+ 
+   '@js-sdsl/ordered-map@4.4.2': {}
+ 
++  '@lukeed/csprng@1.1.0': {}
++
+   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
+     optional: true
+ 
+@@ -3064,6 +3558,57 @@ snapshots:
+       '@tybys/wasm-util': 0.10.3
+     optional: true
+ 
++  '@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)':
++    dependencies:
++      file-type: 21.3.4
++      iterare: 1.2.1
++      load-esm: 1.0.3
++      reflect-metadata: 0.2.2
++      rxjs: 7.8.2
++      tslib: 2.8.1
++      uid: 2.0.2
++    transitivePeerDependencies:
++      - supports-color
++
++  '@nestjs/core@11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/platform-express@11.2.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)':
++    dependencies:
++      '@nestjs/common': 11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)
++      fast-safe-stringify: 2.1.1
++      iterare: 1.2.1
++      path-to-regexp: 8.4.2
++      reflect-metadata: 0.2.2
++      rxjs: 7.8.2
++      tslib: 2.8.1
++      uid: 2.0.2
++    optionalDependencies:
++      '@nestjs/platform-express': 11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.2.1)
++
++  '@nestjs/platform-express@11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.2.1)':
++    dependencies:
++      '@nestjs/common': 11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)
++      '@nestjs/core': 11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/platform-express@11.2.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)
++      cors: 2.8.6
++      express: 5.2.1
++      multer: 2.2.0
++      path-to-regexp: 8.4.2
++      tslib: 2.8.1
++    transitivePeerDependencies:
++      - supports-color
++
++  '@nestjs/testing@11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.2.1)(@nestjs/platform-express@11.2.1)':
++    dependencies:
++      '@nestjs/common': 11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)
++      '@nestjs/core': 11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/platform-express@11.2.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)
++      tslib: 2.8.1
++    optionalDependencies:
++      '@nestjs/platform-express': 11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.2.1)
++
++  '@noble/hashes@1.8.0': {}
++
++  '@paralleldrive/cuid2@2.3.1':
++    dependencies:
++      '@noble/hashes': 1.8.0
++
+   '@pinojs/redact@0.4.0': {}
+ 
+   '@pkgjs/parseargs@0.11.0':
+@@ -3245,6 +3790,15 @@ snapshots:
+       - react-native-b4a
+       - supports-color
+ 
++  '@tokenizer/inflate@0.4.1':
++    dependencies:
++      debug: 4.4.3
++      token-types: 6.1.2
++    transitivePeerDependencies:
++      - supports-color
++
++  '@tokenizer/token@0.3.0': {}
++
+   '@turbo/darwin-64@2.10.11':
+     optional: true
+ 
+@@ -3268,11 +3822,22 @@ snapshots:
+       tslib: 2.8.1
+     optional: true
+ 
++  '@types/body-parser@1.19.6':
++    dependencies:
++      '@types/connect': 3.4.38
++      '@types/node': 22.20.1
++
+   '@types/chai@5.2.3':
+     dependencies:
+       '@types/deep-eql': 4.0.2
+       assertion-error: 2.0.1
+ 
++  '@types/connect@3.4.38':
++    dependencies:
++      '@types/node': 22.20.1
++
++  '@types/cookiejar@2.1.5': {}
++
+   '@types/deep-eql@4.0.2': {}
+ 
+   '@types/docker-modem@3.0.6':
+@@ -3288,10 +3853,27 @@ snapshots:
+ 
+   '@types/estree@1.0.9': {}
+ 
++  '@types/express-serve-static-core@5.1.3':
++    dependencies:
++      '@types/node': 22.20.1
++      '@types/qs': 6.15.1
++      '@types/range-parser': 1.2.7
++      '@types/send': 1.2.1
++
++  '@types/express@5.0.6':
++    dependencies:
++      '@types/body-parser': 1.19.6
++      '@types/express-serve-static-core': 5.1.3
++      '@types/serve-static': 2.2.0
++
++  '@types/http-errors@2.0.5': {}
++
+   '@types/json-schema@7.0.15': {}
+ 
+   '@types/json5@0.0.29': {}
+ 
++  '@types/methods@1.1.4': {}
++
+   '@types/node@18.19.130':
+     dependencies:
+       undici-types: 5.26.5
+@@ -3300,6 +3882,19 @@ snapshots:
+     dependencies:
+       undici-types: 6.21.0
+ 
++  '@types/qs@6.15.1': {}
++
++  '@types/range-parser@1.2.7': {}
++
++  '@types/send@1.2.1':
++    dependencies:
++      '@types/node': 22.20.1
++
++  '@types/serve-static@2.2.0':
++    dependencies:
++      '@types/http-errors': 2.0.5
++      '@types/node': 22.20.1
++
+   '@types/ssh2-streams@0.1.13':
+     dependencies:
+       '@types/node': 22.20.1
+@@ -3313,6 +3908,18 @@ snapshots:
+     dependencies:
+       '@types/node': 18.19.130
+ 
++  '@types/superagent@8.1.11':
++    dependencies:
++      '@types/cookiejar': 2.1.5
++      '@types/methods': 1.1.4
++      '@types/node': 22.20.1
++      form-data: 4.0.6
++
++  '@types/supertest@7.2.1':
++    dependencies:
++      '@types/methods': 1.1.4
++      '@types/superagent': 8.1.11
++
+   '@typescript-eslint/eslint-plugin@8.67.0(@typescript-eslint/parser@8.67.0(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3))(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3)':
+     dependencies:
+       '@eslint-community/regexpp': 4.12.2
+@@ -3520,6 +4127,11 @@ snapshots:
+     dependencies:
+       event-target-shim: 5.0.1
+ 
++  accepts@2.0.0:
++    dependencies:
++      mime-types: 3.0.2
++      negotiator: 1.0.0
++
+   acorn-jsx@5.3.2(acorn@8.18.0):
+     dependencies:
+       acorn: 8.18.0
+@@ -3543,6 +4155,8 @@ snapshots:
+ 
+   ansi-styles@6.2.3: {}
+ 
++  append-field@1.0.0: {}
++
+   archiver-utils@5.0.2:
+     dependencies:
+       glob: 10.5.0
+@@ -3619,6 +4233,8 @@ snapshots:
+       get-intrinsic: 1.3.0
+       is-array-buffer: 3.0.5
+ 
++  asap@2.0.6: {}
++
+   asn1@0.2.6:
+     dependencies:
+       safer-buffer: 2.1.2
+@@ -3631,6 +4247,8 @@ snapshots:
+ 
+   async@3.2.6: {}
+ 
++  asynckit@0.4.0: {}
++
+   atomic-sleep@1.0.0: {}
+ 
+   available-typed-arrays@1.0.7:
+@@ -3684,6 +4302,20 @@ snapshots:
+       inherits: 2.0.4
+       readable-stream: 3.6.2
+ 
++  body-parser@2.3.0:
++    dependencies:
++      bytes: 3.1.2
++      content-type: 2.1.0
++      debug: 4.4.3
++      http-errors: 2.0.1
++      iconv-lite: 0.7.3
++      on-finished: 2.4.1
++      qs: 6.15.3
++      raw-body: 3.0.2
++      type-is: 2.1.0
++    transitivePeerDependencies:
++      - supports-color
++
+   bowser@2.14.1: {}
+ 
+   brace-expansion@1.1.18:
+@@ -3701,6 +4333,8 @@ snapshots:
+ 
+   buffer-crc32@1.0.0: {}
+ 
++  buffer-from@1.1.2: {}
++
+   buffer@5.7.1:
+     dependencies:
+       base64-js: 1.5.1
+@@ -3714,8 +4348,14 @@ snapshots:
+   buildcheck@0.0.7:
+     optional: true
+ 
++  busboy@1.6.0:
++    dependencies:
++      streamsearch: 1.1.0
++
+   byline@5.0.0: {}
+ 
++  bytes@3.1.2: {}
++
+   c12@3.1.0:
+     dependencies:
+       chokidar: 4.0.3
+@@ -3785,6 +4425,8 @@ snapshots:
+       strip-ansi: 6.0.1
+       wrap-ansi: 7.0.0
+ 
++  cluster-key-slot@1.1.1: {}
++
+   color-convert@2.0.1:
+     dependencies:
+       color-name: 1.1.4
+@@ -3793,6 +4435,12 @@ snapshots:
+ 
+   colorette@2.0.20: {}
+ 
++  combined-stream@1.0.8:
++    dependencies:
++      delayed-stream: 1.0.0
++
++  component-emitter@1.3.1: {}
++
+   compress-commons@6.0.2:
+     dependencies:
+       crc-32: 1.2.2
+@@ -3803,12 +4451,36 @@ snapshots:
+ 
+   concat-map@0.0.1: {}
+ 
++  concat-stream@2.0.0:
++    dependencies:
++      buffer-from: 1.1.2
++      inherits: 2.0.4
++      readable-stream: 3.6.2
++      typedarray: 0.0.6
++
+   confbox@0.2.4: {}
+ 
+   consola@3.4.2: {}
+ 
++  content-disposition@1.1.0: {}
++
++  content-type@1.0.5: {}
++
++  content-type@2.1.0: {}
++
++  cookie-signature@1.2.2: {}
++
++  cookie@0.7.2: {}
++
++  cookiejar@2.1.4: {}
++
+   core-util-is@1.0.3: {}
+ 
++  cors@2.8.6:
++    dependencies:
++      object-assign: 4.1.1
++      vary: 1.1.2
++
+   cpu-features@0.0.10:
+     dependencies:
+       buildcheck: 0.0.7
+@@ -3876,8 +4548,19 @@ snapshots:
+ 
+   defu@6.1.7: {}
+ 
++  delayed-stream@1.0.0: {}
++
++  denque@2.1.0: {}
++
++  depd@2.0.0: {}
++
+   destr@2.0.5: {}
+ 
++  dezalgo@1.0.4:
++    dependencies:
++      asap: 2.0.6
++      wrappy: 1.0.2
++
+   docker-compose@0.24.8:
+     dependencies:
+       yaml: 2.9.0
+@@ -3926,6 +4609,8 @@ snapshots:
+ 
+   eastasianwidth@0.2.0: {}
+ 
++  ee-first@1.1.1: {}
++
+   effect@3.21.0:
+     dependencies:
+       '@standard-schema/spec': 1.1.0
+@@ -3937,6 +4622,8 @@ snapshots:
+ 
+   empathic@2.0.0: {}
+ 
++  encodeurl@2.0.0: {}
++
+   end-of-stream@1.4.5:
+     dependencies:
+       once: 1.4.0
+@@ -4066,6 +4753,8 @@ snapshots:
+ 
+   escalade@3.2.0: {}
+ 
++  escape-html@1.0.3: {}
++
+   escape-string-regexp@4.0.0: {}
+ 
+   eslint-import-context@0.1.9(unrs-resolver@1.12.2):
+@@ -4212,6 +4901,8 @@ snapshots:
+ 
+   esutils@2.0.3: {}
+ 
++  etag@1.8.1: {}
++
+   event-target-shim@5.0.1: {}
+ 
+   events-universal@1.0.1:
+@@ -4224,6 +4915,39 @@ snapshots:
+ 
+   expect-type@1.4.0: {}
+ 
++  express@5.2.1:
++    dependencies:
++      accepts: 2.0.0
++      body-parser: 2.3.0
++      content-disposition: 1.1.0
++      content-type: 1.0.5
++      cookie: 0.7.2
++      cookie-signature: 1.2.2
++      debug: 4.4.3
++      depd: 2.0.0
++      encodeurl: 2.0.0
++      escape-html: 1.0.3
++      etag: 1.8.1
++      finalhandler: 2.1.1
++      fresh: 2.0.0
++      http-errors: 2.0.1
++      merge-descriptors: 2.0.0
++      mime-types: 3.0.2
++      on-finished: 2.4.1
++      once: 1.4.0
++      parseurl: 1.3.3
++      proxy-addr: 2.0.7
++      qs: 6.15.3
++      range-parser: 1.3.0
++      router: 2.2.0
++      send: 1.2.1
++      serve-static: 2.2.1
++      statuses: 2.0.2
++      type-is: 2.1.0
++      vary: 1.1.2
++    transitivePeerDependencies:
++      - supports-color
++
+   exsolve@1.1.1: {}
+ 
+   fast-check@3.23.2:
+@@ -4250,6 +4974,26 @@ snapshots:
+     dependencies:
+       flat-cache: 4.0.1
+ 
++  file-type@21.3.4:
++    dependencies:
++      '@tokenizer/inflate': 0.4.1
++      strtok3: 10.3.5
++      token-types: 6.1.2
++      uint8array-extras: 1.5.0
++    transitivePeerDependencies:
++      - supports-color
++
++  finalhandler@2.1.1:
++    dependencies:
++      debug: 4.4.3
++      encodeurl: 2.0.0
++      escape-html: 1.0.3
++      on-finished: 2.4.1
++      parseurl: 1.3.3
++      statuses: 2.0.2
++    transitivePeerDependencies:
++      - supports-color
++
+   find-up@5.0.0:
+     dependencies:
+       locate-path: 6.0.0
+@@ -4271,6 +5015,24 @@ snapshots:
+       cross-spawn: 7.0.6
+       signal-exit: 4.1.0
+ 
++  form-data@4.0.6:
++    dependencies:
++      asynckit: 0.4.0
++      combined-stream: 1.0.8
++      es-set-tostringtag: 2.1.0
++      hasown: 2.0.4
++      mime-types: 2.1.35
++
++  formidable@3.5.4:
++    dependencies:
++      '@paralleldrive/cuid2': 2.3.1
++      dezalgo: 1.0.4
++      once: 1.4.0
++
++  forwarded@0.2.0: {}
++
++  fresh@2.0.0: {}
++
+   fs-constants@1.0.0: {}
+ 
+   fsevents@2.3.3:
+@@ -4385,6 +5147,18 @@ snapshots:
+ 
+   help-me@5.0.0: {}
+ 
++  http-errors@2.0.1:
++    dependencies:
++      depd: 2.0.0
++      inherits: 2.0.4
++      setprototypeof: 1.2.0
++      statuses: 2.0.2
++      toidentifier: 1.0.1
++
++  iconv-lite@0.7.3:
++    dependencies:
++      safer-buffer: 2.1.2
++
+   ieee754@1.2.1: {}
+ 
+   ignore@5.3.2: {}
+@@ -4406,6 +5180,20 @@ snapshots:
+       hasown: 2.0.4
+       side-channel: 1.1.1
+ 
++  ioredis@5.11.1:
++    dependencies:
++      '@ioredis/commands': 1.10.0
++      cluster-key-slot: 1.1.1
++      debug: 4.4.3
++      denque: 2.1.0
++      redis-errors: 1.2.0
++      redis-parser: 3.0.0
++      standard-as-callback: 2.1.0
++    transitivePeerDependencies:
++      - supports-color
++
++  ipaddr.js@1.9.1: {}
++
+   is-array-buffer@3.0.5:
+     dependencies:
+       call-bind: 1.0.9
+@@ -4483,6 +5271,8 @@ snapshots:
+       call-bound: 1.0.4
+       has-tostringtag: 1.0.2
+ 
++  is-promise@4.0.0: {}
++
+   is-regex@1.2.1:
+     dependencies:
+       call-bound: 1.0.4
+@@ -4530,6 +5320,8 @@ snapshots:
+ 
+   isexe@2.0.0: {}
+ 
++  iterare@1.2.1: {}
++
+   jackspeak@3.4.3:
+     dependencies:
+       '@isaacs/cliui': 8.0.2
+@@ -4569,6 +5361,8 @@ snapshots:
+       prelude-ls: 1.2.1
+       type-check: 0.4.0
+ 
++  load-esm@1.0.3: {}
++
+   locate-path@6.0.0:
+     dependencies:
+       p-locate: 5.0.0
+@@ -4591,6 +5385,28 @@ snapshots:
+ 
+   math-intrinsics@1.1.0: {}
+ 
++  media-typer@0.3.0: {}
++
++  media-typer@1.1.1: {}
++
++  merge-descriptors@2.0.0: {}
++
++  methods@1.1.2: {}
++
++  mime-db@1.52.0: {}
++
++  mime-db@1.54.0: {}
++
++  mime-types@2.1.35:
++    dependencies:
++      mime-db: 1.52.0
++
++  mime-types@3.0.2:
++    dependencies:
++      mime-db: 1.54.0
++
++  mime@2.6.0: {}
++
+   minimatch@10.2.6:
+     dependencies:
+       brace-expansion: 5.0.9
+@@ -4617,6 +5433,13 @@ snapshots:
+ 
+   ms@2.1.3: {}
+ 
++  multer@2.2.0:
++    dependencies:
++      append-field: 1.0.0
++      busboy: 1.6.0
++      concat-stream: 2.0.0
++      type-is: 1.6.18
++
+   nan@2.28.0:
+     optional: true
+ 
+@@ -4626,6 +5449,8 @@ snapshots:
+ 
+   natural-compare@1.4.0: {}
+ 
++  negotiator@1.0.0: {}
++
+   node-exports-info@1.6.2:
+     dependencies:
+       array.prototype.flatmap: 1.3.3
+@@ -4643,6 +5468,8 @@ snapshots:
+       pathe: 2.0.3
+       tinyexec: 1.3.0
+ 
++  object-assign@4.1.1: {}
++
+   object-inspect@1.13.4: {}
+ 
+   object-keys@1.1.1: {}
+@@ -4687,6 +5514,10 @@ snapshots:
+ 
+   on-exit-leak-free@2.1.2: {}
+ 
++  on-finished@2.4.1:
++    dependencies:
++      ee-first: 1.1.1
++
+   once@1.4.0:
+     dependencies:
+       wrappy: 1.0.2
+@@ -4721,6 +5552,8 @@ snapshots:
+     dependencies:
+       callsites: 3.1.0
+ 
++  parseurl@1.3.3: {}
++
+   path-exists@4.0.0: {}
+ 
+   path-key@3.1.1: {}
+@@ -4732,6 +5565,8 @@ snapshots:
+       lru-cache: 10.4.3
+       minipass: 7.1.3
+ 
++  path-to-regexp@8.4.2: {}
++
+   pathe@2.0.3: {}
+ 
+   pathval@2.0.1: {}
+@@ -4839,6 +5674,11 @@ snapshots:
+       '@types/node': 22.20.1
+       long: 5.3.2
+ 
++  proxy-addr@2.0.7:
++    dependencies:
++      forwarded: 0.2.0
++      ipaddr.js: 1.9.1
++
+   pump@3.0.4:
+     dependencies:
+       end-of-stream: 1.4.5
+@@ -4848,8 +5688,22 @@ snapshots:
+ 
+   pure-rand@6.1.0: {}
+ 
++  qs@6.15.3:
++    dependencies:
++      es-define-property: 1.0.1
++      side-channel: 1.1.1
++
+   quick-format-unescaped@4.0.4: {}
+ 
++  range-parser@1.3.0: {}
++
++  raw-body@3.0.2:
++    dependencies:
++      bytes: 3.1.2
++      http-errors: 2.0.1
++      iconv-lite: 0.7.3
++      unpipe: 1.0.0
++
+   rc9@2.1.2:
+     dependencies:
+       defu: 6.1.7
+@@ -4887,6 +5741,14 @@ snapshots:
+ 
+   real-require@0.2.0: {}
+ 
++  redis-errors@1.2.0: {}
++
++  redis-parser@3.0.0:
++    dependencies:
++      redis-errors: 1.2.0
++
++  reflect-metadata@0.2.2: {}
++
+   reflect.getprototypeof@1.0.10:
+     dependencies:
+       call-bind: 1.0.9
+@@ -4956,6 +5818,20 @@ snapshots:
+       '@rollup/rollup-win32-x64-msvc': 4.62.4
+       fsevents: 2.3.3
+ 
++  router@2.2.0:
++    dependencies:
++      debug: 4.4.3
++      depd: 2.0.0
++      is-promise: 4.0.0
++      parseurl: 1.3.3
++      path-to-regexp: 8.4.2
++    transitivePeerDependencies:
++      - supports-color
++
++  rxjs@7.8.2:
++    dependencies:
++      tslib: 2.8.1
++
+   safe-array-concat@1.1.4:
+     dependencies:
+       call-bind: 1.0.9
+@@ -4989,6 +5865,31 @@ snapshots:
+ 
+   semver@7.8.5: {}
+ 
++  send@1.2.1:
++    dependencies:
++      debug: 4.4.3
++      encodeurl: 2.0.0
++      escape-html: 1.0.3
++      etag: 1.8.1
++      fresh: 2.0.0
++      http-errors: 2.0.1
++      mime-types: 3.0.2
++      ms: 2.1.3
++      on-finished: 2.4.1
++      range-parser: 1.3.0
++      statuses: 2.0.2
++    transitivePeerDependencies:
++      - supports-color
++
++  serve-static@2.2.1:
++    dependencies:
++      encodeurl: 2.0.0
++      escape-html: 1.0.3
++      parseurl: 1.3.3
++      send: 1.2.1
++    transitivePeerDependencies:
++      - supports-color
++
+   set-function-length@1.2.2:
+     dependencies:
+       define-data-property: 1.1.4
+@@ -5011,6 +5912,8 @@ snapshots:
+       es-errors: 1.3.0
+       es-object-atoms: 1.1.2
+ 
++  setprototypeof@1.2.0: {}
++
+   shebang-command@2.0.0:
+     dependencies:
+       shebang-regex: 3.0.0
+@@ -5078,6 +5981,10 @@ snapshots:
+ 
+   stackback@0.0.2: {}
+ 
++  standard-as-callback@2.1.0: {}
++
++  statuses@2.0.2: {}
++
+   std-env@3.10.0: {}
+ 
+   stop-iteration-iterator@1.1.0:
+@@ -5085,6 +5992,8 @@ snapshots:
+       es-errors: 1.3.0
+       internal-slot: 1.1.0
+ 
++  streamsearch@1.1.0: {}
++
+   streamx@2.28.0:
+     dependencies:
+       events-universal: 1.0.1
+@@ -5156,6 +6065,32 @@ snapshots:
+     dependencies:
+       js-tokens: 9.0.1
+ 
++  strtok3@10.3.5:
++    dependencies:
++      '@tokenizer/token': 0.3.0
++
++  superagent@10.3.0:
++    dependencies:
++      component-emitter: 1.3.1
++      cookiejar: 2.1.4
++      debug: 4.4.3
++      fast-safe-stringify: 2.1.1
++      form-data: 4.0.6
++      formidable: 3.5.4
++      methods: 1.1.2
++      mime: 2.6.0
++      qs: 6.15.3
++    transitivePeerDependencies:
++      - supports-color
++
++  supertest@7.2.2:
++    dependencies:
++      cookie-signature: 1.2.2
++      methods: 1.1.2
++      superagent: 10.3.0
++    transitivePeerDependencies:
++      - supports-color
++
+   supports-color@7.2.0:
+     dependencies:
+       has-flag: 4.0.0
+@@ -5259,6 +6194,14 @@ snapshots:
+ 
+   tmp@0.2.7: {}
+ 
++  toidentifier@1.0.1: {}
++
++  token-types@6.1.2:
++    dependencies:
++      '@borewit/text-codec': 0.2.2
++      '@tokenizer/token': 0.3.0
++      ieee754: 1.2.1
++
+   ts-api-utils@2.5.0(typescript@5.9.3):
+     dependencies:
+       typescript: 5.9.3
+@@ -5293,6 +6236,17 @@ snapshots:
+     dependencies:
+       prelude-ls: 1.2.1
+ 
++  type-is@1.6.18:
++    dependencies:
++      media-typer: 0.3.0
++      mime-types: 2.1.35
++
++  type-is@2.1.0:
++    dependencies:
++      content-type: 2.1.0
++      media-typer: 1.1.1
++      mime-types: 3.0.2
++
+   typed-array-buffer@1.0.3:
+     dependencies:
+       call-bound: 1.0.4
+@@ -5326,6 +6280,8 @@ snapshots:
+       possible-typed-array-names: 1.1.0
+       reflect.getprototypeof: 1.0.10
+ 
++  typedarray@0.0.6: {}
++
+   typescript-eslint@8.67.0(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3):
+     dependencies:
+       '@typescript-eslint/eslint-plugin': 8.67.0(@typescript-eslint/parser@8.67.0(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3))(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3)
+@@ -5339,6 +6295,12 @@ snapshots:
+ 
+   typescript@5.9.3: {}
+ 
++  uid@2.0.2:
++    dependencies:
++      '@lukeed/csprng': 1.1.0
++
++  uint8array-extras@1.5.0: {}
++
+   unbox-primitive@1.1.0:
+     dependencies:
+       call-bound: 1.0.4
+@@ -5354,6 +6316,8 @@ snapshots:
+     dependencies:
+       '@fastify/busboy': 2.1.1
+ 
++  unpipe@1.0.0: {}
++
+   unrs-resolver@1.12.2:
+     dependencies:
+       napi-postinstall: 0.3.4
+@@ -5391,6 +6355,8 @@ snapshots:
+ 
+   uuidv7@1.2.1: {}
+ 
++  vary@1.1.2: {}
++
+   vite-node@3.2.4(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0):
+     dependencies:
+       cac: 6.7.14

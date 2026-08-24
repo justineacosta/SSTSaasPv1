@@ -1,0 +1,328 @@
+# Review package: 8bf2173..HEAD
+
+## Commits
+d282998 security(db): close the findUniqueOrThrow oracle for real, fix a false invariant
+
+## Files changed
+ .claude/security/tenant-isolation.md               | 13 ++++--
+ packages/db/src/tenant-client.integration.spec.ts  | 49 +++++++++++++++-------
+ packages/db/src/tenant-client.ts                   | 44 ++++++++++++-------
+ packages/db/src/tenant-scope.ts                    | 14 +++++++
+ .../db/src/tenant-transaction.integration.spec.ts  | 44 +++++++++++--------
+ 5 files changed, 113 insertions(+), 51 deletions(-)
+
+## Diff
+diff --git a/.claude/security/tenant-isolation.md b/.claude/security/tenant-isolation.md
+index d99c4f6..011db0f 100644
+--- a/.claude/security/tenant-isolation.md
++++ b/.claude/security/tenant-isolation.md
+@@ -101,24 +101,29 @@ theoretical one: it shipped once during Task 6, silently leaving every caller of
+ `withTenantTransaction` protected by layer 2 alone. See
+ `packages/db/src/tenant-transaction.integration.spec.ts`, and its `tenant-transaction.ts`
+ file-level comment, for the fix and the regression test.
+ 
+ This catches what layer 1 cannot, most importantly relation traversal and
+ referential-integrity cascades (the caveat above): hand-written SQL, raw queries for
+ optimised analytics, future ORM changes, and mistakes in the extension itself. Two
+ independent mechanisms must both be wrong for a leak to occur — proven together, not just
+ individually, by `tenant-transaction.integration.spec.ts`'s nested-read and nested-write
+ cases. RI cascades are a **third** category layer 2 cannot catch either — they run inside
+-Postgres's constraint machinery, below RLS — which is why every FK into a tenant-owned
+-table is `RESTRICT` rather than `CASCADE` (`Membership.userId` was the one exception,
+-found live in review and fixed; see `packages/db/prisma/schema.prisma`'s relation
+-comments for the reasoning per FK).
++Postgres's constraint machinery, below RLS. The rule this drives, checked against
++`pg_constraint` directly rather than assumed: **no FK into a tenant-owned table from a
++non-tenant-scoped parent is `CASCADE`** (`Membership.userId` was the one violation, found
++live in review and fixed to `RESTRICT`). `Membership.organizationId` and
++`Invitation.organizationId` *are* `CASCADE` — that's fine, not an exception to track:
++both originate at `Organization`, the tenant root itself, so the cascade can only ever
++stay inside the one tenant being deleted, layer 1 already scopes `organization.delete` to
++the caller's own `id`, and `sentinel_app` holds no `DELETE` on `Organization` at all — see
++`packages/db/prisma/schema.prisma`'s relation comments for the reasoning per FK.
+ 
+ ### Layer 3 — Response serialisation
+ 
+ Responses are built from explicit DTOs, never from raw Prisma models. A relation
+ accidentally included cannot leak, because the serialiser only emits declared fields. This
+ also prevents the subtler leak of internal fields — fingerprints, storage keys, internal
+ IDs of other tenants' referenced rows.
+ 
+ ## 3. Isolation beyond the REST API
+ 
+diff --git a/packages/db/src/tenant-client.integration.spec.ts b/packages/db/src/tenant-client.integration.spec.ts
+index 7ebe831..1ee81a9 100644
+--- a/packages/db/src/tenant-client.integration.spec.ts
++++ b/packages/db/src/tenant-client.integration.spec.ts
+@@ -236,33 +236,50 @@ describe('select/omit do not defeat the scope check (review round 3)', () => {
+     const db = createTenantClient(root, { organizationId: orgA });
+     const row = await db.membership.findUnique({
+       where: { id: membershipB },
+       select: { id: true, status: true },
+     });
+     expect(row).toBeNull();
+   });
+ });
+ 
+ describe('findUniqueOrThrow is not an existence oracle across tenants (review round 3)', () => {
+-  it('raises the same error class and code for a cross-tenant row as for one that does not exist', async () => {
++  it('raises byte-identical message and meta for a cross-tenant row as for one that does not exist', async () => {
++    // Round-3 re-review: class and code matching is not enough. Where RLS is
++    // absent (the unscoped client, migrations, seeds, the future
++    // platform-admin module), a hand-constructed message/meta would still be
++    // distinguishable from Prisma's own. This deep-equals message and meta
++    // against a genuine miss captured live in this same test run, rather
++    // than a hardcoded string — so it also catches drift if Prisma's own
++    // wording ever changes, instead of silently rotting.
++    //
++    // Both attempts are routed through the SAME call site (this one
++    // function) deliberately: Prisma's "Invalid `...` invocation" message
++    // embeds the caller's own file/line/column, captured at the point
++    // `findUniqueOrThrow` was invoked — not anything about the target row.
++    // Two calls written on two different lines in this test would differ by
++    // that location text alone, which would be a false positive for "the
++    // oracle still leaks" (it wouldn't — a single real call site in
++    // application code always reports its own location, never the target
++    // row's tenant). Funnelling both through one function is what makes this
++    // a fair comparison of the same call site's two possible outcomes.
+     const db = createTenantClient(root, { organizationId: orgA });
++    const attempt = async (id: string): Promise<Prisma.PrismaClientKnownRequestError | undefined> => {
++      try {
++        await db.membership.findUniqueOrThrow({ where: { id } });
++        return undefined;
++      } catch (error) {
++        return error as Prisma.PrismaClientKnownRequestError;
++      }
++    };
+ 
+-    let crossTenantError: unknown;
+-    try {
+-      await db.membership.findUniqueOrThrow({ where: { id: membershipB } });
+-    } catch (error) {
+-      crossTenantError = error;
+-    }
+-
+-    let genuineMissError: unknown;
+-    try {
+-      await db.membership.findUniqueOrThrow({ where: { id: newId('mbr') } });
+-    } catch (error) {
+-      genuineMissError = error;
+-    }
++    const crossTenantError = await attempt(membershipB);
++    const genuineMissError = await attempt(newId('mbr'));
+ 
+     expect(crossTenantError).toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
+     expect(genuineMissError).toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
+-    expect((crossTenantError as Prisma.PrismaClientKnownRequestError).code).toBe('P2025');
+-    expect((genuineMissError as Prisma.PrismaClientKnownRequestError).code).toBe('P2025');
++    expect(crossTenantError?.code).toBe('P2025');
++    expect(crossTenantError?.code).toBe(genuineMissError?.code);
++    expect(crossTenantError?.message).toBe(genuineMissError?.message);
++    expect(crossTenantError?.meta).toEqual(genuineMissError?.meta);
+   });
+ });
+diff --git a/packages/db/src/tenant-client.ts b/packages/db/src/tenant-client.ts
+index b00e80a..e2310d5 100644
+--- a/packages/db/src/tenant-client.ts
++++ b/packages/db/src/tenant-client.ts
+@@ -1,17 +1,28 @@
+-import { Prisma, type PrismaClient } from './unscoped.js';
++import type { PrismaClient } from './unscoped.js';
+ import { MissingTenantContextError } from './errors.js';
+ import type { TenantContext } from './tenant-context.js';
+ import { decideScope } from './tenant-scope.js';
+ 
+ export type TenantPrismaClient = PrismaClient;
+ 
++/**
++ * A `where` value guaranteed to match nothing, for every tenant-owned model
++ * and the tenant root — every one of them carries a plain `id String @id`,
++ * so `{ id: NEVER_MATCHES_ID }` is always a structurally valid
++ * `WhereUniqueInput`, regardless of what the caller's own `where` looked
++ * like (a compound unique key included). Used to re-run `findUniqueOrThrow`
++ * so Prisma's own engine raises its own not-found error — see the
++ * `notFoundIsThrow` branch below for why that matters.
++ */
++const NEVER_MATCHES_ID = '00000000000000000000000000-tenant-scope-miss';
++
+ /**
+  * Binds a Prisma client to one organisation.
+  *
+  * Handlers only ever receive this client. It injects the tenant predicate
+  * into every top-level read and write on tenant-owned models and the tenant
+  * root, and throws if no organisation is present, so a handler cannot query
+  * another tenant's rows even if its author forgets to filter. See ADR-0006
+  * and security/tenant-isolation.md §2.
+  *
+  * LIMITATION, BY DESIGN: this only scopes the *top-level* operation. Prisma's
+@@ -70,34 +81,39 @@ export function createTenantClient(
+               const row = result as Record<string, unknown>;
+               if (row[plan.checkField] === plan.expected) {
+                 // `select`/`omit` may have been widened purely so the check
+                 // above had a value to read (tenant-scope.ts's
+                 // adjustProjectionForCheck); strip it back out so the caller
+                 // gets exactly the shape it asked for, not an extra field.
+                 if (plan.stripCheckField) delete row[plan.checkField];
+                 return row;
+               }
+               if (plan.notFoundIsThrow) {
+-                // Raises Prisma's own not-found shape, not
+-                // MissingTenantContextError: findUniqueOrThrow's contract is
+-                // "throws P2025 when nothing matches", and a caller catching
++                // Re-runs the SAME operation (still via `query`, so still on
++                // the caller's own connection/transaction) with a where
++                // guaranteed to match nothing, so Prisma's own engine raises
++                // its own not-found error — byte-identical message and meta
++                // to a genuine miss, on every connection, including where
++                // RLS isn't engaged (migrations, seeds, the future
++                // platform-admin module). findUniqueOrThrow's contract is
++                // "throws P2025 when nothing matches"; a caller catching
+                 // that specific error to distinguish "not found" from other
+-                // failures must see the same class and code whether the row
++                // failures must see the exact same failure whether the row
+                 // genuinely doesn't exist or simply belongs to another
+-                // tenant. A different error here would make the *response*
+-                // itself an existence oracle — confirming another tenant's
+-                // row is there by the shape of the failure alone, even
+-                // though its contents never leak.
+-                throw new Prisma.PrismaClientKnownRequestError(`No ${model ?? 'record'} found`, {
+-                  code: 'P2025',
+-                  clientVersion: Prisma.prismaVersion.client,
+-                  meta: { cause: `No ${model ?? 'record'} found` },
+-                });
++                // tenant, or the *shape of the error itself* becomes an
++                // oracle confirming another tenant's row exists. A
++                // hand-constructed error would drift the moment Prisma's own
++                // wording changes across versions; this can't drift, because
++                // it comes from Prisma itself, not from a copy of its
++                // wording — see tenant-client.integration.spec.ts, which
++                // asserts message and meta against a genuine miss captured
++                // at test run time rather than a hardcoded string.
++                return query({ where: { id: NEVER_MATCHES_ID } });
+               }
+               return null;
+             }
+           }
+         },
+       },
+     },
+   }) as unknown as TenantPrismaClient;
+ }
+diff --git a/packages/db/src/tenant-scope.ts b/packages/db/src/tenant-scope.ts
+index 2450215..051b136 100644
+--- a/packages/db/src/tenant-scope.ts
++++ b/packages/db/src/tenant-scope.ts
+@@ -96,20 +96,34 @@ function hasOwnScopeContext(organizationId: string | null | undefined): organiza
+  * exactly what CLAUDE.md's N+1 and DTO discipline pushes callers toward, so
+  * this had to be handled rather than documented as a limitation.
+  *
+  * Widens `select` to include `checkField` (if the caller didn't already ask
+  * for it) or drops `checkField` from `omit` (if the caller excluded it), so
+  * the row always carries what the check needs. `select` and `omit` are
+  * mutually exclusive at the same level in Prisma, so at most one branch below
+  * ever applies. The caller must then strip `checkField` back out of the
+  * result when `stripCheckField` is true, so the shape returned still matches
+  * exactly what was asked for.
++ *
++ * KNOWN GAP, deliberately not fixed (round 3 re-review): a client-level omit
++ * — `new PrismaClient({ omit: { membership: { organizationId: true } } })`,
++ * as opposed to a per-call `omit` in `args` — reaches this function with
++ * `args.omit` still `undefined`, because Prisma applies client-level omit
++ * after the extension pipeline, not before. The widening above never fires,
++ * so `checkField` comes back `undefined` from every affected `findUnique`,
++ * the check in tenant-client.ts's `run-and-check` case never matches, and
++ * every owned row is discarded as not found. This fails closed — no leak,
++ * just a false negative — and nothing in this codebase constructs a client
++ * this way. Not fixed here because a per-call `args.omit` and a client-level
++ * one are indistinguishable from inside `$allOperations`; there is no
++ * argument available to detect it from. Task 14 is carrying a guard against
++ * ever constructing a client with a global `omit` on a scope column.
+  */
+ function adjustProjectionForCheck(
+   args: unknown,
+   keyField: string,
+ ): { args: unknown; stripCheckField: boolean } {
+   const typed = args as { select?: Record<string, unknown>; omit?: Record<string, unknown> };
+ 
+   if (typed.select !== undefined) {
+     if (typed.select[keyField]) return { args, stripCheckField: false };
+     return {
+diff --git a/packages/db/src/tenant-transaction.integration.spec.ts b/packages/db/src/tenant-transaction.integration.spec.ts
+index 702cf10..9f835c8 100644
+--- a/packages/db/src/tenant-transaction.integration.spec.ts
++++ b/packages/db/src/tenant-transaction.integration.spec.ts
+@@ -151,47 +151,57 @@ describe('select/omit and the findUniqueOrThrow oracle, over the real applicatio
+     await withTenantTransaction(app, orgA, async (tx) => {
+       const row = await tx.membership.findUnique({
+         where: { id: membershipSharedA },
+         select: { id: true, status: true },
+       });
+       expect(row).toEqual({ id: membershipSharedA, status: 'ACTIVE' });
+       expect(row).not.toHaveProperty('organizationId');
+     });
+   });
+ 
+-  it('findUniqueOrThrow raises the same error on the sentinel_app connection too', async () => {
++  it('findUniqueOrThrow raises byte-identical message and meta on the sentinel_app connection too', async () => {
+     // Verification item 3: the oracle fix must hold on both connections —
+     // the superuser one (tenant-client.integration.spec.ts), where only
+     // layer 1's own check produces the error, and this one, where RLS would
+     // otherwise have made the two cases look identical for a different
+     // reason (the fetch returns nothing and Prisma's own P2025 fires first).
+     // Proving it here confirms layer 1's guarantee holds independently of
+-    // whether RLS happens to be engaged.
++    // whether RLS happens to be engaged. Deep-equals message and meta
++    // against a genuine miss captured live in this same run, not a
++    // hardcoded string (round 3 re-review) — class and code matching alone
++    // was not sufficient, since the message text differed wherever RLS
++    // wasn't also masking the difference.
++    //
++    // Both attempts are routed through the SAME call site deliberately: see
++    // the equivalent test in tenant-client.integration.spec.ts for why —
++    // Prisma's "Invalid `...` invocation" message embeds the caller's own
++    // file/line/column, so two calls on two different lines would differ by
++    // that alone, which is not the leak this test is checking for.
+     await withTenantTransaction(app, orgA, async (tx) => {
+-      let crossTenantError: unknown;
+-      try {
+-        await tx.membership.findUniqueOrThrow({ where: { id: membershipSharedB } });
+-      } catch (error) {
+-        crossTenantError = error;
+-      }
+-
+-      let genuineMissError: unknown;
+-      try {
+-        await tx.membership.findUniqueOrThrow({ where: { id: newId('mbr') } });
+-      } catch (error) {
+-        genuineMissError = error;
+-      }
++      const attempt = async (id: string): Promise<Prisma.PrismaClientKnownRequestError | undefined> => {
++        try {
++          await tx.membership.findUniqueOrThrow({ where: { id } });
++          return undefined;
++        } catch (error) {
++          return error as Prisma.PrismaClientKnownRequestError;
++        }
++      };
++
++      const crossTenantError = await attempt(membershipSharedB);
++      const genuineMissError = await attempt(newId('mbr'));
+ 
+       expect(crossTenantError).toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
+       expect(genuineMissError).toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
+-      expect((crossTenantError as Prisma.PrismaClientKnownRequestError).code).toBe('P2025');
+-      expect((genuineMissError as Prisma.PrismaClientKnownRequestError).code).toBe('P2025');
++      expect(crossTenantError?.code).toBe('P2025');
++      expect(crossTenantError?.code).toBe(genuineMissError?.code);
++      expect(crossTenantError?.message).toBe(genuineMissError?.message);
++      expect(crossTenantError?.meta).toEqual(genuineMissError?.meta);
+     });
+   });
+ });
+ 
+ describe('C3: the tenant root (Organization) is scoped, over both layers', () => {
+   it('scopes Organization reads to the caller\'s own org', async () => {
+     const rows = await withTenantTransaction(app, orgA, (tx) => tx.organization.findMany());
+     expect(rows.map((row) => row.id)).toEqual([orgA]);
+   });
+ 

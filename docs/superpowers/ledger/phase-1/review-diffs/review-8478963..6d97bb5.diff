@@ -1,0 +1,3785 @@
+# Review package: 8478963..6d97bb5
+
+## Commits
+6d97bb5 docs(web): tighten proxy.ts to claims that were actually measured
+594687d feat(web): Next.js App Router shell with tokens, fonts, and CSP
+
+## Files changed
+ .claude/architecture/frontend.md          |  29 +-
+ .claude/product/roadmap.md                |  72 ++-
+ .claude/security/transport-and-headers.md |  41 +-
+ .claude/ui-ux/design-system.md            |  18 +-
+ .claude/ui-ux/page-map.md                 |   9 +-
+ .prettierignore                           |   3 +
+ apps/web/app/(app)/dashboard/page.tsx     |  65 ++
+ apps/web/app/(app)/layout.tsx             |  22 +
+ apps/web/app/(auth)/layout.tsx            |  21 +
+ apps/web/app/(marketing)/layout.tsx       |  31 +
+ apps/web/app/(marketing)/page.tsx         | 100 ++++
+ apps/web/app/api/csp-report/route.ts      |  73 +++
+ apps/web/app/api/health/route.ts          |  24 +
+ apps/web/app/fonts.ts                     |  48 ++
+ apps/web/app/globals.css                  |  69 +++
+ apps/web/app/layout.tsx                   |  62 ++
+ apps/web/app/providers.tsx                |  90 +++
+ apps/web/e2e/smoke.spec.ts                |  84 +++
+ apps/web/next-env.d.ts                    |   7 +
+ apps/web/next.config.ts                   |  55 ++
+ apps/web/package.json                     |  34 ++
+ apps/web/playwright.config.ts             |  37 ++
+ apps/web/postcss.config.mjs               |  12 +
+ apps/web/proxy.ts                         |  58 ++
+ apps/web/src/env.ts                       |  34 ++
+ apps/web/src/logger.ts                    |  28 +
+ apps/web/src/security-headers.spec.ts     |  71 +++
+ apps/web/src/security-headers.ts          |  96 +++
+ apps/web/tsconfig.json                    |  40 ++
+ eslint.config.js                          |  52 +-
+ package.json                              |   1 +
+ pnpm-lock.yaml                            | 961 +++++++++++++++++++++++++++++-
+ pnpm-workspace.yaml                       |  11 +
+ 33 files changed, 2306 insertions(+), 52 deletions(-)
+
+## Diff
+diff --git a/.claude/architecture/frontend.md b/.claude/architecture/frontend.md
+index bd38881..88428ed 100644
+--- a/.claude/architecture/frontend.md
++++ b/.claude/architecture/frontend.md
+@@ -1,13 +1,22 @@
+ # Frontend architecture
+ 
+-> **Status: Designed. Not Implemented.** Phase 1 onward.
++> **Status: Partially Implemented.** `apps/web` exists (Task 13): a Next.js 16 App Router
++> shell with the three route groups from §1, self-hosted IBM Plex through `next/font`, the
++> design system's tokens, TanStack Query and an appearance context (§3 partially — the
++> provider is wired, no query is issued because there is no API to call), and the security
++> header table with a per-request CSP nonce. §4 (forms), §5 (permissions), §6 (the six
++> required states), §7 (performance budgets) and §8 (the component tree) are **Not
++> Implemented** — they arrive with the features that need them. The only pages are a
++> marketing landing page and an `(app)` placeholder that says the product is not built.
++>
++> **§2 is not yet honoured, deliberately — see the note at the end of §2.**
+ 
+ Next.js App Router, TypeScript strict, Tailwind, shadcn/ui, TanStack Query, React Hook Form
+ with Zod.
+ 
+ ## 1. Route groups
+ 
+ ```
+ app/
+   (marketing)/     public site — /, features, pricing, security, docs, legal
+   (auth)/          login, register, forgot/reset, verify, mfa, recovery, invitations/[token]
+@@ -26,20 +35,38 @@ loading and error boundaries. Full inventory: [`../ui-ux/page-map.md`](../ui-ux/
+ | Marketing | Static, ISR for changelog and status | SEO and speed |
+ | Auth | Server components, dynamic | No caching of anything auth-adjacent |
+ | App shell, navigation | Server component | Permissions resolved server-side; no flash of forbidden UI |
+ | Lists and detail pages | Server component shell + client data | Fast first paint, interactive filtering |
+ | Realtime views (scan progress) | Client, SSE subscription | Live by definition |
+ | Charts | Client, lazy loaded | Heavy; not needed on first paint |
+ 
+ Never cached: any response containing tenant data. `Cache-Control: no-store` on authenticated
+ responses.
+ 
++### Where the table is not true today (Phase 1)
++
++**Every HTML route is currently `force-dynamic`**, marketing included — set once in
++`apps/web/app/layout.tsx`. This is a conflict with `security/transport-and-headers.md` §3, not
++an oversight, and it is structural rather than a misconfiguration: Next stamps the CSP nonce
++onto its own inline bootstrap scripts by reading the CSP header off the **request**, and a
++page prerendered at build time was never rendered for a request. Measured, not assumed —
++built without `force-dynamic`, `/` compiled as `○ (Static)` and its prerendered HTML held
++nine inline `<script>` tags carrying zero `nonce=` attributes. Because `script-src` includes
++`'strict-dynamic'`, an enforcing policy blocks those scripts and everything they would have
++loaded, so the page ships as dead HTML.
++
++The choice is between a strict CSP and a prerendered marketing page, and Phase 1 takes the
++CSP; `'unsafe-inline'` is the only other way to make prerendering work and it is banned. The
++cost is real: no ISR, no CDN-cached HTML, a server render per request. Revisit when marketing
++content actually exists and there is something for ISR to cache. The shape of the fix is a
++CDN-level policy for the prerendered public routes — not a weaker policy everywhere.
++
+ ## 3. Server state
+ 
+ TanStack Query, exclusively, for server data. React state is for UI state only. There is no
+ Redux-style global store — server data in a client store is a cache that nobody invalidates
+ correctly, and this product's data changes underneath the user constantly.
+ 
+ Query keys are structured and hierarchical, always including the organisation:
+ 
+ ```ts
+ ['org', orgId, 'findings', { status, severity, cursor }]
+diff --git a/.claude/product/roadmap.md b/.claude/product/roadmap.md
+index eaf125a..06588b2 100644
+--- a/.claude/product/roadmap.md
++++ b/.claude/product/roadmap.md
+@@ -36,61 +36,86 @@ two-layer tenant isolation control the whole roadmap depends on, covered by 40+
+ tests and 20+ unit tests against a real Postgres 16).
+ 
+ **`apps/api` now boots.** A NestJS application with the request-ID middleware, the
+ security-header and CSP middleware, the global error-envelope filter, the structured logging
+ interceptor, the Zod validation pipe, the `@Public()`/`@RequirePermission()` access
+ decorators, and a `health` module answering `/health/live`, `/health/ready` and
+ `/health/detailed` against the live Postgres, Redis and MinIO stack. It has **no
+ authentication and no business endpoint**: the only routes are the health probes and the
+ OpenAPI document.
+ 
+-**`packages/ui` exists — tokens and eight primitives, and nothing renders them yet.** The full
++**`packages/ui` exists — tokens and eight primitives.** The full
+ token set from `ui-ux/design-system.md` (the cool-ink neutral ramp, the five-step severity ramp,
+ status and intent, the 1.2 type scale, the three density modes, the motion durations), with light
+ on bare `:root` and dark redefined under both the `prefers-color-scheme` media query and
+ `[data-theme="dark"]`, plus `Button`, `Input`, `Label`, `Field`, `Card`, `Alert`, `Badge` and
+ `Skeleton`. A test asserts the two dark blocks declare identical token sets and that no token
+ exists in only one theme. `Field` ties label, description and error to its control with
+ `aria-describedby` and `aria-invalid`, merging rather than overwriting what the child already
+ declares. The no-raw-hex lint rule that `design-system.md` §7 had claimed for months **now
+ actually exists** and is proven to fire.
+ 
+ Two things this deliberately does not do, because saying so is the point of this section:
+-`packages/ui` **runs no Tailwind build** — tokens are referenced through arbitrary-value
+-utilities (`bg-[var(--color-surface)]`), and named utilities like `bg-surface` do not resolve
+-because no `@theme` block is shipped; and **no browser has rendered any of it.** The primitives
+-are exercised only by jsdom unit tests. There is no application, no page, and no visual
+-verification until Task 13 builds `apps/web`.
++`packages/ui` **runs no Tailwind build of its own** — tokens are referenced through
++arbitrary-value utilities (`bg-[var(--color-surface)]`), and named utilities like `bg-surface`
++do not resolve because no `@theme` block is shipped. Task 13's `apps/web` is what runs the
++Tailwind build that emits those utilities, and it needs an explicit
++`@source '../../../packages/ui/src'` to do it: measured, with that line removed the emitted
++stylesheet was missing every utility that appears only inside `packages/ui`. **A browser has
++now rendered three of the eight primitives** (Card, Alert, Badge) on the marketing page.
++Button, Input, Label, Field and Skeleton are still exercised only by jsdom unit tests, and no
++human has judged any of it by eye.
+ 
+ The boot-time assertion that every route declares its access is now built: a route declaring
+ neither `@Public()` nor `@RequirePermission()` refuses startup with an error naming every
+ offender, and the inventory it checks is cross-checked against Express's own router on each
+ boot so it cannot pass by inspecting nothing. `@Public()` is therefore load-bearing today.
+ **`@RequirePermission()` is still metadata no guard reads** — the authorization guard is
+ Phase 2 — so declaring a permission records an intention, it does not enforce one.
+ 
+ The OpenAPI document is generated from the route inventory and the Zod contracts, served at
+ `/api/v1/openapi.json`, and committed as `apps/api/openapi.json`; a test asserts the committed
+ file is byte-identical to what the code generates. The CI diff of that file arrives in Task 14.
+ 
+ Rate limiting is built and globally registered — a Redis sliding window over the table in
+ `security/abuse-prevention.md` §1 — but it limits **nothing today**, and that distinction
+ matters more than the checkmark. No route carries any limit class: the only routes that exist
+ are the health probes, and liveness is deliberately exempt from the limiter so that it depends
+ on no backing service. What Phase 1 delivers
+ is a control that is correct and tested in advance of the endpoints it will govern, not a
+ control that is currently governing anything.
+ 
+-There is no `apps/web`, nothing is deployed, and no request reaches this code from outside a
+-test or a developer's own machine — so Phase 1 is Partially Implemented, not Implemented.
+-Nothing in this product runs, scans, stores, bills, or authenticates for an actual user
+-today.
++**`apps/web` now renders in a browser — two pages, neither of them a product.** A Next.js
++16 App Router shell with the three route groups from `architecture/frontend.md` §1:
++`(marketing)` serving `/`, `(app)` serving a `/dashboard` placeholder that states the product
++is not built and names the phase, and `(auth)` holding a layout with no routes under it at
++all. IBM Plex Sans, Sans Condensed and Mono are self-hosted through `next/font` (verified: the
++built CSS references `/_next/static/media/*.woff2` and contains zero references to any Google
++font host, which is what makes `font-src 'self'` true rather than aspirational). Every
++response leaves `proxy.ts` carrying the `security/transport-and-headers.md` §2 header table
++and a fresh per-request CSP nonce, with `/api/csp-report` collecting violations into the
++redacting logger from day one. TanStack Query and an appearance (theme/density) context are
++wired; nothing queries anything, because there is no API call to make.
++
++Three things this deliberately does not do. **There is no mock product UI** — no fake metric
++tiles, no seeded findings table. **Nothing has been looked at by a human**: the pages are
++verified by Playwright (renders in both colour schemes, no console errors, no horizontal
++overflow at 375px) and by asserting on returned HTML and headers, which says nothing about
++whether the typography and spacing are any good. And **every HTML route is `force-dynamic`**,
++including marketing, which contradicts `architecture/frontend.md` §2 — a deliberate trade
++explained in a new subsection there: Next can only nonce its inline bootstrap scripts for a
++page rendered against a real request, so a prerendered page under this CSP ships as dead
++HTML.
++
++Nothing is deployed, and no request reaches this code from outside a test or a developer's own
++machine — so Phase 1 is Partially Implemented, not Implemented. Nothing in this product runs,
++scans, stores, bills, or authenticates for an actual user today.
+ 
+ ### Blocked items
+ 
+ | Item | Blocker | Owner |
+ |---|---|---|
+ | Go worker engines | **Go toolchain not installed**; deferred by [ADR-0010](../decisions/ADR-0010-engine-contract.md) | Operator, if Go is wanted |
+ | Terraform IaC execution | **Terraform not installed**; Phase 11 anyway | Operator |
+ 
+ ## Phase detail and exit criteria
+ 
+@@ -105,43 +130,50 @@ install → lint → typecheck → test → build; `.env.example`.
+ 
+ *Exit:* `pnpm install && pnpm build && pnpm test` passes from a clean clone; the compose
+ stack starts; a migration applies; CI is green.
+ 
+ #### Where Phase 1 stopped — read this before resuming
+ 
+ Phase 1 is being executed as 16 tasks from
+ `docs/superpowers/plans/2026-08-20-phase-1-foundation.md`, subagent-driven: a fresh implementer
+ per task, then a separate adversarial reviewer, then scoped re-reviews per fix round.
+ 
+-**Tasks 1–12 are complete.** 1 workspace and CI · 2 `packages/config` · 3
+-`packages/observability` · 4 compose stack, schema, prefixed UUIDv7 IDs, first migration · 5
+-`packages/contracts` · 6 tenant-scoped Prisma client and RLS · 7 seed · 8 `packages/storage` ·
+-9 `apps/api` bootstrap · 10 rate limiting · 11 route-access assertion and OpenAPI · 12
+-`packages/ui` tokens and primitives.
++**Tasks 1–13 are complete** (13 pending its adversarial review). 1 workspace and CI · 2
++`packages/config` · 3 `packages/observability` · 4 compose stack, schema, prefixed UUIDv7 IDs,
++first migration · 5 `packages/contracts` · 6 tenant-scoped Prisma client and RLS · 7 seed · 8
++`packages/storage` · 9 `apps/api` bootstrap · 10 rate limiting · 11 route-access assertion and
++OpenAPI · 12 `packages/ui` tokens and primitives · 13 `apps/web` Next.js shell.
+ 
+-**Tasks 13–16 remain:** 13 `apps/web` · 14 CI checks (OpenAPI diff, tenant-registry
+-completeness) · 15 the two reusable skills · 16 ADRs, documentation, and the full
+-exit-criteria verification pass.
++**Tasks 14–16 remain:** 14 CI checks (OpenAPI diff, tenant-registry completeness) · 15 the two
++reusable skills · 16 ADRs, documentation, and the full exit-criteria verification pass.
+ 
+ The execution ledger — every ruling with its cost if wrong, every review finding, per-task
+ briefs and reports, and the review diffs — lives in
+ `.superpowers/sdd/2026-08-20-phase-1-foundation/`. **That directory is gitignored and exists
+ only on the machine that built it.** `progress.md` is the file to read first; it ends with the
+ current pause state and the carry-forward rulings for Tasks 13–16.
+ 
+-Known outstanding, none of it blocking Task 13:
++Known outstanding, none of it blocking Task 14:
+ 
+ - Task 10's fourth fix round has not itself been reviewed. Recommendation on file: fold it into
+   the whole-branch review rather than spend a fifth round.
+ - A short list of deferred residuals (Redis `EVALSHA`, `maxmemory-policy`, `pnpm format:check`
+   not wired into CI, dead `packages/config/tsconfig/*` presets, a missing root `dev` script) is
+-  recorded in the ledger and assigned to Task 14 or Task 16.
++  recorded in the ledger and assigned to Task 14 or Task 16. The missing root `dev` script now
++  matters more than it did: `apps/web` has a `dev` script and `.claude/development/setup.md`
++  still tells a developer to run `pnpm dev`, which does not exist.
++- **Task 13 left CI without an E2E stage.** `pnpm test:e2e` runs locally (5 Playwright tests,
++  all passing) but `.github/workflows/ci.yml` neither installs a browser nor invokes it, so
++  nothing in CI has ever rendered a page. Task 14's to add.
++- Task 13 forced every HTML route dynamic to keep the nonce-based CSP intact. That is written
++  up in `architecture/frontend.md` §2 and is a real cost to revisit when marketing content
++  exists.
+ - **Task 14 owes a guard that every `*.spec.*` under `packages/*/src` and `apps/*/src` is
+   matched by exactly one Vitest project.** Task 12 hit three separate spellings of the same
+   trap — a spec filename matching no project, passing green under `--passWithNoTests` while
+   executing nothing. All three instances are closed; the class is not, and patching globs one
+   at a time is losing to it. This is recorded here and not only in the gitignored ledger
+   because it is the one carry-forward that a fresh session would otherwise not know it owes.
+ - Task 13 must know four things about `packages/ui` before it wires Tailwind: import
+   `@sentinel/ui`'s `tokens.css` **instead of** declaring its own `@import 'tailwindcss'`, or
+   Tailwind is emitted twice; named utilities (`bg-surface`) do not resolve, only arbitrary-value
+   ones; `--text-sm` is 13px app-wide and overrides Tailwind's own, while `--text-sm--line-height`
+diff --git a/.claude/security/transport-and-headers.md b/.claude/security/transport-and-headers.md
+index cd7cb83..dc0470b 100644
+--- a/.claude/security/transport-and-headers.md
++++ b/.claude/security/transport-and-headers.md
+@@ -1,18 +1,32 @@
+ # Transport security, headers, and frontend hardening
+ 
+-> **Status: §2 and §3 Implemented for the API origin (Phase 1)** —
+-> `apps/api/src/common/middleware/security-headers.middleware.ts`, registered with `app.use()`
+-> in `apps/api/src/app-setup.ts` and asserted header by header in
+-> `apps/api/src/app.integration.spec.ts`. §1 (edge TLS), §4 (CORS), §5 (cookies) and §6
+-> (frontend hardening) are Designed only: there is no edge, no authentication, and no
+-> `apps/web` yet.
++> **Status: §2 and §3 Implemented on both origins (Phase 1).**
++>
++> API origin — `apps/api/src/common/middleware/security-headers.middleware.ts`, registered
++> with `app.use()` in `apps/api/src/app-setup.ts` and asserted header by header in
++> `apps/api/src/app.integration.spec.ts`.
++>
++> Web origin (Task 13) — `apps/web/src/security-headers.ts`, a pure function applied by
++> `apps/web/proxy.ts` to every response, unit-asserted in
++> `apps/web/src/security-headers.spec.ts` and asserted again against a real HTTP response
++> from a real production server in `apps/web/e2e/smoke.spec.ts`. Its three deliberate
++> divergences from the API's table — no blanket `Cache-Control: no-store`, `report-uri`
++> pointing at this origin's own collector, and no `Cross-Origin-Embedder-Policy` — are
++> documented in that file and each has a test.
++>
++> §1 (edge TLS), §4 (CORS) and §5 (cookies) are Designed only: there is no edge and no
++> authentication. §6 (frontend hardening) is Designed only in substance — there is no
++> user-supplied content, no markdown and no evidence to render yet — though
++> `productionBrowserSourceMaps: false` is set in `apps/web/next.config.ts` and React's default
++> escaping applies. There is no lint rule banning `dangerouslySetInnerHTML` yet; §6 claims one
++> and that claim is still ahead of the code.
+ >
+ > The `app.use()` registration is load-bearing, not a style choice. Registering the same
+ > middleware through Nest's `MiddlewareConsumer.forRoutes({ path: '*splat' })` resolves the
+ > path *under the global prefix*, so it covered only `/api/<seg>/**` and `/health/<seg>/**`:
+ > `/`, `/a/b`, `/healthz` and every other off-prefix path answered with no security headers and
+ > no `x-request-id` at all. A consumer registration also runs *after* Nest's body parser, so a
+ > malformed request body was rejected before the chain ran. Both are fixed, and the integration
+ > suite now asserts the full header set on off-prefix paths and on a body-parse failure
+ > specifically — the earlier assertions all picked paths inside the covered tree, which is why
+ > the gap survived review.
+@@ -58,22 +72,33 @@ object-src 'none';
+ upgrade-insecure-requests;
+ report-uri /api/v1/csp-report
+ ```
+ 
+ Nonces are generated per request. `report-uri` is wired from day one and the reports are
+ actually read — a CSP nobody monitors is decoration. The evidence-viewer origin gets its own,
+ even tighter policy (`default-src 'none'; img-src 'self'; style-src 'nonce-…'`).
+ 
+ As shipped on the API origin, `connect-src` is `'self'`: the example hosts above name the
+ *web* origin's API and Sentry endpoints, and the API initiates no browser connections of its
+-own. The `/api/v1/csp-report` collector named by `report-uri` **does not exist yet** — it
+-arrives with `apps/web`, and until then a violation report gets a 404. `Cache-Control:
++own. **The API's `/api/v1/csp-report` collector still does not exist**, so a violation report
++from the API origin gets a 404. What Task 13 added is the *web* origin's collector, at
++`/api/csp-report` (`apps/web/app/api/csp-report/route.ts`), and the web origin's `report-uri`
++points there rather than at the API: `report-uri` sends a cross-origin POST the API's CORS
++policy would not accept, so a report aimed across origins simply never arrives. The web
++collector validates the report with Zod, drops unknown keys rather than logging them, and
++writes one `warn` line through the redacting logger. Verified end to end against the running
++dev server:
++> `{"level":"warn","service":"web","cspReport":{...},"msg":"Content Security Policy violation"}`
++
++The web origin's `connect-src` is also `'self'` today. `API_BASE_URL` is a different origin
++(`:3001`) in local development, so the first browser fetch to the API will need it added —
++Phase 2's problem, noted here so it is not a surprise. `Cache-Control:
+ no-store` is sent on every API response rather than only authenticated ones, and Express's
+ default `ETag` is disabled: a revalidation token for a response the client was told not to
+ store is a contradiction, and computing it means hashing tenant data on every request.
+ 
+ ## 4. CORS
+ 
+ The application API is same-origin, so CORS is not a general permission. A narrow allowlist
+ covers the marketing site and documented integration origins; credentials are allowed only
+ for the application origin. **No wildcard with credentials, ever.** API-key-authenticated
+ endpoints do not need CORS credentials at all.
+diff --git a/.claude/ui-ux/design-system.md b/.claude/ui-ux/design-system.md
+index e9b8132..cecaf83 100644
+--- a/.claude/ui-ux/design-system.md
++++ b/.claude/ui-ux/design-system.md
+@@ -1,17 +1,29 @@
+ # Design system
+ 
+ > **Status: Partially Implemented.** Tokens (`packages/ui/src/tokens.css`) and eight base
+ > primitives — Button, Input, Label, Field, Card, Alert, Badge, Skeleton — shipped in
+ > `packages/ui` (Task 12). The full primitive/pattern/domain-component inventory in
+ > [`components.md`](components.md) is Not Implemented; those land alongside the features
+ > that need them.
++>
++> **A browser now renders some of this (Task 13).** `apps/web` imports
++> `@sentinel/ui/tokens.css`, runs the Tailwind build that emits the utilities the primitives
++> reference, loads the §2 typeface system through `next/font`, and puts `Card`, `Alert` and
++> `Badge` on a real page. What that verifies and what it does not: the tokens resolve, the
++> arbitrary-value utilities are emitted (checked by grepping the built stylesheet, including
++> for a utility that appears only inside `packages/ui`), IBM Plex Sans / Sans Condensed / Mono
++> are self-hosted under `/_next/static/media` with no request to any Google host, and the page
++> renders under both colour schemes with no console error and no horizontal overflow at 375px
++> (Playwright). **No human has looked at it.** Nothing here has been judged by eye for
++> hierarchy, spacing, weight or contrast, and the §4 density modes are wired to a context that
++> nothing reads.
+ 
+ ## 1. Design thesis
+ 
+ **The interface is quiet so the findings can be loud.**
+ 
+ Marcus spends his working day in a triage queue. Priya spends hers writing up evidence.
+ Neither needs an interface with opinions. In a findings table, the single most important
+ signal is severity — and severity is communicated by colour. If the chrome around it is also
+ saturated, severity stops meaning anything, and the user loses the one visual channel that
+ was doing real work.
+@@ -169,21 +181,25 @@ utilities that reference the custom property directly — `bg-[var(--color-surfa
+ `@theme` block, so named utilities like `bg-surface` or `text-body` do not exist and will not
+ resolve; a `:root` custom property alone does not generate one in Tailwind v4. Anyone building
+ an `@theme` mapping later must generate it from this file, not maintain a second copy of the
+ token list by hand. Light is defined on bare `:root`; dark is redefined under both
+ `@media (prefers-color-scheme: dark)` guarded as `:root:not([data-theme="light"])` **and**
+ `:root[data-theme="dark"]`, so the explicit toggle wins in both directions and the system
+ default works without one.
+ 
+ **No component may use a raw hex value.** A lint rule enforces it, scoped to `packages/ui` and
+ `apps/web`. A hardcoded colour is a colour that will be wrong in dark mode, and dark mode is
+-not optional for a tool people use at 2am during an incident.
++not optional for a tool people use at 2am during an incident. The `apps/web` half of that
++scope was written before `apps/web` existed; it was checked once the app landed (Task 13) by
++linting a throwaway `apps/web/src/*.tsx` containing both an inline `style={{ color: '#ff0000' }}`
++and a template-literal class holding `#00ff00`, which produced two `no-restricted-syntax`
++errors.
+ 
+ **`--text-sm` collides with a Tailwind v4 built-in theme variable of the same name.**
+ Tailwind's own default theme defines `--text-sm: 0.875rem` plus `--text-sm--line-height`
+ inside `@layer theme`. Because this file's `:root` block is unlayered CSS following
+ `@import 'tailwindcss'`, it wins the cascade over anything inside `@layer theme` regardless of
+ source order — confirmed by compiling this file with `tailwindcss@4.3.3`'s own compiler.
+ The practical effect: Tailwind's built-in `text-sm` utility silently takes this design
+ system's `13px` for its font-size (since it reads `var(--text-sm)`), but keeps *Tailwind's*
+ line-height ratio, not this file's `--leading-sm: 20px` — the two were never paired, because
+ `--leading-sm` and `--text-sm--line-height` are different variable names. Do not use the bare
+diff --git a/.claude/ui-ux/page-map.md b/.claude/ui-ux/page-map.md
+index d6383c4..affc031 100644
+--- a/.claude/ui-ux/page-map.md
++++ b/.claude/ui-ux/page-map.md
+@@ -1,17 +1,24 @@
+ # Page map
+ 
+-Complete route inventory. **Every route listed is Not Implemented as of 2026-08-20**; the
++Complete route inventory. **Every route listed is Not Implemented as of 2026-08-21**; the
+ Phase column is the commitment. A route ships only when it has all six required states
+ ([`../architecture/frontend.md`](../architecture/frontend.md) §6) — a route that renders but
+ has no empty or error state is not done.
+ 
++Two URLs now answer, and neither counts as a shipped route. `/` renders a marketing landing
++page that describes the product and says outright that nothing on it is a demo. `/dashboard`
++renders a placeholder that says the product is not built and names the current phase — it is
++not the `/dashboard` in the `(app)` table below, which is a live-metrics view committed to
++Phase 5, and it deliberately shows no mock product UI. `(auth)` has a layout and no routes at
++all. See [`../product/roadmap.md`](../product/roadmap.md).
++
+ ## Marketing — `(marketing)`
+ 
+ | Route | Purpose | Phase |
+ |---|---|---|
+ | `/` | Landing: problem, product, proof, CTA | 1 |
+ | `/features` | Capability detail | 5 |
+ | `/features/[slug]` | Per-capability deep dive | 6 |
+ | `/solutions` | By persona and by use case | 7 |
+ | `/solutions/[slug]` | Individual solution | 7 |
+ | `/security` | Our own security posture — table stakes for this category | 1 |
+diff --git a/.prettierignore b/.prettierignore
+index 8a7faa0..28ff0f3 100644
+--- a/.prettierignore
++++ b/.prettierignore
+@@ -5,10 +5,13 @@ dist
+ coverage
+ packages/db/generated
+ # Generated byte-for-byte by `pnpm --filter @sentinel/api openapi:generate`, and
+ # asserted equal to that output by a test. Reformatting it would break the gate.
+ apps/api/openapi.json
+ **/*.md
+ # Transcribed verbatim from ui-ux/design-system.md §2-3, §5-6 (Task 12 brief,
+ # Ruling 3). Prettier would expand the paired type-scale declarations onto
+ # separate lines, which is a real diff from what the brief specifies.
+ packages/ui/src/tokens.css
++# Regenerated by every `next dev`/`next build`; its own header says it should
++# not be edited, so formatting it just produces a diff Next immediately undoes.
++apps/web/next-env.d.ts
+diff --git a/apps/web/app/(app)/dashboard/page.tsx b/apps/web/app/(app)/dashboard/page.tsx
+new file mode 100644
+index 0000000..3f184f0
+--- /dev/null
++++ b/apps/web/app/(app)/dashboard/page.tsx
+@@ -0,0 +1,65 @@
++import { Alert, Card } from '@sentinel/ui';
++import type { Metadata } from 'next';
++import Link from 'next/link';
++import type { ReactNode } from 'react';
++
++export const metadata: Metadata = {
++  title: 'Dashboard',
++};
++
++/**
++ * The `(app)` group's placeholder.
++ *
++ * The task brief named this file `app/(app)/page.tsx`. That path resolves to
++ * `/` — the same URL as `app/(marketing)/page.tsx` — and Next refuses to build
++ * two pages that resolve to one path. `/dashboard` is the route
++ * ui-ux/page-map.md already assigns to this group's overview, so the
++ * placeholder lives there instead.
++ *
++ * There is deliberately no mock product UI on this page: no fake metric tiles,
++ * no seeded findings table, no empty chart. A convincing screenshot of
++ * something that does not exist is the specific illusion this codebase avoids.
++ */
++export default function AppPlaceholderPage(): ReactNode {
++  return (
++    <div className="flex flex-col gap-6">
++      <h1 className="font-display text-[length:var(--text-display)] leading-[var(--leading-display)] text-[var(--color-text)]">
++        The product is not built yet.
++      </h1>
++
++      <Alert variant="warning">
++        <span>
++          Sentinel is in <strong className="font-medium">Phase 1 — Production foundation</strong>.
++          There is no authentication, no organisation, no asset, no scan and no finding. This route
++          exists so the <code>(app)</code> route group has a real boundary, not so it has something
++          to show.
++        </span>
++      </Alert>
++
++      <Card className="p-4">
++        <div className="flex flex-col gap-3">
++          <h2 className="font-display text-[length:var(--text-heading)] leading-[var(--leading-heading)] text-[var(--color-text)]">
++            What exists today
++          </h2>
++          <p className="text-[length:var(--text-sm)] leading-[var(--leading-sm)] text-[var(--color-text-muted)]">
++            A validated configuration loader, a redacting structured logger, shared contracts, an
++            S3-compatible storage adapter, a Prisma schema with tenant-scoped access and row-level
++            security, a NestJS API that answers health probes and nothing else, a design system of
++            tokens and eight primitives — and this shell.
++          </p>
++          <p className="text-[length:var(--text-sm)] leading-[var(--leading-sm)] text-[var(--color-text-muted)]">
++            Identity arrives in Phase 2, and it is what makes this group reachable at all. Until
++            then this page is served to anyone who asks for it, because there is nothing here to
++            protect.
++          </p>
++          <Link
++            href="/"
++            className="text-[length:var(--text-sm)] leading-[var(--leading-sm)] text-[var(--color-accent)] underline underline-offset-2"
++          >
++            Back to the public site
++          </Link>
++        </div>
++      </Card>
++    </div>
++  );
++}
+diff --git a/apps/web/app/(app)/layout.tsx b/apps/web/app/(app)/layout.tsx
+new file mode 100644
+index 0000000..3010058
+--- /dev/null
++++ b/apps/web/app/(app)/layout.tsx
+@@ -0,0 +1,22 @@
++import type { ReactNode } from 'react';
++
++/**
++ * The authenticated product shell.
++ *
++ * It is a bare column today on purpose. The real shell resolves the active
++ * organisation, fetches the effective permission set server-side and provides
++ * it through context (architecture/frontend.md §5) — none of which exists,
++ * because there is no authentication and no organisation. Drawing a
++ * navigation sidebar next to links that go nowhere would make this look
++ * finished; it is not.
++ *
++ * Nothing here sets `Cache-Control`. It does not need to: every HTML route in
++ * this app is `force-dynamic` (see app/layout.tsx), and Next answers a dynamic
++ * route with `private, no-cache, no-store, max-age=0, must-revalidate` on its
++ * own — measured against `next start`, not assumed. transport-and-headers.md
++ * §2's requirement is therefore already met for this group. Revisit if any
++ * route under it ever stops being dynamic.
++ */
++export default function AppLayout({ children }: { children: ReactNode }): ReactNode {
++  return <div className="mx-auto w-full max-w-3xl px-4 py-10 sm:px-6 sm:py-14">{children}</div>;
++}
+diff --git a/apps/web/app/(auth)/layout.tsx b/apps/web/app/(auth)/layout.tsx
+new file mode 100644
+index 0000000..ba0e3cc
+--- /dev/null
++++ b/apps/web/app/(auth)/layout.tsx
+@@ -0,0 +1,21 @@
++import type { ReactNode } from 'react';
++
++/**
++ * The authentication shell — a single centred column, no navigation, nothing
++ * to click away to.
++ *
++ * **No route renders through this layout yet.** `/login`, `/register`,
++ * `/mfa`, `/invitations/[token]` and the rest of `(auth)` are Phase 2
++ * (ui-ux/page-map.md), and there is no authentication in this codebase to
++ * render them against. The layout exists now so the group boundary is real
++ * from the start: `(auth)` responses are dynamic and never cached
++ * (architecture/frontend.md §2), and that is a property of the group, not of
++ * each page that will later be added to it.
++ */
++export default function AuthLayout({ children }: { children: ReactNode }): ReactNode {
++  return (
++    <div className="flex min-h-screen items-center justify-center px-4 py-10">
++      <div className="w-full max-w-sm">{children}</div>
++    </div>
++  );
++}
+diff --git a/apps/web/app/(marketing)/layout.tsx b/apps/web/app/(marketing)/layout.tsx
+new file mode 100644
+index 0000000..dbaea5b
+--- /dev/null
++++ b/apps/web/app/(marketing)/layout.tsx
+@@ -0,0 +1,31 @@
++import type { ReactNode } from 'react';
++
++/**
++ * The public site's shell. Separate from `(auth)` and `(app)` because the
++ * three groups differ in more than decoration: this one is indexable and
++ * cacheable, the other two are neither (architecture/frontend.md §1–2).
++ */
++export default function MarketingLayout({ children }: { children: ReactNode }): ReactNode {
++  return (
++    <div className="flex min-h-screen flex-col">
++      <header className="border-b border-[var(--color-border)] bg-[var(--color-surface)]">
++        <div className="mx-auto flex w-full max-w-5xl items-center gap-3 px-4 py-4 sm:px-6">
++          <span className="font-display text-[length:var(--text-heading)] leading-[var(--leading-heading)] text-[var(--color-text)]">
++            Sentinel
++          </span>
++          <span className="text-[length:var(--text-micro)] leading-[var(--leading-micro)] tracking-[0.06em] text-[var(--color-text-subtle)] uppercase">
++            Pre-release
++          </span>
++        </div>
++      </header>
++
++      <main className="mx-auto w-full max-w-5xl grow px-4 py-10 sm:px-6 sm:py-14">{children}</main>
++
++      <footer className="border-t border-[var(--color-border)] bg-[var(--color-surface)]">
++        <div className="mx-auto w-full max-w-5xl px-4 py-6 text-[length:var(--text-caption)] leading-[var(--leading-caption)] text-[var(--color-text-muted)] sm:px-6">
++          Sentinel performs authorised security testing against customer-owned assets only.
++        </div>
++      </footer>
++    </div>
++  );
++}
+diff --git a/apps/web/app/(marketing)/page.tsx b/apps/web/app/(marketing)/page.tsx
+new file mode 100644
+index 0000000..0ef61ad
+--- /dev/null
++++ b/apps/web/app/(marketing)/page.tsx
+@@ -0,0 +1,100 @@
++import { Alert, Badge, Card } from '@sentinel/ui';
++import type { ReactNode } from 'react';
++
++const workflow = [
++  {
++    step: 'Register',
++    detail: 'Declare the assets you own — domains, hosts, applications, APIs.',
++  },
++  {
++    step: 'Prove',
++    detail:
++      'Verify ownership of each one. Not a checkbox: a DNS record, a file, or a header we go and read.',
++  },
++  {
++    step: 'Scope',
++    detail: 'Define what is in and out of bounds, and test the rules before a scanner sees them.',
++  },
++  {
++    step: 'Test',
++    detail:
++      'Run automated engines and record manual testing against that scope, and only that scope.',
++  },
++  {
++    step: 'Triage',
++    detail: 'Work one queue. Severity is the loudest thing on the screen because it is the point.',
++  },
++  {
++    step: 'Retest and report',
++    detail: 'Prove a finding is fixed, then produce the document somebody else has to read.',
++  },
++] as const;
++
++export default function MarketingPage(): ReactNode {
++  return (
++    <div className="flex flex-col gap-10">
++      <section className="flex flex-col gap-4">
++        <Badge variant="neutral">Phase 1 · Foundation</Badge>
++        <h1 className="font-display text-[length:var(--text-display)] leading-[var(--leading-display)] text-[var(--color-text)]">
++          Security testing for assets you own, and have proved you own.
++        </h1>
++        <p className="max-w-2xl text-[length:var(--text-subhead)] leading-[var(--leading-subhead)] text-[var(--color-text-muted)]">
++          Sentinel is a multi-tenant platform for security testing, penetration-test management, and
++          vulnerability management. Proof of ownership and scope enforcement are not features here.
++          They are the control everything else is built on top of.
++        </p>
++      </section>
++
++      {/* Alert takes no `title` prop — it is a plain container with a role, so
++          the heading is markup rather than an HTML `title` attribute, which
++          would have rendered as a tooltip and been read by nothing. */}
++      <Alert variant="info">
++        <span>
++          <strong className="font-medium">Nothing on this site is a product demo yet.</strong> This
++          page is the first thing in Sentinel a browser has ever rendered. There is no
++          authentication, no scanning, and no data. What is described below is the design
++          commitment, not a shipped capability — see the roadmap in the repository for what actually
++          runs today.
++        </span>
++      </Alert>
++
++      <section className="flex flex-col gap-4">
++        <h2 className="font-display text-[length:var(--text-title)] leading-[var(--leading-title)] text-[var(--color-text)]">
++          The shape of the work
++        </h2>
++        <ol className="grid grid-cols-1 gap-3 sm:grid-cols-2">
++          {workflow.map(({ step, detail }, index) => (
++            <li key={step}>
++              {/* Card ships border, radius and surface only — no padding — so
++                  a card wrapping a table can sit flush. Padding is the
++                  caller's. */}
++              <Card className="h-full p-4">
++                <div className="flex flex-col gap-2">
++                  <span className="text-[length:var(--text-micro)] leading-[var(--leading-micro)] tracking-[0.06em] text-[var(--color-text-subtle)] uppercase">
++                    {/* Mono, because it is a count. design-system.md §2. */}
++                    <span className="font-mono">{String(index + 1).padStart(2, '0')}</span> {step}
++                  </span>
++                  <p className="text-[length:var(--text-sm)] leading-[var(--leading-sm)] text-[var(--color-text-muted)]">
++                    {detail}
++                  </p>
++                </div>
++              </Card>
++            </li>
++          ))}
++        </ol>
++      </section>
++
++      <section className="flex flex-col gap-3">
++        <h2 className="font-display text-[length:var(--text-title)] leading-[var(--leading-title)] text-[var(--color-text)]">
++          Why the interface is this quiet
++        </h2>
++        <p className="max-w-2xl text-[length:var(--text-body)] leading-[var(--leading-body)] text-[var(--color-text-muted)]">
++          In a findings table the single most important signal is severity, and severity is
++          communicated by colour. If the chrome around it is also saturated, severity stops meaning
++          anything. So the colour budget is spent in exactly one place, and everything else is
++          near-neutral ink. It is an instrument, not a war room.
++        </p>
++      </section>
++    </div>
++  );
++}
+diff --git a/apps/web/app/api/csp-report/route.ts b/apps/web/app/api/csp-report/route.ts
+new file mode 100644
+index 0000000..1eff8c1
+--- /dev/null
++++ b/apps/web/app/api/csp-report/route.ts
+@@ -0,0 +1,73 @@
++import { NextResponse } from 'next/server';
++import { z } from 'zod';
++import { logger } from '../../../src/logger';
++
++/**
++ * The collector named by `report-uri` in this origin's CSP
++ * (`src/security-headers.ts`).
++ *
++ * Wired from day one, and the reports actually get read: a CSP nobody
++ * monitors is decoration (security/transport-and-headers.md §3). It is also
++ * the only signal that will tell us the policy is about to break something
++ * when development flips from report-only to enforcing.
++ *
++ * Pinned to the Node.js runtime because it logs through
++ * `@sentinel/observability`, which is pino — a Node library that does not run
++ * on Next's Edge runtime.
++ */
++export const runtime = 'nodejs';
++
++/**
++ * The `report-uri` wire format: a single `csp-report` object with
++ * hyphenated keys. Every field is optional because the set a browser actually
++ * sends varies by browser and by violation, and a schema that rejects a
++ * report is a schema that loses the signal it exists to collect.
++ *
++ * `.passthrough()` is deliberately NOT used: unknown keys are dropped rather
++ * than logged, so a future browser field cannot put unreviewed content into
++ * the log. Every field kept here is a URL, a directive name, a policy string
++ * or a line number — none of them a credential — and `blocked-uri` is capped
++ * because a `data:` URI arrives here in full.
++ */
++const cspReportSchema = z.object({
++  'csp-report': z
++    .object({
++      'document-uri': z.string().max(2048).optional(),
++      referrer: z.string().max(2048).optional(),
++      'violated-directive': z.string().max(256).optional(),
++      'effective-directive': z.string().max(256).optional(),
++      'original-policy': z.string().max(4096).optional(),
++      disposition: z.string().max(32).optional(),
++      'blocked-uri': z.string().max(2048).optional(),
++      'status-code': z.number().int().optional(),
++      'script-sample': z.string().max(256).optional(),
++      'line-number': z.number().int().optional(),
++      'column-number': z.number().int().optional(),
++      'source-file': z.string().max(2048).optional(),
++    })
++    .strip(),
++});
++
++export async function POST(request: Request): Promise<NextResponse> {
++  // Browsers send `application/csp-report` (report-uri) rather than
++  // `application/json`, so the body is read as text and parsed here instead of
++  // relying on `request.json()`'s content-type handling.
++  let payload: unknown;
++  try {
++    payload = JSON.parse(await request.text());
++  } catch {
++    // A malformed body is not worth a log line at warn — it is almost always a
++    // scanner poking the endpoint, and logging it turns the collector into a
++    // way to write attacker-chosen text into our logs.
++    return new NextResponse(null, { status: 204 });
++  }
++
++  const parsed = cspReportSchema.safeParse(payload);
++  if (!parsed.success) return new NextResponse(null, { status: 204 });
++
++  logger.warn({ cspReport: parsed.data['csp-report'] }, 'Content Security Policy violation');
++
++  // 204: the browser discards the response body for a report anyway, and
++  // returning nothing keeps the endpoint from being usable as a reflector.
++  return new NextResponse(null, { status: 204 });
++}
+diff --git a/apps/web/app/api/health/route.ts b/apps/web/app/api/health/route.ts
+new file mode 100644
+index 0000000..c07e2f3
+--- /dev/null
++++ b/apps/web/app/api/health/route.ts
+@@ -0,0 +1,24 @@
++import { NextResponse } from 'next/server';
++
++/**
++ * Liveness for the web origin: is this Node process up and serving?
++ *
++ * Deliberately narrow. It checks nothing else — not the API, not the
++ * database — because a liveness probe that depends on a backing service will
++ * restart a healthy web server when that service has a bad minute. The API's
++ * `/health/ready` and `/health/detailed` are where dependency health is
++ * answered, and they already do it against the real stack.
++ *
++ * `force-dynamic` because a health probe that Next prerendered at build time
++ * would answer "up" from a static file forever, including from a process that
++ * had stopped working.
++ */
++export const dynamic = 'force-dynamic';
++export const runtime = 'nodejs';
++
++export function GET(): NextResponse {
++  return NextResponse.json(
++    { status: 'ok' },
++    { status: 200, headers: { 'Cache-Control': 'no-store' } },
++  );
++}
+diff --git a/apps/web/app/fonts.ts b/apps/web/app/fonts.ts
+new file mode 100644
+index 0000000..e232573
+--- /dev/null
++++ b/apps/web/app/fonts.ts
+@@ -0,0 +1,48 @@
++import { IBM_Plex_Mono, IBM_Plex_Sans, IBM_Plex_Sans_Condensed } from 'next/font/google';
++
++/**
++ * next/font self-hosts these at build time, which is what keeps
++ * `font-src 'self'` true rather than aspirational. A Google Fonts <link> would
++ * silently require a CSP exception, and a CSP with exceptions nobody
++ * remembers is how a strict policy erodes.
++ */
++
++/** Body: all prose, form labels, descriptions, buttons. 400/500. */
++const sans = IBM_Plex_Sans({
++  subsets: ['latin'],
++  weight: ['400', '500'],
++  display: 'swap',
++  variable: '--font-sans',
++  fallback: ['ui-sans-serif', 'system-ui'],
++});
++
++/**
++ * Display: page titles, table headers, metric labels, nav sections. 600.
++ *
++ * The condensed cut earns its place functionally rather than stylistically —
++ * a findings table has eight or nine meaningful columns, and condensed headers
++ * buy horizontal room that system-ui does not. design-system.md §2.
++ */
++const condensed = IBM_Plex_Sans_Condensed({
++  subsets: ['latin'],
++  weight: ['600'],
++  display: 'swap',
++  variable: '--font-condensed',
++  fallback: ['ui-sans-serif', 'system-ui'],
++});
++
++/** Data: evidence, HTTP captures, CVSS vectors, fingerprints, IDs, counts. */
++const mono = IBM_Plex_Mono({
++  subsets: ['latin'],
++  weight: ['400', '500'],
++  display: 'swap',
++  variable: '--font-mono',
++  fallback: ['ui-monospace', 'SFMono-Regular', 'Menlo'],
++});
++
++/**
++ * The three variable classes, applied together to <html>. Every face is
++ * declared once, at the root, so no subtree can be rendered without the family
++ * it references existing.
++ */
++export const fontVariables = `${sans.variable} ${condensed.variable} ${mono.variable}`;
+diff --git a/apps/web/app/globals.css b/apps/web/app/globals.css
+new file mode 100644
+index 0000000..0205545
+--- /dev/null
++++ b/apps/web/app/globals.css
+@@ -0,0 +1,69 @@
++/* The design system's tokens, and Tailwind itself.
++ *
++ * `packages/ui/src/tokens.css` line 1 is already `@import 'tailwindcss';`, so
++ * this file must NOT declare it again — a second declaration emits the whole
++ * of Tailwind twice. This one import brings in both.
++ *
++ * Reminder for anyone adding utilities in this app: `packages/ui` ships no
++ * `@theme` block, so named utilities like `bg-surface` or `text-body` do not
++ * exist and resolve to nothing. Tokens are consumed through arbitrary-value
++ * utilities — `bg-[var(--color-surface)]`, `text-[length:var(--text-body)]`.
++ * See ui-ux/design-system.md §7. */
++@import '@sentinel/ui/tokens.css';
++
++/* Where Tailwind looks for class names.
++ *
++ * Measured, not assumed. Building once with all three of these deleted and
++ * grepping the emitted stylesheet:
++ *
++ *   text-[length:var(--text-display)]   (app/(marketing)/page.tsx)   present
++ *   sm:grid-cols-2                      (app/(marketing)/page.tsx)   present
++ *   rounded-[var(--radius-card)]        (packages/ui .../Card.tsx)  MISSING
++ *
++ * So v4's automatic source detection does reach this app — it roots at the
++ * build's working directory, which is apps/web — and does not reach outside
++ * it, which matters here because `packages/ui` runs no Tailwind build of its
++ * own and this app is the first thing that has ever rendered its primitives.
++ * The third line below is therefore load-bearing; the first two are written
++ * out so the emitted CSS does not depend on where the build was invoked
++ * from. */
++@source '../app';
++@source '../src';
++@source '../../../packages/ui/src';
++
++/* next/font hands back a class (applied to <html> in app/layout.tsx) that
++ * defines these three custom properties, each already carrying the fallback
++ * stack from ui-ux/design-system.md §2. Naming them here is documentation
++ * only — the values come from app/fonts.ts. */
++body {
++  font-family: var(--font-sans);
++  font-size: var(--text-body);
++  line-height: var(--leading-body);
++}
++
++/* design-system.md §2: the condensed cut is the display face — page titles,
++ * table headers, metric labels, nav sections. It is applied deliberately per
++ * element rather than globally to headings, because a card heading inside
++ * prose should not switch faces. */
++.font-display {
++  font-family: var(--font-condensed);
++  font-weight: 600;
++}
++
++code,
++kbd,
++pre,
++samp {
++  font-family: var(--font-mono);
++}
++
++/* Deliberately no global `:focus-visible` rule here.
++ *
++ * One was written and removed. It claimed Tailwind's preflight strips outlines
++ * from interactive elements; grepping the emitted stylesheet says otherwise —
++ * the only outline preflight touches is `:-moz-focusring:where(:not(iframe))
++ * { outline: auto }`, a Firefox normalisation. Worse, the rule was ordered
++ * after `packages/ui`, whose primitives pair `focus-visible:outline-none` with
++ * a token ring, so it put an outline *and* a ring on every focused Button and
++ * Input. Focus styling belongs to the primitives; plain elements keep the
++ * browser default, which is visible in both themes. */
+diff --git a/apps/web/app/layout.tsx b/apps/web/app/layout.tsx
+new file mode 100644
+index 0000000..be42a38
+--- /dev/null
++++ b/apps/web/app/layout.tsx
+@@ -0,0 +1,62 @@
++import type { Metadata, Viewport } from 'next';
++import type { ReactNode } from 'react';
++import './globals.css';
++import { fontVariables } from './fonts';
++import { Providers } from './providers';
++
++export const metadata: Metadata = {
++  title: {
++    default: 'Sentinel',
++    template: '%s · Sentinel',
++  },
++  description:
++    'Security testing, penetration-test management, and vulnerability management for assets you own and have proved you own.',
++  // Keeps a pre-release shell out of search results. Removed deliberately,
++  // by the change that decides this origin is ready to be indexed.
++  robots: { index: false, follow: false },
++};
++
++/**
++ * Every HTML route in this app is server-rendered per request.
++ *
++ * This is a real cost and it is paid deliberately. `architecture/frontend.md`
++ * §2 wants marketing Static with ISR, and that is the right long-term answer
++ * for SEO and speed. It is incompatible today with the nonce-based CSP in
++ * `security/transport-and-headers.md` §3, and the incompatibility is
++ * structural rather than a configuration mistake: Next injects the CSP nonce
++ * into its own inline bootstrap scripts by reading the CSP header off the
++ * *request*, and a page prerendered at build time was never rendered for a
++ * request. Verified rather than assumed — with this line removed, `/` built as
++ * `○ (Static)` and `.next/server/app/index.html` contained nine inline
++ * `<script>` tags and zero `nonce=` attributes. `script-src` carries
++ * `'strict-dynamic'`, so under an enforcing policy those un-nonced inline
++ * scripts — and every chunk they would have loaded — are blocked, and the page
++ * ships as dead HTML.
++ *
++ * Given a choice between a strict CSP and a static marketing page, Phase 1
++ * takes the CSP: this is a security product, and `'unsafe-inline'` is the
++ * only other way to make prerendering work. Revisit when marketing content
++ * actually exists and there is something for ISR to cache — the shape of the
++ * fix is a CDN-level policy for the prerendered public routes, not a weaker
++ * policy for everything.
++ */
++export const dynamic = 'force-dynamic';
++
++export const viewport: Viewport = {
++  // Tells the browser both schemes are supported, so form controls,
++  // scrollbars and the address bar match the tokens rather than defaulting to
++  // light chrome around a dark page.
++  colorScheme: 'light dark',
++  width: 'device-width',
++  initialScale: 1,
++};
++
++export default function RootLayout({ children }: { children: ReactNode }): ReactNode {
++  return (
++    <html lang="en" className={fontVariables}>
++      <body className="min-h-screen bg-[var(--color-bg)] text-[var(--color-text)] antialiased">
++        <Providers>{children}</Providers>
++      </body>
++    </html>
++  );
++}
+diff --git a/apps/web/app/providers.tsx b/apps/web/app/providers.tsx
+new file mode 100644
+index 0000000..8f781cc
+--- /dev/null
++++ b/apps/web/app/providers.tsx
+@@ -0,0 +1,90 @@
++'use client';
++
++import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
++import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
++
++/** `system` follows the OS; the other two override it in both directions. */
++export type ThemePreference = 'light' | 'dark' | 'system';
++
++/** design-system.md §4 — row height, padding and font size move together. */
++export type Density = 'comfortable' | 'compact' | 'dense';
++
++export interface Appearance {
++  readonly theme: ThemePreference;
++  readonly density: Density;
++  readonly setTheme: (theme: ThemePreference) => void;
++  readonly setDensity: (density: Density) => void;
++}
++
++const AppearanceContext = createContext<Appearance | null>(null);
++
++/**
++ * Reads the appearance context. Throws rather than returning a default: a
++ * silent default is how a component ends up rendering outside the provider
++ * and nobody notices until the theme toggle does nothing.
++ */
++export function useAppearance(): Appearance {
++  const value = useContext(AppearanceContext);
++  if (value === null) throw new Error('useAppearance must be used inside <Providers>.');
++  return value;
++}
++
++function createQueryClient(): QueryClient {
++  return new QueryClient({
++    defaultOptions: {
++      queries: {
++        // This product's data changes underneath the user constantly
++        // (architecture/frontend.md §3), so the window in which a cached
++        // answer is trusted without revalidation is deliberately short.
++        staleTime: 30_000,
++        retry: 1,
++        refetchOnWindowFocus: true,
++      },
++      // A mutation that failed is a mutation the user should be told about,
++      // not one the client should quietly try again — several of this
++      // product's mutations start scans.
++      mutations: { retry: 0 },
++    },
++  });
++}
++
++export function Providers({ children }: { children: ReactNode }): ReactNode {
++  // Created once per browser session, inside state rather than at module
++  // scope: a module-scope client is shared across every request on the server
++  // and would leak one user's cached data into another's render.
++  const [queryClient] = useState(createQueryClient);
++
++  const [theme, setTheme] = useState<ThemePreference>('system');
++  const [density, setDensity] = useState<Density>('comfortable');
++
++  // The tokens in packages/ui already answer `prefers-color-scheme`, so
++  // `system` means *remove* the attribute rather than compute a value. That is
++  // also why nothing is applied during render: the server has no way to know
++  // the OS preference, and guessing produces a flash of the wrong theme.
++  //
++  // Not yet persisted. A preference that survives a reload needs a
++  // render-blocking inline script to set the attribute before first paint,
++  // and that script needs the CSP nonce — deliberately deferred rather than
++  // half-built, because a persisted preference that flashes the wrong theme
++  // on every load is worse than one that does not persist.
++  useEffect(() => {
++    const root = document.documentElement;
++    if (theme === 'system') root.removeAttribute('data-theme');
++    else root.setAttribute('data-theme', theme);
++  }, [theme]);
++
++  useEffect(() => {
++    document.documentElement.setAttribute('data-density', density);
++  }, [density]);
++
++  const appearance = useMemo<Appearance>(
++    () => ({ theme, density, setTheme, setDensity }),
++    [theme, density],
++  );
++
++  return (
++    <QueryClientProvider client={queryClient}>
++      <AppearanceContext.Provider value={appearance}>{children}</AppearanceContext.Provider>
++    </QueryClientProvider>
++  );
++}
+diff --git a/apps/web/e2e/smoke.spec.ts b/apps/web/e2e/smoke.spec.ts
+new file mode 100644
+index 0000000..2698639
+--- /dev/null
++++ b/apps/web/e2e/smoke.spec.ts
+@@ -0,0 +1,84 @@
++import { expect, test } from '@playwright/test';
++
++test('the marketing page renders with no console errors', async ({ page }) => {
++  const errors: string[] = [];
++  page.on('console', (message) => {
++    if (message.type() === 'error') errors.push(message.text());
++  });
++  await page.goto('/');
++  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
++  expect(errors).toEqual([]);
++});
++
++test('renders in both colour schemes', async ({ page }) => {
++  for (const colorScheme of ['light', 'dark'] as const) {
++    await page.emulateMedia({ colorScheme });
++    await page.goto('/');
++    await expect(page.locator('body')).toBeVisible();
++  }
++});
++
++test('the page does not scroll horizontally at a narrow viewport', async ({ page }) => {
++  await page.setViewportSize({ width: 375, height: 800 });
++  await page.goto('/');
++  const overflows = await page.evaluate(
++    () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
++  );
++  expect(overflows).toBe(false);
++});
++
++/**
++ * The unit spec asserts what `buildSecurityHeaders` returns. This asserts that
++ * a real HTTP response from a real server actually carries it — the step
++ * between a correct pure function and a correctly configured application,
++ * which is exactly where a header table goes missing.
++ */
++test('a real response carries the security header table and a fresh CSP nonce', async ({
++  page,
++}) => {
++  const first = await page.goto('/');
++  expect(first).not.toBeNull();
++  const headers = first?.headers() ?? {};
++
++  expect(headers['strict-transport-security']).toBe('max-age=31536000; includeSubDomains; preload');
++  expect(headers['x-content-type-options']).toBe('nosniff');
++  expect(headers['x-frame-options']).toBe('DENY');
++  expect(headers['referrer-policy']).toBe('strict-origin-when-cross-origin');
++  expect(headers['permissions-policy']).toBe(
++    'camera=(), microphone=(), geolocation=(), payment=()',
++  );
++  expect(headers['cross-origin-opener-policy']).toBe('same-origin');
++  expect(headers['cross-origin-resource-policy']).toBe('same-origin');
++  // Next's own header; the config sets poweredByHeader: false.
++  expect(headers['x-powered-by']).toBeUndefined();
++
++  // Exactly one of the two is sent, and which one is APP_ENV's decision.
++  const policy =
++    headers['content-security-policy'] ?? headers['content-security-policy-report-only'];
++  expect(policy).toBeDefined();
++  expect(policy).toContain("frame-ancestors 'none'");
++  expect(policy).not.toContain('unsafe-inline');
++  expect(policy).not.toContain('unsafe-eval');
++
++  // A nonce reused across responses is the same as having no nonce at all.
++  const second = await page.goto('/api/health');
++  const secondPolicy =
++    second?.headers()['content-security-policy'] ??
++    second?.headers()['content-security-policy-report-only'];
++  expect(secondPolicy).toBeDefined();
++  expect(secondPolicy).not.toBe(policy);
++});
++
++test('the CSP report collector accepts a violation report', async ({ request }) => {
++  const response = await request.post('/api/csp-report', {
++    headers: { 'content-type': 'application/csp-report' },
++    data: JSON.stringify({
++      'csp-report': {
++        'document-uri': 'http://localhost:3000/',
++        'violated-directive': 'script-src',
++        'blocked-uri': 'inline',
++      },
++    }),
++  });
++  expect(response.status()).toBe(204);
++});
+diff --git a/apps/web/next-env.d.ts b/apps/web/next-env.d.ts
+new file mode 100644
+index 0000000..ce4e94a
+--- /dev/null
++++ b/apps/web/next-env.d.ts
+@@ -0,0 +1,7 @@
++/// <reference types="next" />
++/// <reference types="next/image-types/global" />
++import "./.next/types/routes.d.ts";
++import "./.next/types/root-params.d.ts";
++
++// NOTE: This file should not be edited
++// see https://nextjs.org/docs/app/api-reference/config/typescript for more information.
+diff --git a/apps/web/next.config.ts b/apps/web/next.config.ts
+new file mode 100644
+index 0000000..cde6375
+--- /dev/null
++++ b/apps/web/next.config.ts
+@@ -0,0 +1,55 @@
++import type { NextConfig } from 'next';
++
++const nextConfig: NextConfig = {
++  reactStrictMode: true,
++
++  // `next dev` otherwise writes `apps/web/AGENTS.md` and an `apps/web/CLAUDE.md`
++  // pointing at it, on every run. Observed once and then disabled: this
++  // repository's documentation rule puts authored guidance in `.claude/` and
++  // keeps the root CLAUDE.md short, and a second, generated CLAUDE.md that
++  // nobody wrote and nobody reviews is exactly the kind of unowned
++  // documentation that rule exists to prevent.
++  //
++  // The content Next generates is not worthless, though, and the point it
++  // leads with is worth repeating here: Next 16 differs from what a model is
++  // likely to have been trained on — `middleware.ts` is now `proxy.ts`, and
++  // the Turbopack builder is the default. The reference it points to is real
++  // and readable: `node_modules/next/dist/docs/`.
++  agentRules: false,
++
++  // The API strips `X-Powered-By` in its own middleware; this is the same
++  // decision on this origin. Version-advertising headers are free
++  // reconnaissance.
++  poweredByHeader: false,
++
++  // security/transport-and-headers.md §6 — "Source maps are not published for
++  // production application bundles." This is Next's default; it is written out
++  // because a default that a security document depends on should be visible in
++  // the config rather than inferred from its absence.
++  productionBrowserSourceMaps: false,
++
++  // Deliberately no `serverExternalPackages` for pino. One was added on the
++  // assumption that its worker-thread pretty transport would not survive
++  // bundling, then removed after testing the assumption: with pino bundled,
++  // `/api/csp-report` logged correctly against `next start` in both JSON and
++  // pretty modes. See apps/web/src/logger.ts.
++
++  // A note on import specifiers, because this app breaks the workspace's
++  // convention and the reason should not have to be rediscovered:
++  //
++  // Every other package here is `nodenext` ESM and writes `./foo.js` for a
++  // `foo.ts` file. Inside apps/web, imports are **extensionless** instead
++  // (`./foo`), because Next 16 builds with Turbopack and Turbopack does not
++  // apply the `.js` -> `.ts` substitution. Tried and rejected:
++  // `experimental.extensionAlias`, which Next accepts and prints as an active
++  // experiment, but which is read only by next/dist/build/webpack-config.js —
++  // with it set, `next build` still failed with "Module not found: Can't
++  // resolve './src/env.js'". apps/web's tsconfig uses
++  // `moduleResolution: "bundler"` for the same reason, which is what makes
++  // extensionless specifiers type-check.
++  //
++  // The one exception is `src/security-headers.spec.ts`, which Vitest runs
++  // through Vite — Vite does perform the substitution.
++};
++
++export default nextConfig;
+diff --git a/apps/web/package.json b/apps/web/package.json
+new file mode 100644
+index 0000000..d2192a2
+--- /dev/null
++++ b/apps/web/package.json
+@@ -0,0 +1,34 @@
++{
++  "name": "@sentinel/web",
++  "version": "0.0.0",
++  "private": true,
++  "type": "module",
++  "scripts": {
++    "dev": "dotenv -e ../../.env -v NODE_ENV=development -- next dev",
++    "build": "dotenv -e ../../.env -v NODE_ENV=production -- next build",
++    "start": "dotenv -e ../../.env -v NODE_ENV=production -- next start",
++    "start:e2e": "dotenv -e ../../.env -v NODE_ENV=production -v APP_ENV=test -- next start",
++    "test:e2e": "playwright test",
++    "typecheck": "tsc -p tsconfig.json --noEmit",
++    "lint": "eslint ."
++  },
++  "dependencies": {
++    "@sentinel/config": "workspace:*",
++    "@sentinel/observability": "workspace:*",
++    "@sentinel/ui": "workspace:*",
++    "@tanstack/react-query": "^5.101.0",
++    "next": "^16.3.2",
++    "react": "^19.2.0",
++    "react-dom": "^19.2.0",
++    "zod": "^3.25.76"
++  },
++  "devDependencies": {
++    "@playwright/test": "^1.62.0",
++    "@tailwindcss/postcss": "^4.3.3",
++    "@types/react": "^19.0.0",
++    "@types/react-dom": "^19.0.0",
++    "dotenv-cli": "^7.4.0",
++    "tailwindcss": "^4.3.3",
++    "typescript": "^5.9.3"
++  }
++}
+diff --git a/apps/web/playwright.config.ts b/apps/web/playwright.config.ts
+new file mode 100644
+index 0000000..51187d3
+--- /dev/null
++++ b/apps/web/playwright.config.ts
+@@ -0,0 +1,37 @@
++import { defineConfig, devices } from '@playwright/test';
++
++/**
++ * Playwright runs against a **production build** (`next build` then
++ * `next start`), not `next dev`.
++ *
++ * The reason is specific to what the smoke spec asserts. `next dev` injects
++ * hot-reload machinery and React's development-only warnings, so "no console
++ * errors" would be measuring the dev server rather than the page. The
++ * production server is also the only place where the static/dynamic rendering
++ * decision — and therefore whether Next's inline bootstrap scripts carry the
++ * CSP nonce — is the real one.
++ *
++ * `pnpm test:e2e` at the repository root is what runs this.
++ */
++export default defineConfig({
++  testDir: './e2e',
++  fullyParallel: true,
++  forbidOnly: Boolean(process.env['CI']),
++  retries: process.env['CI'] !== undefined ? 2 : 0,
++  reporter: process.env['CI'] !== undefined ? 'github' : 'list',
++  use: {
++    baseURL: 'http://localhost:3000',
++    trace: 'on-first-retry',
++  },
++  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
++  webServer: {
++    // `start:e2e` pins APP_ENV=test, which makes the CSP **enforcing** rather
++    // than report-only. Deliberate, and the same call the API makes: a policy
++    // that is only ever report-only wherever it is asserted is a policy no
++    // test has watched block anything. operations/environments.md §4.
++    command: 'pnpm build && pnpm start:e2e',
++    url: 'http://localhost:3000',
++    reuseExistingServer: process.env['CI'] === undefined,
++    timeout: 180_000,
++  },
++});
+diff --git a/apps/web/postcss.config.mjs b/apps/web/postcss.config.mjs
+new file mode 100644
+index 0000000..f063746
+--- /dev/null
++++ b/apps/web/postcss.config.mjs
+@@ -0,0 +1,12 @@
++/**
++ * Tailwind v4 is a PostCSS plugin, and this file is how Next finds it. The
++ * whole configuration surface lives in CSS (`app/globals.css` and
++ * `packages/ui/src/tokens.css`) — v4 has no `tailwind.config.js`.
++ */
++const config = {
++  plugins: {
++    '@tailwindcss/postcss': {},
++  },
++};
++
++export default config;
+diff --git a/apps/web/proxy.ts b/apps/web/proxy.ts
+new file mode 100644
+index 0000000..5deeaf7
+--- /dev/null
++++ b/apps/web/proxy.ts
+@@ -0,0 +1,58 @@
++import { NextResponse, type NextRequest } from 'next/server';
++import { enforceCsp } from './src/env';
++import { buildSecurityHeaders } from './src/security-headers';
++
++/**
++ * Every response from this origin passes through here and leaves with the
++ * header table from `security/transport-and-headers.md` §2 and a per-request
++ * CSP nonce (§3). It is the web origin's counterpart to the API's
++ * `SecurityHeadersMiddleware`.
++ *
++ * **Why this file is `proxy.ts` and not `middleware.ts`.** The task brief
++ * named `middleware.ts`. Next 16.3.2 renamed the convention: building with a
++ * `middleware.ts` present prints
++ *
++ *   ⚠ The "middleware" file convention is deprecated. Please use "proxy"
++ *     instead.
++ *
++ * — observed in this app's own build output before the rename, not inferred.
++ * Next detects both files and errors if both exist. Two things follow from
++ * the rename beyond the filename: the exported function must be named
++ * `proxy`, and **proxy always runs on the Node.js runtime** (Next enforces
++ * this — declaring a route-segment `runtime` in a proxy file is a build
++ * error, message: "Proxy always runs on Node.js runtime").
++ *
++ * That second point is load-bearing here. On Node, `process.env` is an
++ * ordinary fully-populated object, so `@sentinel/config`'s `loadEnv` works
++ * exactly as it does in `apps/api`, with none of the build-time-inlining
++ * caveats that would have applied to Edge middleware. Confirmed by observing
++ * the flag it derives actually change: `APP_ENV=development` produced
++ * `Content-Security-Policy-Report-Only` on a live response and
++ * `APP_ENV=test` produced `Content-Security-Policy`, which is only possible
++ * if `loadEnv` read the real environment from inside this file's bundle.
++ */
++export function proxy(request: NextRequest): NextResponse {
++  // A nonce reused across responses is one an attacker can read from one page
++  // and replay on the next, which is the same as having no nonce at all.
++  // randomUUID() is CSPRNG-backed; base64 keeps it to the token grammar
++  // `nonce-` expects.
++  const nonce = Buffer.from(crypto.randomUUID()).toString('base64');
++  const headers = buildSecurityHeaders(nonce, enforceCsp);
++
++  const cspHeaderName = enforceCsp
++    ? 'Content-Security-Policy'
++    : 'Content-Security-Policy-Report-Only';
++  const policy = headers[cspHeaderName];
++
++  // The nonce travels forward on the *request* so a server component can read
++  // it for a `next/script` tag. Next itself reads the CSP request header to
++  // find the nonce it stamps onto its own bootstrap scripts, which is why the
++  // policy is forwarded too and not just `x-nonce`.
++  const requestHeaders = new Headers(request.headers);
++  requestHeaders.set('x-nonce', nonce);
++  if (policy !== undefined) requestHeaders.set(cspHeaderName, policy);
++
++  const response = NextResponse.next({ request: { headers: requestHeaders } });
++  for (const [name, value] of Object.entries(headers)) response.headers.set(name, value);
++  return response;
++}
+diff --git a/apps/web/src/env.ts b/apps/web/src/env.ts
+new file mode 100644
+index 0000000..1a70079
+--- /dev/null
++++ b/apps/web/src/env.ts
+@@ -0,0 +1,34 @@
++import { loadEnv, webEnvSchema, type WebEnv } from '@sentinel/config';
++
++/**
++ * The web app's configuration, parsed once at module load.
++ *
++ * `packages/config` is the only place in this workspace permitted to read
++ * `process.env` (enforced by the `no-restricted-properties` rule in
++ * eslint.config.js), so this module is the single door between that package
++ * and everything in `apps/web`. `loadEnv` throws an `EnvValidationError`
++ * naming the offending variables — and never their values — so a
++ * misconfigured deployment fails loudly on the first module that touches
++ * config rather than confusingly on some later request.
++ *
++ * There is no `apps/web/.env`: `package.json`'s dev/build/start scripts run
++ * through `dotenv -e ../../.env`, the same repository-root file every other
++ * package uses, so there is one place to change a port.
++ */
++export const env: WebEnv = loadEnv(webEnvSchema);
++
++/**
++ * Whether the Content Security Policy is sent as `Content-Security-Policy`
++ * (enforcing) or `Content-Security-Policy-Report-Only`.
++ *
++ * `operations/environments.md` §4: report-only while iterating in development,
++ * enforcing in test, staging and production. Identical rule and identical
++ * derivation to the API's `CSP_ENFORCE` provider
++ * (`apps/api/src/infrastructure/config/config.module.ts`), and derived exactly
++ * once here so "enforcing everywhere except local" cannot drift per call site.
++ *
++ * Development is the one environment where Next's own dev tooling needs
++ * `'unsafe-eval'` for hot reload. Rather than punch that hole in the policy,
++ * development gets the report instead of the block.
++ */
++export const enforceCsp: boolean = env.APP_ENV !== 'development';
+diff --git a/apps/web/src/logger.ts b/apps/web/src/logger.ts
+new file mode 100644
+index 0000000..7f94e8d
+--- /dev/null
++++ b/apps/web/src/logger.ts
+@@ -0,0 +1,28 @@
++import { createLogger, type Logger } from '@sentinel/observability';
++import { env } from './env';
++
++/**
++ * The web origin's structured logger — the redacting one from
++ * `@sentinel/observability`, not `console`, which eslint.config.js bans
++ * outright (`no-console: error`, coding-standards.md §6).
++ *
++ * Same shape as the API's logger provider
++ * (`apps/api/src/infrastructure/config/config.module.ts`): pretty in
++ * development, JSON everywhere else, silent under `APP_ENV=test`.
++ *
++ * A note for whoever hits a bundler problem here later. pino's pretty mode
++ * runs through a worker-thread transport that resolves its target module by
++ * filesystem path at runtime, which is a classic thing for a bundler to
++ * break, so `serverExternalPackages: ['pino', 'pino-pretty']` went into
++ * `next.config.ts` pre-emptively. It came back out, because it turned out not
++ * to be needed: with that option commented out, a POST to `/api/csp-report`
++ * against `next start` produced a correct JSON line with `pretty: false` and a
++ * correct pretty-printed one with `pretty: true`. Nothing is being worked
++ * around here — but if that ever changes, the fix has a name.
++ */
++export const logger: Logger = createLogger({
++  service: 'web',
++  level: env.LOG_LEVEL,
++  pretty: env.APP_ENV === 'development',
++  silent: env.APP_ENV === 'test',
++});
+diff --git a/apps/web/src/security-headers.spec.ts b/apps/web/src/security-headers.spec.ts
+new file mode 100644
+index 0000000..cc051d4
+--- /dev/null
++++ b/apps/web/src/security-headers.spec.ts
+@@ -0,0 +1,71 @@
++import { describe, expect, it } from 'vitest';
++import { buildSecurityHeaders } from './security-headers.js';
++
++describe('buildSecurityHeaders', () => {
++  it('emits a CSP carrying the supplied nonce', () => {
++    const headers = buildSecurityHeaders('abc123', true);
++    expect(headers['Content-Security-Policy']).toContain("'nonce-abc123'");
++  });
++
++  it('never allows unsafe-inline or unsafe-eval', () => {
++    const csp = buildSecurityHeaders('abc123', true)['Content-Security-Policy'] ?? '';
++    expect(csp).not.toContain('unsafe-inline');
++    expect(csp).not.toContain('unsafe-eval');
++  });
++
++  it('sets frame-ancestors none and object-src none', () => {
++    const csp = buildSecurityHeaders('abc123', true)['Content-Security-Policy'] ?? '';
++    expect(csp).toContain("frame-ancestors 'none'");
++    expect(csp).toContain("object-src 'none'");
++  });
++
++  it('restricts fonts to self, which is what next/font self-hosting buys', () => {
++    const csp = buildSecurityHeaders('abc123', true)['Content-Security-Policy'] ?? '';
++    expect(csp).toContain("font-src 'self'");
++  });
++
++  it('reports rather than enforces when enforcement is off', () => {
++    const headers = buildSecurityHeaders('abc123', false);
++    expect(headers['Content-Security-Policy']).toBeUndefined();
++    expect(headers['Content-Security-Policy-Report-Only']).toBeDefined();
++  });
++
++  it('sets the full header table from transport-and-headers.md §2', () => {
++    const headers = buildSecurityHeaders('abc123', true);
++    expect(headers['Strict-Transport-Security']).toBe(
++      'max-age=31536000; includeSubDomains; preload',
++    );
++    expect(headers['X-Content-Type-Options']).toBe('nosniff');
++    expect(headers['X-Frame-Options']).toBe('DENY');
++    expect(headers['Referrer-Policy']).toBe('strict-origin-when-cross-origin');
++    expect(headers['Permissions-Policy']).toBe(
++      'camera=(), microphone=(), geolocation=(), payment=()',
++    );
++    expect(headers['Cross-Origin-Opener-Policy']).toBe('same-origin');
++    expect(headers['Cross-Origin-Resource-Policy']).toBe('same-origin');
++  });
++
++  // Divergence from apps/api's SecurityHeadersMiddleware, asserted rather than
++  // only commented: the API sets `Cache-Control: no-store` on every response
++  // because it serves nothing cacheable. This table is applied to every
++  // response on the web origin including `/_next/static/**`, which is served
++  // `public, max-age=31536000, immutable`; a blanket `no-store` would discard
++  // that. Next already sends `no-store` on the HTML. See security-headers.ts.
++  it('does not blanket-disable caching on the web origin', () => {
++    expect(buildSecurityHeaders('abc123', true)['Cache-Control']).toBeUndefined();
++  });
++
++  // The collector this points at is this origin's own app/api/csp-report
++  // route, not the API's /api/v1/csp-report — which, per
++  // transport-and-headers.md §3, still does not exist.
++  it('points report-uri at this origin collector', () => {
++    const csp = buildSecurityHeaders('abc123', true)['Content-Security-Policy'] ?? '';
++    expect(csp).toContain('report-uri /api/csp-report');
++  });
++
++  it('carries the same policy text whether enforcing or reporting', () => {
++    const enforced = buildSecurityHeaders('abc123', true)['Content-Security-Policy'];
++    const reported = buildSecurityHeaders('abc123', false)['Content-Security-Policy-Report-Only'];
++    expect(reported).toBe(enforced);
++  });
++});
+diff --git a/apps/web/src/security-headers.ts b/apps/web/src/security-headers.ts
+new file mode 100644
+index 0000000..eef37e8
+--- /dev/null
++++ b/apps/web/src/security-headers.ts
+@@ -0,0 +1,96 @@
++/**
++ * The web origin's response-header table (`security/transport-and-headers.md`
++ * §2) and its nonce-based Content Security Policy (§3), as a pure function so
++ * it can be asserted without booting Next.
++ *
++ * This is deliberately a near-copy of the API's
++ * `apps/api/src/common/middleware/security-headers.middleware.ts` rather than a
++ * shared package: the two origins serve different things and their policies
++ * are allowed to diverge. Where they do diverge, the reason is written down
++ * here and asserted in `security-headers.spec.ts`.
++ *
++ * Three deliberate divergences from the API's table:
++ *
++ * 1. **No blanket `Cache-Control: no-store`.** The API justifies its blanket
++ *    `no-store` with "the API serves nothing cacheable; every response may
++ *    contain tenant data". Neither half holds here, and §2 of
++ *    transport-and-headers.md scopes `no-store` to *authenticated* responses
++ *    rather than all of them. Every response leaves through this table,
++ *    including the build's own assets, and those are measured to answer
++ *    `Cache-Control: public, max-age=31536000, immutable` — a blanket
++ *    `no-store` set here would throw that away and re-download the whole
++ *    bundle on every navigation. Meanwhile Next already sends
++ *    `private, no-cache, no-store, max-age=0, must-revalidate` on the HTML
++ *    itself (measured on `/` and `/dashboard` against `next start`), so the
++ *    responses that will one day carry tenant data are covered without this
++ *    function touching the header at all.
++ *
++ * 2. **`report-uri` is `/api/csp-report`, on this origin**, not the API's
++ *    `/api/v1/csp-report`. Two reasons, in order of weight. The API's
++ *    collector does not exist — transport-and-headers.md §3 says so plainly,
++ *    and a report sent there would 404. And the report is about *this*
++ *    origin's policy, so keeping the collector same-origin means it does not
++ *    depend on the API being reachable, on CORS, or on the API's rate limiter
++ *    having an opinion about a browser-generated POST. The collector is
++ *    `app/api/csp-report/route.ts`.
++ *
++ * 3. **No `Cross-Origin-Embedder-Policy: require-corp`.** §2 scopes COEP to
++ *    "the app origin", and this Phase 1 shell has no cross-origin subresources
++ *    to protect — but COEP blocks any third-party resource that does not opt
++ *    in with CORP/CORS, which is a decision that belongs with the origin that
++ *    actually embeds something (the evidence viewer, Phase 5). Enabling it now
++ *    would be enforcing a rule against nothing and then discovering its cost
++ *    later.
++ *
++ * On `'unsafe-eval'`: it is never emitted, in any environment. Next's dev-mode
++ * HMR does need it, which is exactly why `operations/environments.md` §4 makes
++ * the policy report-only in development — a violation report in a terminal is
++ * a cheaper way to learn that than a policy with a permanent hole in it.
++ */
++
++/** The header value shared by every response, enforcing or reporting. */
++function buildContentSecurityPolicy(nonce: string): string {
++  return [
++    "default-src 'self'",
++    // 'strict-dynamic' means scripts loaded *by* a nonced script inherit
++    // trust, which is how Next's chunk loader works without an allowlist of
++    // build-hashed filenames that changes on every deploy.
++    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`,
++    `style-src 'self' 'nonce-${nonce}'`,
++    "img-src 'self' data: blob:",
++    // True rather than aspirational because next/font self-hosts IBM Plex at
++    // build time — see app/fonts.ts.
++    "font-src 'self'",
++    "connect-src 'self'",
++    "frame-ancestors 'none'",
++    "form-action 'self'",
++    "base-uri 'self'",
++    "object-src 'none'",
++    'upgrade-insecure-requests',
++    'report-uri /api/csp-report',
++  ].join('; ');
++}
++
++/**
++ * @param nonce   Per-request nonce. Must be freshly generated per response — a
++ *                nonce reused across responses is one an attacker can read
++ *                from one page and reuse on the next.
++ * @param enforceCsp `true` sends `Content-Security-Policy`; `false` sends
++ *                `Content-Security-Policy-Report-Only` with the identical
++ *                policy text. Derived from `APP_ENV` in one place
++ *                (`src/env.ts`) so it cannot drift per call site.
++ */
++export function buildSecurityHeaders(nonce: string, enforceCsp: boolean): Record<string, string> {
++  const policy = buildContentSecurityPolicy(nonce);
++
++  return {
++    'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload',
++    'X-Content-Type-Options': 'nosniff',
++    'X-Frame-Options': 'DENY',
++    'Referrer-Policy': 'strict-origin-when-cross-origin',
++    'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()',
++    'Cross-Origin-Opener-Policy': 'same-origin',
++    'Cross-Origin-Resource-Policy': 'same-origin',
++    [enforceCsp ? 'Content-Security-Policy' : 'Content-Security-Policy-Report-Only']: policy,
++  };
++}
+diff --git a/apps/web/tsconfig.json b/apps/web/tsconfig.json
+new file mode 100644
+index 0000000..ebb36ad
+--- /dev/null
++++ b/apps/web/tsconfig.json
+@@ -0,0 +1,40 @@
++{
++  // Extends the workspace base so `strict` and the five extra strictness flags
++  // (noUncheckedIndexedAccess, noImplicitOverride, exactOptionalPropertyTypes,
++  // noFallthroughCasesInSwitch, noUnused*) apply here exactly as they do
++  // everywhere else. Only what Next.js genuinely requires is overridden below.
++  "extends": "../../tsconfig.base.json",
++  "compilerOptions": {
++    // Next compiles this app with a bundler (Turbopack), not with `tsc`, and
++    // resolves `next/*` subpath exports and `.tsx` through bundler rules. The
++    // base's `nodenext` pair is right for the publishable packages and wrong
++    // here: under nodenext, `import ... from 'next/font/google'` and JSX in
++    // `.tsx` do not resolve the way the bundler will actually resolve them.
++    "module": "esnext",
++    "moduleResolution": "bundler",
++    "lib": ["ES2023", "DOM", "DOM.Iterable"],
++    // Next transforms JSX itself (its SWC pipeline), so tsc must hand it
++    // through untouched rather than lowering it to `jsx()` calls.
++    "jsx": "preserve",
++    // `tsc -p tsconfig.json --noEmit` is this package's typecheck; `next build`
++    // is its build. Nothing here is emitted by tsc, so the base's declaration
++    // and sourcemap emit options are switched off rather than left dangling.
++    "noEmit": true,
++    "declaration": false,
++    "declarationMap": false,
++    "sourceMap": false,
++    "allowJs": true,
++    "incremental": true,
++    "resolveJsonModule": true,
++    "types": ["node"],
++    // The Next TypeScript plugin — editor-only diagnostics for App Router
++    // conventions (server/client boundary mistakes, bad route exports).
++    "plugins": [{ "name": "next" }]
++  },
++  // `**/*.ts` deliberately reaches next.config.ts, playwright.config.ts,
++  // proxy.ts and e2e/**: every one of them is then inside a tsconfig project,
++  // which is what lets ESLint's `projectService` run type-aware rules on them
++  // instead of falling back to the root config-file block in eslint.config.js.
++  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
++  "exclude": ["node_modules", ".next"]
++}
+diff --git a/eslint.config.js b/eslint.config.js
+index c9527d1..49e38e4 100644
+--- a/eslint.config.js
++++ b/eslint.config.js
+@@ -65,32 +65,56 @@ export default tseslint.config(
+           patterns: [
+             {
+               group: ['**/unscoped', '**/unscoped.js', '@sentinel/db/unscoped'],
+               message: 'Use the tenant-scoped client. See security/tenant-isolation.md.',
+             },
+           ],
+         },
+       ],
+     },
+   },
+-  // Root config files (eslint.config.js, vitest.workspace.ts, and any other
+-  // root *.config.js / *.config.mjs / *.config.ts) belong to no tsconfig
+-  // project — type-aware rules cannot run on them. Deliberately not added to
+-  // a tsconfig; lint them type-unaware instead. Without an explicit tsconfig
+-  // project, typescript-eslint never pulls in @types/node's ambient globals,
+-  // so Node's ambient identifiers (process, console, __dirname, etc.) must be
+-  // declared here or `no-undef` (from js.configs.recommended) misfires on
+-  // legitimate references. This is why root config files like this one and
+-  // a future apps/web/playwright.config.ts (Task 13) or a root-level config
+-  // Task 12 may add need `globals.node`.
++  // Config files that belong to no tsconfig project — type-aware rules cannot
++  // run on them. Deliberately not added to a tsconfig; lint them type-unaware
++  // instead. Without an explicit tsconfig project, typescript-eslint never
++  // pulls in @types/node's ambient globals, so Node's ambient identifiers
++  // (process, console, __dirname, etc.) must be declared here or `no-undef`
++  // (from js.configs.recommended) misfires on legitimate references. That is
++  // what `globals.node` is for.
++  //
++  // **These globs are root-only, and that is not a typo.** An earlier version
++  // of this comment claimed the block would also cover "a future
++  // apps/web/playwright.config.ts (Task 13)". It does not: under ESLint flat
++  // config a pattern with no `/` is resolved against the config's base path
++  // and matches only that one directory level, so `*.config.ts` matches
++  // `./next.config.ts`-style root files and never `apps/web/*.config.ts`.
++  // Verified with `eslint --print-config apps/web/playwright.config.ts` once
++  // that file existed: the printed config had `no-undef` off (from
++  // typescript-eslint's eslint-recommended, not from this block), no `process`
++  // in `languageOptions.globals`, and `@typescript-eslint/no-floating-promises`
++  // still at `error` — i.e. this block did not apply and type-aware linting
++  // did.
++  //
++  // Nothing needed fixing for apps/web's TypeScript config files, because
++  // apps/web/tsconfig.json includes `**/*.ts` — next.config.ts,
++  // playwright.config.ts, proxy.ts and e2e/** are all inside a real project,
++  // so `projectService` type-checks them like any other source file, which is
++  // strictly better than the fallback this block provides. `postcss.config.mjs`
++  // is the one exception: it is not TypeScript, no tsconfig can include it,
++  // and without an entry here the project service refuses to parse it at all.
+   {
+-    files: ['*.config.js', '*.config.mjs', '*.config.ts', 'vitest.workspace.ts'],
++    files: [
++      '*.config.js',
++      '*.config.mjs',
++      '*.config.ts',
++      'vitest.workspace.ts',
++      'apps/*/postcss.config.mjs',
++    ],
+     extends: [tseslint.configs.disableTypeChecked],
+     languageOptions: { globals: globals.node },
+     rules: js.configs.recommended.rules,
+   },
+   // packages/config is the one place allowed to touch process.env
+   {
+     files: ['packages/config/src/**/*.ts'],
+     rules: { 'no-restricted-properties': 'off' },
+   },
+   // packages/db/src/seed.ts is a CLI script (`pnpm db:seed`), not a request
+@@ -139,20 +163,26 @@ export default tseslint.config(
+   // this reason, so it gets the same exemption. apps/api/src/testing is the
+   // same thing for the API: it builds the real application for a spec, which
+   // means loading `.env` and pinning NODE_ENV/APP_ENV to `test`.
+   {
+     files: [
+       '**/*.spec.ts',
+       '**/*.spec.tsx',
+       '**/*.integration.spec.ts',
+       'packages/db/src/testing/**/*.ts',
+       'apps/api/src/testing/**/*.ts',
++      // Playwright's own config is harness too: it reads `CI` to decide
++      // retries, reporter, and whether an already-running dev server may be
++      // reused. That is a property of the machine running the tests, not
++      // application configuration, and it is read before any Sentinel code
++      // loads — `packages/config`'s schema has no business describing it.
++      'apps/*/playwright.config.ts',
+     ],
+     rules: {
+       'no-restricted-imports': 'off',
+       '@typescript-eslint/no-non-null-assertion': 'off',
+       'no-restricted-properties': 'off',
+     },
+   },
+   // ui-ux/design-system.md §7 — "no component may use a raw hex value. A
+   // lint rule enforces it." Scoped to packages/ui now and written to also
+   // cover apps/web once Task 13 lands it, so a colour literal (in a class
+diff --git a/package.json b/package.json
+index fc8dabc..e546b57 100644
+--- a/package.json
++++ b/package.json
+@@ -7,20 +7,21 @@
+   "engines": {
+     "node": ">=22"
+   },
+   "scripts": {
+     "postinstall": "pnpm --filter @sentinel/db db:generate",
+     "build": "turbo run build",
+     "lint": "turbo run lint",
+     "typecheck": "turbo run typecheck",
+     "test": "vitest run --project unit --project ui --passWithNoTests",
+     "test:integration": "vitest run --project integration --passWithNoTests",
++    "test:e2e": "pnpm --filter @sentinel/web test:e2e",
+     "format": "prettier --write .",
+     "format:check": "prettier --check .",
+     "db:migrate": "dotenv -e .env -- pnpm --filter @sentinel/db exec prisma migrate dev",
+     "db:migrate:create": "dotenv -e .env -- pnpm --filter @sentinel/db exec prisma migrate dev --create-only",
+     "db:reset": "dotenv -e .env -- pnpm --filter @sentinel/db exec prisma migrate reset --force",
+     "db:studio": "dotenv -e .env -- pnpm --filter @sentinel/db exec prisma studio",
+     "db:seed": "dotenv -e .env -- pnpm --filter @sentinel/db db:seed"
+   },
+   "devDependencies": {
+     "@eslint/js": "^9.0.0",
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index fe26810..8dce57c 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -36,21 +36,21 @@ importers:
+         specifier: ^2.5.0
+         version: 2.10.11
+       typescript:
+         specifier: ^5.7.0
+         version: 5.9.3
+       typescript-eslint:
+         specifier: ^8.20.0
+         version: 8.67.0(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3)
+       vitest:
+         specifier: ^3.0.0
+-        version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(jsdom@25.0.1)(tsx@4.23.12)(yaml@2.9.0)
++        version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(jsdom@25.0.1)(lightningcss@1.32.0)(tsx@4.23.12)(yaml@2.9.0)
+ 
+   apps/api:
+     dependencies:
+       '@nestjs/common':
+         specifier: ^11.2.1
+         version: 11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)
+       '@nestjs/core':
+         specifier: ^11.2.1
+         version: 11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/platform-express@11.2.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)
+       '@nestjs/platform-express':
+@@ -102,20 +102,69 @@ importers:
+       dotenv-cli:
+         specifier: ^7.4.0
+         version: 7.4.4
+       supertest:
+         specifier: ^7.2.2
+         version: 7.2.2
+       typescript:
+         specifier: ^5.9.3
+         version: 5.9.3
+ 
++  apps/web:
++    dependencies:
++      '@sentinel/config':
++        specifier: workspace:*
++        version: link:../../packages/config
++      '@sentinel/observability':
++        specifier: workspace:*
++        version: link:../../packages/observability
++      '@sentinel/ui':
++        specifier: workspace:*
++        version: link:../../packages/ui
++      '@tanstack/react-query':
++        specifier: ^5.101.0
++        version: 5.101.4(react@19.2.8)
++      next:
++        specifier: ^16.3.2
++        version: 16.3.2(@playwright/test@1.62.1)(@types/node@22.20.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
++      react:
++        specifier: ^19.2.0
++        version: 19.2.8
++      react-dom:
++        specifier: ^19.2.0
++        version: 19.2.8(react@19.2.8)
++      zod:
++        specifier: ^3.25.76
++        version: 3.25.76
++    devDependencies:
++      '@playwright/test':
++        specifier: ^1.62.0
++        version: 1.62.1
++      '@tailwindcss/postcss':
++        specifier: ^4.3.3
++        version: 4.3.3
++      '@types/react':
++        specifier: ^19.0.0
++        version: 19.2.18
++      '@types/react-dom':
++        specifier: ^19.0.0
++        version: 19.2.4(@types/react@19.2.18)
++      dotenv-cli:
++        specifier: ^7.4.0
++        version: 7.4.4
++      tailwindcss:
++        specifier: ^4.3.3
++        version: 4.3.3
++      typescript:
++        specifier: ^5.9.3
++        version: 5.9.3
++
+   packages/config:
+     dependencies:
+       zod:
+         specifier: ^3.24.0
+         version: 3.25.76
+     devDependencies:
+       typescript:
+         specifier: ^5.7.0
+         version: 5.9.3
+ 
+@@ -220,20 +269,24 @@ importers:
+         version: 4.3.3
+       typescript:
+         specifier: ^5.7.0
+         version: 5.9.3
+ 
+ packages:
+ 
+   '@adobe/css-tools@4.5.0':
+     resolution: {integrity: sha512-6OzddxPio9UiWTCemp4N8cYLV2ZN1ncRnV1cVGtve7dhPOtRkleRyx32GQCYSwDYgaHU3USMm84tNsvKzRCa1Q==}
+ 
++  '@alloc/quick-lru@5.2.0':
++    resolution: {integrity: sha512-UrcABB+4bUrFABwbluTIBErXwvbsU/V7TZWfmbgJfbkwiBuziS9gxdODUyuiecfdGQ85jglMW6juS3+z5TsKLw==}
++    engines: {node: '>=10'}
++
+   '@asamuzakjp/css-color@3.2.0':
+     resolution: {integrity: sha512-K1A6z8tS3XsmCMM86xoWdn7Fkdn9m6RSVtocUrJYIwZnFVkng/PvkEoWtOWmP+Scc6saYWHWZYbndEEXxl24jw==}
+ 
+   '@aws-sdk/checksums@3.1000.28':
+     resolution: {integrity: sha512-VCpnmyHQ1IH49ni3LXnQj7DPr7rmcJmzYeiCkYdCcfgNtkvOj38cdcL9lapBWoItZWFACJPFJlymqC7/gem3Gw==}
+     engines: {node: '>=20.0.0'}
+ 
+   '@aws-sdk/client-s3@3.1113.0':
+     resolution: {integrity: sha512-NRqdtohoMRyWkEeeznfG1KPN08dclCbl+HFuLPB2v8qPcgoNmTFlLKl9ELiR6hsGXQ4Ur3qvRnoJVEk8ND74pg==}
+     engines: {node: '>=20.0.0'}
+@@ -351,20 +404,23 @@ packages:
+   '@csstools/css-tokenizer@3.0.4':
+     resolution: {integrity: sha512-Vd/9EVDiu6PPJt9yAh6roZP6El1xHrdvIVGjyBsHR0RYwNHgL7FJPyIIW4fANJNG6FtyZfvlRPpFI4ZM/lubvw==}
+     engines: {node: '>=18'}
+ 
+   '@emnapi/core@1.10.0':
+     resolution: {integrity: sha512-yq6OkJ4p82CAfPl0u9mQebQHKPJkY7WrIuk205cTYnYe+k2Z8YBh11FrbRG/H6ihirqcacOgl2BIO8oyMQLeXw==}
+ 
+   '@emnapi/runtime@1.10.0':
+     resolution: {integrity: sha512-ewvYlk86xUoGI0zQRNq/mC+16R1QeDlKQy21Ki3oSYXNgLb45GV1P6A0M+/s6nyCuNDqe5VpaY84BzXGwVbwFA==}
+ 
++  '@emnapi/runtime@1.11.3':
++    resolution: {integrity: sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA==}
++
+   '@emnapi/wasi-threads@1.2.1':
+     resolution: {integrity: sha512-uTII7OYF+/Mes/MrcIOYp5yOtSMLBWSIoLPpcgwipoiKbli6k322tcoFsxoIIxPDqW01SQGAgko4EzZi2BNv2w==}
+ 
+   '@esbuild/aix-ppc64@0.28.2':
+     resolution: {integrity: sha512-XExcO+dvLKvVtNTibSTBej1NCAbaGhWn9Ww1ZPx80qsahhPFe/8jgWP0IchNe0F3HwkU7n8ejhH8bjonqht8mQ==}
+     engines: {node: '>=18'}
+     cpu: [ppc64]
+     os: [aix]
+ 
+   '@esbuild/android-arm64@0.28.2':
+@@ -586,30 +642,205 @@ packages:
+     engines: {node: '>=18.18.0'}
+ 
+   '@humanwhocodes/module-importer@1.0.1':
+     resolution: {integrity: sha512-bxveV4V8v5Yb4ncFTT3rPSgZBOpCkjfK0y4oVVVJwIuDVBRMDXrPyXRL988i5ap9m9bnyEEjWfm5WkBmtffLfA==}
+     engines: {node: '>=12.22'}
+ 
+   '@humanwhocodes/retry@0.4.3':
+     resolution: {integrity: sha512-bV0Tgo9K4hfPCek+aMAn81RppFKv2ySDQeMoSZuvTASywNTnVJCArCZE2FWqpvIatKu7VMRLWlR1EazvVhDyhQ==}
+     engines: {node: '>=18.18'}
+ 
++  '@img/colour@1.1.0':
++    resolution: {integrity: sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ==}
++    engines: {node: '>=18'}
++
++  '@img/sharp-darwin-arm64@0.35.3':
++    resolution: {integrity: sha512-RMnFX7YQsMoh7lWfcM4NEHHymBX/rLuKNPVM84XE9ONPcaSCDgE7CHIHpSgPcO2xcRthgBy1HfNO319mwhIAkg==}
++    engines: {node: '>=20.9.0'}
++    cpu: [arm64]
++    os: [darwin]
++
++  '@img/sharp-darwin-x64@0.35.3':
++    resolution: {integrity: sha512-Xo+5uFBtLN0BKqieTxiFzFPQAUlBbbH5iBKyRX/z1JrbnYsHTfKJnUfL8+p2TPXr1pXqao4eeL4Rl144uDpK9w==}
++    engines: {node: '>=20.9.0'}
++    cpu: [x64]
++    os: [darwin]
++
++  '@img/sharp-freebsd-wasm32@0.35.3':
++    resolution: {integrity: sha512-lUxcqWIj2wMQ9BrwNjngcr1gWUr5xgaGThBRqPPalIC2n67Cqj1uPh8NnA/ZhAg8hUbKl+kVHKwgUIwe6ZYPrg==}
++    engines: {node: '>=20.9.0'}
++    os: [freebsd]
++
++  '@img/sharp-libvips-darwin-arm64@1.3.2':
++    resolution: {integrity: sha512-9J6ypZFpQBj4YnePGoq/S38w6nz+vqg5WZLrLGY4YuSemdMq47GMLBPO42MzwdGwpg/agZ7xzZcFHa48xlywfg==}
++    cpu: [arm64]
++    os: [darwin]
++
++  '@img/sharp-libvips-darwin-x64@1.3.2':
++    resolution: {integrity: sha512-m2pW1n6cns9VaubNwsZ+c3CRYjxNQWgJ5gPlnL1nbBcpkBvFm6SCFN5o0psFHI8w9n11NKhFkeEDns98tiqbEw==}
++    cpu: [x64]
++    os: [darwin]
++
++  '@img/sharp-libvips-linux-arm64@1.3.2':
++    resolution: {integrity: sha512-dqVSFynCox4C/J8kT16V7SIFAns0IjgLwkvYT7p8LQVmJ5OS5b6tI9IGflxTeuBS//zXeFIUbwt5dwxyZ17cnA==}
++    cpu: [arm64]
++    os: [linux]
++    libc: [glibc]
++
++  '@img/sharp-libvips-linux-arm@1.3.2':
++    resolution: {integrity: sha512-1eMLzy92I4J6rmi4mAT8yC3HxOtniyGELlzGbNMLLeqe052ahFQ0h6LFq+lh5DsDIdYViIDst08abvSbcEdLXQ==}
++    cpu: [arm]
++    os: [linux]
++    libc: [glibc]
++
++  '@img/sharp-libvips-linux-ppc64@1.3.2':
++    resolution: {integrity: sha512-3z0NHDxD6n5I9gc05U1eW1AyRm+Gznzq3naMrthPNqE6oYykcogW0l/jfpJdjYnuNl8R7yI9pNbE1XiUeyq0Aw==}
++    cpu: [ppc64]
++    os: [linux]
++    libc: [glibc]
++
++  '@img/sharp-libvips-linux-riscv64@1.3.2':
++    resolution: {integrity: sha512-bsb4rI+NldGOsXuej2r8OdSS8+zXDVaCWxyWrcv6kneTOlgAHtZABRzBBCwdsPiD90J4myNJuHpg6kA20ImW/w==}
++    cpu: [riscv64]
++    os: [linux]
++    libc: [glibc]
++
++  '@img/sharp-libvips-linux-s390x@1.3.2':
++    resolution: {integrity: sha512-/ABshyj8gCpyIrNXnHn4LorDJ0HHm1VhXPBlxZ8zAtfVPAaSafXPGn+sUSIRiwaSBy0mmFjSjiXI5mkcwdChKQ==}
++    cpu: [s390x]
++    os: [linux]
++    libc: [glibc]
++
++  '@img/sharp-libvips-linux-x64@1.3.2':
++    resolution: {integrity: sha512-ITPEtgffGJ0S6G9dRyw/366tJQqFRcHWPHhC+Stpg3Z8AEMrDrTr2lhdz4f/Y/HMbRh//7Z5mBzEpVdi62Oc3w==}
++    cpu: [x64]
++    os: [linux]
++    libc: [glibc]
++
++  '@img/sharp-libvips-linuxmusl-arm64@1.3.2':
++    resolution: {integrity: sha512-zE9EdiUzUmg5mDT5a1rk5fYJ6GWPloTwWBYDS14naqHsL+EaMpDj1AWnpLgh3u0YCORv2Tt50wrcrpYqkP97Kw==}
++    cpu: [arm64]
++    os: [linux]
++    libc: [musl]
++
++  '@img/sharp-libvips-linuxmusl-x64@1.3.2':
++    resolution: {integrity: sha512-m0lrLiUt+lBYnCFr8qV/65yMR4E/c7/wf78I5eKTdkEakFAlZ9QlzEM3QIhhAwVeUhLAHLcCq7a7Vszq/oFNZQ==}
++    cpu: [x64]
++    os: [linux]
++    libc: [musl]
++
++  '@img/sharp-linux-arm64@0.35.3':
++    resolution: {integrity: sha512-QgKDspHPnrU+GQ55XPhGwyhC8acLVOOSyAvo1oVfFmrIXLkDNmGWzAfDZ4xK8oSA1qBQrALcHX0G5UZni/SuFQ==}
++    engines: {node: '>=20.9.0'}
++    cpu: [arm64]
++    os: [linux]
++    libc: [glibc]
++
++  '@img/sharp-linux-arm@0.35.3':
++    resolution: {integrity: sha512-affVWCTLooy8TSxbDx2qkzuDeaWLNVBA+P//FNBirHsXpP2fuBhk5AuboYUnrDnzoXes8GFjpTx0SBFOCRg+FA==}
++    engines: {node: '>=20.9.0'}
++    cpu: [arm]
++    os: [linux]
++    libc: [glibc]
++
++  '@img/sharp-linux-ppc64@0.35.3':
++    resolution: {integrity: sha512-sMd8rDxmpLOwv/7N44klFjOD5DUO7FLdjiXDI0hoxYaf7Ar262dQIEkosE98bps+5HPLtp/EvNqeqQtOycP/IA==}
++    engines: {node: '>=20.9.0'}
++    cpu: [ppc64]
++    os: [linux]
++    libc: [glibc]
++
++  '@img/sharp-linux-riscv64@0.35.3':
++    resolution: {integrity: sha512-0Eob78yjlYPfL5vMNWAW55l3R9Y6BQS/gOfe0ZcP9mEz9ohhKSt4im1hayiknXgf8AWrFqMvJcKIdmLmEe7yeQ==}
++    engines: {node: '>=20.9.0'}
++    cpu: [riscv64]
++    os: [linux]
++    libc: [glibc]
++
++  '@img/sharp-linux-s390x@0.35.3':
++    resolution: {integrity: sha512-KgAxQ0DxpNOq1rG2t5cgTgShJFGSuU7XO45cqC+1NVOuZnP6tlgZRuSYOfNupGkHID0o3cJOsw4DVeJpMovcGw==}
++    engines: {node: '>=20.9.0'}
++    cpu: [s390x]
++    os: [linux]
++    libc: [glibc]
++
++  '@img/sharp-linux-x64@0.35.3':
++    resolution: {integrity: sha512-8pqvxubL2PGdhlPy6GLqzDYMUjyRmKAwKHYKixpdJYBUK7PJ0C029XdsnpFIdgRZG68fZiGdHVWcKPvtiPB4cA==}
++    engines: {node: '>=20.9.0'}
++    cpu: [x64]
++    os: [linux]
++    libc: [glibc]
++
++  '@img/sharp-linuxmusl-arm64@0.35.3':
++    resolution: {integrity: sha512-Vz0iQjzzcSX3HCbfwFfCSG/9SCIqyO0mH2sXyiHaAYfBk0cRsCWXRyQYX0ovCK/PAQBbTzQ0dsPQHh5MAFL59w==}
++    engines: {node: '>=20.9.0'}
++    cpu: [arm64]
++    os: [linux]
++    libc: [musl]
++
++  '@img/sharp-linuxmusl-x64@0.35.3':
++    resolution: {integrity: sha512-6O1NPKcDVj9QEdg7Hx549EX8U0rp6yXQERqru6yRN7fGBn32UvIRJUlWnk+8xDCiG76hXVBbX82NZ/ZKr0euIg==}
++    engines: {node: '>=20.9.0'}
++    cpu: [x64]
++    os: [linux]
++    libc: [musl]
++
++  '@img/sharp-wasm32@0.35.3':
++    resolution: {integrity: sha512-cZ0XkcYGpHZkqW6iCkqTcmUC0CD9DhD5d/qeZlZkfRBn6GnHniZXLUo5+9xw8Iv76YE6LQFN9YNBlKREcCG76w==}
++    engines: {node: '>=20.9.0'}
++
++  '@img/sharp-webcontainers-wasm32@0.35.3':
++    resolution: {integrity: sha512-2rnq7bX3NzeR2T4YWgz8qiG4h3TSdMe+vN1iQXpJleSJ3SM5zQ8Fy2SyyXAWlbxpEZ2Y+Z4u1BePgJEYbSy80Q==}
++    engines: {node: '>=20.9.0'}
++    cpu: [wasm32]
++
++  '@img/sharp-win32-arm64@0.35.3':
++    resolution: {integrity: sha512-4bPwFdMbeC4JQ8L8LOyWp6nsHcboP5fxkp6iPOXz2Vg49R42TuMs2whkJ5OAP4/Ul035qOzy0AecOF9VOscn4w==}
++    engines: {node: '>=20.9.0'}
++    cpu: [arm64]
++    os: [win32]
++
++  '@img/sharp-win32-ia32@0.35.3':
++    resolution: {integrity: sha512-r53mXsBN6lFUDiST764SvgwUdHAqM4rPAiDzAmf4fLoB6X/rkfyTrLCg6+g17wJJiCmB3JYgHuUldCWUIRFSXw==}
++    engines: {node: ^20.9.0}
++    cpu: [ia32]
++    os: [win32]
++
++  '@img/sharp-win32-x64@0.35.3':
++    resolution: {integrity: sha512-D4y1vNeZrIIJCN+uHaWVtH86B+aCrdMYYjicy9pXHvbGZeGYLLSd3wdVuC37FxVXlU1ARsk84eKWfWMXGYEqvA==}
++    engines: {node: '>=20.9.0'}
++    cpu: [x64]
++    os: [win32]
++
+   '@ioredis/commands@1.10.0':
+     resolution: {integrity: sha512-UmeW7z4LfctwoQ5wkhVzgq8tXkreED2xZGpX+Bg+zA+WJFZCT6c062AfCK/Dfk81xZnnwdhJCUMkitihRaoC2Q==}
+ 
+   '@isaacs/cliui@8.0.2':
+     resolution: {integrity: sha512-O8jcjabXaleOG9DQ0+ARXWZBTfnP4WNAqzuiJK7ll44AmxGKv/J2M4TPjxjY3znBCfvBXFzucm1twdyFybFqEA==}
+     engines: {node: '>=12'}
+ 
++  '@jridgewell/gen-mapping@0.3.13':
++    resolution: {integrity: sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==}
++
++  '@jridgewell/remapping@2.3.5':
++    resolution: {integrity: sha512-LI9u/+laYG4Ds1TDKSJW2YPrIlcVYOwi2fUC6xB43lueCjgxV4lffOCZCtYFiH6TNOX+tQKXx97T4IKHbhyHEQ==}
++
++  '@jridgewell/resolve-uri@3.1.2':
++    resolution: {integrity: sha512-bRISgCIjP20/tbWSPWMEi54QVPRZExkuD9lJL+UIxUKtwVJA8wW1Trb1jMs1RFXo1CBTNZ/5hpC9QvmKWdopKw==}
++    engines: {node: '>=6.0.0'}
++
+   '@jridgewell/sourcemap-codec@1.5.5':
+     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
+ 
++  '@jridgewell/trace-mapping@0.3.31':
++    resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
++
+   '@js-sdsl/ordered-map@4.4.2':
+     resolution: {integrity: sha512-iUKgm52T8HOE/makSxjqoWhe95ZJA1/G1sYsGev2JDKUSS14KAgg1LHb+Ba+IPow0xflbnSkOsZcO08C7w1gYw==}
+ 
+   '@lukeed/csprng@1.1.0':
+     resolution: {integrity: sha512-Z7C/xXCiGWsg0KuKsHTKJxbWhpI3Vs5GwLfOean7MGyVFGqdRgBbAjOCh6u4bbjPc/8MJ2pZmK/0DLdCbivLDA==}
+     engines: {node: '>=8'}
+ 
+   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
+     resolution: {integrity: sha512-oTXEIha4SsuXdTA4Iyskj0kpdx2yVXdhd75c2v3xGrHFfVMsbhTPZU/nMPL4sWKo4pBHm3aucLaqGlF696dTyQ==}
+     engines: {node: ^22.20 || ^24.12 || >=25}
+@@ -667,34 +898,94 @@ packages:
+       '@nestjs/common': ^11.0.0
+       '@nestjs/core': ^11.0.0
+       '@nestjs/microservices': ^11.0.0
+       '@nestjs/platform-express': ^11.0.0
+     peerDependenciesMeta:
+       '@nestjs/microservices':
+         optional: true
+       '@nestjs/platform-express':
+         optional: true
+ 
++  '@next/env@16.3.2':
++    resolution: {integrity: sha512-8k4YoG8cM7LWlkfzGNYCRBbFNlernLiMw4s0btVl+CmmWqn3VpYypA72/5Feb1UWdxe6tHqr5KHP4p4Y4m9luA==}
++
++  '@next/swc-darwin-arm64@16.3.2':
++    resolution: {integrity: sha512-ib5Llm93YCKoKWDh6ZaHq6QWTuOZ2bRkSnUwMmX8dsRIOkBNL1vVlSiUKSfixPL9SSh9pvukzqajk/klkn5vqg==}
++    engines: {node: '>= 10'}
++    cpu: [arm64]
++    os: [darwin]
++
++  '@next/swc-darwin-x64@16.3.2':
++    resolution: {integrity: sha512-qd98fX2+I5nYJDioW2o7nSjoxM5KvWdeDefM80igia4+C/qSIEhH4MhTE+hO/7qKM7W37/Mq+dOWp8UePSyLHw==}
++    engines: {node: '>= 10'}
++    cpu: [x64]
++    os: [darwin]
++
++  '@next/swc-linux-arm64-gnu@16.3.2':
++    resolution: {integrity: sha512-vqsgb6FAOzcrCccsLXiKtAy5t8EzO+uOazuFaSkQxeY0tNONG3vpHYy8pyBafcI5SNFPTeyard6yTr6SzNGo2A==}
++    engines: {node: '>= 10'}
++    cpu: [arm64]
++    os: [linux]
++    libc: [glibc]
++
++  '@next/swc-linux-arm64-musl@16.3.2':
++    resolution: {integrity: sha512-xIe1eujfHUB2XcxHGddxJyu6TJRPjC5NpIkQYB/32ESkt5VkQyIAjmLRS38c+s6QY+qjtY/4KarVDzXRuD7lZQ==}
++    engines: {node: '>= 10'}
++    cpu: [arm64]
++    os: [linux]
++    libc: [musl]
++
++  '@next/swc-linux-x64-gnu@16.3.2':
++    resolution: {integrity: sha512-Fe0SA2j8X0kmc3aveuHD7UktO3AE2+mH3LguP60vGbz7u0z+MrDXbeb5iZFYAwR7EzzzXJ2Yk966w9mGTFMqfA==}
++    engines: {node: '>= 10'}
++    cpu: [x64]
++    os: [linux]
++    libc: [glibc]
++
++  '@next/swc-linux-x64-musl@16.3.2':
++    resolution: {integrity: sha512-TFBipb+gyesI/2Ve4zVu7kGltBWN/R466G5/1gtt2lECfc22G1pjkTxu68Q9aFcOaXiRGTQfvDbQQFe7mYgxiQ==}
++    engines: {node: '>= 10'}
++    cpu: [x64]
++    os: [linux]
++    libc: [musl]
++
++  '@next/swc-win32-arm64-msvc@16.3.2':
++    resolution: {integrity: sha512-rVtmnNpBYIosDnKD/96dKxFsJnwnn1WRGG/HioSe8XCm2ksSHNrd2R6+hSjvTBxeMNhJ9pYeu/90cWB1nQLuNA==}
++    engines: {node: '>= 10'}
++    cpu: [arm64]
++    os: [win32]
++
++  '@next/swc-win32-x64-msvc@16.3.2':
++    resolution: {integrity: sha512-H4Y2o2/JcHu8LtwzD5CXfHhwxwz8gfsx2HXDEw46Mtev5xHnEmB7HNtZtmriw5ReUOjRtcDqo7XSbU01FT9NlA==}
++    engines: {node: '>= 10'}
++    cpu: [x64]
++    os: [win32]
++
+   '@noble/hashes@1.8.0':
+     resolution: {integrity: sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A==}
+     engines: {node: ^14.21.3 || >=16}
+ 
+   '@paralleldrive/cuid2@2.3.1':
+     resolution: {integrity: sha512-XO7cAxhnTZl0Yggq6jOgjiOHhbgcO4NqFqwSmQpjK3b6TEE6Uj/jfSk6wzYyemh3+I0sHirKSetjQwn5cZktFw==}
+ 
+   '@pinojs/redact@0.4.0':
+     resolution: {integrity: sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg==}
+ 
+   '@pkgjs/parseargs@0.11.0':
+     resolution: {integrity: sha512-+1VkjdD0QBLPodGrJUeqarH8VAIvQODIbwh9XpP5Syisf7YoQgsJKPNFoqqLQlu+VQ/tVSshMR6loPMn8U+dPg==}
+     engines: {node: '>=14'}
+ 
++  '@playwright/test@1.62.1':
++    resolution: {integrity: sha512-DTcUc8qii+cpHvtOwggMtBRMjKZHXYWdw8syRYu2vtzuq4Wxphqq4NfCs5Zt44L6mA8rfDfj+PHnxFc/FeK6mQ==}
++    engines: {node: '>=20'}
++    hasBin: true
++
+   '@prisma/client@6.19.3':
+     resolution: {integrity: sha512-mKq3jQFhjvko5LTJFHGilsuQs+W+T3Gm451NzuTDGQxwCzwXHYnIu2zGkRoW+Exq3Rob7yp2MfzSrdIiZVhrBg==}
+     engines: {node: '>=18.18'}
+     peerDependencies:
+       prisma: '*'
+       typescript: '>=5.1.0'
+     peerDependenciesMeta:
+       prisma:
+         optional: true
+       typescript:
+@@ -906,20 +1197,123 @@ packages:
+     resolution: {integrity: sha512-P7Ki6px6OOrxVtx8K7nLmyx4SlXUW/uTKDdMG44UHefmPGSRMBKe2v+TM59WdLcpUIrBrnuCsIqiM2MbsZjmhw==}
+     engines: {node: '>=18.0.0'}
+ 
+   '@smithy/types@4.17.2':
+     resolution: {integrity: sha512-FOKpVZob9MPTn2znRzGrnsMHv7BOsKVw3XiP/cOyYLDVZ9qKp4nifIiSCuUU/fIj5Vu0UOAxCFr+qRAtG0NUkA==}
+     engines: {node: '>=18.0.0'}
+ 
+   '@standard-schema/spec@1.1.0':
+     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
+ 
++  '@swc/helpers@0.5.23':
++    resolution: {integrity: sha512-5lSsMOTXURePglDfvuAQUqkGek9Hg2kksOYay2m0+XR++b2NWYL/4sWyuvVBIs8oKnJaxkdi9whaL/sqN13afw==}
++
++  '@tailwindcss/node@4.3.3':
++    resolution: {integrity: sha512-/T8IKEsf9VTU6tLjgC7+sv2mOPtQxzE2jMw7u4Tt40Tx+QSZxpzh95/H6cMKoja9XuW7iMdLJYBB0o9G1CaAgg==}
++
++  '@tailwindcss/oxide-android-arm64@4.3.3':
++    resolution: {integrity: sha512-Y85A2gmPSkl5Ve5qR86GL4HT509cFqQh1aes9p3sSkyTPwt0Pppf3GkwGe4JPACcRYjgJIEhQgM6dBClnr0NYw==}
++    engines: {node: '>= 20'}
++    cpu: [arm64]
++    os: [android]
++
++  '@tailwindcss/oxide-darwin-arm64@4.3.3':
++    resolution: {integrity: sha512-BiaWatpBcERQFDlOjRDpIVXuFK5PJez5SA4JMg6VYZdBYU+qKfV/vqjcIs+IYmtitf1xYQZTwXvU/8y4lfZUGw==}
++    engines: {node: '>= 20'}
++    cpu: [arm64]
++    os: [darwin]
++
++  '@tailwindcss/oxide-darwin-x64@4.3.3':
++    resolution: {integrity: sha512-fAeUqfV5ndhxRwai8cXGzdLvul9utWOmeTkv69unv4ZXixjn61Z+p9lCWdwOwA3TYboG3BwdVuN/RDjhBRl0mw==}
++    engines: {node: '>= 20'}
++    cpu: [x64]
++    os: [darwin]
++
++  '@tailwindcss/oxide-freebsd-x64@4.3.3':
++    resolution: {integrity: sha512-iyf5bV6+wnAlflVeEy7R25dupxTNECZN5QMI0qNT6eT+EgaGdZcKhGkr5SdoaWiLJ3spLqIY9VCeSGrwmtg4kw==}
++    engines: {node: '>= 20'}
++    cpu: [x64]
++    os: [freebsd]
++
++  '@tailwindcss/oxide-linux-arm-gnueabihf@4.3.3':
++    resolution: {integrity: sha512-aAYUprJAJQWWbRrPvtjdroZ56Md+JM8pMiopS6xGEwDfLhqj+2ver2p4nU4Mb3CRqcMmNBjo8KkUgcxhkzVQGQ==}
++    engines: {node: '>= 20'}
++    cpu: [arm]
++    os: [linux]
++
++  '@tailwindcss/oxide-linux-arm64-gnu@4.3.3':
++    resolution: {integrity: sha512-nDxldcEENOxZRzC2uu9jrutZdAAQtb+8WWDCSnWL1zvBk1+FN+x6MtDViPB5AJMfttVCUhehGWus3XBPgatM/w==}
++    engines: {node: '>= 20'}
++    cpu: [arm64]
++    os: [linux]
++    libc: [glibc]
++
++  '@tailwindcss/oxide-linux-arm64-musl@4.3.3':
++    resolution: {integrity: sha512-Md44bD6veX/PC5iyF8cDVnw4HBIANZepRZZ7a8DQOvkfo5WUBwcp6iAuCUz23u+4SUkhJlD3eL7hNdW8ezd/kA==}
++    engines: {node: '>= 20'}
++    cpu: [arm64]
++    os: [linux]
++    libc: [musl]
++
++  '@tailwindcss/oxide-linux-x64-gnu@4.3.3':
++    resolution: {integrity: sha512-tx7us1muwOKAKWao2v/GaafFeQboE6aj88vC6ziN2NCGcRm8gWUhwjzg+YdVB1e4boAtdtma4L43onunI6NS4w==}
++    engines: {node: '>= 20'}
++    cpu: [x64]
++    os: [linux]
++    libc: [glibc]
++
++  '@tailwindcss/oxide-linux-x64-musl@4.3.3':
++    resolution: {integrity: sha512-SJxX60smvHgasZoBy11dX6YRjXJFovwWBoedhbQPOBzgFWBHGB+TVPWB9BxzR7TTxU8FQZAI2AyiNCMzFm8Img==}
++    engines: {node: '>= 20'}
++    cpu: [x64]
++    os: [linux]
++    libc: [musl]
++
++  '@tailwindcss/oxide-wasm32-wasi@4.3.3':
++    resolution: {integrity: sha512-jx1+rPhY/5Ympkktd656HBWEBLxP7dH06losBLjjf5vgCODXvi9KhtftWcMIwTFIDqBr7cRnQkdLnAG+IOlGvQ==}
++    engines: {node: '>=14.0.0'}
++    cpu: [wasm32]
++    bundledDependencies:
++      - '@napi-rs/wasm-runtime'
++      - '@emnapi/core'
++      - '@emnapi/runtime'
++      - '@tybys/wasm-util'
++      - '@emnapi/wasi-threads'
++      - tslib
++
++  '@tailwindcss/oxide-win32-arm64-msvc@4.3.3':
++    resolution: {integrity: sha512-3rc292Ca2ceK6Ulcc/bAVnTs/3nDtoPhyEKlgPv+yQJQi/JS/AMJlqzxvlDacL1nekbrcf6bTqp/jV4qgnPxNQ==}
++    engines: {node: '>= 20'}
++    cpu: [arm64]
++    os: [win32]
++
++  '@tailwindcss/oxide-win32-x64-msvc@4.3.3':
++    resolution: {integrity: sha512-yJ0pwIVc/nYeGoV02WtsN8KYyLQv7kyI2wDnkezyJlGGjkd4QLwDGAwl47YpPJeuI0M0ObaXGSPjvWDPeTPggw==}
++    engines: {node: '>= 20'}
++    cpu: [x64]
++    os: [win32]
++
++  '@tailwindcss/oxide@4.3.3':
++    resolution: {integrity: sha512-krXjAikiaFSPaK/FkAQT5UTx3VormQaiZ5hBFlJZ9UFQGB/rwg1MZIhHAG9smMQRTdyJxP6Qt5MwMtdyU5FWrA==}
++    engines: {node: '>= 20'}
++
++  '@tailwindcss/postcss@4.3.3':
++    resolution: {integrity: sha512-JTSZZGQi1AyKirbLN3azmjVzef92tcX7h+iSqPdaeStyFpGpDlKvvpxeOE8njhbUanbRwr3z8DyzhICWnMtQeg==}
++
++  '@tanstack/query-core@5.101.4':
++    resolution: {integrity: sha512-gNwcvOJcRbLWPOLG/2OBm+zM+Yv+MKsXKEOWC57USuZDEsI71hEErQsiEGx5wX9rzWWkfwM0fVSPoiIFSsxfiw==}
++
++  '@tanstack/react-query@5.101.4':
++    resolution: {integrity: sha512-yRg2pfOCxIs4ZJW3XYYHU/WgtD04FHSnfHlpRT7h7pR77hwkdRG4wxbKe4aq6P0RvXUTBSQpQeadS1SUYUe+KA==}
++    peerDependencies:
++      react: ^18 || ^19
++
+   '@testcontainers/postgresql@10.28.0':
+     resolution: {integrity: sha512-NN25rruG5D4Q7pCNIJuHwB+G85OSeJ3xHZ2fWx0O6sPoPEfCYwvpj8mq99cyn68nxFkFYZeyrZJtSFO+FnydiA==}
+ 
+   '@testing-library/dom@10.4.1':
+     resolution: {integrity: sha512-o4PXJQidqJl82ckFaXUeoAW+XysPLauYI43Abki5hABd853iMhitooc6znOnczgbTYmEP6U6/y1ZyKAIsvMKGg==}
+     engines: {node: '>=18'}
+ 
+   '@testing-library/jest-dom@6.10.0':
+     resolution: {integrity: sha512-HQwu0KaB2zyT0iLzBL+8CLyZDL3KlZlZJ+2iyc9uCUnlJVskJU/UlPuVCyIPhtukjPQdT2QNoR5nCP5FqTmmDQ==}
+     engines: {node: '>=22', npm: '>=6', yarn: '>=1'}
+@@ -1451,20 +1845,25 @@ packages:
+         optional: true
+       bare-events:
+         optional: true
+ 
+   bare-url@2.5.2:
+     resolution: {integrity: sha512-L13PCJzKG8RGvx8V1/DdMi12ERhC3tprr7/8a94BxpmnRsFqxh5XZNdhtMxu5HPkRshYOOWRGY8lDP7ZhpG9Cg==}
+ 
+   base64-js@1.5.1:
+     resolution: {integrity: sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA==}
+ 
++  baseline-browser-mapping@2.11.15:
++    resolution: {integrity: sha512-FwMjJJ7HnyZpWe+oWxegG0fezZyBZUagI5LZEoO3GCbtbKNwRfMH9Ue5d5v01PNePBy1QSfPSDTTeVL0Hb9EzA==}
++    engines: {node: '>=6.0.0'}
++    hasBin: true
++
+   bcrypt-pbkdf@1.0.2:
+     resolution: {integrity: sha512-qeFIXtP4MSoi6NLqO12WfqARWWuCKi2Rn/9hJLEmtB5yTNr9DqFWkJRCf2qShWzPeAMRnOgCrq0sg/KLv5ES9w==}
+ 
+   bl@4.1.0:
+     resolution: {integrity: sha512-1W07cM9gS6DcLperZfFSj+bWLtaPGSOHWhPiGzXmvVJbRLdG82sH/Kn8EtW1VqWVA54AKf2h5k5BbnIbwF3h6w==}
+ 
+   body-parser@2.3.0:
+     resolution: {integrity: sha512-2cGmJupaNgg+QUwVLAucDuWuoMZ6EX9iHDRswZ5lsNYEmwPaRknMPCLZz07yTzVq/83p4o/wzbDZbBrTvGGTIw==}
+     engines: {node: '>=18'}
+ 
+@@ -1531,20 +1930,23 @@ packages:
+     engines: {node: '>= 0.4'}
+ 
+   call-bound@1.0.4:
+     resolution: {integrity: sha512-+ys997U96po4Kx/ABpBCqhA9EuxJaQWDQg7295H4hBphv3IZg0boBKuwYpt4YXp6MZ5AmZQnU/tyMTlRpaSejg==}
+     engines: {node: '>= 0.4'}
+ 
+   callsites@3.1.0:
+     resolution: {integrity: sha512-P8BjAsXvZS+VIDUI11hHCQEv74YT67YUi5JJFNWIqL235sBmjX4+qx9Muvls5ivyNENctx46xQLQ3aTuE7ssaQ==}
+     engines: {node: '>=6'}
+ 
++  caniuse-lite@1.0.30001809:
++    resolution: {integrity: sha512-xxWVywk6a6Arlk+hymeycyn/VgqEfLDxupvhH/xiY5SJ/18kmi9o6MiO320DCUzypORHLtvh0I4i04tUhCNHNQ==}
++
+   chai@5.3.3:
+     resolution: {integrity: sha512-4zNhdJD/iOjSH0A05ea+Ke6MU5mmpQcbQsSOkgdaUMJ9zTlDTD/GYlwohmIE2u0gaxHYiVHEn1Fw9mZ/ktJWgw==}
+     engines: {node: '>=18'}
+ 
+   chalk@4.1.2:
+     resolution: {integrity: sha512-oKnbhFyRIXpUuez8iBMmyEa4nbj4IOQyuhc/wy9kY7/WVPcwIO9VA668Pu8RkO7+0G76SLROeyw9CpQ061i4mA==}
+     engines: {node: '>=10'}
+ 
+   check-error@2.1.3:
+     resolution: {integrity: sha512-PAJdDJusoxnwm1VwW07VWwUN1sl7smmC3OKggvndJFadxxDRyFJBX/ggnu/KE4kQAB7a3Dp8f/YXC1FlUprWmA==}
+@@ -1556,20 +1958,23 @@ packages:
+ 
+   chownr@1.1.4:
+     resolution: {integrity: sha512-jJ0bqzaylmJtVnNgzTeSOs8DPavpbYgEr/b0YL8/2GO3xJEhInFmhKMUnEJQjZumK7KXGFhUy89PrsJWlakBVg==}
+ 
+   citty@0.1.6:
+     resolution: {integrity: sha512-tskPPKEs8D2KPafUypv2gxwJP8h/OaJmC82QQGGDQcHvXX43xF2VDACcJVmZ0EuSxkpO9Kc4MlrA3q0+FG58AQ==}
+ 
+   citty@0.2.2:
+     resolution: {integrity: sha512-+6vJA3L98yv+IdfKGZHBNiGW5KHn22e/JwID0Strsz8h4S/csAu/OuICwxrg44k5MRiZHWIo8XXuJgQTriRP4w==}
+ 
++  client-only@0.0.1:
++    resolution: {integrity: sha512-IV3Ou0jSMzZrd3pZ48nLkT9DA7Ag1pnPzaiQhpW7c3RbcqqzvzzVu+L8gfqMp/8IM2MQtSiqaCxrrcfu8I8rMA==}
++
+   cliui@8.0.1:
+     resolution: {integrity: sha512-BSeNnyus75C4//NQ9gQt1/csTXyo/8Sb+afLAkzAptFuMsod9HFokGNudZpi/oQV73hnVK+sR+5PVRMd+Dr7YQ==}
+     engines: {node: '>=12'}
+ 
+   cluster-key-slot@1.1.1:
+     resolution: {integrity: sha512-rwHwUfXL40Chm1r08yrhU3qpUvdVlgkKNeyeGPOxnW8/SyVDvgRaed/Uz54AqWNaTCAThlj6QAs3TZcKI0xDEw==}
+     engines: {node: '>=0.10.0'}
+ 
+   color-convert@2.0.1:
+     resolution: {integrity: sha512-RRECPsj7iu/xb5oKYcsFHSppFNnsj/52OVTRKb4zP5onXwVF3zVmmToNcOfGC+CRDpfK/U584fMg38ZHCaElKQ==}
+@@ -1736,20 +2141,24 @@ packages:
+     resolution: {integrity: sha512-g7nH6P6dyDioJogAAGprGpCtVImJhpPk/roCzdb3fIh61/s/nPsfR6onyMwkCAR/OlC3yBC0lESvUoQEAssIrw==}
+     engines: {node: '>= 0.8'}
+ 
+   dequal@2.0.3:
+     resolution: {integrity: sha512-0je+qPKHEMohvfRTCEo3CrPG6cAzAYgmzKyxRiYSSDkS6eGJdyVJm7WaYA5ECaAD9wLB2T4EEeymA5aFVcYXCA==}
+     engines: {node: '>=6'}
+ 
+   destr@2.0.5:
+     resolution: {integrity: sha512-ugFTXCtDZunbzasqBxrK93Ik/DRYsO6S/fedkWEMKqt04xZ4csmnmwGDBAb07QWNaGMAmnTIemsYZCksjATwsA==}
+ 
++  detect-libc@2.1.2:
++    resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
++    engines: {node: '>=8'}
++
+   dezalgo@1.0.4:
+     resolution: {integrity: sha512-rXSP0bf+5n0Qonsb+SVVfNfIsimO4HEtmnIpPHY8Q1UCzKlQrDMfdobr8nJOOsRgWCyMRqeSBQzmWUMq7zvVig==}
+ 
+   docker-compose@0.24.8:
+     resolution: {integrity: sha512-plizRs/Vf15H+GCVxq2EUvyPK7ei9b/cVesHvjnX4xaXjM9spHe2Ytq0BitndFgvTJ3E3NljPNUEl7BAN43iZw==}
+     engines: {node: '>= 6.0.0'}
+ 
+   docker-modem@5.0.7:
+     resolution: {integrity: sha512-XJgGhoR/CLpqshm4d3L7rzH6t8NgDFUIIpztYlLHIApeJjMZKYJMz2zxPsYxnejq5h3ELYSw/RBsi3t5h7gNTA==}
+     engines: {node: '>= 8.0'}
+@@ -1803,20 +2212,24 @@ packages:
+     resolution: {integrity: sha512-i6UzDscO/XfAcNYD75CfICkmfLedpyPDdozrLMmQc5ORaQcdMoc21OnlEylMIqI7U8eniKrPMxxtj8k0vhmJhA==}
+     engines: {node: '>=14'}
+ 
+   encodeurl@2.0.0:
+     resolution: {integrity: sha512-Q0n9HRi4m6JuGIV1eFlmvJB7ZEVxu93IrMyiMsGC0lrMJMWzRgx6WGquyfQgZVb31vhGgXnfmPNNXmxnOkRBrg==}
+     engines: {node: '>= 0.8'}
+ 
+   end-of-stream@1.4.5:
+     resolution: {integrity: sha512-ooEGc6HP26xXq/N+GCGOT0JKCLDGrq2bQUZrQ7gyrJiZANJ/8YDTxTpQBXGMn+WbIQXNVpyWymm7KYVICQnyOg==}
+ 
++  enhanced-resolve@5.24.5:
++    resolution: {integrity: sha512-L1l8TNvomm6UVW5B253AGxQagSQr+vGwhMlrrfRS2qmhx46AMpMVJKQYLvWYbysTMY8VoicOvzHzoHMbyzB+4A==}
++    engines: {node: '>=10.13.0'}
++
+   entities@6.0.1:
+     resolution: {integrity: sha512-aN97NXWF6AWBTahfVOIrB/NShkzi5H7F9r1s9mD3cDj4Ko5f2qhhVoYMibXF7GlLveb/D2ioWay8lxI97Ven3g==}
+     engines: {node: '>=0.12'}
+ 
+   es-abstract-get@1.0.0:
+     resolution: {integrity: sha512-6PMWXpdhshVvFp+FoWYs1EvG1Nj0tvk0dZM+XcK0xMEM1czRVcP6ohqPWHy6qPagSpC8j4+p89WXlT+xXJs/fg==}
+     engines: {node: '>= 0.4'}
+ 
+   es-abstract@1.24.2:
+     resolution: {integrity: sha512-2FpH9Q5i2RRwyEP1AylXe6nYLR5OhaJTZwmlcP0dL/+JCbgg7yyEo/sEK6HeGZRf3dFpWwThaRHVApXSkW3xeg==}
+@@ -2071,20 +2484,25 @@ packages:
+     resolution: {integrity: sha512-buRG0fpBtRHSTCOASe6hD258tEubFoRLb4ZNA6NxMVHNw2gOcwHo9wyablzMzOA5z9xA9L1KNjk/Nt6MT9aYow==}
+     engines: {node: '>= 0.6'}
+ 
+   fresh@2.0.0:
+     resolution: {integrity: sha512-Rx/WycZ60HOaqLKAi6cHRKKI7zxWbJ31MhntmtwMoaTeF7XFH9hhBp8vITaMidfljRQ6eYWCKkaTK+ykVJHP2A==}
+     engines: {node: '>= 0.8'}
+ 
+   fs-constants@1.0.0:
+     resolution: {integrity: sha512-y6OAwoSIf7FyjMIv94u+b5rdheZEjzR63GTyZJm5qh4Bi+2YgwLCcI/fPFZkL5PSixOt6ZNKm+w+Hfp/Bciwow==}
+ 
++  fsevents@2.3.2:
++    resolution: {integrity: sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==}
++    engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
++    os: [darwin]
++
+   fsevents@2.3.3:
+     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
+     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
+     os: [darwin]
+ 
+   function-bind@1.1.2:
+     resolution: {integrity: sha512-7XHNxH7qX9xG5mIwxkhumTox/MIRNcOgDrxWsMt2pAr23WHp6MrRlN7FBSFpCpr+oVO0F744iUgR82nJMfG2SA==}
+ 
+   function.prototype.name@1.2.0:
+     resolution: {integrity: sha512-jObKIik1P2QjPHP5nz5BaOtUlfgS0fWo8IUByNXkM+o+02sJOi94em77GwJKQSJ3gfPHdgzLNrHc1uokV4P/ew==}
+@@ -2421,20 +2839,94 @@ packages:
+     resolution: {integrity: sha512-oxVHkHR/EJf2CNXnWxRLW6mg7JyCCUcG0DtEGmL2ctUo1PNTin1PUil+r/+4r5MpVgC/fn1kjsx7mjSujKqIpw==}
+ 
+   lazystream@1.0.1:
+     resolution: {integrity: sha512-b94GiNHQNy6JNTrt5w6zNyffMrNkXZb3KTkCZJb2V1xaEGCk093vkZ2jk3tpaeP33/OiXC+WvK9AxUebnf5nbw==}
+     engines: {node: '>= 0.6.3'}
+ 
+   levn@0.4.1:
+     resolution: {integrity: sha512-+bT2uH4E5LGE7h/n3evcS/sQlJXCpIp6ym8OWJ5eV6+67Dsql/LaaT7qJBAt2rzfoa/5QBGBhxDix1dMt2kQKQ==}
+     engines: {node: '>= 0.8.0'}
+ 
++  lightningcss-android-arm64@1.32.0:
++    resolution: {integrity: sha512-YK7/ClTt4kAK0vo6w3X+Pnm0D2cf2vPHbhOXdoNti1Ga0al1P4TBZhwjATvjNwLEBCnKvjJc2jQgHXH0NEwlAg==}
++    engines: {node: '>= 12.0.0'}
++    cpu: [arm64]
++    os: [android]
++
++  lightningcss-darwin-arm64@1.32.0:
++    resolution: {integrity: sha512-RzeG9Ju5bag2Bv1/lwlVJvBE3q6TtXskdZLLCyfg5pt+HLz9BqlICO7LZM7VHNTTn/5PRhHFBSjk5lc4cmscPQ==}
++    engines: {node: '>= 12.0.0'}
++    cpu: [arm64]
++    os: [darwin]
++
++  lightningcss-darwin-x64@1.32.0:
++    resolution: {integrity: sha512-U+QsBp2m/s2wqpUYT/6wnlagdZbtZdndSmut/NJqlCcMLTWp5muCrID+K5UJ6jqD2BFshejCYXniPDbNh73V8w==}
++    engines: {node: '>= 12.0.0'}
++    cpu: [x64]
++    os: [darwin]
++
++  lightningcss-freebsd-x64@1.32.0:
++    resolution: {integrity: sha512-JCTigedEksZk3tHTTthnMdVfGf61Fky8Ji2E4YjUTEQX14xiy/lTzXnu1vwiZe3bYe0q+SpsSH/CTeDXK6WHig==}
++    engines: {node: '>= 12.0.0'}
++    cpu: [x64]
++    os: [freebsd]
++
++  lightningcss-linux-arm-gnueabihf@1.32.0:
++    resolution: {integrity: sha512-x6rnnpRa2GL0zQOkt6rts3YDPzduLpWvwAF6EMhXFVZXD4tPrBkEFqzGowzCsIWsPjqSK+tyNEODUBXeeVHSkw==}
++    engines: {node: '>= 12.0.0'}
++    cpu: [arm]
++    os: [linux]
++
++  lightningcss-linux-arm64-gnu@1.32.0:
++    resolution: {integrity: sha512-0nnMyoyOLRJXfbMOilaSRcLH3Jw5z9HDNGfT/gwCPgaDjnx0i8w7vBzFLFR1f6CMLKF8gVbebmkUN3fa/kQJpQ==}
++    engines: {node: '>= 12.0.0'}
++    cpu: [arm64]
++    os: [linux]
++    libc: [glibc]
++
++  lightningcss-linux-arm64-musl@1.32.0:
++    resolution: {integrity: sha512-UpQkoenr4UJEzgVIYpI80lDFvRmPVg6oqboNHfoH4CQIfNA+HOrZ7Mo7KZP02dC6LjghPQJeBsvXhJod/wnIBg==}
++    engines: {node: '>= 12.0.0'}
++    cpu: [arm64]
++    os: [linux]
++    libc: [musl]
++
++  lightningcss-linux-x64-gnu@1.32.0:
++    resolution: {integrity: sha512-V7Qr52IhZmdKPVr+Vtw8o+WLsQJYCTd8loIfpDaMRWGUZfBOYEJeyJIkqGIDMZPwPx24pUMfwSxxI8phr/MbOA==}
++    engines: {node: '>= 12.0.0'}
++    cpu: [x64]
++    os: [linux]
++    libc: [glibc]
++
++  lightningcss-linux-x64-musl@1.32.0:
++    resolution: {integrity: sha512-bYcLp+Vb0awsiXg/80uCRezCYHNg1/l3mt0gzHnWV9XP1W5sKa5/TCdGWaR/zBM2PeF/HbsQv/j2URNOiVuxWg==}
++    engines: {node: '>= 12.0.0'}
++    cpu: [x64]
++    os: [linux]
++    libc: [musl]
++
++  lightningcss-win32-arm64-msvc@1.32.0:
++    resolution: {integrity: sha512-8SbC8BR40pS6baCM8sbtYDSwEVQd4JlFTOlaD3gWGHfThTcABnNDBda6eTZeqbofalIJhFx0qKzgHJmcPTnGdw==}
++    engines: {node: '>= 12.0.0'}
++    cpu: [arm64]
++    os: [win32]
++
++  lightningcss-win32-x64-msvc@1.32.0:
++    resolution: {integrity: sha512-Amq9B/SoZYdDi1kFrojnoqPLxYhQ4Wo5XiL8EVJrVsB8ARoC1PWW6VGtT0WKCemjy8aC+louJnjS7U18x3b06Q==}
++    engines: {node: '>= 12.0.0'}
++    cpu: [x64]
++    os: [win32]
++
++  lightningcss@1.32.0:
++    resolution: {integrity: sha512-NXYBzinNrblfraPGyrbPoD19C1h9lfI/1mzgWYvXUTe414Gz/X1FD2XBZSZM7rRTrMA8JL3OtAaGifrIKhQ5yQ==}
++    engines: {node: '>= 12.0.0'}
++
+   load-esm@1.0.3:
+     resolution: {integrity: sha512-v5xlu8eHD1+6r8EHTg6hfmO97LN8ugKtiXcy5e6oN72iD2r6u0RPfLl6fxM+7Wnh2ZRq15o0russMst44WauPA==}
+     engines: {node: '>=13.2.0'}
+ 
+   locate-path@6.0.0:
+     resolution: {integrity: sha512-iPZK6eYjbxRu3uB4/WZ3EsEIMJFMqAoopl3R+zuq0UjcAm/MO6KCweDgPfP3elTztoKP3KtnVHxTn2NHBSDVUw==}
+     engines: {node: '>=10'}
+ 
+   lodash.camelcase@4.3.0:
+     resolution: {integrity: sha512-TwuEnCnxbc3rAvhf/LbG7tJUDzhqXyFnv3dtzLOPgCG/hODL7WFnsbwktkD7yUV0RrreP/l1PALq/YSg6VvjlA==}
+@@ -2556,20 +3048,41 @@ packages:
+     engines: {node: ^12.20.0 || ^14.18.0 || >=16.0.0}
+     hasBin: true
+ 
+   natural-compare@1.4.0:
+     resolution: {integrity: sha512-OWND8ei3VtNC9h7V60qff3SVobHr996CTwgxubgyQYEpg290h9J0buyECNNJexkFm5sOajh5G116RYA1c8ZMSw==}
+ 
+   negotiator@1.0.0:
+     resolution: {integrity: sha512-8Ofs/AUQh8MaEcrlq5xOX0CQ9ypTF5dl78mjlMNfOK08fzpgTHQRQPBxcPlEtIw0yRpws+Zo/3r+5WRby7u3Gg==}
+     engines: {node: '>= 0.6'}
+ 
++  next@16.3.2:
++    resolution: {integrity: sha512-/ZCaubUy17Lld1SiPWxuPbCk2ihqAxF2QNQaPZeEaEb7t1I58qhsJN187D7AfpapHAqUPXH0f/thtdW9dWgWFg==}
++    engines: {node: '>=20.9.0'}
++    hasBin: true
++    peerDependencies:
++      '@opentelemetry/api': ^1.1.0
++      '@playwright/test': ^1.51.1
++      babel-plugin-react-compiler: '*'
++      react: ^18.2.0 || 19.0.0-rc-de68d2f4-20241204 || ^19.0.0
++      react-dom: ^18.2.0 || 19.0.0-rc-de68d2f4-20241204 || ^19.0.0
++      sass: ^1.3.0
++    peerDependenciesMeta:
++      '@opentelemetry/api':
++        optional: true
++      '@playwright/test':
++        optional: true
++      babel-plugin-react-compiler:
++        optional: true
++      sass:
++        optional: true
++
+   node-exports-info@1.6.2:
+     resolution: {integrity: sha512-kXs9Go0cah0qHVV2v389IXQLdLCeE1xfFtjOAF+iobu0OIoG1pje8At2vMHyaPMiPMnG/LWP50twML21eMcAag==}
+     engines: {node: '>= 0.4'}
+ 
+   node-fetch-native@1.6.7:
+     resolution: {integrity: sha512-g9yhqoedzIUm0nTnTqAQvueMPVOuIY16bqgAJJC8XOOubYFNwz6IER9qs0Gq2Xd0+CecCKFjtdDTMA4u4xG06Q==}
+ 
+   normalize-path@3.0.0:
+     resolution: {integrity: sha512-6eZs5Ls3WtCisHWp9S2GUy8dqkpGi4BVSz3GaqiE6ezub0512ESztXUwUB6C6IKbQkY2Pnb/mD4WYojCRwcwLA==}
+     engines: {node: '>=0.10.0'}
+@@ -2706,24 +3219,38 @@ packages:
+   pino-std-serializers@7.1.0:
+     resolution: {integrity: sha512-BndPH67/JxGExRgiX1dX0w1FvZck5Wa4aal9198SrRhZjH3GxKQUKIBnYJTdj2HDN3UQAS06HlfcSbQj2OHmaw==}
+ 
+   pino@9.14.0:
+     resolution: {integrity: sha512-8OEwKp5juEvb/MjpIc4hjqfgCNysrS94RIOMXYvpYCdm/jglrKEiAYmiumbmGhCvs+IcInsphYDFwqrjr7398w==}
+     hasBin: true
+ 
+   pkg-types@2.3.1:
+     resolution: {integrity: sha512-y+ichcgc2LrADuhLNAx8DFjVfgz91pRxfZdI3UDhxHvcVEZsenLO+7XaU5vOp0u/7V/wZ+plyuQxtrDlZJ+yeg==}
+ 
++  playwright-core@1.62.1:
++    resolution: {integrity: sha512-wPYSwEBJY9GHraISXqyqtx0na0LpO3XEX7jNDhntbex7tzUS7kLnZsOlFruFJB4Hi/rhDMjXGqHewDZ68nYZVw==}
++    engines: {node: '>=20'}
++    hasBin: true
++
++  playwright@1.62.1:
++    resolution: {integrity: sha512-0M+L3LAD8/nm554LOla9Ayx0j0tmFZ0FBcoQ7F1VuVHpM/XpiC8RcDzBQB8W5+hA8L22THxELzeF+2WcUzvcLg==}
++    engines: {node: '>=20'}
++    hasBin: true
++
+   possible-typed-array-names@1.1.0:
+     resolution: {integrity: sha512-/+5VFTchJDoVj3bhoqi6UeymcD00DAwb1nJwamzPvHEszJ4FpF6SNNbUbOS8yI56qHzdV8eK0qEfOSiodkTdxg==}
+     engines: {node: '>= 0.4'}
+ 
++  postcss@8.5.23:
++    resolution: {integrity: sha512-g50586zr4bZmwFiTlflMu8E0bDTb5I5gertgwAKmsdUlTQIhZtunzUlD1WSzwcVWPoAVpsrA6vlfCD7oXvRwgg==}
++    engines: {node: ^10 || ^12 || >=14}
++
+   postcss@8.5.26:
+     resolution: {integrity: sha512-u82N74LFzG8ca+dD8puPnplTXoGH4fTPpVGuIbt36G3qvNlkvfD0lEAZSxaly3KX8TS/L1A1gsCEmvKmBcVbkQ==}
+     engines: {node: ^10 || ^12 || >=14}
+ 
+   prelude-ls@1.2.1:
+     resolution: {integrity: sha512-vkcDPrRZo1QZLbn5RLGPpg/WmIQ65qoWWhcGKf/b5eplkkarX0m9z8ppCat4mlOqUsWpyNuYgO3VRyrYHSzX5g==}
+     engines: {node: '>= 0.8.0'}
+ 
+   prettier@3.9.6:
+     resolution: {integrity: sha512-OpN0zzVdiaiAhxpuuj5efpIS4sY9j7bY6uR5mnj5yPzGkdkjNKSJeUThPb60Jw29QuAZgA4o+/iB49kFiaBX6g==}
+@@ -2952,20 +3479,29 @@ packages:
+     resolution: {integrity: sha512-7PGFlmtwsEADb0WYyvCMa1t+yke6daIG4Wirafur5kcf+MhUnPms1UeR0CKQdTZD81yESwMHbtn+TR+dMviakQ==}
+     engines: {node: '>= 0.4'}
+ 
+   set-proto@1.0.0:
+     resolution: {integrity: sha512-RJRdvCo6IAnPdsvP/7m6bsQqNnn1FCBX5ZNtFL98MmFF/4xAIJTIg1YbHW5DC2W5SKZanrC6i4HsJqlajw/dZw==}
+     engines: {node: '>= 0.4'}
+ 
+   setprototypeof@1.2.0:
+     resolution: {integrity: sha512-E5LDX7Wrp85Kil5bhZv46j8jOeboKq5JMmYM3gVGdGH8xFpPWXUMsNrlODCrkoxMEeNi/XZIwuRvY4XNwYMJpw==}
+ 
++  sharp@0.35.3:
++    resolution: {integrity: sha512-ej0zVHuZGHCiABXcNxeYhpRnPNPAcvbG8RMdBAhDAxLKkCRVSpK3Iyu7qbqw3JMzoj0REeM6f3tJLtVwl0023Q==}
++    engines: {node: '>=20.9.0'}
++    peerDependencies:
++      '@types/node': '*'
++    peerDependenciesMeta:
++      '@types/node':
++        optional: true
++
+   shebang-command@2.0.0:
+     resolution: {integrity: sha512-kHxr2zZpYtdmrN1qDjrrX/Z1rR1kG8Dx+gkpK1G4eXmvXswmcE1hTWBWYUzlraYw1/yZp6YuDY77YtvbN0dmDA==}
+     engines: {node: '>=8'}
+ 
+   shebang-regex@3.0.0:
+     resolution: {integrity: sha512-7++dFhtcx3353uBaq8DDR4NuxBetBzC7ZQOhmTQInHEd6bSrXdiEyzCvG07Z44UYdLShWUyXt5M/yhz8ekcb1A==}
+     engines: {node: '>=8'}
+ 
+   side-channel-list@1.0.1:
+     resolution: {integrity: sha512-mjn/0bi/oUURjc5Xl7IaWi/OJJJumuoJFQJfDDyO46+hBWsfaVM65TBHq2eoZBhzl9EchxOijpkbRC8SVBQU0w==}
+@@ -3092,20 +3628,33 @@ packages:
+     resolution: {integrity: sha512-1tB5mhVo7U+ETBKNf92xT4hrQa3pm0MZ0PQvuDnWgAAGHDsfp4lPSpiS6psrSiet87wyGPh9ft6wmhOMQ0hDiw==}
+     engines: {node: '>=14.16'}
+ 
+   strip-literal@3.1.0:
+     resolution: {integrity: sha512-8r3mkIM/2+PpjHoOtiAW8Rg3jJLHaV7xPwG+YRGrv6FP0wwk/toTpATxWYOW0BKdWwl82VT2tFYi5DlROa0Mxg==}
+ 
+   strtok3@10.3.5:
+     resolution: {integrity: sha512-ki4hZQfh5rX0QDLLkOCj+h+CVNkqmp/CMf8v8kZpkNVK6jGQooMytqzLZYUVYIZcFZ6yDB70EfD8POcFXiF5oA==}
+     engines: {node: '>=18'}
+ 
++  styled-jsx@5.1.6:
++    resolution: {integrity: sha512-qSVyDTeMotdvQYoHWLNGwRFJHC+i+ZvdBRYosOFgC+Wg1vx4frN2/RG/NA7SYqqvKNLf39P2LSRA2pu6n0XYZA==}
++    engines: {node: '>= 12.0.0'}
++    peerDependencies:
++      '@babel/core': '*'
++      babel-plugin-macros: '*'
++      react: '>= 16.8.0 || 17.x.x || ^18.0.0-0 || ^19.0.0-0'
++    peerDependenciesMeta:
++      '@babel/core':
++        optional: true
++      babel-plugin-macros:
++        optional: true
++
+   superagent@10.3.0:
+     resolution: {integrity: sha512-B+4Ik7ROgVKrQsXTV0Jwp2u+PXYLSlqtDAhYnkkD+zn3yg8s/zjA2MeGayPoY/KICrbitwneDHrjSotxKL+0XQ==}
+     engines: {node: '>=14.18.0'}
+ 
+   supertest@7.2.2:
+     resolution: {integrity: sha512-oK8WG9diS3DlhdUkcFn4tkNIiIbBx9lI2ClF8K+b2/m8Eyv47LSawxUzZQSNKUrVb2KsqeTDCcjAAVPYaSLVTA==}
+     engines: {node: '>=14.18.0'}
+ 
+   supports-color@7.2.0:
+     resolution: {integrity: sha512-qpCAvRl9stuOHveKsn7HncJRvv501qIacKzQlO/+Lwxc9+0q2wLyv4Dfvt80/DPn2pqOBsJdDiogXGR9+OvwRw==}
+@@ -3114,20 +3663,24 @@ packages:
+   supports-preserve-symlinks-flag@1.0.0:
+     resolution: {integrity: sha512-ot0WnXS9fgdkgIcePe6RHNk1WA8+muPa6cSjeR3V8K27q9BB1rTE3R1p7Hv0z1ZyAc8s6Vvv8DIyWf681MAt0w==}
+     engines: {node: '>= 0.4'}
+ 
+   symbol-tree@3.2.4:
+     resolution: {integrity: sha512-9QNk5KwDF+Bvz+PyObkmSYjI5ksVUYtjW7AU22r2NKcfLJcXp96hkDWU3+XndOsUb+AQ9QhfzfCT2O+CNWT5Tw==}
+ 
+   tailwindcss@4.3.3:
+     resolution: {integrity: sha512-gOhV3P7ufE62QDGg1zVaTgCR+EtPv92k2nIhVcVKcLmxT1sUBsQGhnZj175j+MqRt4zLF7ic+sCYjfhxMxj7YQ==}
+ 
++  tapable@2.3.3:
++    resolution: {integrity: sha512-uxc/zpqFg6x7C8vOE7lh6Lbda8eEL9zmVm/PLeTPBRhh1xCgdWaQ+J1CUieGpIfm2HdtsUpRv+HshiasBMcc6A==}
++    engines: {node: '>=6'}
++
+   tar-fs@2.1.5:
+     resolution: {integrity: sha512-OboTd8mmMhZDNPV+UjQcK9yKAatXu2aJ+r1w4im1Otd4M4fl2hwvdoXUxIYHFTHWK/3y3FarBP70v3vwmGlOxw==}
+ 
+   tar-fs@3.1.3:
+     resolution: {integrity: sha512-/hU4AXnIdZu+Gvl1pk0oI5f5HxWsCJRtY2aFaJdk9VvyL48DWU6iU5WAIPG+wIi1YvWA6eTJvIviP/tMAZZNwQ==}
+ 
+   tar-stream@2.2.0:
+     resolution: {integrity: sha512-ujeqbceABgwMZxEJnk2HDY2DlnUZ+9oEcb1KzTVfYHio0UE6dG71n60d8D2I4qNvleWrrXpmjpt7vZeF1LnMZQ==}
+     engines: {node: '>=6'}
+ 
+@@ -3498,20 +4051,22 @@ packages:
+     peerDependencies:
+       zod: ^3.25.28 || ^4
+ 
+   zod@3.25.76:
+     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+ 
+ snapshots:
+ 
+   '@adobe/css-tools@4.5.0': {}
+ 
++  '@alloc/quick-lru@5.2.0': {}
++
+   '@asamuzakjp/css-color@3.2.0':
+     dependencies:
+       '@csstools/css-calc': 2.1.4(@csstools/css-parser-algorithms@3.0.5(@csstools/css-tokenizer@3.0.4))(@csstools/css-tokenizer@3.0.4)
+       '@csstools/css-color-parser': 3.1.0(@csstools/css-parser-algorithms@3.0.5(@csstools/css-tokenizer@3.0.4))(@csstools/css-tokenizer@3.0.4)
+       '@csstools/css-parser-algorithms': 3.0.5(@csstools/css-tokenizer@3.0.4)
+       '@csstools/css-tokenizer': 3.0.4
+       lru-cache: 10.4.3
+ 
+   '@aws-sdk/checksums@3.1000.28':
+     dependencies:
+@@ -3725,20 +4280,25 @@ snapshots:
+     dependencies:
+       '@emnapi/wasi-threads': 1.2.1
+       tslib: 2.8.1
+     optional: true
+ 
+   '@emnapi/runtime@1.10.0':
+     dependencies:
+       tslib: 2.8.1
+     optional: true
+ 
++  '@emnapi/runtime@1.11.3':
++    dependencies:
++      tslib: 2.8.1
++    optional: true
++
+   '@emnapi/wasi-threads@1.2.1':
+     dependencies:
+       tslib: 2.8.1
+     optional: true
+ 
+   '@esbuild/aix-ppc64@0.28.2':
+     optional: true
+ 
+   '@esbuild/android-arm64@0.28.2':
+     optional: true
+@@ -3891,33 +4451,157 @@ snapshots:
+       '@humanfs/core': 0.19.2
+       '@humanfs/types': 0.15.0
+       '@humanwhocodes/retry': 0.4.3
+ 
+   '@humanfs/types@0.15.0': {}
+ 
+   '@humanwhocodes/module-importer@1.0.1': {}
+ 
+   '@humanwhocodes/retry@0.4.3': {}
+ 
++  '@img/colour@1.1.0':
++    optional: true
++
++  '@img/sharp-darwin-arm64@0.35.3':
++    optionalDependencies:
++      '@img/sharp-libvips-darwin-arm64': 1.3.2
++    optional: true
++
++  '@img/sharp-darwin-x64@0.35.3':
++    optionalDependencies:
++      '@img/sharp-libvips-darwin-x64': 1.3.2
++    optional: true
++
++  '@img/sharp-freebsd-wasm32@0.35.3':
++    dependencies:
++      '@img/sharp-wasm32': 0.35.3
++    optional: true
++
++  '@img/sharp-libvips-darwin-arm64@1.3.2':
++    optional: true
++
++  '@img/sharp-libvips-darwin-x64@1.3.2':
++    optional: true
++
++  '@img/sharp-libvips-linux-arm64@1.3.2':
++    optional: true
++
++  '@img/sharp-libvips-linux-arm@1.3.2':
++    optional: true
++
++  '@img/sharp-libvips-linux-ppc64@1.3.2':
++    optional: true
++
++  '@img/sharp-libvips-linux-riscv64@1.3.2':
++    optional: true
++
++  '@img/sharp-libvips-linux-s390x@1.3.2':
++    optional: true
++
++  '@img/sharp-libvips-linux-x64@1.3.2':
++    optional: true
++
++  '@img/sharp-libvips-linuxmusl-arm64@1.3.2':
++    optional: true
++
++  '@img/sharp-libvips-linuxmusl-x64@1.3.2':
++    optional: true
++
++  '@img/sharp-linux-arm64@0.35.3':
++    optionalDependencies:
++      '@img/sharp-libvips-linux-arm64': 1.3.2
++    optional: true
++
++  '@img/sharp-linux-arm@0.35.3':
++    optionalDependencies:
++      '@img/sharp-libvips-linux-arm': 1.3.2
++    optional: true
++
++  '@img/sharp-linux-ppc64@0.35.3':
++    optionalDependencies:
++      '@img/sharp-libvips-linux-ppc64': 1.3.2
++    optional: true
++
++  '@img/sharp-linux-riscv64@0.35.3':
++    optionalDependencies:
++      '@img/sharp-libvips-linux-riscv64': 1.3.2
++    optional: true
++
++  '@img/sharp-linux-s390x@0.35.3':
++    optionalDependencies:
++      '@img/sharp-libvips-linux-s390x': 1.3.2
++    optional: true
++
++  '@img/sharp-linux-x64@0.35.3':
++    optionalDependencies:
++      '@img/sharp-libvips-linux-x64': 1.3.2
++    optional: true
++
++  '@img/sharp-linuxmusl-arm64@0.35.3':
++    optionalDependencies:
++      '@img/sharp-libvips-linuxmusl-arm64': 1.3.2
++    optional: true
++
++  '@img/sharp-linuxmusl-x64@0.35.3':
++    optionalDependencies:
++      '@img/sharp-libvips-linuxmusl-x64': 1.3.2
++    optional: true
++
++  '@img/sharp-wasm32@0.35.3':
++    dependencies:
++      '@emnapi/runtime': 1.11.3
++    optional: true
++
++  '@img/sharp-webcontainers-wasm32@0.35.3':
++    dependencies:
++      '@img/sharp-wasm32': 0.35.3
++    optional: true
++
++  '@img/sharp-win32-arm64@0.35.3':
++    optional: true
++
++  '@img/sharp-win32-ia32@0.35.3':
++    optional: true
++
++  '@img/sharp-win32-x64@0.35.3':
++    optional: true
++
+   '@ioredis/commands@1.10.0': {}
+ 
+   '@isaacs/cliui@8.0.2':
+     dependencies:
+       string-width: 5.1.2
+       string-width-cjs: string-width@4.2.3
+       strip-ansi: 7.2.0
+       strip-ansi-cjs: strip-ansi@6.0.1
+       wrap-ansi: 8.1.0
+       wrap-ansi-cjs: wrap-ansi@7.0.0
+ 
++  '@jridgewell/gen-mapping@0.3.13':
++    dependencies:
++      '@jridgewell/sourcemap-codec': 1.5.5
++      '@jridgewell/trace-mapping': 0.3.31
++
++  '@jridgewell/remapping@2.3.5':
++    dependencies:
++      '@jridgewell/gen-mapping': 0.3.13
++      '@jridgewell/trace-mapping': 0.3.31
++
++  '@jridgewell/resolve-uri@3.1.2': {}
++
+   '@jridgewell/sourcemap-codec@1.5.5': {}
+ 
++  '@jridgewell/trace-mapping@0.3.31':
++    dependencies:
++      '@jridgewell/resolve-uri': 3.1.2
++      '@jridgewell/sourcemap-codec': 1.5.5
++
+   '@js-sdsl/ordered-map@4.4.2': {}
+ 
+   '@lukeed/csprng@1.1.0': {}
+ 
+   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
+     optional: true
+ 
+   '@napi-rs/wasm-runtime@1.2.3(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)':
+     dependencies:
+       '@emnapi/core': 1.10.0
+@@ -3963,31 +4647,61 @@ snapshots:
+       - supports-color
+ 
+   '@nestjs/testing@11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.2.1)(@nestjs/platform-express@11.2.1)':
+     dependencies:
+       '@nestjs/common': 11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)
+       '@nestjs/core': 11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/platform-express@11.2.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)
+       tslib: 2.8.1
+     optionalDependencies:
+       '@nestjs/platform-express': 11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.2.1)
+ 
++  '@next/env@16.3.2': {}
++
++  '@next/swc-darwin-arm64@16.3.2':
++    optional: true
++
++  '@next/swc-darwin-x64@16.3.2':
++    optional: true
++
++  '@next/swc-linux-arm64-gnu@16.3.2':
++    optional: true
++
++  '@next/swc-linux-arm64-musl@16.3.2':
++    optional: true
++
++  '@next/swc-linux-x64-gnu@16.3.2':
++    optional: true
++
++  '@next/swc-linux-x64-musl@16.3.2':
++    optional: true
++
++  '@next/swc-win32-arm64-msvc@16.3.2':
++    optional: true
++
++  '@next/swc-win32-x64-msvc@16.3.2':
++    optional: true
++
+   '@noble/hashes@1.8.0': {}
+ 
+   '@paralleldrive/cuid2@2.3.1':
+     dependencies:
+       '@noble/hashes': 1.8.0
+ 
+   '@pinojs/redact@0.4.0': {}
+ 
+   '@pkgjs/parseargs@0.11.0':
+     optional: true
+ 
++  '@playwright/test@1.62.1':
++    dependencies:
++      playwright: 1.62.1
++
+   '@prisma/client@6.19.3(prisma@6.19.3(typescript@5.9.3))(typescript@5.9.3)':
+     optionalDependencies:
+       prisma: 6.19.3(typescript@5.9.3)
+       typescript: 5.9.3
+ 
+   '@prisma/config@6.19.3':
+     dependencies:
+       c12: 3.1.0
+       deepmerge-ts: 7.1.5
+       effect: 3.21.0
+@@ -4141,20 +4855,100 @@ snapshots:
+       '@smithy/core': 3.33.2
+       '@smithy/types': 4.17.2
+       tslib: 2.8.1
+ 
+   '@smithy/types@4.17.2':
+     dependencies:
+       tslib: 2.8.1
+ 
+   '@standard-schema/spec@1.1.0': {}
+ 
++  '@swc/helpers@0.5.23':
++    dependencies:
++      tslib: 2.8.1
++
++  '@tailwindcss/node@4.3.3':
++    dependencies:
++      '@jridgewell/remapping': 2.3.5
++      enhanced-resolve: 5.24.5
++      jiti: 2.7.0
++      lightningcss: 1.32.0
++      magic-string: 0.30.21
++      source-map-js: 1.2.1
++      tailwindcss: 4.3.3
++
++  '@tailwindcss/oxide-android-arm64@4.3.3':
++    optional: true
++
++  '@tailwindcss/oxide-darwin-arm64@4.3.3':
++    optional: true
++
++  '@tailwindcss/oxide-darwin-x64@4.3.3':
++    optional: true
++
++  '@tailwindcss/oxide-freebsd-x64@4.3.3':
++    optional: true
++
++  '@tailwindcss/oxide-linux-arm-gnueabihf@4.3.3':
++    optional: true
++
++  '@tailwindcss/oxide-linux-arm64-gnu@4.3.3':
++    optional: true
++
++  '@tailwindcss/oxide-linux-arm64-musl@4.3.3':
++    optional: true
++
++  '@tailwindcss/oxide-linux-x64-gnu@4.3.3':
++    optional: true
++
++  '@tailwindcss/oxide-linux-x64-musl@4.3.3':
++    optional: true
++
++  '@tailwindcss/oxide-wasm32-wasi@4.3.3':
++    optional: true
++
++  '@tailwindcss/oxide-win32-arm64-msvc@4.3.3':
++    optional: true
++
++  '@tailwindcss/oxide-win32-x64-msvc@4.3.3':
++    optional: true
++
++  '@tailwindcss/oxide@4.3.3':
++    optionalDependencies:
++      '@tailwindcss/oxide-android-arm64': 4.3.3
++      '@tailwindcss/oxide-darwin-arm64': 4.3.3
++      '@tailwindcss/oxide-darwin-x64': 4.3.3
++      '@tailwindcss/oxide-freebsd-x64': 4.3.3
++      '@tailwindcss/oxide-linux-arm-gnueabihf': 4.3.3
++      '@tailwindcss/oxide-linux-arm64-gnu': 4.3.3
++      '@tailwindcss/oxide-linux-arm64-musl': 4.3.3
++      '@tailwindcss/oxide-linux-x64-gnu': 4.3.3
++      '@tailwindcss/oxide-linux-x64-musl': 4.3.3
++      '@tailwindcss/oxide-wasm32-wasi': 4.3.3
++      '@tailwindcss/oxide-win32-arm64-msvc': 4.3.3
++      '@tailwindcss/oxide-win32-x64-msvc': 4.3.3
++
++  '@tailwindcss/postcss@4.3.3':
++    dependencies:
++      '@alloc/quick-lru': 5.2.0
++      '@tailwindcss/node': 4.3.3
++      '@tailwindcss/oxide': 4.3.3
++      postcss: 8.5.26
++      tailwindcss: 4.3.3
++
++  '@tanstack/query-core@5.101.4': {}
++
++  '@tanstack/react-query@5.101.4(react@19.2.8)':
++    dependencies:
++      '@tanstack/query-core': 5.101.4
++      react: 19.2.8
++
+   '@testcontainers/postgresql@10.28.0':
+     dependencies:
+       testcontainers: 10.28.0
+     transitivePeerDependencies:
+       - bare-abort-controller
+       - bare-buffer
+       - react-native-b4a
+       - supports-color
+ 
+   '@testing-library/dom@10.4.1':
+@@ -4494,27 +5288,27 @@ snapshots:
+     optional: true
+ 
+   '@vitest/expect@3.2.7':
+     dependencies:
+       '@types/chai': 5.2.3
+       '@vitest/spy': 3.2.7
+       '@vitest/utils': 3.2.7
+       chai: 5.3.3
+       tinyrainbow: 2.0.0
+ 
+-  '@vitest/mocker@3.2.7(vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))':
++  '@vitest/mocker@3.2.7(vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.12)(yaml@2.9.0))':
+     dependencies:
+       '@vitest/spy': 3.2.7
+       estree-walker: 3.0.3
+       magic-string: 0.30.21
+     optionalDependencies:
+-      vite: 7.3.6(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0)
++      vite: 7.3.6(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.12)(yaml@2.9.0)
+ 
+   '@vitest/pretty-format@3.2.7':
+     dependencies:
+       tinyrainbow: 2.0.0
+ 
+   '@vitest/runner@3.2.7':
+     dependencies:
+       '@vitest/utils': 3.2.7
+       pathe: 2.0.3
+       strip-literal: 3.1.0
+@@ -4707,20 +5501,22 @@ snapshots:
+       bare-events: 2.9.1
+     transitivePeerDependencies:
+       - react-native-b4a
+ 
+   bare-url@2.5.2:
+     dependencies:
+       bare-path: 3.1.1
+ 
+   base64-js@1.5.1: {}
+ 
++  baseline-browser-mapping@2.11.15: {}
++
+   bcrypt-pbkdf@1.0.2:
+     dependencies:
+       tweetnacl: 0.14.5
+ 
+   bl@4.1.0:
+     dependencies:
+       buffer: 5.7.1
+       inherits: 2.0.4
+       readable-stream: 3.6.2
+ 
+@@ -4807,20 +5603,22 @@ snapshots:
+       get-intrinsic: 1.3.0
+       set-function-length: 1.2.2
+ 
+   call-bound@1.0.4:
+     dependencies:
+       call-bind-apply-helpers: 1.0.2
+       get-intrinsic: 1.3.0
+ 
+   callsites@3.1.0: {}
+ 
++  caniuse-lite@1.0.30001809: {}
++
+   chai@5.3.3:
+     dependencies:
+       assertion-error: 2.0.1
+       check-error: 2.1.3
+       deep-eql: 5.0.2
+       loupe: 3.2.1
+       pathval: 2.0.1
+ 
+   chalk@4.1.2:
+     dependencies:
+@@ -4834,20 +5632,22 @@ snapshots:
+       readdirp: 4.1.2
+ 
+   chownr@1.1.4: {}
+ 
+   citty@0.1.6:
+     dependencies:
+       consola: 3.4.2
+ 
+   citty@0.2.2: {}
+ 
++  client-only@0.0.1: {}
++
+   cliui@8.0.1:
+     dependencies:
+       string-width: 4.2.3
+       strip-ansi: 6.0.1
+       wrap-ansi: 7.0.0
+ 
+   cluster-key-slot@1.1.1: {}
+ 
+   color-convert@2.0.1:
+     dependencies:
+@@ -4989,20 +5789,22 @@ snapshots:
+   delayed-stream@1.0.0: {}
+ 
+   denque@2.1.0: {}
+ 
+   depd@2.0.0: {}
+ 
+   dequal@2.0.3: {}
+ 
+   destr@2.0.5: {}
+ 
++  detect-libc@2.1.2: {}
++
+   dezalgo@1.0.4:
+     dependencies:
+       asap: 2.0.6
+       wrappy: 1.0.2
+ 
+   docker-compose@0.24.8:
+     dependencies:
+       yaml: 2.9.0
+ 
+   docker-modem@5.0.7:
+@@ -5065,20 +5867,25 @@ snapshots:
+   emoji-regex@9.2.2: {}
+ 
+   empathic@2.0.0: {}
+ 
+   encodeurl@2.0.0: {}
+ 
+   end-of-stream@1.4.5:
+     dependencies:
+       once: 1.4.0
+ 
++  enhanced-resolve@5.24.5:
++    dependencies:
++      graceful-fs: 4.2.11
++      tapable: 2.3.3
++
+   entities@6.0.1: {}
+ 
+   es-abstract-get@1.0.0:
+     dependencies:
+       es-errors: 1.3.0
+       es-object-atoms: 1.1.2
+       is-callable: 1.2.7
+       object-inspect: 1.13.4
+ 
+   es-abstract@1.24.2:
+@@ -5474,20 +6281,23 @@ snapshots:
+       '@paralleldrive/cuid2': 2.3.1
+       dezalgo: 1.0.4
+       once: 1.4.0
+ 
+   forwarded@0.2.0: {}
+ 
+   fresh@2.0.0: {}
+ 
+   fs-constants@1.0.0: {}
+ 
++  fsevents@2.3.2:
++    optional: true
++
+   fsevents@2.3.3:
+     optional: true
+ 
+   function-bind@1.1.2: {}
+ 
+   function.prototype.name@1.2.0:
+     dependencies:
+       call-bind: 1.0.9
+       call-bound: 1.0.4
+       es-define-property: 1.0.1
+@@ -5856,20 +6666,69 @@ snapshots:
+ 
+   lazystream@1.0.1:
+     dependencies:
+       readable-stream: 2.3.8
+ 
+   levn@0.4.1:
+     dependencies:
+       prelude-ls: 1.2.1
+       type-check: 0.4.0
+ 
++  lightningcss-android-arm64@1.32.0:
++    optional: true
++
++  lightningcss-darwin-arm64@1.32.0:
++    optional: true
++
++  lightningcss-darwin-x64@1.32.0:
++    optional: true
++
++  lightningcss-freebsd-x64@1.32.0:
++    optional: true
++
++  lightningcss-linux-arm-gnueabihf@1.32.0:
++    optional: true
++
++  lightningcss-linux-arm64-gnu@1.32.0:
++    optional: true
++
++  lightningcss-linux-arm64-musl@1.32.0:
++    optional: true
++
++  lightningcss-linux-x64-gnu@1.32.0:
++    optional: true
++
++  lightningcss-linux-x64-musl@1.32.0:
++    optional: true
++
++  lightningcss-win32-arm64-msvc@1.32.0:
++    optional: true
++
++  lightningcss-win32-x64-msvc@1.32.0:
++    optional: true
++
++  lightningcss@1.32.0:
++    dependencies:
++      detect-libc: 2.1.2
++    optionalDependencies:
++      lightningcss-android-arm64: 1.32.0
++      lightningcss-darwin-arm64: 1.32.0
++      lightningcss-darwin-x64: 1.32.0
++      lightningcss-freebsd-x64: 1.32.0
++      lightningcss-linux-arm-gnueabihf: 1.32.0
++      lightningcss-linux-arm64-gnu: 1.32.0
++      lightningcss-linux-arm64-musl: 1.32.0
++      lightningcss-linux-x64-gnu: 1.32.0
++      lightningcss-linux-x64-musl: 1.32.0
++      lightningcss-win32-arm64-msvc: 1.32.0
++      lightningcss-win32-x64-msvc: 1.32.0
++
+   load-esm@1.0.3: {}
+ 
+   locate-path@6.0.0:
+     dependencies:
+       p-locate: 5.0.0
+ 
+   lodash.camelcase@4.3.0: {}
+ 
+   lodash.merge@4.6.2: {}
+ 
+@@ -5950,20 +6809,46 @@ snapshots:
+     optional: true
+ 
+   nanoid@3.3.18: {}
+ 
+   napi-postinstall@0.3.4: {}
+ 
+   natural-compare@1.4.0: {}
+ 
+   negotiator@1.0.0: {}
+ 
++  next@16.3.2(@playwright/test@1.62.1)(@types/node@22.20.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
++    dependencies:
++      '@next/env': 16.3.2
++      '@swc/helpers': 0.5.23
++      baseline-browser-mapping: 2.11.15
++      caniuse-lite: 1.0.30001809
++      postcss: 8.5.23
++      react: 19.2.8
++      react-dom: 19.2.8(react@19.2.8)
++      styled-jsx: 5.1.6(react@19.2.8)
++    optionalDependencies:
++      '@next/swc-darwin-arm64': 16.3.2
++      '@next/swc-darwin-x64': 16.3.2
++      '@next/swc-linux-arm64-gnu': 16.3.2
++      '@next/swc-linux-arm64-musl': 16.3.2
++      '@next/swc-linux-x64-gnu': 16.3.2
++      '@next/swc-linux-x64-musl': 16.3.2
++      '@next/swc-win32-arm64-msvc': 16.3.2
++      '@next/swc-win32-x64-msvc': 16.3.2
++      '@playwright/test': 1.62.1
++      sharp: 0.35.3(@types/node@22.20.1)
++    transitivePeerDependencies:
++      - '@babel/core'
++      - '@types/node'
++      - babel-plugin-macros
++
+   node-exports-info@1.6.2:
+     dependencies:
+       array.prototype.flatmap: 1.3.3
+       es-errors: 1.3.0
+       object.entries: 1.1.9
+       semver: 6.3.1
+ 
+   node-fetch-native@1.6.7: {}
+ 
+   normalize-path@3.0.0: {}
+@@ -6128,22 +7013,36 @@ snapshots:
+       safe-stable-stringify: 2.5.0
+       sonic-boom: 4.2.1
+       thread-stream: 3.2.0
+ 
+   pkg-types@2.3.1:
+     dependencies:
+       confbox: 0.2.4
+       exsolve: 1.1.1
+       pathe: 2.0.3
+ 
++  playwright-core@1.62.1: {}
++
++  playwright@1.62.1:
++    dependencies:
++      playwright-core: 1.62.1
++    optionalDependencies:
++      fsevents: 2.3.2
++
+   possible-typed-array-names@1.1.0: {}
+ 
++  postcss@8.5.23:
++    dependencies:
++      nanoid: 3.3.18
++      picocolors: 1.1.1
++      source-map-js: 1.2.1
++
+   postcss@8.5.26:
+     dependencies:
+       nanoid: 3.3.18
+       picocolors: 1.1.1
+       source-map-js: 1.2.1
+ 
+   prelude-ls@1.2.1: {}
+ 
+   prettier@3.9.6: {}
+ 
+@@ -6449,20 +7348,54 @@ snapshots:
+       has-property-descriptors: 1.0.2
+ 
+   set-proto@1.0.0:
+     dependencies:
+       dunder-proto: 1.0.1
+       es-errors: 1.3.0
+       es-object-atoms: 1.1.2
+ 
+   setprototypeof@1.2.0: {}
+ 
++  sharp@0.35.3(@types/node@22.20.1):
++    dependencies:
++      '@img/colour': 1.1.0
++      detect-libc: 2.1.2
++      semver: 7.8.5
++    optionalDependencies:
++      '@img/sharp-darwin-arm64': 0.35.3
++      '@img/sharp-darwin-x64': 0.35.3
++      '@img/sharp-freebsd-wasm32': 0.35.3
++      '@img/sharp-libvips-darwin-arm64': 1.3.2
++      '@img/sharp-libvips-darwin-x64': 1.3.2
++      '@img/sharp-libvips-linux-arm': 1.3.2
++      '@img/sharp-libvips-linux-arm64': 1.3.2
++      '@img/sharp-libvips-linux-ppc64': 1.3.2
++      '@img/sharp-libvips-linux-riscv64': 1.3.2
++      '@img/sharp-libvips-linux-s390x': 1.3.2
++      '@img/sharp-libvips-linux-x64': 1.3.2
++      '@img/sharp-libvips-linuxmusl-arm64': 1.3.2
++      '@img/sharp-libvips-linuxmusl-x64': 1.3.2
++      '@img/sharp-linux-arm': 0.35.3
++      '@img/sharp-linux-arm64': 0.35.3
++      '@img/sharp-linux-ppc64': 0.35.3
++      '@img/sharp-linux-riscv64': 0.35.3
++      '@img/sharp-linux-s390x': 0.35.3
++      '@img/sharp-linux-x64': 0.35.3
++      '@img/sharp-linuxmusl-arm64': 0.35.3
++      '@img/sharp-linuxmusl-x64': 0.35.3
++      '@img/sharp-webcontainers-wasm32': 0.35.3
++      '@img/sharp-win32-arm64': 0.35.3
++      '@img/sharp-win32-ia32': 0.35.3
++      '@img/sharp-win32-x64': 0.35.3
++      '@types/node': 22.20.1
++    optional: true
++
+   shebang-command@2.0.0:
+     dependencies:
+       shebang-regex: 3.0.0
+ 
+   shebang-regex@3.0.0: {}
+ 
+   side-channel-list@1.0.1:
+     dependencies:
+       es-errors: 1.3.0
+       object-inspect: 1.13.4
+@@ -6608,20 +7541,25 @@ snapshots:
+   strip-json-comments@5.0.3: {}
+ 
+   strip-literal@3.1.0:
+     dependencies:
+       js-tokens: 9.0.1
+ 
+   strtok3@10.3.5:
+     dependencies:
+       '@tokenizer/token': 0.3.0
+ 
++  styled-jsx@5.1.6(react@19.2.8):
++    dependencies:
++      client-only: 0.0.1
++      react: 19.2.8
++
+   superagent@10.3.0:
+     dependencies:
+       component-emitter: 1.3.1
+       cookiejar: 2.1.4
+       debug: 4.4.3
+       fast-safe-stringify: 2.1.1
+       form-data: 4.0.6
+       formidable: 3.5.4
+       methods: 1.1.2
+       mime: 2.6.0
+@@ -6640,20 +7578,22 @@ snapshots:
+   supports-color@7.2.0:
+     dependencies:
+       has-flag: 4.0.0
+ 
+   supports-preserve-symlinks-flag@1.0.0: {}
+ 
+   symbol-tree@3.2.4: {}
+ 
+   tailwindcss@4.3.3: {}
+ 
++  tapable@2.3.3: {}
++
+   tar-fs@2.1.5:
+     dependencies:
+       chownr: 1.1.4
+       mkdirp-classic: 0.5.3
+       pump: 3.0.4
+       tar-stream: 2.2.0
+ 
+   tar-fs@3.1.3:
+     dependencies:
+       pump: 3.0.4
+@@ -6914,80 +7854,81 @@ snapshots:
+       punycode: 2.3.1
+ 
+   util-deprecate@1.0.2: {}
+ 
+   uuid@10.0.0: {}
+ 
+   uuidv7@1.2.1: {}
+ 
+   vary@1.1.2: {}
+ 
+-  vite-node@3.2.4(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0):
++  vite-node@3.2.4(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.12)(yaml@2.9.0):
+     dependencies:
+       cac: 6.7.14
+       debug: 4.4.3
+       es-module-lexer: 1.7.0
+       pathe: 2.0.3
+-      vite: 7.3.6(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0)
++      vite: 7.3.6(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.12)(yaml@2.9.0)
+     transitivePeerDependencies:
+       - '@types/node'
+       - jiti
+       - less
+       - lightningcss
+       - sass
+       - sass-embedded
+       - stylus
+       - sugarss
+       - supports-color
+       - terser
+       - tsx
+       - yaml
+ 
+-  vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0):
++  vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.12)(yaml@2.9.0):
+     dependencies:
+       esbuild: 0.28.2
+       fdir: 6.5.0(picomatch@4.0.5)
+       picomatch: 4.0.5
+       postcss: 8.5.26
+       rollup: 4.62.4
+       tinyglobby: 0.2.17
+     optionalDependencies:
+       '@types/node': 22.20.1
+       fsevents: 2.3.3
+       jiti: 2.7.0
++      lightningcss: 1.32.0
+       tsx: 4.23.12
+       yaml: 2.9.0
+ 
+-  vitest@3.2.7(@types/node@22.20.1)(jiti@2.7.0)(jsdom@25.0.1)(tsx@4.23.12)(yaml@2.9.0):
++  vitest@3.2.7(@types/node@22.20.1)(jiti@2.7.0)(jsdom@25.0.1)(lightningcss@1.32.0)(tsx@4.23.12)(yaml@2.9.0):
+     dependencies:
+       '@types/chai': 5.2.3
+       '@vitest/expect': 3.2.7
+-      '@vitest/mocker': 3.2.7(vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
++      '@vitest/mocker': 3.2.7(vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.12)(yaml@2.9.0))
+       '@vitest/pretty-format': 3.2.7
+       '@vitest/runner': 3.2.7
+       '@vitest/snapshot': 3.2.7
+       '@vitest/spy': 3.2.7
+       '@vitest/utils': 3.2.7
+       chai: 5.3.3
+       debug: 4.4.3
+       expect-type: 1.4.0
+       magic-string: 0.30.21
+       pathe: 2.0.3
+       picomatch: 4.0.5
+       std-env: 3.10.0
+       tinybench: 2.9.0
+       tinyexec: 0.3.2
+       tinyglobby: 0.2.17
+       tinypool: 1.1.1
+       tinyrainbow: 2.0.0
+-      vite: 7.3.6(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0)
+-      vite-node: 3.2.4(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0)
++      vite: 7.3.6(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.12)(yaml@2.9.0)
++      vite-node: 3.2.4(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.12)(yaml@2.9.0)
+       why-is-node-running: 2.3.0
+     optionalDependencies:
+       '@types/node': 22.20.1
+       jsdom: 25.0.1
+     transitivePeerDependencies:
+       - jiti
+       - less
+       - lightningcss
+       - msw
+       - sass
+diff --git a/pnpm-workspace.yaml b/pnpm-workspace.yaml
+index 5eca899..54f4447 100644
+--- a/pnpm-workspace.yaml
++++ b/pnpm-workspace.yaml
+@@ -12,10 +12,21 @@ allowBuilds:
+   # postinstall — required for the client to load at all. cpu-features, ssh2,
+   # and protobufjs are transitive build deps of @testcontainers/postgresql
+   # (via dockerode), needed for the migration integration test's Docker
+   # control channel.
+   '@prisma/client': true
+   '@prisma/engines': true
+   prisma: true
+   cpu-features: true
+   protobufjs: true
+   ssh2: true
++minimumReleaseAgeExclude:
++  - '@next/env@16.3.2'
++  - '@next/swc-darwin-arm64@16.3.2'
++  - '@next/swc-darwin-x64@16.3.2'
++  - '@next/swc-linux-arm64-gnu@16.3.2'
++  - '@next/swc-linux-arm64-musl@16.3.2'
++  - '@next/swc-linux-x64-gnu@16.3.2'
++  - '@next/swc-linux-x64-musl@16.3.2'
++  - '@next/swc-win32-arm64-msvc@16.3.2'
++  - '@next/swc-win32-x64-msvc@16.3.2'
++  - next@16.3.2

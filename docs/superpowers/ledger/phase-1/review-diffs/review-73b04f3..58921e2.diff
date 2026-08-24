@@ -1,0 +1,142 @@
+diff --git a/.claude/api/errors.md b/.claude/api/errors.md
+index 30365ac..2458f57 100644
+--- a/.claude/api/errors.md
++++ b/.claude/api/errors.md
+@@ -40,6 +40,14 @@ Field errors are returned per field so a client can attach them to inputs:
+ `path` uses dotted/bracketed notation matching the request body, so the client can map errors
+ without guessing.
+ 
++**`details.fields` is optional on this code, and a client must treat it that way.**
++`VALIDATION_ERROR` is also the fallback for a client-class status the code table does not name —
++405, 406, 413, 415 — where there is no field to point at and `details` is absent entirely. A
++client that reads `error.details.fields` unconditionally will find `undefined` on a 413. The
++alternative, a dedicated code per status, was considered and rejected: see the note on
++`codeForStatus` in `apps/api/src/common/filters/all-exceptions.filter.ts`. Revisit in Phase 2,
++when there are real endpoints to raise them.
++
+ ## 3. Codes
+ 
+ **Auth:** `UNAUTHENTICATED`, `INVALID_CREDENTIALS`, `SESSION_EXPIRED`, `MFA_REQUIRED`,
+@@ -49,8 +57,8 @@ without guessing.
+ **Access:** `PERMISSION_DENIED`, `NOT_A_MEMBER`, `ORGANIZATION_SUSPENDED`,
+ `RESOURCE_NOT_FOUND` (also returned for cross-tenant access).
+ 
+-**Validation:** `VALIDATION_ERROR`, `UNKNOWN_FIELD`, `INVALID_STATE_TRANSITION`,
+-`VERSION_CONFLICT`, `DUPLICATE_RESOURCE`.
++**Validation:** `VALIDATION_ERROR` (also the fallback for an unmapped client-class status — see
++§2), `UNKNOWN_FIELD`, `INVALID_STATE_TRANSITION`, `VERSION_CONFLICT`, `DUPLICATE_RESOURCE`.
+ 
+ **Domain — security-testing specific:** `SCOPE_VIOLATION`, `ASSET_NOT_VERIFIED`,
+ `ASSET_VERIFICATION_EXPIRED`, `TARGET_DENIED_BY_POLICY` (global deny list),
+@@ -97,7 +105,7 @@ exists. Whether an email address is registered (on login, registration, and rese
+ Internal errors return `INTERNAL_ERROR`, a generic message, and the request ID. Everything else
+ goes to the server log.
+ 
+-Two implementation rules that are easy to get wrong, both covered by tests:
++Three implementation rules that are easy to get wrong, all covered by tests:
+ 
+ - **Status decides, not exception class.** A framework `HttpException` at 5xx — including
+   `new InternalServerErrorException(err.message)`, an ordinary Nest idiom — has its message
+diff --git a/apps/api/src/common/filters/all-exceptions.filter.spec.ts b/apps/api/src/common/filters/all-exceptions.filter.spec.ts
+index 5cef788..97a3d15 100644
+--- a/apps/api/src/common/filters/all-exceptions.filter.spec.ts
++++ b/apps/api/src/common/filters/all-exceptions.filter.spec.ts
+@@ -375,3 +375,41 @@ describe('AllExceptionsFilter — throwables from the http-errors library', () =
+     expect(errorEnvelopeSchema.parse(body).error.message).not.toContain('hunter2');
+   });
+ });
++
++describe('AllExceptionsFilter — hostile throwables', () => {
++  it('answers a throwable whose property getter throws, instead of throwing itself', () => {
++    // A filter that throws while reporting a failure hides the original failure
++    // and hands the response to the framework's default handler, which does not
++    // produce the shared envelope. The reads in asHttpError are guarded for the
++    // same reason the logger guards its own; this is the assertion that keeps
++    // them guarded.
++    const booby = new Error('original failure');
++    Object.defineProperty(booby, 'expose', {
++      get(): never {
++        throw new Error('getter exploded');
++      },
++    });
++
++    let result: { status: number; body: unknown } | undefined;
++    expect(() => {
++      result = invoke(booby);
++    }).not.toThrow();
++
++    expect(result?.status).toBe(500);
++    const parsed = errorEnvelopeSchema.parse(result?.body);
++    expect(parsed.error.code).toBe('INTERNAL_ERROR');
++    expect(parsed.error.message).not.toContain('getter exploded');
++    expect(parsed.error.message).not.toContain('original failure');
++  });
++
++  it('treats a sub-400 status as a fault on this side, not a client mistake', () => {
++    // `status < 500` alone would label a 302 reaching the exception filter
++    // VALIDATION_ERROR — telling the caller they sent a bad request when what
++    // actually happened is a bug here. Nothing constructs one today; the
++    // assertion exists so the rule and its comment stay the same statement.
++    for (const status of [204, 302, 399]) {
++      const parsed = errorEnvelopeSchema.parse(invoke(new HttpException('odd', status)).body);
++      expect(parsed.error.code).toBe('INTERNAL_ERROR');
++    }
++  });
++});
+diff --git a/apps/api/src/common/filters/all-exceptions.filter.ts b/apps/api/src/common/filters/all-exceptions.filter.ts
+index 5cca140..6fd324d 100644
+--- a/apps/api/src/common/filters/all-exceptions.filter.ts
++++ b/apps/api/src/common/filters/all-exceptions.filter.ts
+@@ -50,9 +50,16 @@ const STATUS_TO_CODE: Readonly<Record<number, ErrorCode>> = {
+  * Revisit in Phase 2, when there are real endpoints to raise them.
+  */
+ function codeForStatus(status: number): ErrorCode {
++  // The range is checked at both ends deliberately. `status < 500` alone would
++  // also claim 1xx-3xx, and a 204 or a 302 arriving at an exception filter is
++  // not a client mistake — it is a bug on this side, which is what
++  // `INTERNAL_ERROR` is for. Nothing constructs a sub-400 `HttpException`
++  // today, so this costs nothing; it is here so the rule and the comment above
++  // stay the same statement.
++  const isClientClass = status >= 400 && status < 500;
+   return (
+     STATUS_TO_CODE[status] ??
+-    (status < 500 ? ERROR_CODES.VALIDATION_ERROR : ERROR_CODES.INTERNAL_ERROR)
++    (isClientClass ? ERROR_CODES.VALIDATION_ERROR : ERROR_CODES.INTERNAL_ERROR)
+   );
+ }
+ 
+@@ -79,13 +86,30 @@ interface HttpErrorLike {
+  */
+ function asHttpError(exception: unknown): HttpErrorLike | undefined {
+   if (typeof exception !== 'object' || exception === null) return undefined;
+-  const candidate = exception as { status?: unknown; statusCode?: unknown; expose?: unknown };
+-  if (typeof candidate.expose !== 'boolean') return undefined;
+-  const status = typeof candidate.status === 'number' ? candidate.status : candidate.statusCode;
++
++  // Every read is guarded, for the same reason `redact()` guards its own in
++  // packages/observability/src/logger.ts: these are properties of a value this
++  // filter did not construct, and a getter that throws would propagate out of
++  // `catch()` itself — replacing the error envelope with the framework's
++  // default handler output. A filter that throws while reporting a failure
++  // hides the original failure, which is the one thing it must never do.
++  // Unreadable is treated as absent, so the value simply is not trusted.
++  const read = (key: 'status' | 'statusCode' | 'expose'): unknown => {
++    try {
++      return (exception as Record<string, unknown>)[key];
++    } catch {
++      return undefined;
++    }
++  };
++
++  const expose = read('expose');
++  if (typeof expose !== 'boolean') return undefined;
++  const rawStatus = read('status');
++  const status = typeof rawStatus === 'number' ? rawStatus : read('statusCode');
+   if (typeof status !== 'number' || !Number.isInteger(status) || status < 400 || status > 599) {
+     return undefined;
+   }
+-  return { status, expose: candidate.expose };
++  return { status, expose };
+ }
+ 
+ /**
