@@ -1,0 +1,1009 @@
+# Review package: 6d97bb5..21746c5
+
+## Commits
+21746c5 fix(web): review round 1 — WEB_PORT, CSP-report hardening, false claims
+
+## Files changed
+ .claude/product/roadmap.md                |  24 +++-
+ .claude/security/transport-and-headers.md |  53 ++++++++-
+ .claude/ui-ux/design-system.md            |   2 +-
+ .gitignore                                |   7 ++
+ apps/web/app/api/csp-report/route.ts      |  65 ++++-------
+ apps/web/app/providers.tsx                |   2 +-
+ apps/web/e2e/smoke.spec.ts                |   5 +
+ apps/web/next-env.d.ts                    |   7 --
+ apps/web/package.json                     |   8 +-
+ apps/web/playwright.config.ts             |  15 ++-
+ apps/web/proxy.ts                         |   9 ++
+ apps/web/scripts/next-on-web-port.ts      |  52 +++++++++
+ apps/web/src/csp-report.spec.ts           | 181 +++++++++++++++++++++++++++++
+ apps/web/src/csp-report.ts                | 182 ++++++++++++++++++++++++++++++
+ pnpm-workspace.yaml                       |  33 ++++--
+ 15 files changed, 563 insertions(+), 82 deletions(-)
+
+## Diff
+diff --git a/.claude/product/roadmap.md b/.claude/product/roadmap.md
+index 06588b2..a40f0a0 100644
+--- a/.claude/product/roadmap.md
++++ b/.claude/product/roadmap.md
+@@ -130,21 +130,23 @@ install → lint → typecheck → test → build; `.env.example`.
+ 
+ *Exit:* `pnpm install && pnpm build && pnpm test` passes from a clean clone; the compose
+ stack starts; a migration applies; CI is green.
+ 
+ #### Where Phase 1 stopped — read this before resuming
+ 
+ Phase 1 is being executed as 16 tasks from
+ `docs/superpowers/plans/2026-08-20-phase-1-foundation.md`, subagent-driven: a fresh implementer
+ per task, then a separate adversarial reviewer, then scoped re-reviews per fix round.
+ 
+-**Tasks 1–13 are complete** (13 pending its adversarial review). 1 workspace and CI · 2
++**Tasks 1–13 are complete.** Task 13 was implemented, independently reviewed (spec compliance
++pass, quality approved conditional on two corrections), and the fix round that corrected them
++has landed. 1 workspace and CI · 2
+ `packages/config` · 3 `packages/observability` · 4 compose stack, schema, prefixed UUIDv7 IDs,
+ first migration · 5 `packages/contracts` · 6 tenant-scoped Prisma client and RLS · 7 seed · 8
+ `packages/storage` · 9 `apps/api` bootstrap · 10 rate limiting · 11 route-access assertion and
+ OpenAPI · 12 `packages/ui` tokens and primitives · 13 `apps/web` Next.js shell.
+ 
+ **Tasks 14–16 remain:** 14 CI checks (OpenAPI diff, tenant-registry completeness) · 15 the two
+ reusable skills · 16 ADRs, documentation, and the full exit-criteria verification pass.
+ 
+ The execution ledger — every ruling with its cost if wrong, every review finding, per-task
+ briefs and reports, and the review diffs — lives in
+@@ -154,23 +156,37 @@ current pause state and the carry-forward rulings for Tasks 13–16.
+ 
+ Known outstanding, none of it blocking Task 14:
+ 
+ - Task 10's fourth fix round has not itself been reviewed. Recommendation on file: fold it into
+   the whole-branch review rather than spend a fifth round.
+ - A short list of deferred residuals (Redis `EVALSHA`, `maxmemory-policy`, `pnpm format:check`
+   not wired into CI, dead `packages/config/tsconfig/*` presets, a missing root `dev` script) is
+   recorded in the ledger and assigned to Task 14 or Task 16. The missing root `dev` script now
+   matters more than it did: `apps/web` has a `dev` script and `.claude/development/setup.md`
+   still tells a developer to run `pnpm dev`, which does not exist.
+-- **Task 13 left CI without an E2E stage.** `pnpm test:e2e` runs locally (5 Playwright tests,
+-  all passing) but `.github/workflows/ci.yml` neither installs a browser nor invokes it, so
+-  nothing in CI has ever rendered a page. Task 14's to add.
++- **Task 14 owes a CI end-to-end stage — a browser install and `pnpm test:e2e`.** Required, not
++  suggested. `.github/workflows/ci.yml` today runs lint, typecheck, `pnpm test`,
++  `pnpm test:integration` and `pnpm build`, and none of them renders a page. The Playwright
++  suite is the *only* thing asserting that the CSP nonce reaches the HTML, that the enforcing
++  policy does not break the page, and that the §2 header table survives on a real response —
++  the assertions that separate `apps/web` from the twelve tasks before it. It passes on exactly
++  one developer's Windows machine and nowhere else, so any of those can regress with CI still
++  green. Recorded here rather than only in the gitignored ledger because a fresh session would
++  otherwise not know it owes this.
++- **No `eslint-plugin-react` / `eslint-plugin-react-hooks` anywhere, now that React application
++  code exists.** `grep -n react eslint.config.js` returns nothing. `apps/web/app/providers.tsx`
++  has three hooks with dependency arrays and a lazy `useState` initialiser, and nothing in the
++  toolchain checks any of it; the review confirmed the dependencies are correct **today**, so
++  this is a missing guard rather than a present bug — arriving at exactly the moment the repo
++  acquired the code it guards, over the most common React defect class. Task 14 or 16 to add
++  the plugins. Deliberately not installed by Task 13: adding a workspace-wide lint plugin is a
++  tooling change beyond a feature task, and it would have landed unreviewed.
+ - Task 13 forced every HTML route dynamic to keep the nonce-based CSP intact. That is written
+   up in `architecture/frontend.md` §2 and is a real cost to revisit when marketing content
+   exists.
+ - **Task 14 owes a guard that every `*.spec.*` under `packages/*/src` and `apps/*/src` is
+   matched by exactly one Vitest project.** Task 12 hit three separate spellings of the same
+   trap — a spec filename matching no project, passing green under `--passWithNoTests` while
+   executing nothing. All three instances are closed; the class is not, and patching globs one
+   at a time is losing to it. This is recorded here and not only in the gitignored ledger
+   because it is the one carry-forward that a fresh session would otherwise not know it owes.
+ - Task 13 must know four things about `packages/ui` before it wires Tailwind: import
+diff --git a/.claude/security/transport-and-headers.md b/.claude/security/transport-and-headers.md
+index dc0470b..bdad1a6 100644
+--- a/.claude/security/transport-and-headers.md
++++ b/.claude/security/transport-and-headers.md
+@@ -75,26 +75,57 @@ report-uri /api/v1/csp-report
+ 
+ Nonces are generated per request. `report-uri` is wired from day one and the reports are
+ actually read — a CSP nobody monitors is decoration. The evidence-viewer origin gets its own,
+ even tighter policy (`default-src 'none'; img-src 'self'; style-src 'nonce-…'`).
+ 
+ As shipped on the API origin, `connect-src` is `'self'`: the example hosts above name the
+ *web* origin's API and Sentry endpoints, and the API initiates no browser connections of its
+ own. **The API's `/api/v1/csp-report` collector still does not exist**, so a violation report
+ from the API origin gets a 404. What Task 13 added is the *web* origin's collector, at
+ `/api/csp-report` (`apps/web/app/api/csp-report/route.ts`), and the web origin's `report-uri`
+-points there rather than at the API: `report-uri` sends a cross-origin POST the API's CORS
+-policy would not accept, so a report aimed across origins simply never arrives. The web
+-collector validates the report with Zod, drops unknown keys rather than logging them, and
+-writes one `warn` line through the redacting logger. Verified end to end against the running
+-dev server:
+-> `{"level":"warn","service":"web","cspReport":{...},"msg":"Content Security Policy violation"}`
++points there rather than at the API, for two reasons.
++
++The first is that the API's collector does not exist, so a report aimed at it would 404. The
++second is that a violation report carries `document-uri` and `referrer` — this origin's own
++URLs, which from Phase 2 onward identify tenants and name routes — and sending those to a
++different service is a disclosure decision, not a routing detail. Same-origin collection also
++happens to depend on nothing: no second service needs to be reachable for a report to land.
++
++**A cross-origin `report-uri` would have worked.** Saying so explicitly because an earlier
++version of this paragraph claimed the opposite — that CORS would have blocked it — and that
++was wrong twice over. CSP violation reports are not CORS-gated: the user agent sends a
++fire-and-forget POST and discards the response, with no preflight and no
++`Access-Control-Allow-Origin` check in the way, which is exactly how every hosted CSP
++reporting service works. And `apps/api` has no CORS configuration at all (§4 is still Designed
++only), so there was no policy there to refuse anything. The divergence is a deliberate choice
++between two options that both work, not a workaround for a control that does not exist.
++
++The web collector validates the report with Zod, drops unknown keys rather than logging them,
++reduces `document-uri` and `referrer` to an origin and a path before they reach the log (see
++§6), and writes one `warn` line through the redacting logger. Captured verbatim from the
++running dev server, which is where `apps/web/src/logger.ts` emits the pretty form rather than
++JSON (`pretty: APP_ENV === 'development'`):
++
++```
++[18:18:43.837] WARN: Content Security Policy violation
++    service: "web"
++    cspReport: {
++      "document-uri": "http://localhost:3000/invitations/:seg",
++      "referrer": "http://localhost:3000/reset-password",
++      "violated-directive": "script-src",
++      "blocked-uri": "inline"
++    }
++```
++
++The report that produced it named
++`/invitations/9f8b7c6d5e4f3a2b1c0d9e8f?token=live-secret` as its `document-uri` and
++`/reset-password?token=another` as its `referrer`. Neither token reached the log.
+ 
+ The web origin's `connect-src` is also `'self'` today. `API_BASE_URL` is a different origin
+ (`:3001`) in local development, so the first browser fetch to the API will need it added —
+ Phase 2's problem, noted here so it is not a surprise. `Cache-Control:
+ no-store` is sent on every API response rather than only authenticated ones, and Express's
+ default `ETag` is disabled: a revalidation token for a response the client was told not to
+ store is a contradiction, and computing it means hashing tenant data on every request.
+ 
+ ## 4. CORS
+ 
+@@ -119,17 +150,27 @@ they are readable by any successful XSS, and the session cookie is not.
+   exceptions requiring review and DOMPurify.
+ - **Scanner output and evidence are never rendered as markup.** Escaped text, or a
+   sandboxed frame on a separate origin.
+ - User-supplied URLs are scheme-validated before becoming an `href`; external links carry
+   `rel="noopener noreferrer"`.
+ - Markdown (comments, remediation notes) renders through a sanitiser with a restricted
+   allowlist — no raw HTML, no `javascript:` URLs.
+ - Errors surfaced to users are safe messages from the shared envelope; stack traces and
+   internal identifiers never reach the browser.
+ - Source maps are not published for production application bundles.
++- **A CSP violation report is redacted before it is logged.** `document-uri` and `referrer`
++  are URLs of *our own* pages, and `ui-ux/page-map.md` commits `(auth)` to
++  `/invitations/[token]`, `/reset-password` and `/verify-email`. Browsers strip the fragment
++  from `document-uri` but keep the path and the query, so an ordinary violation on an
++  invitation page would write a live token into the log — CLAUDE.md rule 6. The collector
++  (`apps/web/src/csp-report.ts`) therefore drops the query and fragment outright and masks any
++  path segment it cannot show is a route name, keeping the origin so a report stays
++  attributable. That masking is a shape heuristic, not a route table: a token that happened to
++  be short, lowercase and digit-free would survive it. **Whichever phase ships the first
++  token-bearing URL owes a real route-pattern mapping here** — this is a floor, not a solution.
+ 
+ ## 7. Testing requirements
+ 
+ Header presence asserted on representative routes in integration tests; CSP has no
+ `unsafe-inline`/`unsafe-eval`; CORS rejects an unlisted origin and never reflects arbitrary
+ origins with credentials; cookie flags asserted; a finding whose title contains `<script>`
+ renders as text in the UI (Playwright); `dangerouslySetInnerHTML` count does not increase.
+diff --git a/.claude/ui-ux/design-system.md b/.claude/ui-ux/design-system.md
+index cecaf83..d5c00b9 100644
+--- a/.claude/ui-ux/design-system.md
++++ b/.claude/ui-ux/design-system.md
+@@ -8,21 +8,21 @@
+ >
+ > **A browser now renders some of this (Task 13).** `apps/web` imports
+ > `@sentinel/ui/tokens.css`, runs the Tailwind build that emits the utilities the primitives
+ > reference, loads the §2 typeface system through `next/font`, and puts `Card`, `Alert` and
+ > `Badge` on a real page. What that verifies and what it does not: the tokens resolve, the
+ > arbitrary-value utilities are emitted (checked by grepping the built stylesheet, including
+ > for a utility that appears only inside `packages/ui`), IBM Plex Sans / Sans Condensed / Mono
+ > are self-hosted under `/_next/static/media` with no request to any Google host, and the page
+ > renders under both colour schemes with no console error and no horizontal overflow at 375px
+ > (Playwright). **No human has looked at it.** Nothing here has been judged by eye for
+-> hierarchy, spacing, weight or contrast, and the §4 density modes are wired to a context that
++> hierarchy, spacing, weight or contrast, and the §5 density modes are wired to a context that
+ > nothing reads.
+ 
+ ## 1. Design thesis
+ 
+ **The interface is quiet so the findings can be loud.**
+ 
+ Marcus spends his working day in a triage queue. Priya spends hers writing up evidence.
+ Neither needs an interface with opinions. In a findings table, the single most important
+ signal is severity — and severity is communicated by colour. If the chrome around it is also
+ saturated, severity stops meaning anything, and the user loses the one visual channel that
+diff --git a/.gitignore b/.gitignore
+index 29ad3da..815dee9 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,18 +1,25 @@
+ # Dependencies
+ node_modules/
+ .pnpm-store/
+ .venv/
+ __pycache__/
+ *.py[cod]
+ 
+ # Build output
++# next-env.d.ts is generated by Next and rewritten depending on which command
++# ran last (`next dev` points it at .next/dev/types, `next build` at
++# .next/types), so tracking it means it flips in git status every time a
++# developer alternates the two. Ignored, as current create-next-app does.
++# Verified safe for a cold CI checkout: with apps/web/.next absent entirely,
++# tsc --noEmit still exits 0.
++apps/web/next-env.d.ts
+ dist/
+ build/
+ .next/
+ out/
+ .turbo/
+ *.tsbuildinfo
+ 
+ # Environment and secrets — never commit these
+ .env
+ .env.*
+diff --git a/apps/web/app/api/csp-report/route.ts b/apps/web/app/api/csp-report/route.ts
+index 1eff8c1..7b9a071 100644
+--- a/apps/web/app/api/csp-report/route.ts
++++ b/apps/web/app/api/csp-report/route.ts
+@@ -1,73 +1,46 @@
+ import { NextResponse } from 'next/server';
+-import { z } from 'zod';
++import { parseCspReport, readBoundedBody } from '../../../src/csp-report';
+ import { logger } from '../../../src/logger';
+ 
+ /**
+  * The collector named by `report-uri` in this origin's CSP
+  * (`src/security-headers.ts`).
+  *
+  * Wired from day one, and the reports actually get read: a CSP nobody
+  * monitors is decoration (security/transport-and-headers.md §3). It is also
+  * the only signal that will tell us the policy is about to break something
+  * when development flips from report-only to enforcing.
+  *
++ * Everything this route decides about a body lives in `src/csp-report.ts` and
++ * is asserted in `src/csp-report.spec.ts`. That is not tidiness: this handler
++ * answers 204 to every input, so no HTTP-level test can tell a working
++ * collector from an empty one.
++ *
+  * Pinned to the Node.js runtime because it logs through
+  * `@sentinel/observability`, which is pino — a Node library that does not run
+  * on Next's Edge runtime.
+  */
+ export const runtime = 'nodejs';
+ 
+-/**
+- * The `report-uri` wire format: a single `csp-report` object with
+- * hyphenated keys. Every field is optional because the set a browser actually
+- * sends varies by browser and by violation, and a schema that rejects a
+- * report is a schema that loses the signal it exists to collect.
+- *
+- * `.passthrough()` is deliberately NOT used: unknown keys are dropped rather
+- * than logged, so a future browser field cannot put unreviewed content into
+- * the log. Every field kept here is a URL, a directive name, a policy string
+- * or a line number — none of them a credential — and `blocked-uri` is capped
+- * because a `data:` URI arrives here in full.
+- */
+-const cspReportSchema = z.object({
+-  'csp-report': z
+-    .object({
+-      'document-uri': z.string().max(2048).optional(),
+-      referrer: z.string().max(2048).optional(),
+-      'violated-directive': z.string().max(256).optional(),
+-      'effective-directive': z.string().max(256).optional(),
+-      'original-policy': z.string().max(4096).optional(),
+-      disposition: z.string().max(32).optional(),
+-      'blocked-uri': z.string().max(2048).optional(),
+-      'status-code': z.number().int().optional(),
+-      'script-sample': z.string().max(256).optional(),
+-      'line-number': z.number().int().optional(),
+-      'column-number': z.number().int().optional(),
+-      'source-file': z.string().max(2048).optional(),
+-    })
+-    .strip(),
+-});
++/** Always 204, for every input. See the docblock above. */
++const noContent = (): NextResponse => new NextResponse(null, { status: 204 });
+ 
+ export async function POST(request: Request): Promise<NextResponse> {
+   // Browsers send `application/csp-report` (report-uri) rather than
+-  // `application/json`, so the body is read as text and parsed here instead of
+-  // relying on `request.json()`'s content-type handling.
+-  let payload: unknown;
+-  try {
+-    payload = JSON.parse(await request.text());
+-  } catch {
+-    // A malformed body is not worth a log line at warn — it is almost always a
+-    // scanner poking the endpoint, and logging it turns the collector into a
+-    // way to write attacker-chosen text into our logs.
+-    return new NextResponse(null, { status: 204 });
+-  }
++  // `application/json`, so the body is read as text and parsed by hand rather
++  // than through `request.json()`'s content-type handling.
++  const body = await readBoundedBody(request);
++  if (body === null) return noContent();
+ 
+-  const parsed = cspReportSchema.safeParse(payload);
+-  if (!parsed.success) return new NextResponse(null, { status: 204 });
++  const result = parseCspReport(body);
++  // A malformed or non-conforming body is not worth a log line at warn — it is
++  // almost always a scanner poking the endpoint, and logging it turns the
++  // collector into a way to write attacker-chosen text into our logs.
++  if (!result.ok) return noContent();
+ 
+-  logger.warn({ cspReport: parsed.data['csp-report'] }, 'Content Security Policy violation');
++  logger.warn({ cspReport: result.report }, 'Content Security Policy violation');
+ 
+   // 204: the browser discards the response body for a report anyway, and
+   // returning nothing keeps the endpoint from being usable as a reflector.
+-  return new NextResponse(null, { status: 204 });
++  return noContent();
+ }
+diff --git a/apps/web/app/providers.tsx b/apps/web/app/providers.tsx
+index 8f781cc..461e8bb 100644
+--- a/apps/web/app/providers.tsx
++++ b/apps/web/app/providers.tsx
+@@ -1,19 +1,19 @@
+ 'use client';
+ 
+ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+ 
+ /** `system` follows the OS; the other two override it in both directions. */
+ export type ThemePreference = 'light' | 'dark' | 'system';
+ 
+-/** design-system.md §4 — row height, padding and font size move together. */
++/** design-system.md §5 — row height, padding and font size move together. */
+ export type Density = 'comfortable' | 'compact' | 'dense';
+ 
+ export interface Appearance {
+   readonly theme: ThemePreference;
+   readonly density: Density;
+   readonly setTheme: (theme: ThemePreference) => void;
+   readonly setDensity: (density: Density) => void;
+ }
+ 
+ const AppearanceContext = createContext<Appearance | null>(null);
+diff --git a/apps/web/e2e/smoke.spec.ts b/apps/web/e2e/smoke.spec.ts
+index 2698639..19b81d3 100644
+--- a/apps/web/e2e/smoke.spec.ts
++++ b/apps/web/e2e/smoke.spec.ts
+@@ -1,19 +1,24 @@
+ import { expect, test } from '@playwright/test';
+ 
+ test('the marketing page renders with no console errors', async ({ page }) => {
+   const errors: string[] = [];
+   page.on('console', (message) => {
+     if (message.type() === 'error') errors.push(message.text());
+   });
+   await page.goto('/');
+   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
++  // The h1 is visible at first paint, but the chunks that `'strict-dynamic'`
++  // has to allow are still arriving — and a CSP violation from one of those
++  // would land after the assertion, turning the strongest test in this suite
++  // into one that passes by being early. Wait for the network to settle first.
++  await page.waitForLoadState('networkidle');
+   expect(errors).toEqual([]);
+ });
+ 
+ test('renders in both colour schemes', async ({ page }) => {
+   for (const colorScheme of ['light', 'dark'] as const) {
+     await page.emulateMedia({ colorScheme });
+     await page.goto('/');
+     await expect(page.locator('body')).toBeVisible();
+   }
+ });
+diff --git a/apps/web/next-env.d.ts b/apps/web/next-env.d.ts
+deleted file mode 100644
+index ce4e94a..0000000
+--- a/apps/web/next-env.d.ts
++++ /dev/null
+@@ -1,7 +0,0 @@
+-/// <reference types="next" />
+-/// <reference types="next/image-types/global" />
+-import "./.next/types/routes.d.ts";
+-import "./.next/types/root-params.d.ts";
+-
+-// NOTE: This file should not be edited
+-// see https://nextjs.org/docs/app/api-reference/config/typescript for more information.
+diff --git a/apps/web/package.json b/apps/web/package.json
+index d2192a2..3ffe016 100644
+--- a/apps/web/package.json
++++ b/apps/web/package.json
+@@ -1,21 +1,21 @@
+ {
+   "name": "@sentinel/web",
+   "version": "0.0.0",
+   "private": true,
+   "type": "module",
+   "scripts": {
+-    "dev": "dotenv -e ../../.env -v NODE_ENV=development -- next dev",
++    "dev": "dotenv -e ../../.env -v NODE_ENV=development -- node scripts/next-on-web-port.ts dev",
+     "build": "dotenv -e ../../.env -v NODE_ENV=production -- next build",
+-    "start": "dotenv -e ../../.env -v NODE_ENV=production -- next start",
+-    "start:e2e": "dotenv -e ../../.env -v NODE_ENV=production -v APP_ENV=test -- next start",
+-    "test:e2e": "playwright test",
++    "start": "dotenv -e ../../.env -v NODE_ENV=production -- node scripts/next-on-web-port.ts start",
++    "start:e2e": "dotenv -e ../../.env -v NODE_ENV=production -v APP_ENV=test -- node scripts/next-on-web-port.ts start",
++    "test:e2e": "dotenv -e ../../.env -- playwright test",
+     "typecheck": "tsc -p tsconfig.json --noEmit",
+     "lint": "eslint ."
+   },
+   "dependencies": {
+     "@sentinel/config": "workspace:*",
+     "@sentinel/observability": "workspace:*",
+     "@sentinel/ui": "workspace:*",
+     "@tanstack/react-query": "^5.101.0",
+     "next": "^16.3.2",
+     "react": "^19.2.0",
+diff --git a/apps/web/playwright.config.ts b/apps/web/playwright.config.ts
+index 51187d3..a59fa1c 100644
+--- a/apps/web/playwright.config.ts
++++ b/apps/web/playwright.config.ts
+@@ -1,37 +1,48 @@
++import { loadEnv, webEnvSchema } from '@sentinel/config';
+ import { defineConfig, devices } from '@playwright/test';
+ 
++/**
++ * The port the app is actually served on, from the one place that owns it.
++ * `pnpm test:e2e` runs this config under `dotenv -e ../../.env`, so the same
++ * `WEB_PORT` the launcher binds (`scripts/next-on-web-port.ts`) is the one
++ * these tests navigate to. Hardcoding 3000 here is what let `WEB_PORT` be
++ * decorative in the first place.
++ */
++const { WEB_PORT } = loadEnv(webEnvSchema);
++const baseURL = `http://localhost:${String(WEB_PORT)}`;
++
+ /**
+  * Playwright runs against a **production build** (`next build` then
+  * `next start`), not `next dev`.
+  *
+  * The reason is specific to what the smoke spec asserts. `next dev` injects
+  * hot-reload machinery and React's development-only warnings, so "no console
+  * errors" would be measuring the dev server rather than the page. The
+  * production server is also the only place where the static/dynamic rendering
+  * decision — and therefore whether Next's inline bootstrap scripts carry the
+  * CSP nonce — is the real one.
+  *
+  * `pnpm test:e2e` at the repository root is what runs this.
+  */
+ export default defineConfig({
+   testDir: './e2e',
+   fullyParallel: true,
+   forbidOnly: Boolean(process.env['CI']),
+   retries: process.env['CI'] !== undefined ? 2 : 0,
+   reporter: process.env['CI'] !== undefined ? 'github' : 'list',
+   use: {
+-    baseURL: 'http://localhost:3000',
++    baseURL,
+     trace: 'on-first-retry',
+   },
+   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+   webServer: {
+     // `start:e2e` pins APP_ENV=test, which makes the CSP **enforcing** rather
+     // than report-only. Deliberate, and the same call the API makes: a policy
+     // that is only ever report-only wherever it is asserted is a policy no
+     // test has watched block anything. operations/environments.md §4.
+     command: 'pnpm build && pnpm start:e2e',
+-    url: 'http://localhost:3000',
++    url: baseURL,
+     reuseExistingServer: process.env['CI'] === undefined,
+     timeout: 180_000,
+   },
+ });
+diff --git a/apps/web/proxy.ts b/apps/web/proxy.ts
+index 5deeaf7..d374bce 100644
+--- a/apps/web/proxy.ts
++++ b/apps/web/proxy.ts
+@@ -41,18 +41,27 @@ export function proxy(request: NextRequest): NextResponse {
+ 
+   const cspHeaderName = enforceCsp
+     ? 'Content-Security-Policy'
+     : 'Content-Security-Policy-Report-Only';
+   const policy = headers[cspHeaderName];
+ 
+   // The nonce travels forward on the *request* so a server component can read
+   // it for a `next/script` tag. Next itself reads the CSP request header to
+   // find the nonce it stamps onto its own bootstrap scripts, which is why the
+   // policy is forwarded too and not just `x-nonce`.
++  //
++  // Both CSP header names are cleared before one is set. Setting only the name
++  // being sent would leave a client-supplied header under the *other* name
++  // intact for Next to read a nonce out of — in report-only mode, an inbound
++  // `Content-Security-Policy` request header would survive. Report-only is
++  // development-only so there is nothing to bypass today, but "today" is not a
++  // property worth depending on, and the fix is one line.
+   const requestHeaders = new Headers(request.headers);
+   requestHeaders.set('x-nonce', nonce);
++  requestHeaders.delete('Content-Security-Policy');
++  requestHeaders.delete('Content-Security-Policy-Report-Only');
+   if (policy !== undefined) requestHeaders.set(cspHeaderName, policy);
+ 
+   const response = NextResponse.next({ request: { headers: requestHeaders } });
+   for (const [name, value] of Object.entries(headers)) response.headers.set(name, value);
+   return response;
+ }
+diff --git a/apps/web/scripts/next-on-web-port.ts b/apps/web/scripts/next-on-web-port.ts
+new file mode 100644
+index 0000000..4ee837f
+--- /dev/null
++++ b/apps/web/scripts/next-on-web-port.ts
+@@ -0,0 +1,52 @@
++import { spawn } from 'node:child_process';
++import { createRequire } from 'node:module';
++import { loadEnv, webEnvSchema } from '@sentinel/config';
++
++/**
++ * Runs `next dev` / `next start` bound to `WEB_PORT`.
++ *
++ * This exists because the obvious thing does not work. Writing
++ * `next start -p $WEB_PORT` straight into a package.json script relies on the
++ * script runner expanding a shell variable, and pnpm on Windows does not:
++ * measured, `pnpm run` handed the literal five characters `$WEB_PORT` through
++ * to the command. That failure is silent — Next falls back to its default
++ * 3000 and everything looks fine — and it would have worked on Linux CI while
++ * being broken on the machine this repository is developed on, which is the
++ * worst shape a configuration bug can take.
++ *
++ * So the port is resolved in Node instead, through `@sentinel/config` like
++ * every other setting. `WEB_PORT` is therefore load-bearing rather than
++ * decorative: change it and the server moves.
++ *
++ * `loadEnv` is called here rather than importing `../src/env.ts`, because this
++ * file runs under Node's TypeScript type-stripping, which does no extension
++ * resolution — a relative import would have to be spelled `../src/env.ts`, and
++ * tsc rejects a `.ts` specifier unless the whole project opts into
++ * `allowImportingTsExtensions`. One duplicated `loadEnv` call in a launcher is
++ * a smaller price than a project-wide compiler flag.
++ *
++ * Next is spawned as `node <next-cli-entry>` rather than through the `next`
++ * bin shim, because the shim is `next.CMD` on Windows and `next` elsewhere and
++ * resolving that difference means `shell: true`, which then has to worry about
++ * quoting. Resolving the CLI's JS entry sidesteps both.
++ */
++const command = process.argv[2];
++if (command !== 'dev' && command !== 'start') {
++  throw new Error(`Expected "dev" or "start", received ${JSON.stringify(command)}.`);
++}
++
++const nextCli = createRequire(import.meta.url).resolve('next/dist/bin/next');
++
++const child = spawn(
++  process.execPath,
++  [nextCli, command, '--port', String(loadEnv(webEnvSchema).WEB_PORT), ...process.argv.slice(3)],
++  { stdio: 'inherit' },
++);
++
++// Forward the child's fate rather than swallowing it: a `next build` that
++// fails must fail the turbo task, and Ctrl-C on `next dev` must stop this
++// process too.
++child.on('exit', (code, signal) => {
++  if (signal !== null) process.kill(process.pid, signal);
++  else process.exit(code ?? 0);
++});
+diff --git a/apps/web/src/csp-report.spec.ts b/apps/web/src/csp-report.spec.ts
+new file mode 100644
+index 0000000..c1d1ecd
+--- /dev/null
++++ b/apps/web/src/csp-report.spec.ts
+@@ -0,0 +1,181 @@
++import { describe, expect, it } from 'vitest';
++import {
++  CSP_REPORT_MAX_BYTES,
++  parseCspReport,
++  readBoundedBody,
++  sanitizeReportedUrl,
++} from './csp-report.js';
++
++describe('parseCspReport', () => {
++  const valid = (extra: Record<string, unknown> = {}): string =>
++    JSON.stringify({
++      'csp-report': {
++        'document-uri': 'https://app.example.com/dashboard',
++        'violated-directive': 'script-src',
++        'blocked-uri': 'inline',
++        ...extra,
++      },
++    });
++
++  it('accepts a report a browser would actually send', () => {
++    const result = parseCspReport(valid());
++    expect(result.ok).toBe(true);
++    if (!result.ok) return;
++    expect(result.report['violated-directive']).toBe('script-src');
++    expect(result.report['blocked-uri']).toBe('inline');
++  });
++
++  it('strips a key the schema does not know, rather than passing it through', () => {
++    // The guarantee the route's docblock leans on: a field a future browser
++    // adds cannot put unreviewed content into the log.
++    const result = parseCspReport(valid({ 'injected-key': 'attacker-controlled' }));
++    expect(result.ok).toBe(true);
++    if (!result.ok) return;
++    expect(Object.keys(result.report)).not.toContain('injected-key');
++    expect(JSON.stringify(result.report)).not.toContain('attacker-controlled');
++  });
++
++  it('rejects malformed JSON without throwing', () => {
++    expect(parseCspReport('{not json')).toEqual({ ok: false, reason: 'malformed-json' });
++  });
++
++  it.each([
++    ['an empty object', '{}'],
++    ['a JSON array', '[]'],
++    ['a bare string', '"hello"'],
++    ['null', 'null'],
++    ['the wrong envelope key', '{"report":{}}'],
++    ['a non-object report body', '{"csp-report":"nope"}'],
++  ])('rejects %s on schema grounds', (_label, body) => {
++    expect(parseCspReport(body)).toEqual({ ok: false, reason: 'schema' });
++  });
++
++  it('rejects a field that exceeds its cap instead of truncating it', () => {
++    const result = parseCspReport(valid({ 'script-sample': 'x'.repeat(257) }));
++    expect(result).toEqual({ ok: false, reason: 'schema' });
++  });
++
++  it('masks the document-uri before it can reach the log', () => {
++    const result = parseCspReport(
++      valid({ 'document-uri': 'https://app.example.com/invitations/9f8b7c6d5e4f3a2b1c0d9e8f' }),
++    );
++    expect(result.ok).toBe(true);
++    if (!result.ok) return;
++    expect(result.report['document-uri']).toBe('https://app.example.com/invitations/:seg');
++  });
++
++  it('masks the referrer too, and leaves an empty referrer alone', () => {
++    const masked = parseCspReport(
++      valid({ referrer: 'https://app.example.com/reset-password?token=live-secret' }),
++    );
++    expect(masked.ok).toBe(true);
++    if (!masked.ok) return;
++    expect(masked.report.referrer).toBe('https://app.example.com/reset-password');
++
++    const empty = parseCspReport(valid({ referrer: '' }));
++    expect(empty.ok).toBe(true);
++    if (!empty.ok) return;
++    expect(empty.report.referrer).toBe('');
++  });
++});
++
++describe('sanitizeReportedUrl', () => {
++  it('drops the query string, where a reset or verification token rides', () => {
++    // page-map.md commits /reset-password and /verify-email, which
++    // conventionally carry their token in the query.
++    expect(sanitizeReportedUrl('https://app.example.com/verify-email?token=live-secret')).toBe(
++      'https://app.example.com/verify-email',
++    );
++  });
++
++  it('drops the fragment', () => {
++    expect(sanitizeReportedUrl('https://app.example.com/dashboard#anchor')).toBe(
++      'https://app.example.com/dashboard',
++    );
++  });
++
++  it.each([
++    ['a UUID', '123e4567-e89b-12d3-a456-426614174000'],
++    ["this repo's prefixed UUIDv7", 'finding_01h9zqk4m8n2p5r7t9v1x3y5z7'],
++    ['a base64url-ish token', 'Ab3xY7pQ9wZ2mK5nR8tV1sD4'],
++    ['a long hex string', '9f8b7c6d5e4f3a2b1c0d9e8f'],
++  ])('masks %s in the path', (_label, segment) => {
++    expect(sanitizeReportedUrl(`https://app.example.com/invitations/${segment}`)).toBe(
++      'https://app.example.com/invitations/:seg',
++    );
++  });
++
++  it.each(['invitations', 'reset-password', 'organizations', 'audit-logs', 'dashboard', 'v1'])(
++    'keeps the real route name %s',
++    (segment) => {
++      expect(sanitizeReportedUrl(`https://app.example.com/${segment}`)).toBe(
++        `https://app.example.com/${segment}`,
++      );
++    },
++  );
++
++  it('keeps the origin so a report is still attributable', () => {
++    expect(sanitizeReportedUrl('https://app.example.com:8443/x/9f8b7c6d5e4f3a2b1c0d9e8f')).toBe(
++      'https://app.example.com:8443/x/:seg',
++    );
++  });
++
++  it('does not echo an unparsable value back into the log', () => {
++    expect(sanitizeReportedUrl('not a url')).toBe('[unparsable]');
++  });
++
++  it('is not fooled by credentials in the authority', () => {
++    // `new URL().origin` drops userinfo, so a password embedded in the URL
++    // cannot survive into the log.
++    const sanitized = sanitizeReportedUrl('https://user:hunter2@app.example.com/dashboard');
++    expect(sanitized).toBe('https://app.example.com/dashboard');
++    expect(sanitized).not.toContain('hunter2');
++  });
++});
++
++describe('CSP_REPORT_MAX_BYTES', () => {
++  it('leaves headroom over the largest field the schema keeps', () => {
++    // original-policy is capped at 4096; a body cap below that would reject
++    // reports the schema would otherwise have accepted.
++    expect(CSP_REPORT_MAX_BYTES).toBeGreaterThan(4096);
++  });
++});
++
++describe('readBoundedBody', () => {
++  const post = (body: BodyInit, headers: Record<string, string> = {}): Request =>
++    new Request('https://app.example.com/api/csp-report', { method: 'POST', body, headers });
++
++  it('reads a normal report', async () => {
++    await expect(readBoundedBody(post('{"csp-report":{}}'))).resolves.toBe('{"csp-report":{}}');
++  });
++
++  it('refuses a body larger than the cap', async () => {
++    const oversized = 'x'.repeat(CSP_REPORT_MAX_BYTES + 1);
++    await expect(readBoundedBody(post(oversized))).resolves.toBeNull();
++  });
++
++  it('accepts a body exactly at the cap', async () => {
++    const exact = 'x'.repeat(CSP_REPORT_MAX_BYTES);
++    await expect(readBoundedBody(post(exact))).resolves.toHaveLength(CSP_REPORT_MAX_BYTES);
++  });
++
++  it('refuses on an oversized Content-Length without reading the stream', async () => {
++    // The fast path: a huge declared length is rejected before a byte is
++    // buffered. `bodyUsed` stays false because the stream was never read.
++    const request = post('{}', { 'content-length': String(CSP_REPORT_MAX_BYTES + 1) });
++    await expect(readBoundedBody(request)).resolves.toBeNull();
++    expect(request.bodyUsed).toBe(false);
++  });
++
++  it('still refuses an oversized body when Content-Length lies about it', async () => {
++    // The header is client-supplied, so it is a fast path and not the control.
++    // A stream that under-declares itself must still be cut off.
++    const request = post('x'.repeat(CSP_REPORT_MAX_BYTES + 1), { 'content-length': '10' });
++    await expect(readBoundedBody(request)).resolves.toBeNull();
++  });
++
++  it('refuses a request with no body at all', async () => {
++    const request = new Request('https://app.example.com/api/csp-report', { method: 'POST' });
++    await expect(readBoundedBody(request)).resolves.toBeNull();
++  });
++});
+diff --git a/apps/web/src/csp-report.ts b/apps/web/src/csp-report.ts
+new file mode 100644
+index 0000000..9541c9d
+--- /dev/null
++++ b/apps/web/src/csp-report.ts
+@@ -0,0 +1,182 @@
++import { z } from 'zod';
++
++/**
++ * Everything the `/api/csp-report` collector does to a request body, with no
++ * Next and no I/O, so it can be asserted directly.
++ *
++ * The route handler around this is deliberately thin: bound the body, hand the
++ * text here, log what comes back. That split exists because the handler
++ * answers 204 to every input — a deliberate choice, since a violation report's
++ * response is discarded by the browser and a status code is free
++ * reconnaissance — which makes an HTTP-level test unable to tell a working
++ * collector from a deleted one.
++ */
++
++/**
++ * Maximum accepted body. A real `report-uri` payload is a few hundred bytes;
++ * the largest field this schema keeps is `original-policy` at 4 KB, so 8 KB is
++ * roughly twice the largest legitimate report.
++ *
++ * This endpoint is unauthenticated, is behind no rate limiter (the API's
++ * limiter runs on the other origin), and its URL is published to every browser
++ * in the world inside the CSP header. Next's App Router applies no default
++ * body-size limit — `api.bodyParser.sizeLimit` was Pages Router only — so
++ * without this cap `await request.text()` buffers whatever it is sent.
++ */
++export const CSP_REPORT_MAX_BYTES = 8 * 1024;
++
++/**
++ * The `report-uri` wire format: a single `csp-report` object with hyphenated
++ * keys. Every field is optional because the set a browser actually sends
++ * varies by browser and by violation, and a schema that rejects a report is a
++ * schema that loses the signal it exists to collect.
++ *
++ * Unknown keys are stripped rather than passed through, so a field a future
++ * browser adds cannot put unreviewed content into the log.
++ */
++const cspReportSchema = z.object({
++  'csp-report': z
++    .object({
++      'document-uri': z.string().max(2048).optional(),
++      referrer: z.string().max(2048).optional(),
++      'violated-directive': z.string().max(256).optional(),
++      'effective-directive': z.string().max(256).optional(),
++      'original-policy': z.string().max(4096).optional(),
++      disposition: z.string().max(32).optional(),
++      'blocked-uri': z.string().max(2048).optional(),
++      'status-code': z.number().int().optional(),
++      'script-sample': z.string().max(256).optional(),
++      'line-number': z.number().int().optional(),
++      'column-number': z.number().int().optional(),
++      'source-file': z.string().max(2048).optional(),
++    })
++    .strip(),
++});
++
++export type CspReport = z.infer<typeof cspReportSchema>['csp-report'];
++
++/** Replaces a path segment that cannot be proven to be a route name. */
++const OPAQUE_SEGMENT = ':seg';
++
++/**
++ * True when a path segment is safe to log as-is.
++ *
++ * The threat is concrete rather than theoretical. `ui-ux/page-map.md` commits
++ * `(auth)` to `/invitations/[token]`, `/reset-password` and `/verify-email`;
++ * browsers strip the fragment from `document-uri` but keep the path and the
++ * query, so from Phase 2 onward an ordinary CSP violation on an invitation
++ * page would otherwise write a live invitation token into the log. That is
++ * CLAUDE.md security rule 6.
++ *
++ * The rule: a real route name in this product is a short lowercase word or
++ * hyphenated pair — `invitations`, `reset-password`, `organizations`,
++ * `audit-logs`, the longest in the whole page map being 13 characters.
++ * Anything else is treated as an identifier. Long-and-contains-digits is
++ * rejected outright, which covers UUIDs, this repo's prefixed UUIDv7 ids, and
++ * base64url tokens.
++ *
++ * **What this does not guarantee.** It is a shape heuristic, not a route
++ * table. A token that happens to be short, lowercase and digit-free would
++ * survive it. The correct fix is to match the real route manifest and log the
++ * pattern, and that is owed by whichever phase ships token-bearing URLs —
++ * this is a floor, not a solution.
++ */
++function segmentIsRouteName(segment: string): boolean {
++  if (!/^[a-z][a-z0-9-]*$/.test(segment)) return false;
++  if (segment.length > 24) return false;
++  if (segment.length >= 12 && /\d/.test(segment)) return false;
++  return true;
++}
++
++/**
++ * Reduces a URL reported by the browser to something safe to write down:
++ * origin plus a path whose identifier-shaped segments are masked, with the
++ * query string and fragment dropped entirely.
++ */
++export function sanitizeReportedUrl(raw: string): string {
++  let url: URL;
++  try {
++    url = new URL(raw);
++  } catch {
++    // `document-uri` is always an absolute URL in practice. Anything that is
++    // not parseable is unexpected input, and unexpected input is exactly what
++    // should not be echoed into a log verbatim.
++    return '[unparsable]';
++  }
++
++  const path = url.pathname
++    .split('/')
++    .map((segment) => (segment === '' || segmentIsRouteName(segment) ? segment : OPAQUE_SEGMENT))
++    .join('/');
++
++  return `${url.origin}${path}`;
++}
++
++/**
++ * Reads at most `CSP_REPORT_MAX_BYTES`, refusing before anything is buffered
++ * where possible.
++ *
++ * `Content-Length` is checked first because it lets an oversized request be
++ * rejected without reading a byte — but it is client-supplied, so it is a
++ * fast path and not the control. The control is the running total below,
++ * which abandons the stream the moment the budget is exceeded regardless of
++ * what the header claimed.
++ */
++export async function readBoundedBody(request: Request): Promise<string | null> {
++  const declared = Number(request.headers.get('content-length') ?? Number.NaN);
++  if (Number.isFinite(declared) && declared > CSP_REPORT_MAX_BYTES) return null;
++
++  const body = request.body;
++  if (body === null) return null;
++
++  const reader = body.getReader();
++  const chunks: Uint8Array[] = [];
++  let total = 0;
++  try {
++    for (;;) {
++      const { done, value } = await reader.read();
++      if (done) break;
++      total += value.byteLength;
++      if (total > CSP_REPORT_MAX_BYTES) {
++        await reader.cancel();
++        return null;
++      }
++      chunks.push(value);
++    }
++  } catch {
++    return null;
++  }
++
++  return new TextDecoder().decode(Buffer.concat(chunks));
++}
++
++export type CspReportParseResult =
++  | { readonly ok: true; readonly report: CspReport }
++  | { readonly ok: false; readonly reason: 'malformed-json' | 'schema' };
++
++/**
++ * Parses, validates, strips unknown keys, and masks the two URL-bearing
++ * fields. Never throws: a collector that throws on hostile input is a
++ * collector that turns a violation report into an error report.
++ */
++export function parseCspReport(body: string): CspReportParseResult {
++  let payload: unknown;
++  try {
++    payload = JSON.parse(body);
++  } catch {
++    return { ok: false, reason: 'malformed-json' };
++  }
++
++  const parsed = cspReportSchema.safeParse(payload);
++  if (!parsed.success) return { ok: false, reason: 'schema' };
++
++  const report = { ...parsed.data['csp-report'] };
++  if (report['document-uri'] !== undefined) {
++    report['document-uri'] = sanitizeReportedUrl(report['document-uri']);
++  }
++  if (report.referrer !== undefined && report.referrer !== '') {
++    report.referrer = sanitizeReportedUrl(report.referrer);
++  }
++
++  return { ok: true, report };
++}
+diff --git a/pnpm-workspace.yaml b/pnpm-workspace.yaml
+index 54f4447..501e3c2 100644
+--- a/pnpm-workspace.yaml
++++ b/pnpm-workspace.yaml
+@@ -12,21 +12,32 @@ allowBuilds:
+   # postinstall — required for the client to load at all. cpu-features, ssh2,
+   # and protobufjs are transitive build deps of @testcontainers/postgresql
+   # (via dockerode), needed for the migration integration test's Docker
+   # control channel.
+   '@prisma/client': true
+   '@prisma/engines': true
+   prisma: true
+   cpu-features: true
+   protobufjs: true
+   ssh2: true
+-minimumReleaseAgeExclude:
+-  - '@next/env@16.3.2'
+-  - '@next/swc-darwin-arm64@16.3.2'
+-  - '@next/swc-darwin-x64@16.3.2'
+-  - '@next/swc-linux-arm64-gnu@16.3.2'
+-  - '@next/swc-linux-arm64-musl@16.3.2'
+-  - '@next/swc-linux-x64-gnu@16.3.2'
+-  - '@next/swc-linux-x64-musl@16.3.2'
+-  - '@next/swc-win32-arm64-msvc@16.3.2'
+-  - '@next/swc-win32-x64-msvc@16.3.2'
+-  - next@16.3.2
++
++# minimumReleaseAgeExclude is deliberately absent.
++#
++# `pnpm install` wrote ten entries here during Task 13 — `next@16.3.2` and its
++# nine `@next/swc-*` platform binaries — exempting them from pnpm's minimum
++# release-age check. That check is a supply-chain control: it refuses freshly
++# published packages, because a compromised release is most dangerous in the
++# hours before anyone notices. `next@16.3.2` was published at
++# 2026-08-21T09:54:02Z and was roughly three hours old when it was installed,
++# which is squarely inside the window the control exists to cover.
++#
++# The entries were removed rather than justified. Verified that nothing needs
++# them: with the block deleted, `pnpm install`, `pnpm install --frozen-lockfile`
++# (what CI runs) and `pnpm install --lockfile-only` all succeed and produce no
++# change to pnpm-lock.yaml — the resolution is already pinned, so the cooldown
++# is not consulted again.
++#
++# If a future `pnpm install` offers to re-add exclusions, that is a resolution
++# happening against the registry for a package too new to have been vetted.
++# The answer is to wait out the cooldown or pin the previous release, not to
++# accept the exemption — and if one is ever genuinely accepted, it belongs here
++# with the same kind of comment every other block in this file carries.

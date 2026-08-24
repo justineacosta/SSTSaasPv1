@@ -1,0 +1,889 @@
+diff --git a/.claude/api/errors.md b/.claude/api/errors.md
+index b88f45c..30365ac 100644
+--- a/.claude/api/errors.md
++++ b/.claude/api/errors.md
+@@ -109,6 +109,15 @@ Two implementation rules that are easy to get wrong, both covered by tests:
+   through its structural `redact()`. Authored 4xx messages quote user input — a rejected
+   callback URL, a bad enum value — and a credentialed URL is exactly the shape that arrives
+   that way.
++- **There are two generic messages, and they must stay two.** When a message is withheld,
++  the replacement matches the *class* of the failure: a 5xx gets "Something went wrong on our
++  side…", a 4xx gets "The request could not be accepted…". Collapsing them into one string
++  tells a caller that their own bad request was the server's fault — which re-introduces, in
++  the `message`, exactly the confusion the client-class/server-class split in `code` exists to
++  remove (§1, §3), and generates the support ticket §4 is written to avoid. Neither string
++  speculates about the cause: a message is withheld precisely because the underlying text is
++  not trusted. `apps/api/src/common/filters/all-exceptions.filter.ts` holds both, and its
++  spec pins each one against a collapse in either direction.
+ 
+ ## 6. Logging
+ 
+diff --git a/.claude/architecture/backend.md b/.claude/architecture/backend.md
+index 67f7a54..0e97273 100644
+--- a/.claude/architecture/backend.md
++++ b/.claude/architecture/backend.md
+@@ -45,7 +45,16 @@ must be testable without a database. Where that becomes hard, the layering has s
+ 
+ ## 3. Cross-cutting pipeline
+ 
+-Order matters and is asserted by a test.
++Order matters and is asserted by a test —
++`apps/api/src/app-setup.spec.ts`, which asserts it on the registration path production
++actually takes.
++
++The first two stages are registered with `app.use()` in `configureApp`, not through
++`MiddlewareConsumer`. A consumer registration resolves its paths under the global prefix and
++runs after Nest's body parser, which left every off-prefix path and every body-parse failure
++with no request ID and no security headers. Guard stages from Phase 2 onward are Nest guards
++and are unaffected; anything that must cover *every* response, routed or not, belongs in
++`configureApp`.
+ 
+ | Stage | Mechanism | Status |
+ |---|---|---|
+diff --git a/.claude/security/transport-and-headers.md b/.claude/security/transport-and-headers.md
+index 30e313c..cd7cb83 100644
+--- a/.claude/security/transport-and-headers.md
++++ b/.claude/security/transport-and-headers.md
+@@ -1,10 +1,21 @@
+ # Transport security, headers, and frontend hardening
+ 
+ > **Status: §2 and §3 Implemented for the API origin (Phase 1)** —
+-> `apps/api/src/common/middleware/security-headers.middleware.ts`, asserted header by header in
++> `apps/api/src/common/middleware/security-headers.middleware.ts`, registered with `app.use()`
++> in `apps/api/src/app-setup.ts` and asserted header by header in
+ > `apps/api/src/app.integration.spec.ts`. §1 (edge TLS), §4 (CORS), §5 (cookies) and §6
+ > (frontend hardening) are Designed only: there is no edge, no authentication, and no
+ > `apps/web` yet.
++>
++> The `app.use()` registration is load-bearing, not a style choice. Registering the same
++> middleware through Nest's `MiddlewareConsumer.forRoutes({ path: '*splat' })` resolves the
++> path *under the global prefix*, so it covered only `/api/<seg>/**` and `/health/<seg>/**`:
++> `/`, `/a/b`, `/healthz` and every other off-prefix path answered with no security headers and
++> no `x-request-id` at all. A consumer registration also runs *after* Nest's body parser, so a
++> malformed request body was rejected before the chain ran. Both are fixed, and the integration
++> suite now asserts the full header set on off-prefix paths and on a body-parse failure
++> specifically — the earlier assertions all picked paths inside the covered tree, which is why
++> the gap survived review.
+ 
+ ## 1. Transport
+ 
+diff --git a/apps/api/nest-cli.json b/apps/api/nest-cli.json
+deleted file mode 100644
+index 2f068a1..0000000
+--- a/apps/api/nest-cli.json
++++ /dev/null
+@@ -1,9 +0,0 @@
+-{
+-  "$schema": "https://json.schemastore.org/nest-cli",
+-  "collection": "@nestjs/schematics",
+-  "sourceRoot": "src",
+-  "compilerOptions": {
+-    "deleteOutDir": true,
+-    "tsConfigPath": "tsconfig.build.json"
+-  }
+-}
+diff --git a/apps/api/src/app-setup.spec.ts b/apps/api/src/app-setup.spec.ts
+new file mode 100644
+index 0000000..3c510bf
+--- /dev/null
++++ b/apps/api/src/app-setup.spec.ts
+@@ -0,0 +1,111 @@
++import { describe, expect, it } from 'vitest';
++import type { NestExpressApplication } from '@nestjs/platform-express';
++import type { NextFunction, Request, Response } from 'express';
++import { configureApp, type MiddlewareHandler } from './app-setup.js';
++import { CSP_ENFORCE, LOGGER } from './infrastructure/tokens.js';
++import { REQUEST_ID_HEADER } from './common/middleware/request-id.middleware.js';
++
++/**
++ * The narrowest stand-in for a Nest application that `configureApp` touches,
++ * recording the middleware it registers in the order it registers it.
++ *
++ * A stub rather than a real application on purpose: this asserts the *ordering*
++ * decision, which is a property of `configureApp` itself. Coverage — that the
++ * chain actually reaches every path, including off-prefix ones and a body-parse
++ * failure — is asserted against a live application in `app.integration.spec.ts`.
++ */
++function recordingApp(): { app: NestExpressApplication; handlers: MiddlewareHandler[] } {
++  const handlers: MiddlewareHandler[] = [];
++  const noop = (): void => {};
++  const logger = { debug: noop, info: noop, warn: noop, error: noop, fatal: noop };
++  const app = {
++    use: (handler: MiddlewareHandler) => {
++      handlers.push(handler);
++    },
++    get: (token: unknown) => (token === LOGGER ? logger : token === CSP_ENFORCE ? true : undefined),
++    disable: noop,
++    set: noop,
++    setGlobalPrefix: noop,
++    enableVersioning: noop,
++    useLogger: noop,
++    useGlobalFilters: noop,
++    useGlobalInterceptors: noop,
++    enableShutdownHooks: noop,
++  } as unknown as NestExpressApplication;
++  return { app, handlers };
++}
++
++interface HeaderWrite {
++  readonly name: string;
++  /** The request ID as it stood at the moment this header was written. */
++  readonly requestIdAtWrite: unknown;
++}
++
++/** Runs the recorded chain the way Express would: each handler calls the next. */
++function runChain(handlers: readonly MiddlewareHandler[]): {
++  writes: HeaderWrite[];
++  reachedEnd: boolean;
++} {
++  const request = { headers: {} } as Request;
++  const writes: HeaderWrite[] = [];
++  const response = {
++    locals: {},
++    setHeader: (name: string) => {
++      writes.push({ name: name.toLowerCase(), requestIdAtWrite: request.id });
++    },
++    removeHeader: () => {},
++  } as unknown as Response;
++
++  let reachedEnd = false;
++  const step = (index: number): void => {
++    const handler = handlers[index];
++    if (handler === undefined) {
++      reachedEnd = true;
++      return;
++    }
++    handler(request, response, (() => {
++      step(index + 1);
++    }) as NextFunction);
++  };
++  step(0);
++  return { writes, reachedEnd };
++}
++
++describe('configureApp middleware pipeline', () => {
++  it('registers exactly the two cross-cutting stages, unfiltered by path', () => {
++    const { app, handlers } = recordingApp();
++    configureApp(app);
++    // `app.use(handler)` with no path mounts on every path and every method.
++    // A path argument here is how a security header quietly stops covering a
++    // route added later — which is exactly what `forRoutes({ path: '*splat' })`
++    // did, because Nest resolves it under the global prefix.
++    expect(handlers).toHaveLength(2);
++    for (const handler of handlers) expect(handler).toHaveLength(3);
++  });
++
++  // architecture/backend.md §3: "Order matters and is asserted by a test." This
++  // is that test for the two stages that exist, and it asserts the order on the
++  // path production actually takes. Each guard stage added later extends this,
++  // so a stage inserted in the wrong place cannot land quietly.
++  it('establishes the request ID before the security headers are written', () => {
++    const { app, handlers } = recordingApp();
++    configureApp(app);
++    const { writes, reachedEnd } = runChain(handlers);
++
++    expect(reachedEnd).toBe(true);
++    // Every header the security middleware writes — and the echo of the request
++    // ID itself — must be written with a request ID already in hand, so that a
++    // failure inside a later stage, including inside the security-headers
++    // middleware, still correlates to a log line.
++    expect(writes.length).toBeGreaterThan(1);
++    const writtenBeforeAnIdExisted = writes
++      .filter((write) => typeof write.requestIdAtWrite !== 'string')
++      .map((write) => write.name);
++    expect(writtenBeforeAnIdExisted).toEqual([]);
++    expect(writes[0]?.requestIdAtWrite).toMatch(/^req_/);
++    const names = writes.map((write) => write.name);
++    expect(names[0]).toBe(REQUEST_ID_HEADER);
++    expect(names).toContain('x-content-type-options');
++    expect(names).toContain('content-security-policy');
++  });
++});
+diff --git a/apps/api/src/app-setup.ts b/apps/api/src/app-setup.ts
+index 49113d2..45a28d9 100644
+--- a/apps/api/src/app-setup.ts
++++ b/apps/api/src/app-setup.ts
+@@ -1,10 +1,44 @@
+ import { RequestMethod, VersioningType } from '@nestjs/common';
+ import type { NestExpressApplication } from '@nestjs/platform-express';
++import type { NextFunction, Request, Response } from 'express';
+ import type { Logger } from '@sentinel/observability';
+ import { AllExceptionsFilter } from './common/filters/all-exceptions.filter.js';
+ import { LoggingInterceptor } from './common/interceptors/logging.interceptor.js';
++import { RequestIdMiddleware } from './common/middleware/request-id.middleware.js';
++import { SecurityHeadersMiddleware } from './common/middleware/security-headers.middleware.js';
+ import { NestLoggerBridge } from './infrastructure/config/nest-logger.js';
+-import { LOGGER } from './infrastructure/tokens.js';
++import { CSP_ENFORCE, LOGGER } from './infrastructure/tokens.js';
++
++/** What `app.use()` accepts: a bare Express handler. */
++export type MiddlewareHandler = (request: Request, response: Response, next: NextFunction) => void;
++
++/**
++ * The first two rows of architecture/backend.md §3, in order.
++ *
++ * The request ID is established before anything else so that every later stage
++ * — including a failure inside the security-headers middleware itself — has
++ * something to correlate by. Security headers come next so they are present on
++ * a response even when a later stage throws.
++ *
++ * These are built as instances rather than registered through
++ * `MiddlewareConsumer`, because a consumer registration is resolved relative to
++ * the global prefix and therefore covers only `/api/<seg>/**` — see the note in
++ * `app.module.ts`. `SecurityHeadersMiddleware`'s one dependency is read out of
++ * the DI container by its token, the same way the logger already is below, so
++ * `CSP_ENFORCE` stays the single place `APP_ENV` is turned into a policy mode.
++ */
++function crossCuttingMiddleware(app: NestExpressApplication): MiddlewareHandler[] {
++  const requestId = new RequestIdMiddleware();
++  const securityHeaders = new SecurityHeadersMiddleware(app.get<boolean>(CSP_ENFORCE));
++  return [
++    (request, response, next) => {
++      requestId.use(request, response, next);
++    },
++    (request, response, next) => {
++      securityHeaders.use(request, response, next);
++    },
++  ];
++}
+ 
+ /**
+  * Applies everything that is a property of the HTTP surface rather than of a
+@@ -13,6 +47,18 @@ import { LOGGER } from './infrastructure/tokens.js';
+  * is a bootstrap no test has ever seen.
+  */
+ export function configureApp(app: NestExpressApplication): NestExpressApplication {
++  // First, before anything else this function does and — because `configureApp`
++  // runs before `app.init()` — before Nest registers its body parser. That
++  // ordering is the point: a malformed request body is rejected by the parser
++  // without ever reaching a route, and a response that skipped this chain is a
++  // response with no security headers and no request ID.
++  // transport-and-headers.md §2 applies to *every* response, not to the routed
++  // ones. `app-setup.spec.ts` asserts the order; `app.integration.spec.ts`
++  // asserts the coverage, including off-prefix paths and the parser failure.
++  for (const middleware of crossCuttingMiddleware(app)) {
++    app.use(middleware);
++  }
++
+   // Express advertises itself by default. Removed at the app level as well as
+   // per-response, so it is gone even on a response that never reaches the
+   // middleware chain. transport-and-headers.md §2.
+@@ -29,15 +75,13 @@ export function configureApp(app: NestExpressApplication): NestExpressApplicatio
+     // backend.md §8 both write the unprefixed paths, and a probe URL that moves
+     // when the API version moves breaks a deployment on the day it changes.
+     //
+-    // `{*splat}` is path-to-regexp v8 syntax, matching the `*splat` used for
+-    // middleware in app.module.ts. Measured on this stack (Nest 11.2 / Express
+-    // 5.2 / path-to-regexp 8.4), the Express 4 form `health/(.*)` also works
+-    // here — Nest evaluates prefix exclusions with its own matcher rather than
+-    // through Express's router, so v8's stricter syntax does not reach it. The
+-    // v8 form is used anyway so both wildcard sites read the same way. A bare
+-    // `health` does NOT work: it excludes only the exact path, and
+-    // /health/live goes back under the prefix. app.integration.spec.ts asserts
+-    // both directions.
++    // `{*splat}` is path-to-regexp v8 syntax. Measured on this stack (Nest 11.2
++    // / Express 5.2 / path-to-regexp 8.4), the Express 4 form `health/(.*)`
++    // also works here — Nest evaluates prefix exclusions with its own matcher
++    // rather than through Express's router, so v8's stricter syntax does not
++    // reach it. The v8 form is used anyway. A bare `health` does NOT work: it
++    // excludes only the exact path, and /health/live goes back under the
++    // prefix. app.integration.spec.ts asserts both directions.
+     exclude: [{ path: 'health/{*splat}', method: RequestMethod.ALL }],
+   });
+ 
+diff --git a/apps/api/src/app.integration.spec.ts b/apps/api/src/app.integration.spec.ts
+index 6a5ece7..4e35ebd 100644
+--- a/apps/api/src/app.integration.spec.ts
++++ b/apps/api/src/app.integration.spec.ts
+@@ -159,6 +159,88 @@ describe('API surface', () => {
+     expect(headers['x-request-id']).toMatch(/^req_/);
+   });
+ 
++  // The gap that let a whole class of unprotected responses ship: every header
++  // assertion above picks a path *inside* `/api` or `/health`, which is exactly
++  // the tree `MiddlewareConsumer.forRoutes({ path: '*splat' })` covered — it
++  // resolves relative to the global prefix. `/`, `/a/b` and `/healthz` answered
++  // with no security headers and no request ID at all. These paths are the
++  // control, and they must stay in the suite even when nothing is routed there:
++  // transport-and-headers.md §2 says "every application response", and an
++  // unrouted path still produces one.
++  it.each(['/', '/a', '/a/b', '/healthz', '/health', '/favicon.ico'])(
++    'sets the full header set on %s, outside both /api and /health',
++    async (path) => {
++      const { headers } = await request(server).get(path);
++      expect(headers['x-content-type-options']).toBe('nosniff');
++      expect(headers['x-frame-options']).toBe('DENY');
++      expect(headers['strict-transport-security']).toBe(
++        'max-age=31536000; includeSubDomains; preload',
++      );
++      expect(headers['referrer-policy']).toBe('strict-origin-when-cross-origin');
++      expect(headers['permissions-policy']).toBe(
++        'camera=(), microphone=(), geolocation=(), payment=()',
++      );
++      expect(headers['cross-origin-opener-policy']).toBe('same-origin');
++      expect(headers['cross-origin-resource-policy']).toBe('same-origin');
++      expect(headers['cross-origin-embedder-policy']).toBe('require-corp');
++      expect(headers['cache-control']).toBe('no-store');
++      expect(headers['content-security-policy']).toBeDefined();
++      expect(headers['x-powered-by']).toBeUndefined();
++      expect(headers['x-request-id']).toMatch(/^req_/);
++    },
++  );
++
++  it('covers a response Nest rejects before routing, such as a malformed body', async () => {
++    // Nest registers its body parser during `app.init()`. A chain registered
++    // through `MiddlewareConsumer` runs *after* the parser, so a parse failure
++    // answered with no headers and a request ID of `req_unknown` in both the
++    // envelope and the log — an error nobody could correlate. `configureApp`
++    // now registers the chain before init, which puts it ahead of the parser.
++    const response = await request(server)
++      .post('/api/v1/x')
++      .set('content-type', 'application/json')
++      .send('{"a":');
++    expect(response.status).toBe(400);
++    expect(response.headers['x-content-type-options']).toBe('nosniff');
++    expect(response.headers['x-frame-options']).toBe('DENY');
++    expect(response.headers['cache-control']).toBe('no-store');
++    expect(response.headers['content-security-policy']).toBeDefined();
++    const requestId = response.headers['x-request-id'] as string;
++    expect(requestId).toMatch(/^req_/);
++    // The envelope's request ID is the one on the wire, not the `req_unknown`
++    // placeholder the filter falls back to when nothing set one.
++    const parsed = errorEnvelopeSchema.parse(response.body);
++    expect(parsed.error.requestId).toBe(requestId);
++  });
++
++  it('honours a supplied request id even on a pre-routing failure', async () => {
++    const response = await request(server)
++      .post('/api/v1/x')
++      .set('content-type', 'application/json')
++      .set('x-request-id', 'req_from_edge')
++      .send('{"a":');
++    expect(response.headers['x-request-id']).toBe('req_from_edge');
++    expect(errorEnvelopeSchema.parse(response.body).error.requestId).toBe('req_from_edge');
++  });
++
++  it('answers an oversized body with a client-class 413, not a 500', async () => {
++    // body-parser raises an `http-errors` object, which is not a Nest
++    // HttpException. Left unrecognised it fell to the filter's catch-all and
++    // every oversized request became a 500 — a 5xx any caller could drive,
++    // against the alert in operations/monitoring.md §6.
++    const response = await request(server)
++      .post('/api/v1/x')
++      .set('content-type', 'application/json')
++      .send(JSON.stringify({ a: 'x'.repeat(200_000) }));
++    expect(response.status).toBe(413);
++    const parsed = errorEnvelopeSchema.parse(response.body);
++    // errors.md §3 files INTERNAL_ERROR under Server; a client must not read its
++    // own too-large request as a server fault.
++    expect(parsed.error.code).not.toBe('INTERNAL_ERROR');
++    expect(parsed.error.requestId).toMatch(/^req_/);
++    expect(response.headers['x-content-type-options']).toBe('nosniff');
++  });
++
+   it('sets a nonce-based CSP with no unsafe-inline and no unsafe-eval', async () => {
+     const { headers } = await request(server).get('/health/live').expect(200);
+     const csp =
+@@ -356,6 +438,16 @@ describe('A dependency outage', () => {
+     expect(body.status).toBe('degraded');
+     expect(body.dependencies.redis?.status).toBe('error');
+     expect(body.dependencies.postgres?.status).toBe('ok');
++    // The same key-shape assertion the healthy case gets, applied to the branch
++    // that actually runs during an outage. A forbidden-string sweep below is a
++    // second line only: it catches the strings someone thought of, and a probe
++    // that started reporting `host` or `driver` is exactly the field nobody
++    // thought of.
++    expect(Object.keys(body).sort()).toEqual(['checkedAt', 'dependencies', 'status']);
++    expect(Object.keys(body.dependencies).sort()).toEqual(['postgres', 'redis', 'storage']);
++    for (const entry of Object.values(body.dependencies)) {
++      expect(Object.keys(entry).sort()).toEqual(['latencyMs', 'status']);
++    }
+     const serialised = JSON.stringify(response.body);
+     for (const forbidden of ['127.0.0.1', '6399', 'ECONNREFUSED', 'redis://']) {
+       expect(serialised).not.toContain(forbidden);
+diff --git a/apps/api/src/app.module.spec.ts b/apps/api/src/app.module.spec.ts
+deleted file mode 100644
+index 9247389..0000000
+--- a/apps/api/src/app.module.spec.ts
++++ /dev/null
+@@ -1,48 +0,0 @@
+-import { describe, expect, it } from 'vitest';
+-import { RequestMethod, type MiddlewareConsumer } from '@nestjs/common';
+-import { AppModule } from './app.module.js';
+-import { RequestIdMiddleware } from './common/middleware/request-id.middleware.js';
+-import { SecurityHeadersMiddleware } from './common/middleware/security-headers.middleware.js';
+-
+-interface Registration {
+-  readonly middleware: unknown[];
+-  readonly routes: unknown[];
+-}
+-
+-function recordMiddleware(): { consumer: MiddlewareConsumer; registrations: Registration[] } {
+-  const registrations: Registration[] = [];
+-  const consumer = {
+-    apply: (...middleware: unknown[]) => ({
+-      forRoutes: (...routes: unknown[]) => {
+-        registrations.push({ middleware, routes });
+-        return consumer;
+-      },
+-      exclude: () => ({ forRoutes: () => consumer }),
+-    }),
+-  } as unknown as MiddlewareConsumer;
+-  return { consumer, registrations };
+-}
+-
+-describe('AppModule middleware pipeline', () => {
+-  // architecture/backend.md §3: "Order matters and is asserted by a test." This
+-  // is that test for the two stages that exist. Each guard stage added later
+-  // extends the expected sequence here, so a stage inserted in the wrong place
+-  // — authentication after authorization, say — cannot land quietly.
+-  it('runs the request ID middleware before the security headers middleware', () => {
+-    const { consumer, registrations } = recordMiddleware();
+-    new AppModule().configure(consumer);
+-
+-    const order = registrations.flatMap((registration) => registration.middleware);
+-    expect(order).toEqual([RequestIdMiddleware, SecurityHeadersMiddleware]);
+-  });
+-
+-  it('applies both to every route and method, not to a subset', () => {
+-    const { consumer, registrations } = recordMiddleware();
+-    new AppModule().configure(consumer);
+-
+-    expect(registrations).toHaveLength(1);
+-    // A path filter here is how a security header quietly stops covering an
+-    // endpoint added later.
+-    expect(registrations[0]!.routes).toEqual([{ path: '*splat', method: RequestMethod.ALL }]);
+-  });
+-});
+diff --git a/apps/api/src/app.module.ts b/apps/api/src/app.module.ts
+index 6c84b6d..ffeb069 100644
+--- a/apps/api/src/app.module.ts
++++ b/apps/api/src/app.module.ts
+@@ -1,29 +1,23 @@
+-import { Module, type MiddlewareConsumer, type NestModule, RequestMethod } from '@nestjs/common';
++import { Module } from '@nestjs/common';
+ import { ConfigModule } from './infrastructure/config/config.module.js';
+ import { PrismaModule } from './infrastructure/prisma/prisma.module.js';
+ import { RedisModule } from './infrastructure/redis/redis.module.js';
+ import { StorageModule } from './infrastructure/storage/storage.module.js';
+-import { RequestIdMiddleware } from './common/middleware/request-id.middleware.js';
+-import { SecurityHeadersMiddleware } from './common/middleware/security-headers.middleware.js';
+ import { HealthModule } from './modules/health/health.module.js';
+ 
+ /**
+  * The composition root.
+  *
+- * Middleware order is the first two rows of architecture/backend.md §3 and is
+- * asserted by `app.integration.spec.ts`: the request ID is established before
+- * anything else so that every later stage — including a failure inside the
+- * security-headers middleware itself — has something to correlate by. Security
+- * headers come next so they are present on a response even when a later stage
+- * throws.
++ * The cross-cutting middleware chain is deliberately NOT registered here.
++ * `MiddlewareConsumer.forRoutes()` resolves its paths *under the global prefix*,
++ * so `{ path: '*splat' }` covered only `/api/<seg>/**` and `/health/<seg>/**` —
++ * `/`, `/a/b`, `/healthz` and a body-parse failure all answered with no security
++ * headers and no request ID. Both middlewares are now registered with
++ * `app.use()` in `configureApp` (`app-setup.ts`), which puts them ahead of
++ * Nest's body parser and outside the prefix entirely.
++ * security/transport-and-headers.md §2, architecture/backend.md §3.
+  */
+ @Module({
+   imports: [ConfigModule, PrismaModule, RedisModule, StorageModule, HealthModule],
+ })
+-export class AppModule implements NestModule {
+-  configure(consumer: MiddlewareConsumer): void {
+-    consumer
+-      .apply(RequestIdMiddleware, SecurityHeadersMiddleware)
+-      .forRoutes({ path: '*splat', method: RequestMethod.ALL });
+-  }
+-}
++export class AppModule {}
+diff --git a/apps/api/src/common/filters/all-exceptions.filter.spec.ts b/apps/api/src/common/filters/all-exceptions.filter.spec.ts
+index 9b526ec..5cef788 100644
+--- a/apps/api/src/common/filters/all-exceptions.filter.spec.ts
++++ b/apps/api/src/common/filters/all-exceptions.filter.spec.ts
+@@ -236,3 +236,142 @@ describe('AllExceptionsFilter — what must reach the log', () => {
+     expect(errorEnvelopeSchema.parse(body).error.code).toBe('INTERNAL_ERROR');
+   });
+ });
++
++describe('AllExceptionsFilter — throwables from the http-errors library', () => {
++  /**
++   * The shape `body-parser` actually raises. Reproduced rather than imported so
++   * the test states the contract it depends on: `status`, `statusCode`, and a
++   * boolean `expose`.
++   */
++  class PayloadTooLargeError extends Error {
++    readonly status = 413;
++    readonly statusCode = 413;
++    readonly expose = true;
++    readonly type = 'entity.too.large';
++    readonly limit = 102_400;
++  }
++
++  it('serves a body over the size limit as a 413, not a 500', () => {
++    // Before this branch existed, body-parser's error fell through to the
++    // catch-all and every oversized request answered 500 — a 5xx any caller
++    // could drive at will, against the alert in monitoring.md §6, and telling
++    // the client nothing it could act on (errors.md §4).
++    const { status, body } = invoke(new PayloadTooLargeError('request entity too large'));
++    expect(status).toBe(413);
++    const parsed = errorEnvelopeSchema.parse(body);
++    expect(parsed.error.message).toBe('request entity too large');
++  });
++
++  it('gives an unmapped 4xx a client-class code, never a Server-class one', () => {
++    // errors.md §3 files INTERNAL_ERROR under Server and §1 says clients branch
++    // on `code`. A 413 labelled INTERNAL_ERROR tells a client to retry its own
++    // bad request as a server fault.
++    const parsed = errorEnvelopeSchema.parse(invoke(new PayloadTooLargeError('too large')).body);
++    expect(parsed.error.code).toBe('VALIDATION_ERROR');
++  });
++
++  it.each([
++    [405, 'VALIDATION_ERROR'],
++    [406, 'VALIDATION_ERROR'],
++    [415, 'VALIDATION_ERROR'],
++    [418, 'VALIDATION_ERROR'],
++  ])('maps an unmapped %s HttpException to %s', (status, code) => {
++    const result = invoke(new HttpException('nope', status));
++    expect(result.status).toBe(status);
++    expect(errorEnvelopeSchema.parse(result.body).error.code).toBe(code);
++  });
++
++  it('leaves an unmapped 5xx on INTERNAL_ERROR', () => {
++    const result = invoke(new HttpException('upstream exploded', 502));
++    expect(result.status).toBe(502);
++    const parsed = errorEnvelopeSchema.parse(result.body);
++    expect(parsed.error.code).toBe('INTERNAL_ERROR');
++    expect(parsed.error.message).not.toContain('upstream exploded');
++  });
++
++  it('ignores a status on a throwable that is not an http-errors object', () => {
++    // The discrimination is the point. A Prisma, AWS-SDK or fetch error carrying
++    // a status-shaped property must not get to choose this API's HTTP status or
++    // to put its own message in front of a client.
++    class DriverError extends Error {
++      readonly status = 404;
++      readonly statusCode = 404;
++      readonly meta = { table: 'Finding' };
++    }
++    const { status, body } = invoke(new DriverError('relation "Finding" does not exist'));
++    expect(status).toBe(500);
++    const parsed = errorEnvelopeSchema.parse(body);
++    expect(parsed.error.code).toBe('INTERNAL_ERROR');
++    expect(parsed.error.message).not.toContain('Finding');
++  });
++
++  it('withholds the message of an http-error that says it is not safe to expose', () => {
++    class UnexposedError extends Error {
++      readonly status = 400;
++      readonly statusCode = 400;
++      readonly expose = false;
++      readonly connectionString = 'postgres://sentinel:hunter2@db-primary.internal:5432';
++    }
++    const { status, body } = invoke(new UnexposedError('db-primary.internal rejected the request'));
++    expect(status).toBe(400);
++    const parsed = errorEnvelopeSchema.parse(body);
++    // Three properties at once, because dropping any one of them is a
++    // regression someone would plausibly introduce while tidying:
++    const { code, message } = parsed.error;
++    // (a) the withheld text stays withheld,
++    expect(message).not.toContain('db-primary.internal');
++    expect(message).not.toContain('hunter2');
++    // (b) the code is client-class — errors.md §3 files INTERNAL_ERROR under
++    //     Server and §1 has clients branching on `code`,
++    expect(code).toBe('VALIDATION_ERROR');
++    // (c) and so is the *message*. A 4xx reading "something went wrong on our
++    //     side" tells the caller their own bad request was our fault, which
++    //     re-introduces one layer up exactly the confusion (b) removes, and
++    //     generates the support ticket errors.md §4 is written to avoid.
++    expect(message).toBe(
++      'The request could not be accepted. Quote the request ID if you contact support.',
++    );
++    expect(message).not.toContain('on our side');
++  });
++
++  it('still uses the server-side generic message for a 5xx, which is a different string', () => {
++    // The two must not be collapsed back into one. This pins both halves: the
++    // 5xx text is unchanged, and it is not the client-class text.
++    class UnexposedServerError extends Error {
++      readonly status = 502;
++      readonly statusCode = 502;
++      readonly expose = false;
++    }
++    const { status, body } = invoke(new UnexposedServerError('upstream pool exhausted'));
++    expect(status).toBe(502);
++    const { code, message } = errorEnvelopeSchema.parse(body).error;
++    expect(code).toBe('INTERNAL_ERROR');
++    expect(message).toBe(
++      'Something went wrong on our side. Quote the request ID if you contact support.',
++    );
++    expect(message).not.toContain('upstream pool exhausted');
++  });
++
++  it('withholds the message of a 5xx http-error even when it claims to be exposable', () => {
++    class ExposedServerError extends Error {
++      readonly status = 500;
++      readonly statusCode = 500;
++      readonly expose = true;
++    }
++    const { status, body } = invoke(new ExposedServerError('connect ECONNREFUSED 10.0.0.5:5432'));
++    expect(status).toBe(500);
++    const parsed = errorEnvelopeSchema.parse(body);
++    expect(parsed.error.code).toBe('INTERNAL_ERROR');
++    expect(parsed.error.message).not.toContain('10.0.0.5');
++  });
++
++  it('redacts a secret-shaped substring out of an exposable http-error message', () => {
++    class BadUrlError extends Error {
++      readonly status = 400;
++      readonly statusCode = 400;
++      readonly expose = true;
++    }
++    const { body } = invoke(new BadUrlError('rejected https://user:hunter2@example.com/callback'));
++    expect(errorEnvelopeSchema.parse(body).error.message).not.toContain('hunter2');
++  });
++});
+diff --git a/apps/api/src/common/filters/all-exceptions.filter.ts b/apps/api/src/common/filters/all-exceptions.filter.ts
+index a4f4b09..5cca140 100644
+--- a/apps/api/src/common/filters/all-exceptions.filter.ts
++++ b/apps/api/src/common/filters/all-exceptions.filter.ts
+@@ -29,9 +29,89 @@ const STATUS_TO_CODE: Readonly<Record<number, ErrorCode>> = {
+   503: ERROR_CODES.SERVICE_UNAVAILABLE,
+ };
+ 
+-const GENERIC_MESSAGE =
++/**
++ * The code for a status the table above does not name.
++ *
++ * `INTERNAL_ERROR` for everything unmapped was wrong for the 4xx half: errors.md
++ * §3 files that code under **Server**, and §1 says clients branch on `code` and
++ * never on `message` — so a 405, 406, 413 or 415 labelled `INTERNAL_ERROR` tells
++ * a client to retry its own bad request as though the server were at fault.
++ * Any unmapped client-class status therefore falls back to `VALIDATION_ERROR`,
++ * which sits in the Validation group and honestly means "your request was not
++ * acceptable". Server-class statuses keep `INTERNAL_ERROR`.
++ *
++ * The trade, recorded deliberately: a 413 arrives as `VALIDATION_ERROR` with no
++ * `details.fields`, which is a weaker signal than a dedicated code would be.
++ * Adding `PAYLOAD_TOO_LARGE`/`UNSUPPORTED_MEDIA_TYPE` to `ERROR_CODES` was
++ * considered and rejected for now — Task 11 generates OpenAPI from that
++ * contract and errors.md §7 wants a test that produces every documented code,
++ * so a code with no endpoint behind it costs more than it pays. The property
++ * that matters here is client-class versus server-class, and this delivers it.
++ * Revisit in Phase 2, when there are real endpoints to raise them.
++ */
++function codeForStatus(status: number): ErrorCode {
++  return (
++    STATUS_TO_CODE[status] ??
++    (status < 500 ? ERROR_CODES.VALIDATION_ERROR : ERROR_CODES.INTERNAL_ERROR)
++  );
++}
++
++/** The two halves of the `http-errors` contract this filter is willing to trust. */
++interface HttpErrorLike {
++  readonly status: number;
++  readonly expose: boolean;
++}
++
++/**
++ * Recognises a throwable from the `http-errors` library, which is what
++ * `body-parser` raises and Express propagates: a payload over the size limit, an
++ * unsupported `Content-Encoding`, a bad `Content-Type`. None of these are Nest
++ * `HttpException`s, and Nest's own `mapExternalException` converts only
++ * `SyntaxError` and `URIError` — so left alone they reach the catch-all below
++ * and a 413 is served as a 500. That is dishonest to the client (errors.md §4)
++ * and lets any caller drive the 5xx rate that monitoring.md §6 alerts on.
++ *
++ * The check is deliberately narrow. A `status` alone is not enough: Prisma,
++ * AWS SDK and node-fetch errors all carry status-shaped properties, and
++ * trusting those would let a driver choose this API's HTTP status. Both halves
++ * of the `http-errors` contract must be present — an integer status in the
++ * 400–599 range **and** a boolean `expose` — before the value is honoured.
++ */
++function asHttpError(exception: unknown): HttpErrorLike | undefined {
++  if (typeof exception !== 'object' || exception === null) return undefined;
++  const candidate = exception as { status?: unknown; statusCode?: unknown; expose?: unknown };
++  if (typeof candidate.expose !== 'boolean') return undefined;
++  const status = typeof candidate.status === 'number' ? candidate.status : candidate.statusCode;
++  if (typeof status !== 'number' || !Number.isInteger(status) || status < 400 || status > 599) {
++    return undefined;
++  }
++  return { status, expose: candidate.expose };
++}
++
++/**
++ * Two generic messages, not one, and they must stay two.
++ *
++ * `SERVER_GENERIC_MESSAGE` is what replaces a 5xx whose text this codebase did
++ * not author. `CLIENT_GENERIC_MESSAGE` is what replaces a 4xx whose text is not
++ * safe to repeat — an `http-errors` throwable with `expose: false`. Collapsing
++ * them would tell a caller that their own bad request was the server's fault,
++ * which is the same confusion the client-class/server-class split in
++ * `codeForStatus` exists to remove (errors.md §1, §3) and exactly the sort of
++ * contradiction that turns into a support ticket (errors.md §4). The rule is
++ * written down in errors.md §5 so it survives a later tidy-up.
++ *
++ * Neither message speculates about the cause: for `expose: false` the whole
++ * point is that the underlying text is not trusted, so the client-class string
++ * says the request was not acceptable and stops there. The `code` and the
++ * status carry the machine-readable part; the request ID carries the rest, in
++ * the log.
++ */
++const SERVER_GENERIC_MESSAGE =
+   'Something went wrong on our side. Quote the request ID if you contact support.';
+ 
++const CLIENT_GENERIC_MESSAGE =
++  'The request could not be accepted. Quote the request ID if you contact support.';
++
+ interface RequestLike {
+   id?: string;
+   url?: string;
+@@ -124,15 +204,31 @@ export class AllExceptionsFilter implements ExceptionFilter {
+ 
+     if (exception instanceof HttpException) {
+       const status = exception.getStatus();
+-      const code = STATUS_TO_CODE[status] ?? ERROR_CODES.INTERNAL_ERROR;
+       return {
+         status,
+-        code,
+-        message: status >= 500 ? GENERIC_MESSAGE : redactSecretsInText(exception.message),
++        code: codeForStatus(status),
++        message: status >= 500 ? SERVER_GENERIC_MESSAGE : redactSecretsInText(exception.message),
++      };
++    }
++
++    const httpError = asHttpError(exception);
++    if (httpError !== undefined) {
++      // `expose` is the library's own statement about whether its message is
++      // safe for a client; it is false for every 5xx it builds. Combining it
++      // with the status keeps property 1 of this file intact — no 5xx this
++      // codebase did not author carries a message — while letting a
++      // client-caused failure say what the client did wrong.
++      const usesOwnMessage =
++        httpError.expose && httpError.status < 500 && exception instanceof Error;
++      const withheld = httpError.status < 500 ? CLIENT_GENERIC_MESSAGE : SERVER_GENERIC_MESSAGE;
++      return {
++        status: httpError.status,
++        code: codeForStatus(httpError.status),
++        message: usesOwnMessage ? redactSecretsInText(exception.message) : withheld,
+       };
+     }
+ 
+-    return { status: 500, code: ERROR_CODES.INTERNAL_ERROR, message: GENERIC_MESSAGE };
++    return { status: 500, code: ERROR_CODES.INTERNAL_ERROR, message: SERVER_GENERIC_MESSAGE };
+   }
+ 
+   private log(
+diff --git a/apps/api/src/modules/health/health.service.spec.ts b/apps/api/src/modules/health/health.service.spec.ts
+index 9b61e9b..199b8ca 100644
+--- a/apps/api/src/modules/health/health.service.spec.ts
++++ b/apps/api/src/modules/health/health.service.spec.ts
+@@ -49,10 +49,17 @@ describe('HealthService.checkDependencies', () => {
+     // An operator needs to know *which* dependency failed. A single boolean
+     // sends them to look at all three. monitoring.md §5.
+     const report = await serviceWith(overrides).checkDependencies();
+-    expect(report.status).toBe('degraded');
+-    expect(report.dependencies[name as 'postgres']).toBe('error');
+-    const stillOk = Object.entries(report.dependencies).filter(([key]) => key !== name);
+-    expect(stillOk.every(([, value]) => value === 'ok')).toBe(true);
++    // Whole-object equality rather than a spot check: a probe that grew an extra
++    // field would otherwise pass, and the error branch is precisely where a
++    // driver's host, role, or version is tempting to attach.
++    expect(report).toEqual({
++      status: 'degraded',
++      dependencies: {
++        postgres: name === 'postgres' ? 'error' : 'ok',
++        redis: name === 'redis' ? 'error' : 'ok',
++        storage: name === 'storage' ? 'error' : 'ok',
++      },
++    });
+   });
+ 
+   it('checks every dependency even when the first one fails', async () => {
+@@ -96,8 +103,9 @@ describe('HealthService.checkDependencies', () => {
+     const head = vi.fn(() => Promise.resolve(null));
+     const list = vi.fn();
+     const put = vi.fn();
+-    await serviceWith({ storage: { head, list, put } as unknown as StorageAdapter })
+-      .checkDependencies();
++    await serviceWith({
++      storage: { head, list, put } as unknown as StorageAdapter,
++    }).checkDependencies();
+     expect(head).toHaveBeenCalledTimes(1);
+     expect(list).not.toHaveBeenCalled();
+     expect(put).not.toHaveBeenCalled();
+@@ -116,6 +124,27 @@ describe('HealthService.detailed', () => {
+     }
+   });
+ 
++  it('adds timings and nothing else on the degraded path too, not only the healthy one', async () => {
++    // The healthy report never executes the error branch of `probe()`, so a
++    // key-shape assertion that only ever runs against an all-ok report asserts
++    // nothing about the branch this endpoint exists to keep quiet. A forbidden-
++    // string sweep does not close the gap either: it catches only the strings
++    // someone thought of. This asserts the shape where the leak would be.
++    const report = await serviceWith({
++      database: { $queryRaw: rejecting('connect ECONNREFUSED db-primary.internal:5432') },
++      storage: { head: rejecting('minio.internal:9000 refused') } as unknown as StorageAdapter,
++    }).detailed();
++    expect(report.status).toBe('degraded');
++    expect(report.dependencies.postgres.status).toBe('error');
++    expect(report.dependencies.storage.status).toBe('error');
++    expect(Object.keys(report).sort()).toEqual(['checkedAt', 'dependencies', 'status']);
++    expect(Object.keys(report.dependencies).sort()).toEqual(['postgres', 'redis', 'storage']);
++    for (const entry of Object.values(report.dependencies)) {
++      expect(Object.keys(entry).sort()).toEqual(['latencyMs', 'status']);
++      expect(typeof entry.latencyMs).toBe('number');
++    }
++  });
++
+   it('exposes no hostname, URL, version, driver, or error text', async () => {
+     // monitoring.md §5 places /health/detailed behind authentication, which does
+     // not exist until Phase 2. Until the guard exists, this endpoint may expose
+@@ -123,10 +152,19 @@ describe('HealthService.detailed', () => {
+     // so it is ready() plus timings, and no more.
+     const report = await serviceWith({
+       database: { $queryRaw: rejecting('connect ECONNREFUSED 10.0.0.5:5432') },
+-      storage: { head: rejecting('https://minio.internal:9000 refused') } as unknown as StorageAdapter,
++      storage: {
++        head: rejecting('https://minio.internal:9000 refused'),
++      } as unknown as StorageAdapter,
+     }).detailed();
+     const serialised = JSON.stringify(report);
+-    for (const forbidden of ['10.0.0.5', 'minio', '9000', 'ECONNREFUSED', 'evidence', 'postgresql']) {
++    for (const forbidden of [
++      '10.0.0.5',
++      'minio',
++      '9000',
++      'ECONNREFUSED',
++      'evidence',
++      'postgresql',
++    ]) {
+       expect(serialised).not.toContain(forbidden);
+     }
+   });
+diff --git a/packages/config/tsconfig/nest.json b/packages/config/tsconfig/nest.json
+index 50bf13f..149eefb 100644
+--- a/packages/config/tsconfig/nest.json
++++ b/packages/config/tsconfig/nest.json
+@@ -2,6 +2,16 @@
+   "extends": "./base.json",
+   "compilerOptions": {
+     "experimentalDecorators": true,
+-    "emitDecoratorMetadata": true
++    // Deliberately FALSE, and it must stay false. esbuild — which Vitest uses to
++    // transform TypeScript — does not implement `emitDecoratorMetadata`, so any
++    // NestJS DI that relied on the `design:paramtypes` it emits would resolve
++    // under `tsc` and fail silently under test: the provider comes back
++    // `undefined` and the failure surfaces as an unrelated null dereference.
++    // Every injected constructor parameter in this repo therefore carries an
++    // explicit `@Inject(TOKEN)`, which needs no reflected type metadata and
++    // behaves identically in both toolchains. Turning this on would make the
++    // explicit tokens look redundant and invite their removal.
++    // See `apps/api/tsconfig.json`, which states the same reasoning.
++    "emitDecoratorMetadata": false
+   }
+ }

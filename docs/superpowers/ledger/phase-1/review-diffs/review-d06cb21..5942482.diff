@@ -1,0 +1,183 @@
+# Review package: d06cb21..5942482
+
+## Commits
+5942482 fix(api): restore a stranded docblock, and close the gap it was claimed for
+
+## Files changed
+ apps/api/src/modules/health/health.contracts.ts   | 22 ++++++++++++------
+ apps/api/src/openapi/generate.integration.spec.ts | 28 +++++++++++++++++++++++
+ apps/api/src/openapi/generate.ts                  | 14 ++++++------
+ 3 files changed, 50 insertions(+), 14 deletions(-)
+
+## Diff
+diff --git a/apps/api/src/modules/health/health.contracts.ts b/apps/api/src/modules/health/health.contracts.ts
+index 914b61c..e309d9f 100644
+--- a/apps/api/src/modules/health/health.contracts.ts
++++ b/apps/api/src/modules/health/health.contracts.ts
+@@ -9,27 +9,35 @@ import type { DetailedReport, ReadinessReport } from './health.service.js';
+  * nothing else consumes them: the contracts package is what the frontend and
+  * the API share (backend.md §6), and no browser reads a readiness probe. An
+  * operator's `curl` and a Kubernetes probe are the clients here.
+  *
+  * Two different bindings, and it is worth being exact about what each buys:
+  *
+  * - `livenessReportSchema` is the **source of truth**. `HealthController.live`
+  *   returns the inferred `LivenessReport`, so the schema and the response
+  *   cannot differ in either direction.
+  * - `readinessReportSchema` and `detailedReportSchema` are annotated
+- *   `z.ZodType<T>` against types `health.service.ts` already owns. That check is
+- *   **one-directional**: adding a field to `ReadinessReport` and forgetting it
+- *   here fails to compile, but adding a field *here* that the handler never
+- *   returns stays assignable and would publish silently. Those two reports are
+- *   assembled by the service from probe results rather than parsed from a
+- *   schema, so type-first is the honest direction; the gap is real and is why
+- *   the integration test asserts the served body's key shape separately.
++ *   `z.ZodType<T>` against types `health.service.ts` already owns. Those two
++ *   reports are assembled by the service from probe results rather than parsed
++ *   from a schema, so type-first is the honest direction. The annotation is
++ *   **one-directional**, though: adding a field to `ReadinessReport` and
++ *   forgetting it here fails to compile, but adding a field *here* that the
++ *   handler never returns stays assignable, and would publish a document
++ *   promising a field the API does not send.
++ *
++ *   That second direction is closed at runtime instead, not by the compiler:
++ *   `openapi/generate.integration.spec.ts` parses the live `/health/ready` and
++ *   `/health/detailed` responses with these schemas, so a key a schema requires
++ *   and the handler does not return is a failing test. It is the only check
++ *   that catches it — the committed-document tests go green again the moment
++ *   someone regenerates `openapi.json`, which is exactly what an author adding
++ *   a field would do.
+  */
+ const dependencyStatusSchema = z.enum(['ok', 'error']);
+ 
+ const overallStatusSchema = z.enum(['ok', 'degraded']);
+ 
+ export const livenessReportSchema = z.object({ status: z.literal('ok') });
+ 
+ /** Inferred, not declared alongside: the schema above is the only definition. */
+ export type LivenessReport = z.infer<typeof livenessReportSchema>;
+ 
+diff --git a/apps/api/src/openapi/generate.integration.spec.ts b/apps/api/src/openapi/generate.integration.spec.ts
+index c4d606f..c2d35ba 100644
+--- a/apps/api/src/openapi/generate.integration.spec.ts
++++ b/apps/api/src/openapi/generate.integration.spec.ts
+@@ -1,20 +1,21 @@
+ import 'reflect-metadata';
+ import { readFileSync } from 'node:fs';
+ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+ import request from 'supertest';
+ import type { NestExpressApplication } from '@nestjs/platform-express';
+ import {
+   assertEveryRouteDeclaresAccess,
+   findRoutesWithoutAccessDeclaration,
+ } from '../common/access-assertion.js';
+ import { describeRoutes, registeredRouterRoutes } from '../common/route-inventory.js';
++import { detailedReportSchema, readinessReportSchema } from '../modules/health/health.contracts.js';
+ import { buildApp } from '../testing/build-app.js';
+ import { generateOpenApiDocument } from './generate.js';
+ 
+ /**
+  * The real application, with every module, routed by the real `configureApp`.
+  *
+  * The unit lane proves these functions behave correctly on inputs it
+  * constructs. This proves they see *this* application — the one that serves
+  * traffic — which is the half a hand-built fixture can never establish.
+  */
+@@ -99,10 +100,37 @@ describe('the OpenAPI document', () => {
+ 
+   it('is served, unauthenticated, at /api/v1/openapi.json', () => {
+     return request(app.getHttpServer())
+       .get('/api/v1/openapi.json')
+       .expect(200)
+       .expect((response: { body: unknown }) => {
+         expect(response.body).toEqual(generateOpenApiDocument(app));
+       });
+   });
+ });
++
++describe('the published health schemas describe the bodies actually served', () => {
++  /**
++   * Closes the one direction `health.contracts.ts`'s `z.ZodType<T>` annotations
++   * cannot.
++   *
++   * That annotation catches a field added to `ReadinessReport` and forgotten in
++   * the schema — it stops compiling. It does **not** catch the reverse: a field
++   * added to the *schema* that the handler never returns stays assignable, and
++   * would publish an OpenAPI document promising a field the API does not send.
++   * Parsing the served body with the schema is what fails in that direction,
++   * because a required key the response lacks is a Zod error.
++   *
++   * Deliberately parsed against the schema rather than compared to a
++   * hand-written key list: a key list is a third copy of the shape, and would
++   * drift from both.
++   */
++  it('/health/ready returns exactly what readinessReportSchema requires', async () => {
++    const response = await request(app.getHttpServer()).get('/health/ready').expect(200);
++    expect(() => readinessReportSchema.parse(response.body as unknown)).not.toThrow();
++  });
++
++  it('/health/detailed returns exactly what detailedReportSchema requires', async () => {
++    const response = await request(app.getHttpServer()).get('/health/detailed').expect(200);
++    expect(() => detailedReportSchema.parse(response.body as unknown)).not.toThrow();
++  });
++});
+diff --git a/apps/api/src/openapi/generate.ts b/apps/api/src/openapi/generate.ts
+index f4a5ed3..811e5b3 100644
+--- a/apps/api/src/openapi/generate.ts
++++ b/apps/api/src/openapi/generate.ts
+@@ -88,27 +88,20 @@ function operationFor(route: RegisteredRoute): OpenApiOperation {
+   return {
+     operationId: `${route.controller}_${route.handler}`,
+     tags: [route.controller.replace(/Controller$/, '')],
+     ...(route.doc === undefined ? {} : { summary: route.doc.summary }),
+     ...(route.doc?.description === undefined ? {} : { description: route.doc.description }),
+     responses: responsesFor(route),
+     ...(route.access === undefined ? {} : { 'x-sentinel-access': route.access }),
+   };
+ }
+ 
+-/**
+- * Builds the document from an already-collected route inventory.
+- *
+- * Split from `generateOpenApiDocument` so the shape of the document can be
+- * asserted against hand-built routes — including routes this codebase cannot
+- * have, such as one carrying a permission — without standing up an application.
+- */
+ /**
+  * Refuses a document in which two operations share an `operationId`.
+  *
+  * One handler can legitimately produce several routes — `@Get(['a', 'b'])`, or
+  * `@Version(['1', '2'])` — and every one of them would be named
+  * `Controller_handler`. Duplicate `operationId`s make the document invalid, and
+  * the tools that consume it report that badly or not at all: a client generator
+  * silently emits one method and drops the other. Failing here means the
+  * regeneration script and the committed-document test both refuse before it can
+  * be merged.
+@@ -127,20 +120,27 @@ function assertUniqueOperationIds(operations: readonly OpenApiOperation[]): void
+       '',
+       ...duplicates.map((id) => `  ${id}`),
+       '',
+       'An operationId must be unique. One handler serving several paths or',
+       'several versions produces one operation per path, all named after that',
+       'handler — give each its own handler.',
+     ].join('\n'),
+   );
+ }
+ 
++/**
++ * Builds the document from an already-collected route inventory.
++ *
++ * Split from `generateOpenApiDocument` so the shape of the document can be
++ * asserted against hand-built routes — including routes this codebase cannot
++ * have, such as one carrying a permission — without standing up an application.
++ */
+ export function buildOpenApiDocument(routes: readonly RegisteredRoute[]): OpenApiDocument {
+   const paths: Record<string, Record<string, OpenApiOperation>> = {};
+ 
+   // Sorted by path, then method, so the committed artefact changes only when
+   // the API does. An unstable key order would make every regeneration a diff.
+   const sorted = [...routes].sort((a, b) => {
+     if (a.path !== b.path) return a.path < b.path ? -1 : 1;
+     return a.method < b.method ? -1 : a.method > b.method ? 1 : 0;
+   });
+ 

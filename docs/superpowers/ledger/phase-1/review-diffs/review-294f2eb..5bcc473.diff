@@ -1,0 +1,1711 @@
+# Review package: 294f2eb..HEAD
+
+## Commits
+5bcc473 fix(observability): redact child logger bindings by wrapping child()
+5e5d66c fix(observability): text-scan nested Error messages; document bindings gap
+7836f50 fix(observability): apply value-shape backstop to interpolation args
+4058db6 fix(observability): preempt pino's msg-from-error fallback
+1bb5d72 fix(observability): redact secrets in msg strings and Error message/stack
+d856973 feat(observability): structured logger with structural redaction
+
+## Files changed
+ packages/observability/package.json          |  27 +++
+ packages/observability/src/context.ts        |  23 +++
+ packages/observability/src/index.ts          |   5 +
+ packages/observability/src/logger.spec.ts    | 206 ++++++++++++++++++++++
+ packages/observability/src/logger.ts         | 255 +++++++++++++++++++++++++++
+ packages/observability/src/redaction.spec.ts | 102 +++++++++++
+ packages/observability/src/redaction.ts      | 124 +++++++++++++
+ packages/observability/tsconfig.build.json   |   4 +
+ packages/observability/tsconfig.json         |   5 +
+ pnpm-lock.yaml                               | 201 +++++++++++++++++++++
+ 10 files changed, 952 insertions(+)
+
+## Diff
+diff --git a/packages/observability/package.json b/packages/observability/package.json
+new file mode 100644
+index 0000000..fd93fad
+--- /dev/null
++++ b/packages/observability/package.json
+@@ -0,0 +1,27 @@
++{
++  "name": "@sentinel/observability",
++  "version": "0.0.0",
++  "private": true,
++  "type": "module",
++  "main": "./dist/index.js",
++  "types": "./dist/index.d.ts",
++  "exports": {
++    ".": {
++      "types": "./dist/index.d.ts",
++      "default": "./dist/index.js"
++    }
++  },
++  "scripts": {
++    "build": "tsc -p tsconfig.build.json",
++    "typecheck": "tsc -p tsconfig.json --noEmit",
++    "lint": "eslint src"
++  },
++  "dependencies": {
++    "pino": "^9.5.0",
++    "pino-pretty": "^13.0.0"
++  },
++  "devDependencies": {
++    "@sentinel/config": "workspace:*",
++    "typescript": "^5.7.0"
++  }
++}
+diff --git a/packages/observability/src/context.ts b/packages/observability/src/context.ts
+new file mode 100644
+index 0000000..427dc8c
+--- /dev/null
++++ b/packages/observability/src/context.ts
+@@ -0,0 +1,23 @@
++import { AsyncLocalStorage } from 'node:async_hooks';
++
++export interface RequestContext {
++  readonly requestId: string;
++  readonly traceId?: string;
++  readonly organizationId?: string;
++  readonly userId?: string;
++}
++
++const storage = new AsyncLocalStorage<RequestContext>();
++
++/**
++ * Runs `fn` with an ambient request context. Every log line emitted inside —
++ * including from awaited async work and from queue producers — carries the
++ * correlation IDs without the caller threading them through by hand.
++ */
++export function runWithRequestContext<T>(context: RequestContext, fn: () => T): T {
++  return storage.run(context, fn);
++}
++
++export function getRequestContext(): RequestContext | undefined {
++  return storage.getStore();
++}
+diff --git a/packages/observability/src/index.ts b/packages/observability/src/index.ts
+new file mode 100644
+index 0000000..b6ea8ec
+--- /dev/null
++++ b/packages/observability/src/index.ts
+@@ -0,0 +1,5 @@
++export { createLogger } from './logger.js';
++export type { CreateLoggerOptions, Logger } from './logger.js';
++export { getRequestContext, runWithRequestContext } from './context.js';
++export type { RequestContext } from './context.js';
++export { REDACTED, redact, redactSecretsInText } from './redaction.js';
+diff --git a/packages/observability/src/logger.spec.ts b/packages/observability/src/logger.spec.ts
+new file mode 100644
+index 0000000..899e36b
+--- /dev/null
++++ b/packages/observability/src/logger.spec.ts
+@@ -0,0 +1,206 @@
++import { describe, expect, it } from 'vitest';
++import { Writable } from 'node:stream';
++import { createLogger } from './logger.js';
++import { runWithRequestContext } from './context.js';
++import { REDACTED } from './redaction.js';
++
++function captureLogger() {
++  const lines: Record<string, unknown>[] = [];
++  const stream = new Writable({
++    write(chunk, _enc, cb) {
++      lines.push(JSON.parse(String(chunk)) as Record<string, unknown>);
++      cb();
++    },
++  });
++  const logger = createLogger({ service: 'api', level: 'debug', pretty: false, stream });
++  return { logger, lines };
++}
++
++describe('createLogger', () => {
++  it('emits structured JSON carrying the service name', () => {
++    const { logger, lines } = captureLogger();
++    logger.info({ scanId: 'scn_01J' }, 'Scan created');
++    expect(lines).toHaveLength(1);
++    expect(lines[0]).toMatchObject({ service: 'api', msg: 'Scan created', scanId: 'scn_01J' });
++  });
++
++  it('injects the ambient request context into every line', () => {
++    const { logger, lines } = captureLogger();
++    runWithRequestContext(
++      { requestId: 'req_01J', organizationId: 'org_01J', userId: 'usr_01J' },
++      () => logger.info('hello'),
++    );
++    expect(lines[0]).toMatchObject({
++      requestId: 'req_01J',
++      organizationId: 'org_01J',
++      userId: 'usr_01J',
++    });
++  });
++
++  it('redacts secrets in the logged object', () => {
++    const { logger, lines } = captureLogger();
++    logger.info({ headers: { authorization: 'Bearer abc' } }, 'inbound');
++    expect((lines[0] as { headers: { authorization: string } }).headers.authorization).toBe(
++      REDACTED,
++    );
++  });
++
++  it('omits context keys entirely when there is no ambient context', () => {
++    const { logger, lines } = captureLogger();
++    logger.info('no context');
++    expect(lines[0]).not.toHaveProperty('requestId');
++  });
++
++  it('redacts a secret embedded in the msg string, leaving the rest readable', () => {
++    const { logger, lines } = captureLogger();
++    logger.info('exchanging token=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def now');
++    const out = lines[0] as { msg: string };
++    expect(out.msg).toBe(`exchanging token=${REDACTED} now`);
++  });
++
++  it('leaves a msg with no secret shape byte-identical', () => {
++    const { logger, lines } = captureLogger();
++    logger.info('Scan completed with 3 findings');
++    const out = lines[0] as { msg: string };
++    expect(out.msg).toBe('Scan completed with 3 findings');
++  });
++
++  it('redacts a secret inside Error.message when the error is the first argument', () => {
++    const { logger, lines } = captureLogger();
++    const err = new Error('auth failed: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
++    logger.error(err, 'request failed');
++    const out = lines[0] as { err: { message: string } };
++    expect(out.err.message).toBe(`auth failed: ${REDACTED}`);
++  });
++
++  it('redacts a secret inside Error.message when logged as { err }', () => {
++    const { logger, lines } = captureLogger();
++    const err = new Error('auth failed: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
++    logger.error({ err }, 'request failed');
++    const out = lines[0] as { err: { message: string } };
++    expect(out.err.message).toBe(`auth failed: ${REDACTED}`);
++  });
++
++  it('keeps the stack after serialization and redacts any secret inside it', () => {
++    const { logger, lines } = captureLogger();
++    const err = new Error('token leak: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
++    logger.error(err, 'boom');
++    const out = lines[0] as { err: { stack: string } };
++    expect(typeof out.err.stack).toBe('string');
++    expect(out.err.stack.length).toBeGreaterThan(0);
++    expect(out.err.stack).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
++    expect(out.err.stack).toContain(REDACTED);
++  });
++
++  it('redacts a secret in both msg and the serialised error for a bare Error with no message argument', () => {
++    const { logger, lines } = captureLogger();
++    const err = new Error('auth failed: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
++    logger.error(err);
++    const out = lines[0] as { msg: string; err: { message: string } };
++    expect(out.msg).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
++    expect(out.err.message).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
++    expect(out.msg).toBe(`auth failed: ${REDACTED}`);
++    expect(out.err.message).toBe(`auth failed: ${REDACTED}`);
++  });
++
++  it('redacts a secret in both msg and the serialised error for { err } with no message argument', () => {
++    const { logger, lines } = captureLogger();
++    const err = new Error('auth failed: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
++    logger.error({ err });
++    const out = lines[0] as { msg: string; err: { message: string } };
++    expect(out.msg).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
++    expect(out.err.message).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
++    expect(out.msg).toBe(`auth failed: ${REDACTED}`);
++    expect(out.err.message).toBe(`auth failed: ${REDACTED}`);
++  });
++
++  it('uses the explicit message when one is given, redacted, without regressing error serialization', () => {
++    const { logger, lines } = captureLogger();
++    const err = new Error('inner detail: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
++    logger.error(
++      err,
++      'request failed for token=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def',
++    );
++    const out = lines[0] as { msg: string; err: { message: string; type: string } };
++    expect(out.msg).toBe(`request failed for token=${REDACTED}`);
++    expect(out.err.message).toBe(`inner detail: ${REDACTED}`);
++    expect(out.err.type).toBe('Error');
++  });
++
++  it('leaves msg byte-identical to a non-secret Error.message when logged alone', () => {
++    const { logger, lines } = captureLogger();
++    const err = new Error('connection reset by peer');
++    logger.error(err);
++    const out = lines[0] as { msg: string; err: { message: string } };
++    expect(out.msg).toBe('connection reset by peer');
++    expect(out.err.message).toBe('connection reset by peer');
++  });
++
++  it('redacts a shape-recognisable secret passed as a trailing interpolation argument', () => {
++    const { logger, lines } = captureLogger();
++    logger.info('token=%s', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
++    const out = lines[0] as { msg: string };
++    expect(out.msg).toBe(`token=${REDACTED}`);
++  });
++
++  it('leaves a non-secret trailing interpolation argument unchanged', () => {
++    const { logger, lines } = captureLogger();
++    logger.info('scan %s completed', 'scn_01J');
++    const out = lines[0] as { msg: string };
++    expect(out.msg).toBe('scan scn_01J completed');
++  });
++
++  it('leaves the existing top-level err message/stack redaction unchanged', () => {
++    const { logger, lines } = captureLogger();
++    const err = new Error('auth failed: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
++    logger.error(err, 'request failed');
++    const out = lines[0] as { err: { message: string; stack: string } };
++    expect(out.err.message).toBe(`auth failed: ${REDACTED}`);
++    expect(out.err.stack).toContain(REDACTED);
++    expect(out.err.stack).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
++  });
++
++  it('redacts a secret in child logger bindings, and again on a second line from the same child', () => {
++    const { logger, lines } = captureLogger();
++    const child = logger.child({ apiKey: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def' });
++    child.info('first line');
++    child.info('second line');
++    expect(lines).toHaveLength(2);
++    expect((lines[0] as { apiKey: string }).apiKey).toBe(REDACTED);
++    expect((lines[1] as { apiKey: string }).apiKey).toBe(REDACTED);
++  });
++
++  it('redacts a secret in grandchild bindings, proving the override is inherited', () => {
++    const { logger, lines } = captureLogger();
++    const grandchild = logger
++      .child({ requestId: 'req_1' })
++      .child({ apiKey: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def' });
++    grandchild.info('grandchild line');
++    const out = lines[0] as { requestId: string; apiKey: string };
++    expect(out.requestId).toBe('req_1');
++    expect(out.apiKey).toBe(REDACTED);
++  });
++
++  it('leaves a non-secret child binding byte-identical', () => {
++    const { logger, lines } = captureLogger();
++    const child = logger.child({ organizationId: 'org_01J', requestId: 'req_01J' });
++    child.info('plain');
++    const out = lines[0] as { organizationId: string; requestId: string };
++    expect(out.organizationId).toBe('org_01J');
++    expect(out.requestId).toBe('req_01J');
++  });
++
++  it('still honours the two-argument child(bindings, options) form, including level', () => {
++    const { logger, lines } = captureLogger();
++    const child = logger.child(
++      { apiKey: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def' },
++      { level: 'warn' },
++    );
++    child.info('should be suppressed by level');
++    child.warn('should appear');
++    expect(lines).toHaveLength(1);
++    const out = lines[0] as { level: number; apiKey: string; msg: string };
++    expect(out.msg).toBe('should appear');
++    expect(out.apiKey).toBe(REDACTED);
++  });
++});
+diff --git a/packages/observability/src/logger.ts b/packages/observability/src/logger.ts
+new file mode 100644
+index 0000000..496c4ec
+--- /dev/null
++++ b/packages/observability/src/logger.ts
+@@ -0,0 +1,255 @@
++import type { Writable } from 'node:stream';
++import pino, {
++  type Bindings,
++  type ChildLoggerOptions,
++  type Logger,
++  type LoggerOptions,
++} from 'pino';
++import { getRequestContext } from './context.js';
++import { redact, redactSecretsInText } from './redaction.js';
++
++export type { Logger };
++
++export interface CreateLoggerOptions {
++  readonly service: string;
++  readonly level: string;
++  readonly pretty: boolean;
++  readonly silent?: boolean;
++  /** Test seam. Production and development both write to stdout. */
++  readonly stream?: Writable;
++}
++
++// Pino's default key for an Error passed as (or under) the first log
++// argument — see lib/proto.js `write()`: a bare Error becomes `{ err }`.
++//
++// Ideally this would read back whatever `errorKey` the logger was actually
++// constructed with, but pino stores it under a private Symbol
++// (`errorKeySym`) and does not expose it as a public property on the
++// `Logger` instance — confirmed by inspecting a constructed logger at
++// runtime, where `logger.errorKey` is `undefined`. Hardcoded, since this
++// package never configures `errorKey` to anything other than the default.
++const ERROR_KEY = 'err';
++
++function isRecord(value: unknown): value is Record<string, unknown> {
++  return typeof value === 'object' && value !== null;
++}
++
++/**
++ * Redaction for a trailing printf-style interpolation argument
++ * (`logger.info('token=%s', value)`). Unlike a field in the merged bindings
++ * object, this position carries no key name to match against
++ * `SECRET_KEY_FRAGMENTS` — an opaque high-entropy string here is
++ * indistinguishable from a scan ID. Only the value-shape backstop applies:
++ * substring redaction for a string, full structural `redact()` for an
++ * object (which does have field names to match once inside it). Numbers,
++ * booleans, and other primitives pass through unchanged.
++ */
++function redactInterpolationArg(value: unknown): unknown {
++  if (typeof value === 'string') return redactSecretsInText(value);
++  if (typeof value === 'object' && value !== null) return redact(value);
++  return value;
++}
++
++/**
++ * Serializer for the `err` key. By the time this runs, pino has already
++ * called `formatters.log` (see below) and, for a real `Error` under
++ * `ERROR_KEY`, `formatters.log` deliberately left it untouched — this
++ * serializer is the only stage of the pipeline that still holds a genuine
++ * `Error` instance with a real `.stack`, so it is where that stack gets
++ * redacted instead of dropped outright.
++ *
++ * `pino.stdSerializers.err` is used as a base for its `type`/`message`/
++ * `stack`/cause-chain handling and its copy of any custom own properties on
++ * the error. Its non-enumerable `.raw` (the original Error) is never copied
++ * by object spread, so it never reaches the output. `message` and `stack`
++ * are then overwritten with a substring-redacted copy; every other property
++ * (including any custom one an application attached to the Error, which
++ * could itself be secret-shaped) goes through the normal structural
++ * `redact()` used everywhere else.
++ */
++function redactError(error: unknown): unknown {
++  if (!(error instanceof Error)) return error;
++  const serialized = pino.stdSerializers.err(error);
++  const { message, stack, ...extra } = serialized;
++  return {
++    ...(redact(extra) as Record<string, unknown>),
++    message: redactSecretsInText(message),
++    stack: redactSecretsInText(stack),
++  };
++}
++
++/**
++ * Pino resets a child's bindings formatter to an identity function before
++ * applying the bindings it was given — confirmed by reading
++ * `lib/proto.js`: both branches of `child()` assign
++ * `resetChildingsFormatter` before calling `asChindings(instance, bindings)`.
++ * A root-level `formatters.bindings` can never see child bindings, by
++ * construction, not by omission — there is no configuration-only way to
++ * close this. Intercepting `.child()` itself is the only place left.
++ *
++ * Pino builds children with `Object.create(this)`, so defining `child` as an
++ * own property on the root instance is inherited by every descendant through
++ * the prototype chain: no recursion is needed here, and `this` binds
++ * correctly at each level because the call below is `inheritedChild.call(this, ...)`
++ * rather than a captured reference to the root logger.
++ */
++function wrapChild(logger: Logger): Logger {
++  // `child` is generic over pino's custom-levels type parameter, which
++  // fights plain assignment and `.call()`'s `this` typing once pulled off
++  // the instance as a value. Routing through `unknown` narrows it to the
++  // concrete signature this package actually uses (no custom levels) — the
++  // underlying function is unchanged, only the static type is. Extracting
++  // the method as a value would normally risk losing its `this` binding
++  // (`@typescript-eslint/unbound-method`), which is exactly why it is only
++  // ever invoked below via `.call(this, ...)`, never called unbound.
++  // eslint-disable-next-line @typescript-eslint/unbound-method
++  const inheritedChild = logger.child as unknown as (
++    bindings: Bindings,
++    options?: ChildLoggerOptions,
++  ) => Logger;
++  Object.defineProperty(logger, 'child', {
++    configurable: true,
++    writable: true,
++    enumerable: false,
++    value(this: Logger, bindings: Bindings, options?: ChildLoggerOptions) {
++      return inheritedChild.call(this, redact(bindings) as Bindings, options);
++    },
++  });
++  return logger;
++}
++
++export function createLogger(options: CreateLoggerOptions): Logger {
++  const base: LoggerOptions = {
++    level: options.silent === true ? 'silent' : options.level,
++    base: { service: options.service },
++    timestamp: pino.stdTimeFunctions.isoTime,
++    // The merged bindings object passes through structural redaction before
++    // it is serialised. Verified empirically: this covers a bare Error (or
++    // `{ err }`) passed as the log call's first argument — its message and
++    // stack are redacted by the `err` serializer below — and it survives
++    // `pretty: true`, because `formatters.log` runs before both the
++    // pino-pretty transport and pino's per-key serializers.
++    //
++    // The error under ERROR_KEY is deliberately excluded from the generic
++    // redact() walk here and handed to redactError() untouched: redact()'s
++    // own `instanceof Error` branch (used for an Error nested anywhere else
++    // in the payload) drops the stack outright because there is no later
++    // stage that could redact-and-reattach it for those; ERROR_KEY is the
++    // one place that later stage exists.
++    formatters: {
++      level: (label) => ({ level: label }),
++      // Bindings (the object passed to `.child()`) are a separate pipeline
++      // from the per-call `log` formatter below: `log` never sees them, so
++      // they cannot be double-redacted by both — confirmed by inspecting a
++      // captured line from a child logger directly, which contains no
++      // trace of the bindings object passed to `formatters.log`.
++      //
++      // This formatter does NOT protect `.child()` bindings, despite the
++      // name — confirmed by reading pino's own `child()` (lib/proto.js):
++      // both branches assign `resetChildingsFormatter` (the identity
++      // function) before applying a child's bindings, discarding whatever
++      // this was configured to. A root-level `formatters.bindings` can
++      // never see child bindings, by construction, not by omission. What
++      // this formatter actually covers is narrow: this root logger's own
++      // `base` bindings only (`{ service }`, which never carries a secret
++      // in this package's design). Child bindings — the case that matters,
++      // since `.child()` is this codebase's expected way to attach
++      // `organizationId`/`requestId` per request — are instead redacted by
++      // wrapping `.child` itself; see `wrapChild` below.
++      bindings: (bindings) => redact(bindings) as Record<string, unknown>,
++      log: (object) => {
++        const context = getRequestContext();
++        const { [ERROR_KEY]: topLevelError, ...rest } = object;
++        const redactedRest = redact(rest) as Record<string, unknown>;
++        const redacted: Record<string, unknown> =
++          topLevelError === undefined
++            ? redactedRest
++            : {
++                ...redactedRest,
++                [ERROR_KEY]: topLevelError instanceof Error ? topLevelError : redact(topLevelError),
++              };
++        return context === undefined ? redacted : { ...context, ...redacted };
++      },
++    },
++    serializers: {
++      err: redactError,
++    },
++    // Covers the other real gaps: pino carries the `msg` string through a
++    // path that never reaches `formatters.log` (confirmed by reading
++    // lib/tools.js — `serializers[messageKey]` runs independently of the
++    // `log` formatter). This hook runs earliest of all, before pino has even
++    // decided which argument is the message, so it redacts whichever
++    // position holds a string: `logger.info(msg)` or `logger.info(obj, msg)`.
++    // Substring redaction, not whole-value: a message is prose, not a
++    // secret, and should stay readable around the part that had to go.
++    //
++    // Trailing printf-style interpolation arguments (`logger.info('token=%s',
++    // value)`) also pass through `redactInterpolationArg` before pino
++    // substitutes them into the formatted message. This is a narrower
++    // guarantee than the rest of this hook: those positions carry no key
++    // name to match against `SECRET_KEY_FRAGMENTS`, so only the value-shape
++    // backstop applies — a shape the backstop does not recognise (a plain
++    // password, an opaque internal ID) is not distinguishable from an
++    // ordinary interpolated value and is not redacted. Reimplementing pino's
++    // `%s`/`%d`/`%j`/`%o` formatting ourselves to close that fully was
++    // considered and rejected: it would mean maintaining a second copy of
++    // pino's interpolation semantics, which is a worse failure mode than the
++    // residual gap it would close.
++    hooks: {
++      logMethod(inputArgs, method) {
++        // A single-argument call — `logger.error(err)` or
++        // `logger.error({ err })` — is the common shape for logging a
++        // caught error, and it is also the one pino resolves specially:
++        // when no separate message argument is supplied, pino's own
++        // write() (lib/proto.js) derives `msg` straight from the raw
++        // `err.message` *after* this hook has already run, bypassing every
++        // redaction stage below. Preempt that fallback by supplying an
++        // explicit, already-redacted message ourselves, so pino's fallback
++        // never fires (it only derives `msg` when none was given).
++        if (inputArgs.length === 1) {
++          const [first] = inputArgs;
++          if (first instanceof Error) {
++            method.call(this, { [ERROR_KEY]: first }, redactSecretsInText(first.message));
++            return;
++          }
++          if (isRecord(first)) {
++            const err = first[ERROR_KEY];
++            if (err instanceof Error) {
++              method.call(this, first, redactSecretsInText(err.message));
++              return;
++            }
++          }
++        }
++
++        if (typeof inputArgs[0] === 'string') {
++          inputArgs[0] = redactSecretsInText(inputArgs[0]);
++          for (let i = 1; i < inputArgs.length; i++) {
++            inputArgs[i] = redactInterpolationArg(inputArgs[i]);
++          }
++        } else if (inputArgs.length > 1 && typeof inputArgs[1] === 'string') {
++          inputArgs[1] = redactSecretsInText(inputArgs[1]);
++          for (let i = 2; i < inputArgs.length; i++) {
++            inputArgs[i] = redactInterpolationArg(inputArgs[i]);
++          }
++        }
++        method.apply(this, inputArgs);
++      },
++    },
++  };
++
++  if (options.stream !== undefined) return wrapChild(pino(base, options.stream));
++
++  if (options.pretty) {
++    return wrapChild(
++      pino({
++        ...base,
++        transport: {
++          target: 'pino-pretty',
++          options: { colorize: true, translateTime: 'HH:MM:ss.l' },
++        },
++      }),
++    );
++  }
++
++  return wrapChild(pino(base));
++}
+diff --git a/packages/observability/src/redaction.spec.ts b/packages/observability/src/redaction.spec.ts
+new file mode 100644
+index 0000000..b4a241d
+--- /dev/null
++++ b/packages/observability/src/redaction.spec.ts
+@@ -0,0 +1,102 @@
++import { describe, expect, it } from 'vitest';
++import { REDACTED, redact, redactSecretsInText } from './redaction.js';
++
++describe('redact', () => {
++  it('redacts by key name at the top level', () => {
++    expect(redact({ password: 'hunter2', email: 'a@b.c' })).toEqual({
++      password: REDACTED,
++      email: 'a@b.c',
++    });
++  });
++
++  it('redacts by key name at any depth', () => {
++    expect(redact({ user: { credential: { passwordHash: 'x' }, name: 'Marcus' } })).toEqual({
++      user: { credential: { passwordHash: REDACTED }, name: 'Marcus' },
++    });
++  });
++
++  it('matches key names case-insensitively and as substrings', () => {
++    const out = redact({ Authorization: 'Bearer x', apiKey: 'k', X_CSRF_TOKEN: 't' }) as Record<
++      string,
++      unknown
++    >;
++    expect(out.Authorization).toBe(REDACTED);
++    expect(out.apiKey).toBe(REDACTED);
++    expect(out.X_CSRF_TOKEN).toBe(REDACTED);
++  });
++
++  it('redacts inside arrays', () => {
++    expect(redact([{ token: 'a' }, { token: 'b' }])).toEqual([
++      { token: REDACTED },
++      { token: REDACTED },
++    ]);
++  });
++
++  it('applies the value-shape backstop to a bearer token under an innocent key', () => {
++    const out = redact({ note: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def' }) as Record<
++      string,
++      unknown
++    >;
++    expect(out.note).toBe(REDACTED);
++  });
++
++  it('applies the value-shape backstop to a postgres URL containing a password', () => {
++    const out = redact({ dsn: 'postgresql://user:hunter2@host:5432/db' }) as Record<
++      string,
++      unknown
++    >;
++    expect(out.dsn).toBe(REDACTED);
++  });
++
++  it('leaves ordinary values alone', () => {
++    const input = { scanId: 'scn_01J', count: 42, ok: true, at: null };
++    expect(redact(input)).toEqual(input);
++  });
++
++  it('does not loop forever on a circular reference', () => {
++    const circular: Record<string, unknown> = { name: 'x' };
++    circular.self = circular;
++    expect(() => redact(circular)).not.toThrow();
++  });
++
++  it('preserves Error name and message but drops the stack', () => {
++    const out = redact(new Error('boom')) as Record<string, unknown>;
++    expect(out.message).toBe('boom');
++    expect(out.stack).toBeUndefined();
++  });
++
++  it('text-scans the message of an Error nested anywhere in a payload', () => {
++    const inner = new Error('leaked here: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
++    const out = redact({ context: { originalError: inner } }) as {
++      context: { originalError: { message: string } };
++    };
++    expect(out.context.originalError.message).toBe(`leaked here: ${REDACTED}`);
++  });
++
++  it('replaces a property whose getter throws instead of crashing', () => {
++    const hostile = {
++      get poison(): string {
++        throw new Error('getter exploded');
++      },
++      ok: 'value',
++    };
++    expect(() => redact(hostile)).not.toThrow();
++    const out = redact(hostile) as Record<string, unknown>;
++    expect(out.poison).toBe('[unreadable]');
++    expect(out.ok).toBe('value');
++  });
++});
++
++describe('redactSecretsInText', () => {
++  it('redacts only the matched span, leaving the surrounding text intact', () => {
++    const out = redactSecretsInText(
++      'exchanging token=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def now',
++    );
++    expect(out).toBe(`exchanging token=${REDACTED} now`);
++  });
++
++  it('leaves text with no secret shape byte-identical', () => {
++    const text = 'scan scn_01J completed with 3 findings';
++    expect(redactSecretsInText(text)).toBe(text);
++  });
++});
+diff --git a/packages/observability/src/redaction.ts b/packages/observability/src/redaction.ts
+new file mode 100644
+index 0000000..c33f14c
+--- /dev/null
++++ b/packages/observability/src/redaction.ts
+@@ -0,0 +1,124 @@
++export const REDACTED = '[redacted]';
++
++/**
++ * Key fragments that mark a value as secret. Matched case-insensitively as a
++ * substring, so `mfaSecret`, `X_CSRF_TOKEN`, and `stripeWebhookSecret` are all
++ * caught without enumerating every spelling.
++ *
++ * Source list: .claude/operations/monitoring.md §2.
++ */
++const SECRET_KEY_FRAGMENTS = [
++  'password',
++  'passwd',
++  'secret',
++  'token',
++  'apikey',
++  'api_key',
++  'authorization',
++  'cookie',
++  'privatekey',
++  'private_key',
++  'sessionid',
++  'session_id',
++  'mfasecret',
++] as const;
++
++/**
++ * Value-shape backstop. Redaction is structural first — these patterns exist
++ * only to catch a secret that arrived under an innocent key name, which is the
++ * case a key denylist alone cannot see.
++ */
++const SECRET_VALUE_PATTERNS: RegExp[] = [
++  /\bBearer\s+[A-Za-z0-9._~+/-]{16,}=*/i, // bearer tokens
++  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/, // JWTs
++  /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:[^\s:/@]+@/i, // any URL with inline credentials
++  /\b(?:sk|rk|whsec)_[A-Za-z0-9]{16,}/, // Stripe-style keys
++  /-----BEGIN [A-Z ]*PRIVATE KEY-----/, // PEM material
++];
++
++function keyIsSecret(key: string): boolean {
++  const normalised = key.toLowerCase().replaceAll(/[^a-z]/g, '');
++  return SECRET_KEY_FRAGMENTS.some((fragment) => normalised.includes(fragment.replaceAll('_', '')));
++}
++
++function valueLooksSecret(value: string): boolean {
++  return SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(value));
++}
++
++// Global-flagged copies of the same patterns, for substring replacement
++// rather than whole-value matching. `String.prototype.replace` resets a
++// global regex's `lastIndex` to 0 on every call (ECMA-262 22.2.6.11 step 8),
++// so reusing these across calls is safe.
++const GLOBAL_SECRET_VALUE_PATTERNS: RegExp[] = SECRET_VALUE_PATTERNS.map(
++  (pattern) =>
++    new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`),
++);
++
++/**
++ * Substring redaction for free text — log messages and error text — where the
++ * value is prose that may *contain* a secret rather than being one outright.
++ * Unlike `redact()`'s whole-value backstop for structured fields, this
++ * replaces only the matched span, so `"exchanging token=Bearer xyz now"`
++ * becomes `"exchanging token=[redacted] now"` instead of disappearing
++ * entirely — replacing the whole message would trade a credential leak for
++ * an unreadable log, and an operator debugging a failure still needs the
++ * rest of the sentence.
++ */
++export function redactSecretsInText(text: string): string {
++  let result = text;
++  for (const pattern of GLOBAL_SECRET_VALUE_PATTERNS) {
++    result = result.replace(pattern, REDACTED);
++  }
++  return result;
++}
++
++const MAX_DEPTH = 12;
++
++/**
++ * Deep, structural redaction. Walks the object graph and redacts by key name,
++ * with a value-shape backstop.
++ *
++ * This is deliberately NOT a regex over the final serialised string: by the
++ * time a log line is a string, the structure that tells you which field held a
++ * credential is gone, and a string-level regex either misses secrets or mangles
++ * legitimate content such as an evidence payload.
++ */
++export function redact(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
++  if (depth > MAX_DEPTH) return REDACTED;
++
++  if (typeof value === 'string') return valueLooksSecret(value) ? REDACTED : value;
++  if (value === null || typeof value !== 'object') return value;
++
++  if (seen.has(value)) return '[circular]';
++  seen.add(value);
++
++  if (value instanceof Error) {
++    // Stacks are dropped here; the logger attaches them separately at error
++    // level, where they are wanted, rather than everywhere an Error is nested.
++    // The message is still text-scanned: an Error nested anywhere else in a
++    // payload (not under the top-level err key, which gets its own
++    // serializer in logger.ts) has no other stage that will ever see it.
++    return { name: value.name, message: redactSecretsInText(value.message) };
++  }
++
++  if (Array.isArray(value)) {
++    return value.map((item) => redact(item, depth + 1, seen));
++  }
++
++  const output: Record<string, unknown> = {};
++  for (const key of Object.keys(value)) {
++    let item: unknown;
++    try {
++      // A getter can throw (e.g. a lazily-computed property backed by a
++      // resource that is no longer available). Logging happens on the error
++      // path, so a hostile or broken getter must not crash the logger and
++      // hide the real failure.
++      item = (value as Record<string, unknown>)[key];
++    } catch {
++      output[key] = '[unreadable]';
++      continue;
++    }
++    output[key] = keyIsSecret(key) ? REDACTED : redact(item, depth + 1, seen);
++  }
++  return output;
++}
+diff --git a/packages/observability/tsconfig.build.json b/packages/observability/tsconfig.build.json
+new file mode 100644
+index 0000000..43f7ed3
+--- /dev/null
++++ b/packages/observability/tsconfig.build.json
+@@ -0,0 +1,4 @@
++{
++  "extends": "./tsconfig.json",
++  "exclude": ["src/**/*.spec.ts", "src/**/*.integration.spec.ts"]
++}
+diff --git a/packages/observability/tsconfig.json b/packages/observability/tsconfig.json
+new file mode 100644
+index 0000000..5ee9c86
+--- /dev/null
++++ b/packages/observability/tsconfig.json
+@@ -0,0 +1,5 @@
++{
++  "extends": "../../tsconfig.base.json",
++  "compilerOptions": { "rootDir": "src", "outDir": "dist" },
++  "include": ["src/**/*.ts"]
++}
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 9ed1ee1..0da1a0d 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -45,20 +45,36 @@ importers:
+   packages/config:
+     dependencies:
+       zod:
+         specifier: ^3.24.0
+         version: 3.25.76
+     devDependencies:
+       typescript:
+         specifier: ^5.7.0
+         version: 5.9.3
+ 
++  packages/observability:
++    dependencies:
++      pino:
++        specifier: ^9.5.0
++        version: 9.14.0
++      pino-pretty:
++        specifier: ^13.0.0
++        version: 13.1.3
++    devDependencies:
++      '@sentinel/config':
++        specifier: workspace:*
++        version: link:../config
++      typescript:
++        specifier: ^5.7.0
++        version: 5.9.3
++
+ packages:
+ 
+   '@emnapi/core@1.10.0':
+     resolution: {integrity: sha512-yq6OkJ4p82CAfPl0u9mQebQHKPJkY7WrIuk205cTYnYe+k2Z8YBh11FrbRG/H6ihirqcacOgl2BIO8oyMQLeXw==}
+ 
+   '@emnapi/runtime@1.10.0':
+     resolution: {integrity: sha512-ewvYlk86xUoGI0zQRNq/mC+16R1QeDlKQy21Ki3oSYXNgLb45GV1P6A0M+/s6nyCuNDqe5VpaY84BzXGwVbwFA==}
+ 
+   '@emnapi/wasi-threads@1.2.1':
+     resolution: {integrity: sha512-uTII7OYF+/Mes/MrcIOYp5yOtSMLBWSIoLPpcgwipoiKbli6k322tcoFsxoIIxPDqW01SQGAgko4EzZi2BNv2w==}
+@@ -287,20 +303,23 @@ packages:
+     os: [linux]
+     libc: [glibc]
+ 
+   '@napi-rs/wasm-runtime@1.2.3':
+     resolution: {integrity: sha512-UMduMbqO5s5zF2NkNacMT/yK5Y5QiKvWr2+50bzIIxFDwVJ2h49b+oyjaCGPhJxd2/gC2x39EHv/gHVuu36x2Q==}
+     engines: {node: ^20.19.0 || ^22.13.0 || >=23.5.0}
+     peerDependencies:
+       '@emnapi/core': ^1.7.1 || ^2.0.0-alpha.4
+       '@emnapi/runtime': ^1.7.1 || ^2.0.0-alpha.4
+ 
++  '@pinojs/redact@0.4.0':
++    resolution: {integrity: sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg==}
++
+   '@rollup/rollup-android-arm-eabi@4.62.4':
+     resolution: {integrity: sha512-RrPokAb7dmbxFoeO3TloqHyOjgye8RkBhSqmp4aJMIex4c9r46ZstPnleDQOq1t46VOVjwIuwNogIqbodV1Vvg==}
+     cpu: [arm]
+     os: [android]
+ 
+   '@rollup/rollup-android-arm64@4.62.4':
+     resolution: {integrity: sha512-JKuJc+pnpks2pjy7L/N3v/cAkZxYlnmuZoD840ldbMI5KDbC4iO9NKwPKYdjYFCMAIIlBzYSFHxIJVYzRo2/8A==}
+     cpu: [arm64]
+     os: [android]
+ 
+@@ -739,20 +758,24 @@ packages:
+     engines: {node: '>= 0.4'}
+ 
+   assertion-error@2.0.1:
+     resolution: {integrity: sha512-Izi8RQcffqCeNVgFigKli1ssklIbpHnCYc6AknXGYoB6grJqyeby7jv12JUQgmTAnIDnbck1uxksT4dzN3PWBA==}
+     engines: {node: '>=12'}
+ 
+   async-function@1.0.0:
+     resolution: {integrity: sha512-hsU18Ae8CDTR6Kgu9DYf0EbCr/a5iGL0rytQDobUcdpYOKokk8LEjVphnXkDkgpi0wYVsqrXuP0bZxJaTqdgoA==}
+     engines: {node: '>= 0.4'}
+ 
++  atomic-sleep@1.0.0:
++    resolution: {integrity: sha512-kNOjDqAh7px0XWNI+4QbzoiR/nTkHAWNud2uvnJquD1/x5a7EQZMJT0AczqK0Qn67oY/TTQ1LbUKajZpp3I9tQ==}
++    engines: {node: '>=8.0.0'}
++
+   available-typed-arrays@1.0.7:
+     resolution: {integrity: sha512-wvUjBtSGN7+7SjNpq/9M2Tg350UZD3q62IFZLbRAR1bSMlCo1ZaeW+BJ+D090e4hIIZLBcTDWe4Mh4jvUDajzQ==}
+     engines: {node: '>= 0.4'}
+ 
+   balanced-match@1.0.2:
+     resolution: {integrity: sha512-3oSeUO0TMV67hN1AmbXsK4yaqU7tjiHlbxRDZOpH0KW9+CeX4bRAaX0Anxt0tx2MrpRpWwQaPwIlISEJhYU5Pw==}
+ 
+   balanced-match@4.0.4:
+     resolution: {integrity: sha512-BLrgEcRTwX2o6gGxGOCNyMvGSp35YofuYzw9h1IMTRmKqttAZZVU67bdb9Pr2vUHA8+j3i2tJfjO6C6+4myGTA==}
+     engines: {node: 18 || 20 || >=22}
+@@ -796,39 +819,45 @@ packages:
+     resolution: {integrity: sha512-PAJdDJusoxnwm1VwW07VWwUN1sl7smmC3OKggvndJFadxxDRyFJBX/ggnu/KE4kQAB7a3Dp8f/YXC1FlUprWmA==}
+     engines: {node: '>= 16'}
+ 
+   color-convert@2.0.1:
+     resolution: {integrity: sha512-RRECPsj7iu/xb5oKYcsFHSppFNnsj/52OVTRKb4zP5onXwVF3zVmmToNcOfGC+CRDpfK/U584fMg38ZHCaElKQ==}
+     engines: {node: '>=7.0.0'}
+ 
+   color-name@1.1.4:
+     resolution: {integrity: sha512-dOy+3AuW3a2wNbZHIuMZpTcgjGuLU/uBL/ubcZF9OXbDo8ff4O8yVp5Bf0efS8uEoYo5q4Fx7dY9OgQGXgAsQA==}
+ 
++  colorette@2.0.20:
++    resolution: {integrity: sha512-IfEDxwoWIjkeXL1eXcDiow4UbKjhLdq6/EuSVR9GMN7KVH3r9gQ83e73hsz1Nd1T3ijd5xv1wcWRYO+D6kCI2w==}
++
+   concat-map@0.0.1:
+     resolution: {integrity: sha512-/Srv4dswyQNBfohGpz9o6Yb3Gz3SrUDqBH5rTuhGR7ahtlbYKnVxw2bCFMRljaA7EXHaXZ8wsHdodFvbkhKmqg==}
+ 
+   cross-spawn@7.0.6:
+     resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
+     engines: {node: '>= 8'}
+ 
+   data-view-buffer@1.0.2:
+     resolution: {integrity: sha512-EmKO5V3OLXh1rtK2wgXRansaK1/mtVdTUEiEI0W8RkvgT05kfxaH29PliLnpLP73yYO6142Q72QNa8Wx/A5CqQ==}
+     engines: {node: '>= 0.4'}
+ 
+   data-view-byte-length@1.0.2:
+     resolution: {integrity: sha512-tuhGbE6CfTM9+5ANGf+oQb72Ky/0+s3xKUpHvShfiz2RxMFgFPjsXuRLBVMtvMs15awe45SRb83D6wH4ew6wlQ==}
+     engines: {node: '>= 0.4'}
+ 
+   data-view-byte-offset@1.0.1:
+     resolution: {integrity: sha512-BS8PfmtDGnrgYdOonGZQdLZslWIeCGFP9tpan0hi1Co2Zr2NKADsvGYA8XxuG/4UWgJ6Cjtv+YJnB6MM69QGlQ==}
+     engines: {node: '>= 0.4'}
+ 
++  dateformat@4.6.3:
++    resolution: {integrity: sha512-2P0p0pFGzHS5EMnhdxQi7aJN+iMheud0UhG4dlE1DLAlvL8JHjJJTX/CSm4JXwV0Ka5nGk3zC5mcb5bUQUxxMA==}
++
+   debug@3.2.7:
+     resolution: {integrity: sha512-CFjzYYAi4ThfiQvizrFQevTTXHtnCqWfe7x1AhgEscTz6ZbLbfoLRLPugTQyBth6f8ZERVUSyWHFD/7Wu4t1XQ==}
+     peerDependencies:
+       supports-color: '*'
+     peerDependenciesMeta:
+       supports-color:
+         optional: true
+ 
+   debug@4.4.3:
+     resolution: {integrity: sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==}
+@@ -855,20 +884,23 @@ packages:
+     engines: {node: '>= 0.4'}
+ 
+   doctrine@2.1.0:
+     resolution: {integrity: sha512-35mSku4ZXK0vfCuHEDAwt55dg2jNajHZ1odvF+8SSr82EsZY4QmXfuWso8oEd8zRhVObSN18aM0CjSdoBX7zIw==}
+     engines: {node: '>=0.10.0'}
+ 
+   dunder-proto@1.0.1:
+     resolution: {integrity: sha512-KIN/nDJBQRcXw0MLVhZE9iQHmG68qAVIBg9CqmUYjmQIhgij9U5MFvrqkUL5FbtyyzZuOeOt0zdeRe4UY7ct+A==}
+     engines: {node: '>= 0.4'}
+ 
++  end-of-stream@1.4.5:
++    resolution: {integrity: sha512-ooEGc6HP26xXq/N+GCGOT0JKCLDGrq2bQUZrQ7gyrJiZANJ/8YDTxTpQBXGMn+WbIQXNVpyWymm7KYVICQnyOg==}
++
+   es-abstract-get@1.0.0:
+     resolution: {integrity: sha512-6PMWXpdhshVvFp+FoWYs1EvG1Nj0tvk0dZM+XcK0xMEM1czRVcP6ohqPWHy6qPagSpC8j4+p89WXlT+xXJs/fg==}
+     engines: {node: '>= 0.4'}
+ 
+   es-abstract@1.24.2:
+     resolution: {integrity: sha512-2FpH9Q5i2RRwyEP1AylXe6nYLR5OhaJTZwmlcP0dL/+JCbgg7yyEo/sEK6HeGZRf3dFpWwThaRHVApXSkW3xeg==}
+     engines: {node: '>= 0.4'}
+ 
+   es-define-property@1.0.1:
+     resolution: {integrity: sha512-e3nRfgfUZ4rNGL232gUgX06QNyyez04KdjFrF+LTRoOXmrOgFKDg4BCdsjW8EnT69eqdYGmRpJwiPVYNrCaW3g==}
+@@ -1008,29 +1040,35 @@ packages:
+     resolution: {integrity: sha512-7RUKfXgSMMkzt6ZuXmqapOurLGPPfgj6l9uRZ7lRGolvk0y2yocc35LdcxKC5PQZdn2DMqioAQ2NoWcrTKmm6g==}
+ 
+   esutils@2.0.3:
+     resolution: {integrity: sha512-kVscqXk4OCp68SZ0dkgEKVi6/8ij300KBWTJq32P/dYeWTSwK41WyTxalN1eRmA5Z9UU/LX9D7FWSmV9SAYx6g==}
+     engines: {node: '>=0.10.0'}
+ 
+   expect-type@1.4.0:
+     resolution: {integrity: sha512-KfYbmpRm0VbLjEvVa9yGwCi9GI34xvi7A/HXYWQO65CSD2u3MczUJSuwXKFIxlGsgBQizV9q5J9NHj4VG0n+pA==}
+     engines: {node: '>=12.0.0'}
+ 
++  fast-copy@4.0.4:
++    resolution: {integrity: sha512-eVAiWVNPSEGIzDl5yPuLrx8fNMogScXvD9xp1Kzd41FjRIz2I3sSIcxsFeM5EzFfHAfobdvs8ZySffUopljvIA==}
++
+   fast-deep-equal@3.1.3:
+     resolution: {integrity: sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q==}
+ 
+   fast-json-stable-stringify@2.1.0:
+     resolution: {integrity: sha512-lhd/wF+Lk98HZoTCtlVraHtfh5XYijIjalXck7saUtuanSDyLMxnHhSXEDJqHxD7msR8D0uCmqlkwjCV8xvwHw==}
+ 
+   fast-levenshtein@2.0.6:
+     resolution: {integrity: sha512-DCXu6Ifhqcks7TZKY3Hxp3y6qphY5SJZmrWMDrKcERSOXWQdMhU9Ig/PYrzyw/ul9jOIyh0N4M0tbC5hodg8dw==}
+ 
++  fast-safe-stringify@2.1.1:
++    resolution: {integrity: sha512-W+KJc2dmILlPplD/H4K9l9LcAHAfPtP6BY84uVLXQ6Evcz9Lcg33Y2z1IVblT6xdY54PXYVHEv+0Wpq8Io6zkA==}
++
+   fdir@6.5.0:
+     resolution: {integrity: sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==}
+     engines: {node: '>=12.0.0'}
+     peerDependencies:
+       picomatch: ^3 || ^4
+     peerDependenciesMeta:
+       picomatch:
+         optional: true
+ 
+   file-entry-cache@8.0.0:
+@@ -1126,20 +1164,23 @@ packages:
+     engines: {node: '>= 0.4'}
+ 
+   has-tostringtag@1.0.2:
+     resolution: {integrity: sha512-NqADB8VjPFLM2V0VvHUewwwsw0ZWBaIdgo+ieHtK3hasLz4qeCRjYcqfB6AQrBggRKppKF8L52/VqdVsO47Dlw==}
+     engines: {node: '>= 0.4'}
+ 
+   hasown@2.0.4:
+     resolution: {integrity: sha512-T2UbfbBEF32wiepXIsMlTW9+dDYC6wMh/t/vYA4tuOMKqWz/n3vr1NFSxQiyP+zk2mXsoMA/i/7qV6LKut1t1A==}
+     engines: {node: '>= 0.4'}
+ 
++  help-me@5.0.0:
++    resolution: {integrity: sha512-7xgomUX6ADmcYzFik0HzAxh/73YlKR9bmFzf51CZwR+b6YtzU2m0u49hQCqV6SvlqIqsaxovfwdvbnsw3b/zpg==}
++
+   ignore@5.3.2:
+     resolution: {integrity: sha512-hsBTNUqQTDwkWtcdYI2i06Y/nUBEsNEDJKjWdigLvegy8kDuJAS8uRlpkkcQpyEXL0Z/pjDy5HBmMjRCJ2gq+g==}
+     engines: {node: '>= 4'}
+ 
+   ignore@7.0.6:
+     resolution: {integrity: sha512-BAg6QkE8W+TuQLrrw0Ugr7HegXduRuuj8/ti2kSOc+jz1dmx8/WNcjr6XGnq5YpDWxFwwaavqD0+jIUOKelTsw==}
+     engines: {node: '>= 4'}
+ 
+   import-fresh@3.3.1:
+     resolution: {integrity: sha512-TR3KfrTZTYLPB6jUjfx6MF9WcWrHL9su5TObK4ZkYgBdWKPOFoSoQIdEuTuR82pmtxH2spWG9h6etwfr1pLBqQ==}
+@@ -1255,20 +1296,24 @@ packages:
+   is-weakset@2.0.4:
+     resolution: {integrity: sha512-mfcwb6IzQyOKTs84CQMrOwW4gQcaTOAWJ0zzJCl2WSPDrWk/OzDaImWFH3djXhb24g4eudZfLRozAvPGw4d9hQ==}
+     engines: {node: '>= 0.4'}
+ 
+   isarray@2.0.5:
+     resolution: {integrity: sha512-xHjhDr3cNBK0BzdUJSPXZntQUx/mwMS5Rw4A7lPJ90XGAO6ISP/ePDNuo0vhqOZU+UD5JoodwCAAoZQd3FeAKw==}
+ 
+   isexe@2.0.0:
+     resolution: {integrity: sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw==}
+ 
++  joycon@3.1.1:
++    resolution: {integrity: sha512-34wB/Y7MW7bzjKRjUKTa46I2Z7eV62Rkhva+KkopW7Qvv/OSWBqvkSY7vusOPrNuZcUG3tApvdVgNB8POj3SPw==}
++    engines: {node: '>=10'}
++
+   js-tokens@9.0.1:
+     resolution: {integrity: sha512-mxa9E9ITFOt0ban3j6L5MpjwegGz6lBQmM1IJkWeBZGcMxto50+eWdjC/52xDbS2vy0k7vIMK0Fe2wfL9OQSpQ==}
+ 
+   js-yaml@4.3.1:
+     resolution: {integrity: sha512-CY6crGq313MX8GkwvB7tzgp99vjQxY1++5y10/BKN/GUfHqWaOGQMNZkBvqSzsZKWk/ijwHlWzzkLulsGHhjWQ==}
+     hasBin: true
+ 
+   json-buffer@3.0.1:
+     resolution: {integrity: sha512-4bV5BfR2mqfQTJm+V5tPPdf+ZpuhiIvTuAB5g8kcrXOZpTT/QwwVRWBywX1ozr6lEuPdbHxwaJlm9G6mI2sfSQ==}
+ 
+@@ -1357,20 +1402,27 @@ packages:
+     engines: {node: '>= 0.4'}
+ 
+   object.groupby@1.0.3:
+     resolution: {integrity: sha512-+Lhy3TQTuzXI5hevh8sBGqbmurHbbIjAi0Z4S63nthVLmLxfbj4T54a4CfZrXIrt9iP4mVAPYMo/v99taj3wjQ==}
+     engines: {node: '>= 0.4'}
+ 
+   object.values@1.2.1:
+     resolution: {integrity: sha512-gXah6aZrcUxjWg2zR2MwouP2eHlCBzdV4pygudehaKXSGW4v2AsRQUK+lwwXhii6KFZcunEnmSUoYp5CXibxtA==}
+     engines: {node: '>= 0.4'}
+ 
++  on-exit-leak-free@2.1.2:
++    resolution: {integrity: sha512-0eJJY6hXLGf1udHwfNftBqH+g73EU4B504nZeKpz1sYRKafAghwxEJunB2O7rDZkL4PGfsMVnTXZ2EjibbqcsA==}
++    engines: {node: '>=14.0.0'}
++
++  once@1.4.0:
++    resolution: {integrity: sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w==}
++
+   optionator@0.9.4:
+     resolution: {integrity: sha512-6IpQ7mKUxRcZNLIObR0hz7lxsapSSIYNZJwXPGeF0mTVqGKFIXj1DQcMoT22S3ROcLyY/rz0PWaWZ9ayWmad9g==}
+     engines: {node: '>= 0.8.0'}
+ 
+   own-keys@1.0.2:
+     resolution: {integrity: sha512-19YVAg7T+WTrxggPukVq7DjTv6+PJ867TmhCvBsYwmbFCsZd344rq2Ld1p0wo8f8Qrrhgp82c6FJRqdXWtSEhg==}
+     engines: {node: '>= 0.4'}
+ 
+   p-limit@3.1.0:
+     resolution: {integrity: sha512-TYOanM3wGwNGsZN2cVTYPArw454xnXj5qmWF1bEoAc4+cU/ol7GVh7odevjp1FNHduHc3KZMcFduxU5Xc6uJRQ==}
+@@ -1402,41 +1454,71 @@ packages:
+     resolution: {integrity: sha512-//nshmD55c46FuFw26xV/xFAaB5HF9Xdap7HJBBnrKdAd6/GxDBaNA1870O79+9ueg61cZLSVc+OaFlfmObYVQ==}
+     engines: {node: '>= 14.16'}
+ 
+   picocolors@1.1.1:
+     resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
+ 
+   picomatch@4.0.5:
+     resolution: {integrity: sha512-RvwwcruNjI1ncT5xRakeyS9Lf8lcItv34KD+aif+VH9kduAyfYBipGh12274xtenIPZ119/R9BdTBa8gAwSh0A==}
+     engines: {node: '>=12'}
+ 
++  pino-abstract-transport@2.0.0:
++    resolution: {integrity: sha512-F63x5tizV6WCh4R6RHyi2Ml+M70DNRXt/+HANowMflpgGFMAym/VKm6G7ZOQRjqN7XbGxK1Lg9t6ZrtzOaivMw==}
++
++  pino-abstract-transport@3.0.0:
++    resolution: {integrity: sha512-wlfUczU+n7Hy/Ha5j9a/gZNy7We5+cXp8YL+X+PG8S0KXxw7n/JXA3c46Y0zQznIJ83URJiwy7Lh56WLokNuxg==}
++
++  pino-pretty@13.1.3:
++    resolution: {integrity: sha512-ttXRkkOz6WWC95KeY9+xxWL6AtImwbyMHrL1mSwqwW9u+vLp/WIElvHvCSDg0xO/Dzrggz1zv3rN5ovTRVowKg==}
++    hasBin: true
++
++  pino-std-serializers@7.1.0:
++    resolution: {integrity: sha512-BndPH67/JxGExRgiX1dX0w1FvZck5Wa4aal9198SrRhZjH3GxKQUKIBnYJTdj2HDN3UQAS06HlfcSbQj2OHmaw==}
++
++  pino@9.14.0:
++    resolution: {integrity: sha512-8OEwKp5juEvb/MjpIc4hjqfgCNysrS94RIOMXYvpYCdm/jglrKEiAYmiumbmGhCvs+IcInsphYDFwqrjr7398w==}
++    hasBin: true
++
+   possible-typed-array-names@1.1.0:
+     resolution: {integrity: sha512-/+5VFTchJDoVj3bhoqi6UeymcD00DAwb1nJwamzPvHEszJ4FpF6SNNbUbOS8yI56qHzdV8eK0qEfOSiodkTdxg==}
+     engines: {node: '>= 0.4'}
+ 
+   postcss@8.5.26:
+     resolution: {integrity: sha512-u82N74LFzG8ca+dD8puPnplTXoGH4fTPpVGuIbt36G3qvNlkvfD0lEAZSxaly3KX8TS/L1A1gsCEmvKmBcVbkQ==}
+     engines: {node: ^10 || ^12 || >=14}
+ 
+   prelude-ls@1.2.1:
+     resolution: {integrity: sha512-vkcDPrRZo1QZLbn5RLGPpg/WmIQ65qoWWhcGKf/b5eplkkarX0m9z8ppCat4mlOqUsWpyNuYgO3VRyrYHSzX5g==}
+     engines: {node: '>= 0.8.0'}
+ 
+   prettier@3.9.6:
+     resolution: {integrity: sha512-OpN0zzVdiaiAhxpuuj5efpIS4sY9j7bY6uR5mnj5yPzGkdkjNKSJeUThPb60Jw29QuAZgA4o+/iB49kFiaBX6g==}
+     engines: {node: '>=14'}
+     hasBin: true
+ 
++  process-warning@5.1.0:
++    resolution: {integrity: sha512-jQSaVHsPgtyw60e1rQ/A+/ArPEj/S8pS/vFnyGa/gYFXrKk/6RuDkoqVDQ5NI5MmS01698ltlAk0NoDBNLujRw==}
++
++  pump@3.0.4:
++    resolution: {integrity: sha512-VS7sjc6KR7e1ukRFhQSY5LM2uBWAUPiOPa/A3mkKmiMwSmRFUITt0xuj+/lesgnCv+dPIEYlkzrcyXgquIHMcA==}
++
+   punycode@2.3.1:
+     resolution: {integrity: sha512-vYt7UD1U9Wg6138shLtLOvdAu+8DsC/ilFtEVHcH+wydcSpNE20AfSOduf6MkRFahL5FY7X1oU7nKVZFtfq8Fg==}
+     engines: {node: '>=6'}
+ 
++  quick-format-unescaped@4.0.4:
++    resolution: {integrity: sha512-tYC1Q1hgyRuHgloV/YXs2w15unPVh8qfu/qCTfhTYamaw7fyhumKa2yGpdSo87vY32rIclj+4fWYQXUMs9EHvg==}
++
++  real-require@0.2.0:
++    resolution: {integrity: sha512-57frrGM/OCTLqLOAh0mhVA9VBMHd+9U7Zb2THMGdBUoZVOtGbJzjxsYGDJ3A9AYYCP4hn6y1TVbaOfzWtm5GFg==}
++    engines: {node: '>= 12.13.0'}
++
+   reflect.getprototypeof@1.0.10:
+     resolution: {integrity: sha512-00o4I+DVrefhv+nX0ulyi3biSHCPDe+yLv5o/p6d/UVlirijB8E16FtfwSAi4g3tcqrQ4lRAqQSoFEZJehYEcw==}
+     engines: {node: '>= 0.4'}
+ 
+   regexp.prototype.flags@1.5.4:
+     resolution: {integrity: sha512-dYqgNSZbDwkaJ2ceRd9ojCGjBq+mOm9LmtXnAnEGyHhN/5R7iDW2TRw3h+o/jCFxus3P2LfWIIiwowAjANm7IA==}
+     engines: {node: '>= 0.4'}
+ 
+   resolve-from@4.0.0:
+     resolution: {integrity: sha512-pb/MYmXstAkysRFx8piNI1tGFNQIFA3vkE3Gq4EuA1dF6gHp/+vgZqsCGJapvy8N3Q+4o7FwvquPJcnZ7RYy4g==}
+@@ -1460,20 +1542,27 @@ packages:
+     engines: {node: '>=0.4'}
+ 
+   safe-push-apply@1.0.0:
+     resolution: {integrity: sha512-iKE9w/Z7xCzUMIZqdBsp6pEQvwuEebH4vdpjcDWnyzaI6yl6O9FHvVpmGelvEHNsoY6wGblkxR6Zty/h00WiSA==}
+     engines: {node: '>= 0.4'}
+ 
+   safe-regex-test@1.1.0:
+     resolution: {integrity: sha512-x/+Cz4YrimQxQccJf5mKEbIa1NzeCRNI5Ecl/ekmlYaampdNLPalVyIcCZNNH3MvmqBugV5TMYZXv0ljslUlaw==}
+     engines: {node: '>= 0.4'}
+ 
++  safe-stable-stringify@2.5.0:
++    resolution: {integrity: sha512-b3rppTKm9T+PsVCBEOUR46GWI7fdOs00VKZ1+9c1EWDaDMvjQc6tUwuFyIprgGgTcWoVHSKrU8H31ZHA2e0RHA==}
++    engines: {node: '>=10'}
++
++  secure-json-parse@4.1.0:
++    resolution: {integrity: sha512-l4KnYfEyqYJxDwlNVyRfO2E4NTHfMKAWdUuA8J0yve2Dz/E/PdBepY03RvyJpssIpRFwJoCD55wA+mEDs6ByWA==}
++
+   semver@6.3.1:
+     resolution: {integrity: sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA==}
+     hasBin: true
+ 
+   semver@7.8.5:
+     resolution: {integrity: sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==}
+     engines: {node: '>=10'}
+     hasBin: true
+ 
+   set-function-length@1.2.2:
+@@ -1508,24 +1597,31 @@ packages:
+     resolution: {integrity: sha512-WPS/HvHQTYnHisLo9McqBHOJk2FkHO/tlpvldyrnem4aeQp4hai3gythswg6p01oSoTl58rcpiFAjF2br2Ak2A==}
+     engines: {node: '>= 0.4'}
+ 
+   side-channel@1.1.1:
+     resolution: {integrity: sha512-6x6dK6zJdpTzF4sQeNYxwtvBzf6Eg4GtlesS94HOvTudUeyK2WXAaIfmDgsyslYrRBeFIlsi54AYsFGUuhmvrQ==}
+     engines: {node: '>= 0.4'}
+ 
+   siginfo@2.0.0:
+     resolution: {integrity: sha512-ybx0WO1/8bSBLEWXZvEd7gMW3Sn3JFlW3TvX1nREbDLRNQNaeNN8WK0meBwPdAaOI7TtRRRJn/Es1zhrrCHu7g==}
+ 
++  sonic-boom@4.2.1:
++    resolution: {integrity: sha512-w6AxtubXa2wTXAUsZMMWERrsIRAdrK0Sc+FUytWvYAhBJLyuI4llrMIC1DtlNSdI99EI86KZum2MMq3EAZlF9Q==}
++
+   source-map-js@1.2.1:
+     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
+     engines: {node: '>=0.10.0'}
+ 
++  split2@4.2.0:
++    resolution: {integrity: sha512-UcjcJOWknrNkF6PLX83qcHM6KHgVKNkV62Y8a5uYDVv9ydGQVwAHMKqHdJje1VTWpljG0WYpCDhrCdAOYH4TWg==}
++    engines: {node: '>= 10.x'}
++
+   stable-hash-x@0.2.0:
+     resolution: {integrity: sha512-o3yWv49B/o4QZk5ZcsALc6t0+eCelPc44zZsLtCQnZPDwFpDYSWcDnrv2TtMmMbQ7uKo3J0HTURCqckw23czNQ==}
+     engines: {node: '>=12.0.0'}
+ 
+   stackback@0.0.2:
+     resolution: {integrity: sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw==}
+ 
+   std-env@3.10.0:
+     resolution: {integrity: sha512-5GS12FdOZNliM5mAOxFRg7Ir0pWz8MdpYm6AY6VPkGpbA7ZzmbzNcBJQ0GPvvyWgcY7QAhCgf9Uy89I03faLkg==}
+ 
+@@ -1546,31 +1642,38 @@ packages:
+     engines: {node: '>= 0.4'}
+ 
+   strip-bom@3.0.0:
+     resolution: {integrity: sha512-vavAMRXOgBVNF6nyEEmL3DBK19iRpDcoIwW+swQ+CbGiu7lju6t+JklA1MHweoWtadgt4ISVUsXLyDq34ddcwA==}
+     engines: {node: '>=4'}
+ 
+   strip-json-comments@3.1.1:
+     resolution: {integrity: sha512-6fPc+R4ihwqP6N/aIv2f1gMH8lOVtWQHoqC4yK6oSDVVocumAsfCqjkXnqiYMhmMwS/mEHLp7Vehlt3ql6lEig==}
+     engines: {node: '>=8'}
+ 
++  strip-json-comments@5.0.3:
++    resolution: {integrity: sha512-1tB5mhVo7U+ETBKNf92xT4hrQa3pm0MZ0PQvuDnWgAAGHDsfp4lPSpiS6psrSiet87wyGPh9ft6wmhOMQ0hDiw==}
++    engines: {node: '>=14.16'}
++
+   strip-literal@3.1.0:
+     resolution: {integrity: sha512-8r3mkIM/2+PpjHoOtiAW8Rg3jJLHaV7xPwG+YRGrv6FP0wwk/toTpATxWYOW0BKdWwl82VT2tFYi5DlROa0Mxg==}
+ 
+   supports-color@7.2.0:
+     resolution: {integrity: sha512-qpCAvRl9stuOHveKsn7HncJRvv501qIacKzQlO/+Lwxc9+0q2wLyv4Dfvt80/DPn2pqOBsJdDiogXGR9+OvwRw==}
+     engines: {node: '>=8'}
+ 
+   supports-preserve-symlinks-flag@1.0.0:
+     resolution: {integrity: sha512-ot0WnXS9fgdkgIcePe6RHNk1WA8+muPa6cSjeR3V8K27q9BB1rTE3R1p7Hv0z1ZyAc8s6Vvv8DIyWf681MAt0w==}
+     engines: {node: '>= 0.4'}
+ 
++  thread-stream@3.2.0:
++    resolution: {integrity: sha512-zLBvqpwr4Esa0kRjcrzGU6zL25lePWaCLMx0RQFrmteozIfeNdaMLpG5U7PeHzvlFkAWaRKA9/KVW4F60iB+qw==}
++
+   tinybench@2.9.0:
+     resolution: {integrity: sha512-0+DUvqWMValLmha6lr4kD8iAMK1HzV0/aKnCtWb9v9641TnP/MFb7Pc2bxoxQjTXAErryXVgUOfv2YqNllqGeg==}
+ 
+   tinyexec@0.3.2:
+     resolution: {integrity: sha512-KQQR9yN7R5+OSwaK0XQoj22pwHoTlgYqmUscPYoknOoWCWfj/5/ABTMRi69FrKU5ffPVh5QcFikpWJI/P1ocHA==}
+ 
+   tinyglobby@0.2.17:
+     resolution: {integrity: sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==}
+     engines: {node: '>=12.0.0'}
+ 
+@@ -1743,20 +1846,23 @@ packages:
+ 
+   why-is-node-running@2.3.0:
+     resolution: {integrity: sha512-hUrmaWBdVDcxvYqnyh09zunKzROWjbZTiNy8dBEjkS7ehEDQibXJ7XvlmtbwuTclUiIyN+CyXQD4Vmko8fNm8w==}
+     engines: {node: '>=8'}
+     hasBin: true
+ 
+   word-wrap@1.2.5:
+     resolution: {integrity: sha512-BN22B5eaMMI9UMtjrGd5g5eCYPpCPDUy0FJXbYsaT5zYxjFOckS53SQDE3pWkVoWpHXVb3BrYcEN4Twa55B5cA==}
+     engines: {node: '>=0.10.0'}
+ 
++  wrappy@1.0.2:
++    resolution: {integrity: sha512-l4Sp/DRseor9wL6EvV2+TuQn63dMkPjZ/sp9XkghTEbV9KlPS1xUsZ3u7/IQO4wxtcFB4bgpQPRcR3QCvezPcQ==}
++
+   yocto-queue@0.1.0:
+     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
+     engines: {node: '>=10'}
+ 
+   zod@3.25.76:
+     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+ 
+ snapshots:
+ 
+   '@emnapi/core@1.10.0':
+@@ -1920,20 +2026,22 @@ snapshots:
+   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
+     optional: true
+ 
+   '@napi-rs/wasm-runtime@1.2.3(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)':
+     dependencies:
+       '@emnapi/core': 1.10.0
+       '@emnapi/runtime': 1.10.0
+       '@tybys/wasm-util': 0.10.3
+     optional: true
+ 
++  '@pinojs/redact@0.4.0': {}
++
+   '@rollup/rollup-android-arm-eabi@4.62.4':
+     optional: true
+ 
+   '@rollup/rollup-android-arm64@4.62.4':
+     optional: true
+ 
+   '@rollup/rollup-darwin-arm64@4.62.4':
+     optional: true
+ 
+   '@rollup/rollup-darwin-x64@4.62.4':
+@@ -2313,20 +2421,22 @@ snapshots:
+       define-properties: 1.2.1
+       es-abstract: 1.24.2
+       es-errors: 1.3.0
+       get-intrinsic: 1.3.0
+       is-array-buffer: 3.0.5
+ 
+   assertion-error@2.0.1: {}
+ 
+   async-function@1.0.0: {}
+ 
++  atomic-sleep@1.0.0: {}
++
+   available-typed-arrays@1.0.7:
+     dependencies:
+       possible-typed-array-names: 1.1.0
+ 
+   balanced-match@1.0.2: {}
+ 
+   balanced-match@4.0.4: {}
+ 
+   brace-expansion@1.1.18:
+     dependencies:
+@@ -2372,20 +2482,22 @@ snapshots:
+       supports-color: 7.2.0
+ 
+   check-error@2.1.3: {}
+ 
+   color-convert@2.0.1:
+     dependencies:
+       color-name: 1.1.4
+ 
+   color-name@1.1.4: {}
+ 
++  colorette@2.0.20: {}
++
+   concat-map@0.0.1: {}
+ 
+   cross-spawn@7.0.6:
+     dependencies:
+       path-key: 3.1.1
+       shebang-command: 2.0.0
+       which: 2.0.2
+ 
+   data-view-buffer@1.0.2:
+     dependencies:
+@@ -2398,20 +2510,22 @@ snapshots:
+       call-bound: 1.0.4
+       es-errors: 1.3.0
+       is-data-view: 1.0.2
+ 
+   data-view-byte-offset@1.0.1:
+     dependencies:
+       call-bound: 1.0.4
+       es-errors: 1.3.0
+       is-data-view: 1.0.2
+ 
++  dateformat@4.6.3: {}
++
+   debug@3.2.7:
+     dependencies:
+       ms: 2.1.3
+ 
+   debug@4.4.3:
+     dependencies:
+       ms: 2.1.3
+ 
+   deep-eql@5.0.2: {}
+ 
+@@ -2432,20 +2546,24 @@ snapshots:
+   doctrine@2.1.0:
+     dependencies:
+       esutils: 2.0.3
+ 
+   dunder-proto@1.0.1:
+     dependencies:
+       call-bind-apply-helpers: 1.0.2
+       es-errors: 1.3.0
+       gopd: 1.2.0
+ 
++  end-of-stream@1.4.5:
++    dependencies:
++      once: 1.4.0
++
+   es-abstract-get@1.0.0:
+     dependencies:
+       es-errors: 1.3.0
+       es-object-atoms: 1.1.2
+       is-callable: 1.2.7
+       object-inspect: 1.13.4
+ 
+   es-abstract@1.24.2:
+     dependencies:
+       array-buffer-byte-length: 1.0.2
+@@ -2701,26 +2819,30 @@ snapshots:
+   estraverse@5.3.0: {}
+ 
+   estree-walker@3.0.3:
+     dependencies:
+       '@types/estree': 1.0.9
+ 
+   esutils@2.0.3: {}
+ 
+   expect-type@1.4.0: {}
+ 
++  fast-copy@4.0.4: {}
++
+   fast-deep-equal@3.1.3: {}
+ 
+   fast-json-stable-stringify@2.1.0: {}
+ 
+   fast-levenshtein@2.0.6: {}
+ 
++  fast-safe-stringify@2.1.1: {}
++
+   fdir@6.5.0(picomatch@4.0.5):
+     optionalDependencies:
+       picomatch: 4.0.5
+ 
+   file-entry-cache@8.0.0:
+     dependencies:
+       flat-cache: 4.0.1
+ 
+   find-up@5.0.0:
+     dependencies:
+@@ -2817,20 +2939,22 @@ snapshots:
+   has-symbols@1.1.0: {}
+ 
+   has-tostringtag@1.0.2:
+     dependencies:
+       has-symbols: 1.1.0
+ 
+   hasown@2.0.4:
+     dependencies:
+       function-bind: 1.1.2
+ 
++  help-me@5.0.0: {}
++
+   ignore@5.3.2: {}
+ 
+   ignore@7.0.6: {}
+ 
+   import-fresh@3.3.1:
+     dependencies:
+       parent-module: 1.0.1
+       resolve-from: 4.0.0
+ 
+   imurmurhash@0.1.4: {}
+@@ -2952,20 +3076,22 @@ snapshots:
+ 
+   is-weakset@2.0.4:
+     dependencies:
+       call-bound: 1.0.4
+       get-intrinsic: 1.3.0
+ 
+   isarray@2.0.5: {}
+ 
+   isexe@2.0.0: {}
+ 
++  joycon@3.1.1: {}
++
+   js-tokens@9.0.1: {}
+ 
+   js-yaml@4.3.1:
+     dependencies:
+       argparse: 2.0.1
+ 
+   json-buffer@3.0.1: {}
+ 
+   json-schema-traverse@0.4.1: {}
+ 
+@@ -3056,20 +3182,26 @@ snapshots:
+       define-properties: 1.2.1
+       es-abstract: 1.24.2
+ 
+   object.values@1.2.1:
+     dependencies:
+       call-bind: 1.0.9
+       call-bound: 1.0.4
+       define-properties: 1.2.1
+       es-object-atoms: 1.1.2
+ 
++  on-exit-leak-free@2.1.2: {}
++
++  once@1.4.0:
++    dependencies:
++      wrappy: 1.0.2
++
+   optionator@0.9.4:
+     dependencies:
+       deep-is: 0.1.4
+       fast-levenshtein: 2.0.6
+       levn: 0.4.1
+       prelude-ls: 1.2.1
+       type-check: 0.4.0
+       word-wrap: 1.2.5
+ 
+   own-keys@1.0.2:
+@@ -3098,34 +3230,85 @@ snapshots:
+   path-parse@1.0.7: {}
+ 
+   pathe@2.0.3: {}
+ 
+   pathval@2.0.1: {}
+ 
+   picocolors@1.1.1: {}
+ 
+   picomatch@4.0.5: {}
+ 
++  pino-abstract-transport@2.0.0:
++    dependencies:
++      split2: 4.2.0
++
++  pino-abstract-transport@3.0.0:
++    dependencies:
++      split2: 4.2.0
++
++  pino-pretty@13.1.3:
++    dependencies:
++      colorette: 2.0.20
++      dateformat: 4.6.3
++      fast-copy: 4.0.4
++      fast-safe-stringify: 2.1.1
++      help-me: 5.0.0
++      joycon: 3.1.1
++      minimist: 1.2.8
++      on-exit-leak-free: 2.1.2
++      pino-abstract-transport: 3.0.0
++      pump: 3.0.4
++      secure-json-parse: 4.1.0
++      sonic-boom: 4.2.1
++      strip-json-comments: 5.0.3
++
++  pino-std-serializers@7.1.0: {}
++
++  pino@9.14.0:
++    dependencies:
++      '@pinojs/redact': 0.4.0
++      atomic-sleep: 1.0.0
++      on-exit-leak-free: 2.1.2
++      pino-abstract-transport: 2.0.0
++      pino-std-serializers: 7.1.0
++      process-warning: 5.1.0
++      quick-format-unescaped: 4.0.4
++      real-require: 0.2.0
++      safe-stable-stringify: 2.5.0
++      sonic-boom: 4.2.1
++      thread-stream: 3.2.0
++
+   possible-typed-array-names@1.1.0: {}
+ 
+   postcss@8.5.26:
+     dependencies:
+       nanoid: 3.3.18
+       picocolors: 1.1.1
+       source-map-js: 1.2.1
+ 
+   prelude-ls@1.2.1: {}
+ 
+   prettier@3.9.6: {}
+ 
++  process-warning@5.1.0: {}
++
++  pump@3.0.4:
++    dependencies:
++      end-of-stream: 1.4.5
++      once: 1.4.0
++
+   punycode@2.3.1: {}
+ 
++  quick-format-unescaped@4.0.4: {}
++
++  real-require@0.2.0: {}
++
+   reflect.getprototypeof@1.0.10:
+     dependencies:
+       call-bind: 1.0.9
+       define-properties: 1.2.1
+       es-abstract: 1.24.2
+       es-errors: 1.3.0
+       es-object-atoms: 1.1.2
+       get-intrinsic: 1.3.0
+       get-proto: 1.0.1
+       which-builtin-type: 1.2.1
+@@ -3196,20 +3379,24 @@ snapshots:
+     dependencies:
+       es-errors: 1.3.0
+       isarray: 2.0.5
+ 
+   safe-regex-test@1.1.0:
+     dependencies:
+       call-bound: 1.0.4
+       es-errors: 1.3.0
+       is-regex: 1.2.1
+ 
++  safe-stable-stringify@2.5.0: {}
++
++  secure-json-parse@4.1.0: {}
++
+   semver@6.3.1: {}
+ 
+   semver@7.8.5: {}
+ 
+   set-function-length@1.2.2:
+     dependencies:
+       define-data-property: 1.1.4
+       es-errors: 1.3.0
+       function-bind: 1.1.2
+       get-intrinsic: 1.3.0
+@@ -3258,22 +3445,28 @@ snapshots:
+   side-channel@1.1.1:
+     dependencies:
+       es-errors: 1.3.0
+       object-inspect: 1.13.4
+       side-channel-list: 1.0.1
+       side-channel-map: 1.0.1
+       side-channel-weakmap: 1.0.2
+ 
+   siginfo@2.0.0: {}
+ 
++  sonic-boom@4.2.1:
++    dependencies:
++      atomic-sleep: 1.0.0
++
+   source-map-js@1.2.1: {}
+ 
++  split2@4.2.0: {}
++
+   stable-hash-x@0.2.0: {}
+ 
+   stackback@0.0.2: {}
+ 
+   std-env@3.10.0: {}
+ 
+   stop-iteration-iterator@1.1.0:
+     dependencies:
+       es-errors: 1.3.0
+       internal-slot: 1.1.0
+@@ -3299,30 +3492,36 @@ snapshots:
+   string.prototype.trimstart@1.0.8:
+     dependencies:
+       call-bind: 1.0.9
+       define-properties: 1.2.1
+       es-object-atoms: 1.1.2
+ 
+   strip-bom@3.0.0: {}
+ 
+   strip-json-comments@3.1.1: {}
+ 
++  strip-json-comments@5.0.3: {}
++
+   strip-literal@3.1.0:
+     dependencies:
+       js-tokens: 9.0.1
+ 
+   supports-color@7.2.0:
+     dependencies:
+       has-flag: 4.0.0
+ 
+   supports-preserve-symlinks-flag@1.0.0: {}
+ 
++  thread-stream@3.2.0:
++    dependencies:
++      real-require: 0.2.0
++
+   tinybench@2.9.0: {}
+ 
+   tinyexec@0.3.2: {}
+ 
+   tinyglobby@0.2.17:
+     dependencies:
+       fdir: 6.5.0(picomatch@4.0.5)
+       picomatch: 4.0.5
+ 
+   tinypool@1.1.1: {}
+@@ -3563,13 +3762,15 @@ snapshots:
+     dependencies:
+       isexe: 2.0.0
+ 
+   why-is-node-running@2.3.0:
+     dependencies:
+       siginfo: 2.0.0
+       stackback: 0.0.2
+ 
+   word-wrap@1.2.5: {}
+ 
++  wrappy@1.0.2: {}
++
+   yocto-queue@0.1.0: {}
+ 
+   zod@3.25.76: {}

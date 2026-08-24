@@ -1,0 +1,278 @@
+diff --git a/.claude/product/roadmap.md b/.claude/product/roadmap.md
+index 0161789..9f79348 100644
+--- a/.claude/product/roadmap.md
++++ b/.claude/product/roadmap.md
+@@ -78,6 +78,35 @@ install → lint → typecheck → test → build; `.env.example`.
+ *Exit:* `pnpm install && pnpm build && pnpm test` passes from a clean clone; the compose
+ stack starts; a migration applies; CI is green.
+ 
++#### Where Phase 1 stopped — read this before resuming
++
++Phase 1 is being executed as 16 tasks from
++`docs/superpowers/plans/2026-08-20-phase-1-foundation.md`, subagent-driven: a fresh implementer
++per task, then a separate adversarial reviewer, then scoped re-reviews per fix round.
++
++**Tasks 1–10 are complete.** 1 workspace and CI · 2 `packages/config` · 3
++`packages/observability` · 4 compose stack, schema, prefixed UUIDv7 IDs, first migration · 5
++`packages/contracts` · 6 tenant-scoped Prisma client and RLS · 7 seed · 8 `packages/storage` ·
++9 `apps/api` bootstrap · 10 rate limiting.
++
++**Tasks 11–16 remain:** 11 route-access assertion and OpenAPI · 12 `packages/ui` · 13
++`apps/web` · 14 CI checks (OpenAPI diff, tenant-registry completeness) · 15 the two reusable
++skills · 16 ADRs, documentation, and the full exit-criteria verification pass.
++
++The execution ledger — every ruling with its cost if wrong, every review finding, per-task
++briefs and reports, and the review diffs — lives in
++`.superpowers/sdd/2026-08-20-phase-1-foundation/`. **That directory is gitignored and exists
++only on the machine that built it.** `progress.md` is the file to read first; it ends with the
++current pause state and the carry-forward rulings for Tasks 11–16.
++
++Known outstanding at the pause, none of them blocking Task 11:
++
++- Task 10's fourth fix round has not itself been reviewed. Recommendation on file: fold it into
++  the whole-branch review rather than spend a fifth round.
++- A short list of deferred residuals (Redis `EVALSHA`, `maxmemory-policy`, `pnpm format:check`
++  not wired into CI, dead `packages/config/tsconfig/*` presets, a missing root `dev` script) is
++  recorded in the ledger and assigned to Task 14 or Task 16.
++
+ ### Phase 2 — Identity
+ Registration, email verification, login/logout, Argon2id, sessions, CSRF, password reset,
+ TOTP MFA with recovery codes, organisations, memberships, system roles and permissions,
+diff --git a/.claude/security/abuse-prevention.md b/.claude/security/abuse-prevention.md
+index 21384ed..3e2db4a 100644
+--- a/.claude/security/abuse-prevention.md
++++ b/.claude/security/abuse-prevention.md
+@@ -54,8 +54,17 @@ control is commonly built wrong:
+   `trust proxy` disabled, so it is the socket's peer address. If the header were trusted,
+   rotating it would mint a fresh bucket per request and per-IP limiting would be decorative.
+   Putting a load balancer in front of this API therefore requires more than enabling
+-  `trust proxy`: the deployment must also guarantee the proxy **overwrites** the header rather
+-  than appending to it, or the bypass returns through the front door.
++  `trust proxy`. The deployment must also guarantee that the proxy **overwrites** the header
++  rather than appending to it, and that it writes a **bare canonical address with no port** — a
++  proxy that appends `:port`, as some do, gives every connection its own bucket and makes
++  per-IP limiting decorative again.
++- **The per-IP unit is an address for IPv4 and a /64 for IPv6.** A single host is routinely
++  delegated a whole /64 — 1.8×10^19 addresses — so bucketing per address would make every
++  per-IP figure in the table free to bypass for anyone with a v6 allocation, including the
++  resend bound above. The cost of the /64 is real and worth knowing before someone debugs it:
++  neighbours behind a **shared** /64, which some mobile carriers and some hosting providers hand
++  out, share a bucket and can exhaust each other's. That is the same trade IPv4 NAT already
++  forces, and the other side of it is no bound at all.
+ - **The per-account rows are keyed off the request body, not an authenticated principal.**
+   Login, password reset and email verification resend are unauthenticated by definition — a
+   failed login carries no principal, and "5 / 15 min per account" means the account being
+@@ -63,8 +72,10 @@ control is commonly built wrong:
+   also carry a per-IP scope that *does* resolve, the miss would be skipped in silence: a route
+   that refuses at the IP limit, advertises that limit in its headers, and never applies the
+   control that actually stops credential stuffing. A declared scope that resolves to nothing on
+-  a fail-closed class now logs at `warn` naming the scope, so the next one is loud rather than
+-  invisible. The body value is hashed before it becomes
++  a fail-closed class logs at `warn` naming the scope — **once per class and scope per process**,
++  not on every occurrence, because a client sending a body without the field is ordinary traffic
++  anyone can generate, and a line per request would bury the wiring defect the warning exists to
++  surface. The body value is hashed before it becomes
+   part of a key, so an email address never lands in Redis in plaintext.
+ - **A refusal stops the evaluation.** Scopes are consumed in order and the first refusal ends
+   it. Otherwise a request already being rejected would still be charged against every remaining
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 3b1550b..a1a6cfb 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -37,8 +37,29 @@ jobs:
+       - name: Unit tests
+         run: pnpm test
+ 
++      # The integration suites are the only gate that proves the tenant-isolation
++      # layer, the storage adapter and the API pipeline actually work against
++      # real services rather than mocks — so CI has to stand the same stack up
++      # that a developer runs. `.env.example` holds local-safe placeholders and
++      # is the same file the setup docs tell a developer to copy; using it here
++      # means drift between the two is caught by a red build rather than by the
++      # next person to clone the repo.
++      #
++      # `minio-init` is a one-shot that creates the buckets and exits, so it is
++      # excluded from `--wait` (which waits for services to stay up) and run to
++      # completion separately.
++      - name: Start the local stack
++        run: |
++          cp .env.example .env
++          docker compose up -d --wait postgres redis minio mailpit
++          docker compose run --rm minio-init
++
+       - name: Integration tests
+         run: pnpm test:integration
+ 
++      - name: Stack logs on failure
++        if: failure()
++        run: docker compose logs --no-color --tail=100
++
+       - name: Build
+         run: pnpm build
+diff --git a/apps/api/src/common/guards/rate-limit.guard.spec.ts b/apps/api/src/common/guards/rate-limit.guard.spec.ts
+index e6664b2..b660579 100644
+--- a/apps/api/src/common/guards/rate-limit.guard.spec.ts
++++ b/apps/api/src/common/guards/rate-limit.guard.spec.ts
+@@ -1,5 +1,10 @@
+ import { describe, expect, it } from 'vitest';
+-import { normaliseAccountIdentifier, normaliseIp, resolveIdentifier } from './rate-limit.guard.js';
++import {
++  normaliseAccountIdentifier,
++  normaliseIp,
++  RateLimitGuard,
++  resolveIdentifier,
++} from './rate-limit.guard.js';
+ import { RATE_LIMIT_CLASSES } from './rate-limit.config.js';
+ 
+ describe('normaliseIp', () => {
+@@ -162,11 +167,20 @@ describe('normaliseIp — IPv6 is bucketed by /64', () => {
+   it('still treats loopback and mapped IPv4 the way the rest of the suite expects', () => {
+     expect(normaliseIp('::ffff:127.0.0.1')).toBe('127.0.0.1');
+     expect(normaliseIp('127.0.0.1')).toBe('127.0.0.1');
+-    expect(normaliseIp('::1')).toBe(normaliseIp('::1'));
++    // Not `toBe(normaliseIp('::1'))` — comparing a call to itself is a
++    // tautology that passes no matter what the function does. Pin the shape.
++    expect(normaliseIp('::1')).toBe('0:0:0:0::/64');
+   });
+ 
+-  it('ignores a zone index, which is local to the host and not part of identity', () => {
+-    expect(normaliseIp('fe80::1%eth0')).toBe(normaliseIp('fe80::1%eth1'));
++  it('buckets a zone-bearing address with its zoneless twin', () => {
++    // A zone index is host-local and not part of identity. This holds because
++    // the zone attaches to the LAST hextet and the /64 keeps the first four —
++    // it is a property of the bucketing, not of a strip somewhere. The old
++    // version compared two zoned addresses to each other, which passed with
++    // the strip deleted; this compares against the zoneless form and against
++    // the key, so it constrains the outcome that matters.
++    expect(normaliseIp('fe80::1%eth0')).toBe(normaliseIp('fe80::1'));
++    expect(normaliseIp('fe80::1%eth0')).not.toContain('%');
+   });
+ });
+ 
+@@ -187,3 +201,61 @@ describe('normaliseAccountIdentifier — the form is pinned, not just its presen
+     expect(normaliseAccountIdentifier('a\u200bb@example.com')).not.toBe('ab@example.com');
+   });
+ });
++
++describe('the unresolvable-scope warning is suppressed per scope, not per class', () => {
++  /** Drives the guard directly: a real socket always has a peer address, so the
++   *  per-IP scope cannot be made unresolvable over HTTP — but a wiring defect
++   *  can, which is the case this warning exists for. */
++  function harness() {
++    const warned: string[][] = [];
++    const logger = {
++      warn: (bindings: { unresolvedScopes?: string[] }) => {
++        if (bindings.unresolvedScopes !== undefined) warned.push(bindings.unresolvedScopes);
++      },
++      debug: () => undefined,
++    };
++    const reflector = {
++      get: () => undefined,
++      getAllAndOverride: (key: string) => (key === 'sentinel:rate-limit' ? 'login' : undefined),
++    };
++    // One allowed decision, so the guard reaches the reporting branch.
++    const redis = { eval: () => Promise.resolve([1, 1, '-1']) };
++    const guard = new RateLimitGuard(reflector as never, redis as never, logger as never);
++
++    const run = (request: Record<string, unknown>): Promise<boolean> =>
++      guard.canActivate({
++        getType: () => 'http',
++        getHandler: () => () => undefined,
++        getClass: () => class {},
++        switchToHttp: () => ({
++          getRequest: () => request,
++          getResponse: () => ({ setHeader: () => undefined }),
++        }),
++      } as never);
++
++    return { run, warned };
++  }
++
++  it('reports a second scope even after the first has been reported', async () => {
++    // Keyed by class alone, the first miss burns the class's only warning — and
++    // on `login` that first miss is free for any unauthenticated caller to
++    // trigger by posting a body with no `email`, within seconds of boot. A
++    // genuine wiring defect on the other scope would then never be reported for
++    // the life of the process, which is the opposite of the point.
++    const { run, warned } = harness();
++
++    await run({ ip: '203.0.113.1', body: {} }); // perPrincipal unresolvable
++    await run({ body: { email: 'a@example.com' } }); // perIp unresolvable
++
++    expect(warned.flat()).toContain('perPrincipal');
++    expect(warned.flat()).toContain('perIp');
++  });
++
++  it('still does not repeat a scope it has already reported', async () => {
++    const { run, warned } = harness();
++
++    for (let i = 0; i < 5; i += 1) await run({ ip: '203.0.113.1', body: {} });
++
++    expect(warned.flat().filter((scope) => scope === 'perPrincipal')).toHaveLength(1);
++  });
++});
+diff --git a/apps/api/src/common/guards/rate-limit.guard.ts b/apps/api/src/common/guards/rate-limit.guard.ts
+index 4ca5f3c..958358f 100644
+--- a/apps/api/src/common/guards/rate-limit.guard.ts
++++ b/apps/api/src/common/guards/rate-limit.guard.ts
+@@ -56,8 +56,11 @@ export function normaliseIp(address: string): string {
+   // like "one client". A shared /64 (some mobile carriers, some hosting) means
+   // neighbours share a bucket; that is the same trade IPv4 NAT already forces,
+   // and the wrong side of it is unbounded.
+-  const zoneless = lower.split('%')[0] ?? lower;
+-  return `${expandIpv6Prefix(zoneless)}::/64`;
++  // No zone-index strip. A zone (`%eth0`) is only ever attached to the last
++  // hextet, and the /64 slice below keeps the first four — so it can never
++  // reach the bucket key. The strip that used to be here was unreachable, and
++  // the test that claimed to cover it passed with the line deleted.
++  return `${expandIpv6Prefix(lower)}::/64`;
+ }
+ 
+ /** The first four hextets of an IPv6 address, `::`-expansion included. */
+@@ -200,8 +203,21 @@ export class RateLimitGuard implements CanActivate {
+    */
+   private backendDown = false;
+ 
+-  /** Classes already warned about an unresolvable scope; see the warn below. */
+-  private readonly unresolvedWarned = new Set<RateLimitClass>();
++  /**
++   * `class:scope` pairs already warned about; see the warn below.
++   *
++   * Keyed by the pair, not by the class. Keying by class alone meant the first
++   * unresolvable scope burned the class's only warning — and on `login`,
++   * `passwordReset` and `emailVerificationResend` that first miss is free for
++   * any unauthenticated caller to trigger within seconds of boot, by posting a
++   * body with no `email`. A genuine wiring defect on the *other* scope of the
++   * same class would then never be reported for the life of the process, which
++   * is precisely the signal this warning exists to carry.
++   *
++   * Bounded by the class table times three scopes, and every component comes
++   * from route metadata, so nothing a caller controls can grow it.
++   */
++  private readonly unresolvedWarned = new Set<string>();
+ 
+   constructor(
+     @Inject(Reflector) private readonly reflector: Reflector,
+@@ -319,13 +335,16 @@ export class RateLimitGuard implements CanActivate {
+       // ordinary traffic anyone can generate at will. Warning on every
+       // occurrence would let any unauthenticated caller flood the channel and
+       // bury the wiring defect underneath, which is the same anti-pattern the
+-      // fail-open branch below is written to avoid. The first occurrence
+-      // carries the whole signal: the class and the scope are all an operator
+-      // needs to find it.
+-      if (!this.unresolvedWarned.has(className)) {
+-        this.unresolvedWarned.add(className);
++      // fail-open branch below is written to avoid. The first occurrence of
++      // each class-and-scope pair carries the whole signal: which limit is not
++      // being applied, and on what, is all an operator needs to find it.
++      const unreported = unresolved.filter(
++        (scope) => !this.unresolvedWarned.has(`${className}:${scope}`),
++      );
++      if (unreported.length > 0) {
++        for (const scope of unreported) this.unresolvedWarned.add(`${className}:${scope}`);
+         this.logger.warn(
+-          { rateLimitClass: className, unresolvedScopes: unresolved },
++          { rateLimitClass: className, unresolvedScopes: unreported },
+           'Rate limit scope declared but not resolvable; that limit is not being applied',
+         );
+       }

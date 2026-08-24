@@ -1,0 +1,730 @@
+# Review package: c1ca471..HEAD
+
+## Commits
+784504c fix(ui): address review round 1 — Field integrity, filenames, docs
+
+## Files changed
+ .claude/ui-ux/components.md                        |  7 ++
+ .claude/ui-ux/design-system.md                     | 44 ++++++++---
+ eslint.config.js                                   |  9 ++-
+ packages/ui/src/cn.ts                              | 10 ++-
+ packages/ui/src/components/Alert.tsx               | 40 ++++++++++
+ .../ui/src/components/{badge.tsx => Badge.tsx}     |  2 +-
+ .../{button.spec.tsx => Button.spec.tsx}           |  2 +-
+ .../ui/src/components/{button.tsx => Button.tsx}   |  8 +-
+ packages/ui/src/components/{card.tsx => Card.tsx}  |  0
+ packages/ui/src/components/Field.spec.tsx          | 85 ++++++++++++++++++++++
+ .../ui/src/components/{field.tsx => Field.tsx}     | 45 +++++++-----
+ .../ui/src/components/{input.tsx => Input.tsx}     |  7 +-
+ .../ui/src/components/{label.tsx => Label.tsx}     |  0
+ .../src/components/{skeleton.tsx => Skeleton.tsx}  |  0
+ packages/ui/src/components/alert.tsx               | 32 --------
+ packages/ui/src/components/field.spec.tsx          | 43 -----------
+ packages/ui/src/index.ts                           | 16 ++--
+ vitest.workspace.ts                                | 28 +++++--
+ 18 files changed, 247 insertions(+), 131 deletions(-)
+
+## Diff
+diff --git a/.claude/ui-ux/components.md b/.claude/ui-ux/components.md
+index 6792990..82c40b4 100644
+--- a/.claude/ui-ux/components.md
++++ b/.claude/ui-ux/components.md
+@@ -84,10 +84,17 @@ and because people need the numbers to paste into a report.
+ 1. **Every interactive component supports keyboard operation.** No exceptions.
+ 2. **Every data-bound component handles loading, empty, and error.** A component that assumes
+    data exists is incomplete.
+ 3. **No raw hex, no arbitrary spacing.** Tokens only, enforced by lint.
+ 4. **No `dangerouslySetInnerHTML`** outside the reviewed markdown renderer.
+ 5. **Domain components do not fetch.** If a component needs data, its parent supplies it.
+ 6. Every primitive and pattern has a Storybook entry covering its states, which doubles as the
+    accessibility and visual regression target.
+ 7. `alert()`, `confirm()`, and `prompt()` are banned. Product interactions use `ConfirmDialog`
+    and `Toast`.
++8. **Every component file is `PascalCase.tsx`**, per
++   [`coding-standards.md`](../development/coding-standards.md). The shadcn CLI generates
++   lowercase filenames (`button.tsx`, `dropdown-menu.tsx`) — rename on generation, before the
++   file is ever committed. `packages/ui`'s eight primitives (Task 12) are the precedent: the
++   brief that specified them listed lowercase names, and they were renamed to match this rule
++   rather than left as the exception. A repo half in each convention is worse than either
++   convention on its own.
+diff --git a/.claude/ui-ux/design-system.md b/.claude/ui-ux/design-system.md
+index 839aa1a..834ba53 100644
+--- a/.claude/ui-ux/design-system.md
++++ b/.claude/ui-ux/design-system.md
+@@ -1,14 +1,17 @@
+ # Design system
+ 
+-> **Status: Direction defined. Not Implemented.** Tokens and primitives are built in
+-> Phase 1; components land alongside the features that need them.
++> **Status: Partially Implemented.** Tokens (`packages/ui/src/tokens.css`) and eight base
++> primitives — Button, Input, Label, Field, Card, Alert, Badge, Skeleton — shipped in
++> `packages/ui` (Task 12). The full primitive/pattern/domain-component inventory in
++> [`components.md`](components.md) is Not Implemented; those land alongside the features
++> that need them.
+ 
+ ## 1. Design thesis
+ 
+ **The interface is quiet so the findings can be loud.**
+ 
+ Marcus spends his working day in a triage queue. Priya spends hers writing up evidence.
+ Neither needs an interface with opinions. In a findings table, the single most important
+ signal is severity — and severity is communicated by colour. If the chrome around it is also
+ saturated, severity stops meaning anything, and the user loses the one visual channel that
+ was doing real work.
+@@ -153,28 +156,49 @@ There is exactly one ambient animation in the product: the scan-progress indicat
+ pulses while a scan is genuinely running and stops the instant the stream reports otherwise.
+ It is driven by real SSE events — **never by a timer**. A progress animation that continues
+ after the backend has stopped reporting is the interface lying about system state, and in a
+ security tool that is a defect, not a polish issue.
+ 
+ `prefers-reduced-motion: reduce` removes all transitions and replaces the progress pulse with
+ a static determinate bar.
+ 
+ ## 7. Tokens
+ 
+-Tokens are CSS custom properties on `:root`, consumed through Tailwind theme extension. Light
+-is defined on bare `:root`; dark is redefined under both `@media (prefers-color-scheme: dark)`
+-guarded as `:root:not([data-theme="light"])` **and** `:root[data-theme="dark"]`, so the
+-explicit toggle wins in both directions and the system default works without one.
+-
+-**No component may use a raw hex value.** A lint rule enforces it. A hardcoded colour is a
+-colour that will be wrong in dark mode, and dark mode is not optional for a tool people use at
+-2am during an incident.
++Tokens are CSS custom properties on `:root`, consumed through Tailwind **arbitrary-value**
++utilities that reference the custom property directly — `bg-[var(--color-surface)]`,
++`text-[length:var(--text-body)]`, `rounded-[var(--radius-control)]`. `packages/ui` ships no
++`@theme` block, so named utilities like `bg-surface` or `text-body` do not exist and will not
++resolve; a `:root` custom property alone does not generate one in Tailwind v4. Anyone building
++an `@theme` mapping later must generate it from this file, not maintain a second copy of the
++token list by hand. Light is defined on bare `:root`; dark is redefined under both
++`@media (prefers-color-scheme: dark)` guarded as `:root:not([data-theme="light"])` **and**
++`:root[data-theme="dark"]`, so the explicit toggle wins in both directions and the system
++default works without one.
++
++**No component may use a raw hex value.** A lint rule enforces it, scoped to `packages/ui` and
++`apps/web`. A hardcoded colour is a colour that will be wrong in dark mode, and dark mode is
++not optional for a tool people use at 2am during an incident.
++
++**`--text-sm` collides with a Tailwind v4 built-in theme variable of the same name.**
++Tailwind's own default theme defines `--text-sm: 0.875rem` plus `--text-sm--line-height`
++inside `@layer theme`. Because this file's `:root` block is unlayered CSS following
++`@import 'tailwindcss'`, it wins the cascade over anything inside `@layer theme` regardless of
++source order — confirmed by compiling this file with `tailwindcss@4.3.3`'s own compiler.
++The practical effect: Tailwind's built-in `text-sm` utility silently takes this design
++system's `13px` for its font-size (since it reads `var(--text-sm)`), but keeps *Tailwind's*
++line-height ratio, not this file's `--leading-sm: 20px` — the two were never paired, because
++`--leading-sm` and `--text-sm--line-height` are different variable names. Do not use the bare
++`text-sm`/`leading-sm` utilities on this design system's typography; every primitive in
++`packages/ui` instead pairs `text-[length:var(--text-sm)]` with `leading-[var(--leading-sm)]`
++explicitly, and any new component should do the same. No other token in this file collides
++with a Tailwind v4 theme variable — checked the full `--color-*`, `--text-*`, `--radius-*`,
++and `--ease-*` namespaces in `tailwindcss@4.3.3/theme.css` against every token name here.
+ 
+ ## 8. Voice
+ 
+ Sentence case everywhere — never Title Case, never ALL CAPS outside the `text-micro` eyebrow.
+ 
+ Buttons name the outcome: "Start scan", "Generate report", "Revoke key" — never "Submit",
+ "OK", or "Confirm". The verb stays constant through the flow: the button that says "Start
+ scan" produces a toast that says "Scan started".
+ 
+ Errors state what happened and what to do, in the product's voice, without apologising:
+diff --git a/eslint.config.js b/eslint.config.js
+index 2e6a7b7..c9527d1 100644
+--- a/eslint.config.js
++++ b/eslint.config.js
+@@ -149,23 +149,26 @@ export default tseslint.config(
+     ],
+     rules: {
+       'no-restricted-imports': 'off',
+       '@typescript-eslint/no-non-null-assertion': 'off',
+       'no-restricted-properties': 'off',
+     },
+   },
+   // ui-ux/design-system.md §7 — "no component may use a raw hex value. A
+   // lint rule enforces it." Scoped to packages/ui now and written to also
+   // cover apps/web once Task 13 lands it, so a colour literal (in a class
+-  // string, an inline style, anywhere) has to route through a design token
+-  // instead — a hardcoded colour is a colour that's wrong in dark mode.
+-  // tokens.css itself is exempt: it's the one file where hex is the point.
++  // string, an inline style, anywhere in .ts/.tsx) has to route through a
++  // design token instead — a hardcoded colour is a colour that's wrong in
++  // dark mode. This rule only ever sees TypeScript/TSX: the `files` glob is
++  // `*.{ts,tsx}`, and ESLint does not lint CSS at all — tokens.css's hex
++  // values (the token definitions themselves) are outside its reach
++  // entirely, not "exempted" by anything written here.
+   {
+     files: ['packages/ui/**/*.{ts,tsx}', 'apps/web/**/*.{ts,tsx}'],
+     rules: {
+       'no-restricted-syntax': [
+         'error',
+         {
+           selector: 'Literal[value=/#[0-9a-fA-F]{3,8}\\b/]',
+           message:
+             'No raw hex colours — reference a design token custom property instead (e.g. bg-[var(--color-surface)]). See ui-ux/design-system.md §7.',
+         },
+diff --git a/packages/ui/src/cn.ts b/packages/ui/src/cn.ts
+index 7aefb38..ee3956c 100644
+--- a/packages/ui/src/cn.ts
++++ b/packages/ui/src/cn.ts
+@@ -1,9 +1,13 @@
+ /**
+  * Joins class name fragments, dropping anything falsy. No specificity
+- * merging (no tailwind-merge): callers append their own `className` last,
+- * so an override wins by CSS source order the same way it would with plain
+- * Tailwind classes anywhere else in the app.
++ * merging (no tailwind-merge): appending a caller's `className` last in the
++ * output *string* does not make it win. Two Tailwind utilities of equal
++ * specificity are resolved by their order in the compiled stylesheet, which
++ * the string's order has no influence over — a caller writing
++ * `<Button className="bg-[var(--color-danger)]">` to override the variant's
++ * own background may see no effect at all. Reach for `tailwind-merge` if
++ * that turns out to matter in practice.
+  */
+ export function cn(...classes: Array<string | false | null | undefined>): string {
+   return classes.filter((value): value is string => Boolean(value)).join(' ');
+ }
+diff --git a/packages/ui/src/components/Alert.tsx b/packages/ui/src/components/Alert.tsx
+new file mode 100644
+index 0000000..f37ba8d
+--- /dev/null
++++ b/packages/ui/src/components/Alert.tsx
+@@ -0,0 +1,40 @@
++import { forwardRef, type HTMLAttributes } from 'react';
++import { cn } from '../cn.js';
++
++export type AlertVariant = 'info' | 'success' | 'warning' | 'danger';
++
++export interface AlertProps extends HTMLAttributes<HTMLDivElement> {
++  variant?: AlertVariant;
++}
++
++const variantClasses: Record<AlertVariant, string> = {
++  info: 'border-[var(--color-border-strong)] text-[var(--color-text)]',
++  success: 'border-[var(--color-success)] text-[var(--color-success)]',
++  warning: 'border-[var(--color-warning)] text-[var(--color-warning)]',
++  danger: 'border-[var(--color-danger)] text-[var(--color-danger)]',
++};
++
++export const Alert = forwardRef<HTMLDivElement, AlertProps>(
++  ({ className, variant = 'info', role, ...props }, ref) => {
++    // 'alert' is the assertive live-region role — announced immediately,
++    // interrupting other speech. That's appropriate for `danger` (a failure,
++    // something the user needs to hear now) but not for the other variants,
++    // which should announce politely like any other status update. An
++    // explicit `role` prop always wins.
++    const resolvedRole = role ?? (variant === 'danger' ? 'alert' : 'status');
++    return (
++      <div
++        ref={ref}
++        role={resolvedRole}
++        className={cn(
++          'flex items-start gap-2 rounded-[var(--radius-control)] border bg-[var(--color-surface-raised)]',
++          'px-3 py-2 text-[length:var(--text-sm)] leading-[var(--leading-sm)]',
++          variantClasses[variant],
++          className,
++        )}
++        {...props}
++      />
++    );
++  },
++);
++Alert.displayName = 'Alert';
+diff --git a/packages/ui/src/components/badge.tsx b/packages/ui/src/components/Badge.tsx
+similarity index 93%
+rename from packages/ui/src/components/badge.tsx
+rename to packages/ui/src/components/Badge.tsx
+index e163548..acc1c11 100644
+--- a/packages/ui/src/components/badge.tsx
++++ b/packages/ui/src/components/Badge.tsx
+@@ -18,19 +18,19 @@ const variantClasses: Record<BadgeVariant, string> = {
+   low: 'border-transparent bg-[var(--color-severity-low-surface)] text-[var(--color-severity-low)]',
+   info: 'border-transparent bg-[var(--color-severity-info-surface)] text-[var(--color-severity-info)]',
+ };
+ 
+ export const Badge = forwardRef<HTMLSpanElement, BadgeProps>(
+   ({ className, variant = 'neutral', ...props }, ref) => (
+     <span
+       ref={ref}
+       className={cn(
+         'inline-flex items-center gap-1 rounded-[var(--radius-control)] border px-2 py-0.5',
+-        'text-[length:var(--text-caption)] font-medium',
++        'text-[length:var(--text-caption)] leading-[var(--leading-caption)] font-medium',
+         variantClasses[variant],
+         className,
+       )}
+       {...props}
+     />
+   ),
+ );
+ Badge.displayName = 'Badge';
+diff --git a/packages/ui/src/components/button.spec.tsx b/packages/ui/src/components/Button.spec.tsx
+similarity index 97%
+rename from packages/ui/src/components/button.spec.tsx
+rename to packages/ui/src/components/Button.spec.tsx
+index 2e794c3..785fe71 100644
+--- a/packages/ui/src/components/button.spec.tsx
++++ b/packages/ui/src/components/Button.spec.tsx
+@@ -1,19 +1,19 @@
+ import { createRef } from 'react';
+ import { render, screen } from '@testing-library/react';
+ // A default import types as the whole module namespace here (nodenext +
+ // esModuleInterop, against this package's conditional exports map, which
+ // has no explicit "import" condition) — verified empirically. The named
+ // export is the same object and types correctly.
+ import { userEvent } from '@testing-library/user-event';
+ import { describe, expect, it, vi } from 'vitest';
+-import { Button } from './button.js';
++import { Button } from './Button.js';
+ 
+ describe('Button', () => {
+   it('renders its children as the accessible name', () => {
+     render(<Button>Start scan</Button>);
+     expect(screen.getByRole('button', { name: 'Start scan' })).toBeInTheDocument();
+   });
+ 
+   it('does not fire onClick while disabled', async () => {
+     const onClick = vi.fn();
+     render(
+diff --git a/packages/ui/src/components/button.tsx b/packages/ui/src/components/Button.tsx
+similarity index 86%
+rename from packages/ui/src/components/button.tsx
+rename to packages/ui/src/components/Button.tsx
+index 8566aee..9823a8c 100644
+--- a/packages/ui/src/components/button.tsx
++++ b/packages/ui/src/components/Button.tsx
+@@ -16,22 +16,26 @@ const variantClasses: Record<ButtonVariant, string> = {
+     'border border-transparent bg-[var(--color-accent)] text-[var(--color-surface)] hover:opacity-90',
+   secondary:
+     'border border-[var(--color-border-strong)] bg-[var(--color-surface)] text-[var(--color-text)] hover:bg-[var(--color-surface-raised)]',
+   ghost:
+     'border border-transparent bg-transparent text-[var(--color-text)] hover:bg-[var(--color-surface-raised)]',
+   danger:
+     'border border-transparent bg-[var(--color-danger)] text-[var(--color-surface)] hover:opacity-90',
+ };
+ 
+ const sizeClasses: Record<ButtonSize, string> = {
+-  sm: 'h-[var(--row-height-dense)] px-3 text-[length:var(--text-sm)]',
+-  md: 'h-[var(--row-height-compact)] px-4 text-[length:var(--text-body)]',
++  // --text-sm collides with a Tailwind v4 built-in theme variable of the
++  // same name (see ui-ux/design-system.md §7) — reference it through this
++  // arbitrary-value pair, never through the bare `text-sm`/`leading-sm`
++  // utilities, which follow Tailwind's own 0.875rem/line-height default.
++  sm: 'h-[var(--row-height-dense)] px-3 text-[length:var(--text-sm)] leading-[var(--leading-sm)]',
++  md: 'h-[var(--row-height-compact)] px-4 text-[length:var(--text-body)] leading-[var(--leading-body)]',
+ };
+ 
+ /**
+  * Buttons name the outcome: "Start scan", "Generate report", "Revoke key" —
+  * never "Submit", "OK", or "Confirm". The verb stays constant through the
+  * flow, so the button that says "Start scan" produces a toast that says
+  * "Scan started". See ui-ux/design-system.md §8.
+  */
+ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
+   (
+diff --git a/packages/ui/src/components/card.tsx b/packages/ui/src/components/Card.tsx
+similarity index 100%
+rename from packages/ui/src/components/card.tsx
+rename to packages/ui/src/components/Card.tsx
+diff --git a/packages/ui/src/components/Field.spec.tsx b/packages/ui/src/components/Field.spec.tsx
+new file mode 100644
+index 0000000..b29efac
+--- /dev/null
++++ b/packages/ui/src/components/Field.spec.tsx
+@@ -0,0 +1,85 @@
++import { render, screen } from '@testing-library/react';
++import { describe, expect, it } from 'vitest';
++import { Field } from './Field.js';
++import { Input } from './Input.js';
++
++describe('Field', () => {
++  it('associates the label with the control', () => {
++    render(
++      <Field label="Organisation name">
++        <input id="name" />
++      </Field>,
++    );
++    expect(screen.getByLabelText('Organisation name')).toBeInTheDocument();
++  });
++
++  it('ties the error message to the control with aria-describedby', () => {
++    render(
++      <Field label="Email" error="Enter a valid email address.">
++        <input id="email" />
++      </Field>,
++    );
++    const input = screen.getByLabelText('Email');
++    const describedBy = input.getAttribute('aria-describedby') ?? '';
++    expect(document.getElementById(describedBy)?.textContent).toBe('Enter a valid email address.');
++  });
++
++  it('marks the control invalid when there is an error', () => {
++    render(
++      <Field label="Email" error="Bad.">
++        <input id="email" />
++      </Field>,
++    );
++    expect(screen.getByLabelText('Email')).toHaveAttribute('aria-invalid', 'true');
++  });
++
++  it('does not mark the control invalid without an error', () => {
++    render(
++      <Field label="Email">
++        <input id="email" />
++      </Field>,
++    );
++    expect(screen.getByLabelText('Email')).not.toHaveAttribute('aria-invalid', 'true');
++  });
++
++  it("preserves a control's own aria-describedby, merging in the description", () => {
++    // The referenced element deliberately lives outside Field's children —
++    // Field only ever receives one child, so this exercises the realistic
++    // case of a control that already points at a description elsewhere in
++    // the layout.
++    render(
++      <div>
++        <Field label="Password" description="At least 12 characters.">
++          <input id="password" aria-describedby="pw-rules" />
++        </Field>
++        <span id="pw-rules">Mix of upper and lower case.</span>
++      </div>,
++    );
++    const describedBy = screen.getByLabelText('Password').getAttribute('aria-describedby') ?? '';
++    const ids = describedBy.split(' ');
++    expect(ids).toContain('pw-rules');
++    expect(document.getElementById('pw-rules')?.textContent).toBe('Mix of upper and lower case.');
++    const descriptionText = ids
++      .map((id) => document.getElementById(id)?.textContent)
++      .find((text) => text === 'At least 12 characters.');
++    expect(descriptionText).toBe('At least 12 characters.');
++  });
++
++  it("leaves a control's own aria-invalid alone when there is no error", () => {
++    render(
++      <Field label="Email">
++        <input id="email" aria-invalid="true" />
++      </Field>,
++    );
++    expect(screen.getByLabelText('Email')).toHaveAttribute('aria-invalid', 'true');
++  });
++
++  it('generates an id for a control that supplies none, still associating the label', () => {
++    render(
++      <Field label="Organisation name">
++        <Input />
++      </Field>,
++    );
++    expect(screen.getByLabelText('Organisation name')).toBeInTheDocument();
++  });
++});
+diff --git a/packages/ui/src/components/field.tsx b/packages/ui/src/components/Field.tsx
+similarity index 55%
+rename from packages/ui/src/components/field.tsx
+rename to packages/ui/src/components/Field.tsx
+index cab3d84..40b4001 100644
+--- a/packages/ui/src/components/field.tsx
++++ b/packages/ui/src/components/Field.tsx
+@@ -1,20 +1,13 @@
+-import {
+-  cloneElement,
+-  forwardRef,
+-  isValidElement,
+-  useId,
+-  type HTMLAttributes,
+-  type ReactElement,
+-} from 'react';
++import { cloneElement, forwardRef, useId, type HTMLAttributes, type ReactElement } from 'react';
+ import { cn } from '../cn.js';
+-import { Label } from './label.js';
++import { Label } from './Label.js';
+ 
+ interface ControllableProps {
+   id?: string | undefined;
+   'aria-describedby'?: string | undefined;
+   'aria-invalid'?: boolean | 'true' | 'false' | undefined;
+ }
+ 
+ export interface FieldProps extends Omit<HTMLAttributes<HTMLDivElement>, 'children'> {
+   label: string;
+   description?: string;
+@@ -28,46 +21,60 @@ export interface FieldProps extends Omit<HTMLAttributes<HTMLDivElement>, 'childr
+  * together with `aria-describedby` and `aria-invalid`. A form error not
+  * programmatically tied to its input is invisible to a screen reader, which
+  * is why this is a component rather than a convention.
+  */
+ export const Field = forwardRef<HTMLDivElement, FieldProps>(
+   ({ label, description, error, children, className, ...rest }, ref) => {
+     const generatedId = useId();
+     const controlId = children.props.id ?? generatedId;
+     const descriptionId = description ? `${controlId}-description` : undefined;
+     const errorId = error ? `${controlId}-error` : undefined;
+-    const describedBy = [descriptionId, errorId].filter(Boolean).join(' ') || undefined;
+ 
+-    const control = isValidElement<ControllableProps>(children)
+-      ? cloneElement(children, {
+-          id: controlId,
+-          'aria-describedby': describedBy,
+-          'aria-invalid': error ? true : undefined,
+-        })
+-      : children;
++    // Merge with whatever the child already declares. cloneElement replaces
++    // a prop outright rather than adding to it, so overwriting
++    // aria-describedby here would silently strip an association the caller
++    // already set up on their own control.
++    const describedBy =
++      [children.props['aria-describedby'], descriptionId, errorId].filter(Boolean).join(' ') ||
++      undefined;
++
++    const overrides: Partial<ControllableProps> = {
++      id: controlId,
++      'aria-describedby': describedBy,
++    };
++    // Only set aria-invalid when there's an error to report. cloneElement
++    // with an explicit `undefined` overwrites — it does not "leave alone" —
++    // whatever the child already had, so a control's own aria-invalid has to
++    // be left out of `overrides` entirely rather than cleared to undefined
++    // here.
++    if (error) {
++      overrides['aria-invalid'] = true;
++    }
++
++    const control = cloneElement(children, overrides);
+ 
+     return (
+       <div ref={ref} className={cn('flex flex-col gap-1.5', className)} {...rest}>
+         <Label htmlFor={controlId}>{label}</Label>
+         {control}
+         {description ? (
+           <p
+             id={descriptionId}
+-            className="text-[length:var(--text-caption)] text-[var(--color-text-muted)]"
++            className="text-[length:var(--text-caption)] leading-[var(--leading-caption)] text-[var(--color-text-muted)]"
+           >
+             {description}
+           </p>
+         ) : null}
+         {error ? (
+           <p
+             id={errorId}
+             role="alert"
+-            className="text-[length:var(--text-caption)] text-[var(--color-danger)]"
++            className="text-[length:var(--text-caption)] leading-[var(--leading-caption)] text-[var(--color-danger)]"
+           >
+             {error}
+           </p>
+         ) : null}
+       </div>
+     );
+   },
+ );
+ Field.displayName = 'Field';
+diff --git a/packages/ui/src/components/input.tsx b/packages/ui/src/components/Input.tsx
+similarity index 60%
+rename from packages/ui/src/components/input.tsx
+rename to packages/ui/src/components/Input.tsx
+index 6756232..e61c461 100644
+--- a/packages/ui/src/components/input.tsx
++++ b/packages/ui/src/components/Input.tsx
+@@ -1,21 +1,24 @@
+ import { forwardRef, type InputHTMLAttributes } from 'react';
+ import { cn } from '../cn.js';
+ 
+ export type InputProps = InputHTMLAttributes<HTMLInputElement>;
+ 
+ export const Input = forwardRef<HTMLInputElement, InputProps>(({ className, ...props }, ref) => (
+   <input
+     ref={ref}
+     className={cn(
+-      'w-full rounded-[var(--radius-control)] border border-[var(--color-border-strong)]',
+-      'bg-[var(--color-surface)] px-3 text-[length:var(--text-body)] text-[var(--color-text)]',
++      // h-[var(--row-height-compact)] matches Button's md size so an Input
++      // and a Button placed side by side (a search bar, a form row) line up.
++      'h-[var(--row-height-compact)] w-full rounded-[var(--radius-control)]',
++      'border border-[var(--color-border-strong)] bg-[var(--color-surface)] px-3',
++      'text-[length:var(--text-body)] leading-[var(--leading-body)] text-[var(--color-text)]',
+       'placeholder:text-[var(--color-text-subtle)]',
+       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]',
+       'disabled:cursor-not-allowed disabled:opacity-50',
+       'aria-invalid:border-[var(--color-danger)]',
+       className,
+     )}
+     {...props}
+   />
+ ));
+ Input.displayName = 'Input';
+diff --git a/packages/ui/src/components/label.tsx b/packages/ui/src/components/Label.tsx
+similarity index 100%
+rename from packages/ui/src/components/label.tsx
+rename to packages/ui/src/components/Label.tsx
+diff --git a/packages/ui/src/components/skeleton.tsx b/packages/ui/src/components/Skeleton.tsx
+similarity index 100%
+rename from packages/ui/src/components/skeleton.tsx
+rename to packages/ui/src/components/Skeleton.tsx
+diff --git a/packages/ui/src/components/alert.tsx b/packages/ui/src/components/alert.tsx
+deleted file mode 100644
+index aa6a928..0000000
+--- a/packages/ui/src/components/alert.tsx
++++ /dev/null
+@@ -1,32 +0,0 @@
+-import { forwardRef, type HTMLAttributes } from 'react';
+-import { cn } from '../cn.js';
+-
+-export type AlertVariant = 'info' | 'success' | 'warning' | 'danger';
+-
+-export interface AlertProps extends HTMLAttributes<HTMLDivElement> {
+-  variant?: AlertVariant;
+-}
+-
+-const variantClasses: Record<AlertVariant, string> = {
+-  info: 'border-[var(--color-border-strong)] text-[var(--color-text)]',
+-  success: 'border-[var(--color-success)] text-[var(--color-success)]',
+-  warning: 'border-[var(--color-warning)] text-[var(--color-warning)]',
+-  danger: 'border-[var(--color-danger)] text-[var(--color-danger)]',
+-};
+-
+-export const Alert = forwardRef<HTMLDivElement, AlertProps>(
+-  ({ className, variant = 'info', role = 'status', ...props }, ref) => (
+-    <div
+-      ref={ref}
+-      role={role}
+-      className={cn(
+-        'flex items-start gap-2 rounded-[var(--radius-control)] border bg-[var(--color-surface-raised)]',
+-        'px-3 py-2 text-[length:var(--text-sm)]',
+-        variantClasses[variant],
+-        className,
+-      )}
+-      {...props}
+-    />
+-  ),
+-);
+-Alert.displayName = 'Alert';
+diff --git a/packages/ui/src/components/field.spec.tsx b/packages/ui/src/components/field.spec.tsx
+deleted file mode 100644
+index c519248..0000000
+--- a/packages/ui/src/components/field.spec.tsx
++++ /dev/null
+@@ -1,43 +0,0 @@
+-import { render, screen } from '@testing-library/react';
+-import { describe, expect, it } from 'vitest';
+-import { Field } from './field.js';
+-
+-describe('Field', () => {
+-  it('associates the label with the control', () => {
+-    render(
+-      <Field label="Organisation name">
+-        <input id="name" />
+-      </Field>,
+-    );
+-    expect(screen.getByLabelText('Organisation name')).toBeInTheDocument();
+-  });
+-
+-  it('ties the error message to the control with aria-describedby', () => {
+-    render(
+-      <Field label="Email" error="Enter a valid email address.">
+-        <input id="email" />
+-      </Field>,
+-    );
+-    const input = screen.getByLabelText('Email');
+-    const describedBy = input.getAttribute('aria-describedby') ?? '';
+-    expect(document.getElementById(describedBy)?.textContent).toBe('Enter a valid email address.');
+-  });
+-
+-  it('marks the control invalid when there is an error', () => {
+-    render(
+-      <Field label="Email" error="Bad.">
+-        <input id="email" />
+-      </Field>,
+-    );
+-    expect(screen.getByLabelText('Email')).toHaveAttribute('aria-invalid', 'true');
+-  });
+-
+-  it('does not mark the control invalid without an error', () => {
+-    render(
+-      <Field label="Email">
+-        <input id="email" />
+-      </Field>,
+-    );
+-    expect(screen.getByLabelText('Email')).not.toHaveAttribute('aria-invalid', 'true');
+-  });
+-});
+diff --git a/packages/ui/src/index.ts b/packages/ui/src/index.ts
+index 02d1d61..c72c9ee 100644
+--- a/packages/ui/src/index.ts
++++ b/packages/ui/src/index.ts
+@@ -1,15 +1,15 @@
+ export { cn } from './cn.js';
+ 
+ export {
+   Button,
+   type ButtonProps,
+   type ButtonVariant,
+   type ButtonSize,
+-} from './components/button.js';
+-export { Input, type InputProps } from './components/input.js';
+-export { Label, type LabelProps } from './components/label.js';
+-export { Field, type FieldProps } from './components/field.js';
+-export { Card, type CardProps } from './components/card.js';
+-export { Alert, type AlertProps, type AlertVariant } from './components/alert.js';
+-export { Badge, type BadgeProps, type BadgeVariant } from './components/badge.js';
+-export { Skeleton, type SkeletonProps } from './components/skeleton.js';
++} from './components/Button.js';
++export { Input, type InputProps } from './components/Input.js';
++export { Label, type LabelProps } from './components/Label.js';
++export { Field, type FieldProps } from './components/Field.js';
++export { Card, type CardProps } from './components/Card.js';
++export { Alert, type AlertProps, type AlertVariant } from './components/Alert.js';
++export { Badge, type BadgeProps, type BadgeVariant } from './components/Badge.js';
++export { Skeleton, type SkeletonProps } from './components/Skeleton.js';
+diff --git a/vitest.workspace.ts b/vitest.workspace.ts
+index f68a554..1377288 100644
+--- a/vitest.workspace.ts
++++ b/vitest.workspace.ts
+@@ -14,27 +14,41 @@ export default defineWorkspace([
+     test: {
+       name: 'integration',
+       include: ['packages/*/src/**/*.integration.spec.ts', 'apps/*/src/**/*.integration.spec.ts'],
+       environment: 'node',
+       testTimeout: 120_000,
+       hookTimeout: 120_000,
+       fileParallelism: false,
+       passWithNoTests: true,
+     },
+   },
+-  // packages/ui's specs render React components and need a DOM (jsdom) plus
+-  // jest-dom's matchers — neither belongs in the 'unit' project above, whose
+-  // every other member is a plain Node package. A separate project keeps
++  // React specs render components and need a DOM (jsdom) plus jest-dom's
++  // matchers — neither belongs in the 'unit' project above, whose every
++  // other member is a plain Node package. A separate project keeps
+   // `environment: 'node'` as the default for everything else instead of
+-  // switching the whole 'unit' project to jsdom for one package's sake, and
+-  // keeps the jest-dom setup file (and packages/ui's devDependency on it)
+-  // from being loaded for packages that never installed it.
++  // switching the whole 'unit' project to jsdom.
++  //
++  // The glob covers packages/*/src and apps/*/src, not just packages/ui:
++  // the 'unit' project above only matches `*.spec.ts`, so a `.spec.tsx` file
++  // anywhere else (apps/web, once Task 13 lands it) would otherwise match no
++  // project at all, and root `pnpm test`'s `--passWithNoTests` would print
++  // green while silently executing zero of that package's tests — the exact
++  // failure this project exists to rule out for packages/ui (Task 12,
++  // Ruling 1). Verified this reaches apps/* too: a temporary
++  // apps/web/src/__probe__.spec.tsx matched this project and ran under
++  // jsdom with jest-dom's matcher available, resolved via this setupFiles
++  // path even though the spec's own directory (apps/web) had no
++  // @testing-library/jest-dom of its own — Node resolves the *setup file's*
++  // imports against packages/ui's node_modules, not the running spec's.
++  // A real apps/web spec that imports @testing-library/react directly will
++  // still need that package added as an apps/web devDependency; that's
++  // Task 13's to add when the app package exists.
+   {
+     test: {
+       name: 'ui',
+-      include: ['packages/ui/src/**/*.spec.tsx'],
++      include: ['packages/*/src/**/*.spec.tsx', 'apps/*/src/**/*.spec.tsx'],
+       environment: 'jsdom',
+       setupFiles: ['./packages/ui/src/test-setup.ts'],
+       passWithNoTests: true,
+     },
+   },
+ ]);

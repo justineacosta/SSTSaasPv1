@@ -3,9 +3,9 @@
 > **A dated record of what was said and decided at the time. Not a description of current state —
 > [`roadmap.md`](../../../../.claude/product/roadmap.md) is the only authority on that.**
 
-Phase 1's ledger lived in `.superpowers/sdd/2026-08-20-phase-1-foundation/`, which `.gitignore:81`
-excludes. Every ruling and review finding from its 16 tasks therefore exists only on the machine
-that built it. Phase 2's is tracked in git instead, by the operator's decision on 2026-08-24.
+Layout and the rules that govern every ledger are in [`../README.md`](../README.md). Phase 1's
+ledger was recovered out of gitignored `.superpowers/` and now sits beside this one at
+[`../phase-1/`](../phase-1/) — read its README for why, and for what it turned out to be missing.
 
 ## What lives here
 

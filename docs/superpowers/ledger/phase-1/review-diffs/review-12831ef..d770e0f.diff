@@ -1,0 +1,163 @@
+# Review package: 12831ef..HEAD
+
+## Commits
+d770e0f fix: declare Node ambient globals for root ESLint config files
+
+## Files changed
+ eslint.config.js | 10 +++++++++-
+ package.json     |  1 +
+ pnpm-lock.yaml   |  9 +++++++++
+ 3 files changed, 19 insertions(+), 1 deletion(-)
+
+## Diff
+diff --git a/eslint.config.js b/eslint.config.js
+index 95cac2a..18f1f8b 100644
+--- a/eslint.config.js
++++ b/eslint.config.js
+@@ -1,13 +1,14 @@
+ import js from '@eslint/js';
+ import tseslint from 'typescript-eslint';
+ import importPlugin from 'eslint-plugin-import';
++import globals from 'globals';
+ 
+ export default tseslint.config(
+   {
+     ignores: [
+       '**/dist/**',
+       '**/.next/**',
+       '**/.turbo/**',
+       '**/coverage/**',
+       'packages/db/generated/**',
+     ],
+@@ -50,24 +51,31 @@ export default tseslint.config(
+               message: 'Use the tenant-scoped client. See security/tenant-isolation.md.',
+             },
+           ],
+         },
+       ],
+     },
+   },
+   // Root config files (eslint.config.js, vitest.workspace.ts, and any other
+   // root *.config.js / *.config.mjs / *.config.ts) belong to no tsconfig
+   // project — type-aware rules cannot run on them. Deliberately not added to
+-  // a tsconfig; lint them type-unaware instead.
++  // a tsconfig; lint them type-unaware instead. Without an explicit tsconfig
++  // project, typescript-eslint never pulls in @types/node's ambient globals,
++  // so Node's ambient identifiers (process, console, __dirname, etc.) must be
++  // declared here or `no-undef` (from js.configs.recommended) misfires on
++  // legitimate references. This is why root config files like this one and
++  // a future apps/web/playwright.config.ts (Task 13) or a root-level config
++  // Task 12 may add need `globals.node`.
+   {
+     files: ['*.config.js', '*.config.mjs', '*.config.ts', 'vitest.workspace.ts'],
+     extends: [tseslint.configs.disableTypeChecked],
++    languageOptions: { globals: globals.node },
+     rules: js.configs.recommended.rules,
+   },
+   // packages/config is the one place allowed to touch process.env
+   {
+     files: ['packages/config/src/**/*.ts'],
+     rules: { 'no-restricted-properties': 'off' },
+   },
+   // seeds, migrations, and the tenant client itself may use the unscoped client
+   {
+     files: [
+diff --git a/package.json b/package.json
+index c631786..486f786 100644
+--- a/package.json
++++ b/package.json
+@@ -15,17 +15,18 @@
+     "test:integration": "vitest run --project integration --passWithNoTests",
+     "format": "prettier --write .",
+     "format:check": "prettier --check ."
+   },
+   "devDependencies": {
+     "@eslint/js": "^9.0.0",
+     "@types/node": "^22.0.0",
+     "eslint": "^9.0.0",
+     "eslint-import-resolver-typescript": "^4.0.0",
+     "eslint-plugin-import": "^2.31.0",
++    "globals": "^15.0.0",
+     "prettier": "^3.3.0",
+     "turbo": "^2.5.0",
+     "typescript": "^5.7.0",
+     "typescript-eslint": "^8.20.0",
+     "vitest": "^3.0.0"
+   }
+ }
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index beea516..2e4dcd6 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -16,20 +16,23 @@ importers:
+         version: 22.20.1
+       eslint:
+         specifier: ^9.0.0
+         version: 9.39.5
+       eslint-import-resolver-typescript:
+         specifier: ^4.0.0
+         version: 4.4.5(eslint-plugin-import@2.32.0)(eslint@9.39.5)
+       eslint-plugin-import:
+         specifier: ^2.31.0
+         version: 2.32.0(@typescript-eslint/parser@8.67.0(eslint@9.39.5)(typescript@5.9.3))(eslint-import-resolver-typescript@4.4.5)(eslint@9.39.5)
++      globals:
++        specifier: ^15.0.0
++        version: 15.15.0
+       prettier:
+         specifier: ^3.3.0
+         version: 3.9.6
+       turbo:
+         specifier: ^2.5.0
+         version: 2.10.11
+       typescript:
+         specifier: ^5.7.0
+         version: 5.9.3
+       typescript-eslint:
+@@ -1074,20 +1077,24 @@ packages:
+     resolution: {integrity: sha512-++QEw4DIY7WGoukz+/+A/8dGYPT9l9yIadnmSgZ8Rjr3YVSVDipQSO9CdnJo9ePqFqUUqh+wk9uIaoiAwsiPkA==}
+ 
+   glob-parent@6.0.2:
+     resolution: {integrity: sha512-XxwI8EOhVQgWp6iDL+3b0r86f4d6AX6zSU55HfB4ydCEuXLXc5FcYeOu+nnGftS4TEju/11rt4KJPTMgbfmv4A==}
+     engines: {node: '>=10.13.0'}
+ 
+   globals@14.0.0:
+     resolution: {integrity: sha512-oahGvuMGQlPw/ivIYBjVSrWAfWLBeku5tpPE2fOPLi+WHffIWbuh2tCjhyQhTBPMf5E9jDEH4FOmTYgYwbKwtQ==}
+     engines: {node: '>=18'}
+ 
++  globals@15.15.0:
++    resolution: {integrity: sha512-7ACyT3wmyp3I61S4fG682L0VA2RGD9otkqGJIwNUMF1SWUombIIk+af1unuDYgMm082aHYwD+mzJvv9Iu8dsgg==}
++    engines: {node: '>=18'}
++
+   globalthis@1.0.4:
+     resolution: {integrity: sha512-DpLKbNU4WylpxJykQujfCcwYWiV/Jhm50Goo0wrVILAv5jOr9d+H+UR3PhSCD2rCCEIg0uc+G+muBTwD54JhDQ==}
+     engines: {node: '>= 0.4'}
+ 
+   gopd@1.2.0:
+     resolution: {integrity: sha512-ZUKRh6/kUFoAiTAtTYPZJ3hw9wNxx+BIBOijnlG9PnrJsCcSjs1wyyD6vJpaYtgnzDrKYRSqf3OO6Rfa93xsRg==}
+     engines: {node: '>= 0.4'}
+ 
+   has-bigints@1.1.0:
+     resolution: {integrity: sha512-R3pbpkcIqv2Pm3dUwgjclDRVmWpTJW2DcMzcIhEXEx1oh/CEMObMm3KLmRJOdvhM7o4uQBnwr8pzRK2sJWIqfg==}
+@@ -2766,20 +2773,22 @@ snapshots:
+   get-tsconfig@4.14.3:
+     dependencies:
+       resolve-pkg-maps: 1.0.0
+ 
+   glob-parent@6.0.2:
+     dependencies:
+       is-glob: 4.0.3
+ 
+   globals@14.0.0: {}
+ 
++  globals@15.15.0: {}
++
+   globalthis@1.0.4:
+     dependencies:
+       define-properties: 1.2.1
+       gopd: 1.2.0
+ 
+   gopd@1.2.0: {}
+ 
+   has-bigints@1.1.0: {}
+ 
+   has-flag@4.0.0: {}

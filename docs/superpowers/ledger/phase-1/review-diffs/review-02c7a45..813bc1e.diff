@@ -1,0 +1,2513 @@
+# Review package: 02c7a45..HEAD
+
+## Commits
+813bc1e feat(api): boot-time route access assertion and generated OpenAPI
+
+## Files changed
+ .claude/architecture/backend.md                    |  64 +++-
+ .prettierignore                                    |   3 +
+ apps/api/openapi.json                              | 375 +++++++++++++++++++++
+ apps/api/package.json                              |   4 +-
+ apps/api/src/app-setup.ts                          |  47 ++-
+ apps/api/src/app.integration.spec.ts               |  29 +-
+ apps/api/src/app.module.ts                         |  19 +-
+ apps/api/src/common/access-assertion.spec.ts       | 171 ++++++++++
+ apps/api/src/common/access-assertion.ts            | 105 ++++++
+ .../api/src/common/decorators/openapi.decorator.ts |  57 ++++
+ apps/api/src/common/route-inventory.spec.ts        | 142 ++++++++
+ apps/api/src/common/route-inventory.ts             | 196 +++++++++++
+ apps/api/src/main.ts                               |  19 ++
+ apps/api/src/modules/health/health.contracts.ts    |  46 +++
+ apps/api/src/modules/health/health.controller.ts   |  36 ++
+ apps/api/src/openapi/cli.ts                        |  51 +++
+ apps/api/src/openapi/generate.integration.spec.ts  |  96 ++++++
+ apps/api/src/openapi/generate.spec.ts              | 160 +++++++++
+ apps/api/src/openapi/generate.ts                   | 144 ++++++++
+ apps/api/src/openapi/openapi.controller.ts         |  47 +++
+ apps/api/src/openapi/openapi.module.ts             |  11 +
+ apps/api/src/testing/build-app.ts                  |  43 +++
+ apps/api/src/testing/routing-app.ts                |  36 ++
+ apps/api/tsconfig.build.json                       |   4 +-
+ eslint.config.js                                   |  11 +-
+ pnpm-lock.yaml                                     |  13 +
+ 26 files changed, 1872 insertions(+), 57 deletions(-)
+
+## Diff
+diff --git a/.claude/architecture/backend.md b/.claude/architecture/backend.md
+index 511e984..140ff6c 100644
+--- a/.claude/architecture/backend.md
++++ b/.claude/architecture/backend.md
+@@ -1,16 +1,17 @@
+ # Backend architecture
+ 
+ > **Status: Partially Implemented (Phase 1).** The application bootstrap, the request-ID and
+ > security-header middleware, the Zod validation pipe, the global exception filter, the logging
+-> interceptor, and the `health` module are built and tested (`apps/api`). Every other module in
+-> §1 and every stage in §3 marked *Not Implemented* below is still Designed only.
++> interceptor, the boot-time route access assertion (§3), the generated OpenAPI document (§7),
++> and the `health` module are built and tested (`apps/api`). Every other module in §1 and every
++> stage in §3 marked *Not Implemented* below is still Designed only.
+ 
+ NestJS modular monolith. One deployable, many bounded modules, explicit dependencies.
+ 
+ ## 1. Module structure
+ 
+ ```
+ src/
+   main.ts, app.module.ts
+   common/          guards, interceptors, filters, decorators, pipes
+   infrastructure/  prisma, redis, queue, storage, mail, stripe clients
+@@ -58,34 +59,53 @@ and are unaffected; anything that must cover *every* response, routed or not, be
+ 
+ | Stage | Mechanism | Status |
+ |---|---|---|
+ | Request ID + trace | Middleware; `x-request-id` propagated everywhere including into jobs | Implemented (`traceId` in Phase 4) |
+ | Security headers | Middleware; [`../security/transport-and-headers.md`](../security/transport-and-headers.md) §2–§3 | Implemented |
+ | Rate limit | Guard, Redis-backed, every declared scope | Implemented (global `APP_GUARD`) |
+ | Authenticate | Guard, session cookie or API key -> `Principal` | Not Implemented (Phase 2) |
+ | Tenant resolve | Guard, membership + org state -> `TenantContext` | Not Implemented (Phase 2) |
+ | CSRF | Guard, cookie-authenticated unsafe methods only | Not Implemented (Phase 2) |
+ | Validate | Zod pipe against `packages/contracts` schemas | Implemented; no consumer until Phase 2 |
+-| Authorize | Guard reading `@RequirePermission` | Decorator implemented, guard Not Implemented |
++| Authorize | Guard reading `@RequirePermission` | Decorator implemented and asserted at boot; guard Not Implemented (Phase 2) |
+ | Entitlement | Guard reading `@RequireEntitlement` | Not Implemented (Phase 10) |
+ | Handle | Controller -> service | Implemented |
+ | Serialise | Interceptor, explicit DTO | Not Implemented |
+ | Errors | Global filter -> shared error envelope | Implemented |
+ | Audit | Service-level, in the mutation's transaction | Not Implemented (Phase 3) |
+ | Logging | Interceptor, structured, redacted | Implemented |
+ 
+ A route without an explicit access declaration **fails a startup assertion**. Missing
+-authorization is a boot crash, not a production discovery. The declaration itself —
+-`@Public()` and `@RequirePermission()`, both keyed on `ACCESS_METADATA_KEY` — lives in
+-`apps/api/src/common/decorators/access.decorator.ts`. **The startup assertion that reads it
+-does not exist yet**, so today an undeclared route is simply undeclared; the assertion is the
+-next task's work.
++authorization is a boot crash, not a production discovery.
++
++**Status: Implemented.** The declaration — `@Public()` and `@RequirePermission()`, both keyed
++on `ACCESS_METADATA_KEY` — lives in `apps/api/src/common/decorators/access.decorator.ts`. The
++assertion that reads it is `assertEveryRouteDeclaresAccess` in
++`apps/api/src/common/access-assertion.ts`, called from `main.ts`. It reports **every** offender
++in one message rather than the first, so one boot reveals the whole backlog.
++
++Two properties of it are load-bearing and are asserted by tests, because both failure modes are
++silent:
++
++- **It runs after an explicit `await app.init()`, not merely "before `listen`".** Nest registers
++  no route until `init()` runs, and `listen()` runs it implicitly — so an assertion placed
++  immediately before `listen` inspects an empty router and passes without checking anything. The
++  assertion therefore refuses to run at all against a router with no routes.
++- **It compares its own inventory against Express's router on every boot.** The inventory is
++  built from controller metadata (`apps/api/src/common/route-inventory.ts`, which borrows Nest's
++  own `RoutePathFactory` so the paths cannot disagree with the ones Nest registered). Metadata is
++  exactly what survives when routing breaks, so a route registered outside that metadata, or a
++  path assembled differently by a future Nest, is a boot failure rather than a route the check
++  quietly never looked at.
++
++The check lands in Phase 1 with one module on purpose. Added in Phase 2 with thirty routes
++already written, it would start life with a backlog of offenders and get switched off.
+ 
+ ## 4. Transactions
+ 
+ Any multi-write operation runs in one transaction, and the audit event is part of it. If the
+ change rolls back, so does the record of it.
+ 
+ Side effects — queue enqueue, email, webhook dispatch, realtime publish — happen **after
+ commit**, never inside the transaction. A job enqueued inside a transaction that later rolls
+ back is a worker processing something that does not exist, which is a class of bug worth
+ designing out entirely.
+@@ -111,20 +131,48 @@ Zod schemas in `packages/contracts` are shared with the frontend, so client and
+ validate identically and cannot drift. Types are inferred from schemas — the schema is the
+ source of truth, never a hand-written interface alongside it. Every external input is
+ validated: bodies, queries, params, headers, webhook payloads, and engine output.
+ 
+ ## 7. OpenAPI
+ 
+ Generated from the Zod contracts and decorators, published at `/api/v1/openapi.json`,
+ committed to the repository, and **diffed in CI** so an unintended contract change is caught
+ in review rather than by a customer.
+ 
++**Status: Implemented; the CI diff step itself is Not Implemented (next task).**
++
++- The **path list comes from the running application**, never from a table maintained beside it:
++  `generateOpenApiDocument` reads the same route inventory the access assertion checks, so the
++  document cannot describe a deleted route or miss a new one. An integration test compares the
++  document's paths against Express's own router.
++- The **schemas come from Zod**. `@ApiDoc()`
++  (`apps/api/src/common/decorators/openapi.decorator.ts`) carries the Zod schema itself, and
++  `zod-to-json-schema` converts it with the `openApi3` target. `errorEnvelopeSchema` from
++  `packages/contracts` is published once as `components.schemas.ErrorEnvelope` and referenced by
++  every route's `default` response, because §5's envelope is part of every route's contract
++  whether or not the route says so.
++- **`@nestjs/swagger` is deliberately not a dependency.** It does not read Zod, so every route
++  would declare its shape twice — once for validation, once for documentation — which is the
++  drift this document exists to prevent.
++- Each operation publishes its access declaration as `x-sentinel-access`. There is no
++  `securitySchemes` entry to point at until Phase 2, and inventing one would describe a control
++  that does not exist; publishing the declaration makes an authorization change visible in the
++  committed document's diff, which is the review step this section is asking for.
++- Regenerate with `pnpm --filter @sentinel/api openapi:generate`, which writes
++  `apps/api/openapi.json`. It builds the container but does **not** call `app.init()`, so
++  regeneration needs no Postgres, Redis or MinIO — only a valid environment. A test asserts the
++  committed file equals what the code generates.
++- `/api/v1/openapi.json` is served in **every** environment and is `@Public()`. That is a
++  deliberate call: the document describes a public API surface and names no host, no dependency
++  and no internal identifier, and a description available only where nobody looks at it goes
++  stale.
++
+ ## 8. Health
+ 
+ `/health/live` (process up), `/health/ready` (database, Redis, storage reachable),
+ `/health/detailed` (authenticated: queue depth, worker heartbeats, migration state).
+ Readiness gates deployment; liveness restarts a wedged process.
+ 
+ **Status: Implemented, with `/health/detailed` deliberately reduced.** All three routes are
+ excluded from the `/api` global prefix and are version-neutral, so a probe URL does not move
+ when the API version does. `/health/ready` returns 503 carrying a per-dependency verdict in
+ the shared error envelope, and never the driver's error text. `/health/detailed` currently
+diff --git a/.prettierignore b/.prettierignore
+index b2f3780..1207fcf 100644
+--- a/.prettierignore
++++ b/.prettierignore
+@@ -1,7 +1,10 @@
+ pnpm-lock.yaml
+ dist
+ .next
+ .turbo
+ coverage
+ packages/db/generated
++# Generated byte-for-byte by `pnpm --filter @sentinel/api openapi:generate`, and
++# asserted equal to that output by a test. Reformatting it would break the gate.
++apps/api/openapi.json
+ **/*.md
+diff --git a/apps/api/openapi.json b/apps/api/openapi.json
+new file mode 100644
+index 0000000..e54f9ad
+--- /dev/null
++++ b/apps/api/openapi.json
+@@ -0,0 +1,375 @@
++{
++  "openapi": "3.0.3",
++  "info": {
++    "title": "Sentinel API",
++    "version": "1",
++    "description": "Multi-tenant security testing, penetration-test management, and vulnerability management."
++  },
++  "paths": {
++    "/api/v1/openapi.json": {
++      "get": {
++        "operationId": "OpenApiController_read",
++        "tags": [
++          "OpenApi"
++        ],
++        "summary": "The OpenAPI description of this API.",
++        "responses": {
++          "200": {
++            "description": "The OpenAPI 3.0 document."
++          },
++          "default": {
++            "description": "Error. Every error response uses the shared envelope.",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/ErrorEnvelope"
++                }
++              }
++            }
++          }
++        },
++        "x-sentinel-access": {
++          "kind": "public"
++        }
++      }
++    },
++    "/health/detailed": {
++      "get": {
++        "operationId": "HealthController_detailed",
++        "tags": [
++          "Health"
++        ],
++        "summary": "Operator detail.",
++        "description": "Readiness plus a per-dependency probe latency.",
++        "responses": {
++          "200": {
++            "description": "Readiness with timings.",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "type": "object",
++                  "properties": {
++                    "status": {
++                      "type": "string",
++                      "enum": [
++                        "ok",
++                        "degraded"
++                      ]
++                    },
++                    "checkedAt": {
++                      "type": "string",
++                      "format": "date-time"
++                    },
++                    "dependencies": {
++                      "type": "object",
++                      "properties": {
++                        "postgres": {
++                          "type": "object",
++                          "properties": {
++                            "status": {
++                              "type": "string",
++                              "enum": [
++                                "ok",
++                                "error"
++                              ]
++                            },
++                            "latencyMs": {
++                              "type": "number",
++                              "minimum": 0
++                            }
++                          },
++                          "required": [
++                            "status",
++                            "latencyMs"
++                          ],
++                          "additionalProperties": false
++                        },
++                        "redis": {
++                          "type": "object",
++                          "properties": {
++                            "status": {
++                              "type": "string",
++                              "enum": [
++                                "ok",
++                                "error"
++                              ]
++                            },
++                            "latencyMs": {
++                              "type": "number",
++                              "minimum": 0
++                            }
++                          },
++                          "required": [
++                            "status",
++                            "latencyMs"
++                          ],
++                          "additionalProperties": false
++                        },
++                        "storage": {
++                          "type": "object",
++                          "properties": {
++                            "status": {
++                              "type": "string",
++                              "enum": [
++                                "ok",
++                                "error"
++                              ]
++                            },
++                            "latencyMs": {
++                              "type": "number",
++                              "minimum": 0
++                            }
++                          },
++                          "required": [
++                            "status",
++                            "latencyMs"
++                          ],
++                          "additionalProperties": false
++                        }
++                      },
++                      "required": [
++                        "postgres",
++                        "redis",
++                        "storage"
++                      ],
++                      "additionalProperties": false
++                    }
++                  },
++                  "required": [
++                    "status",
++                    "checkedAt",
++                    "dependencies"
++                  ],
++                  "additionalProperties": false
++                }
++              }
++            }
++          },
++          "default": {
++            "description": "Error. Every error response uses the shared envelope.",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/ErrorEnvelope"
++                }
++              }
++            }
++          }
++        },
++        "x-sentinel-access": {
++          "kind": "public"
++        }
++      }
++    },
++    "/health/live": {
++      "get": {
++        "operationId": "HealthController_live",
++        "tags": [
++          "Health"
++        ],
++        "summary": "Liveness probe.",
++        "description": "Reports that the process is running. Touches no dependency.",
++        "responses": {
++          "200": {
++            "description": "The process is alive.",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "type": "object",
++                  "properties": {
++                    "status": {
++                      "type": "string",
++                      "enum": [
++                        "ok"
++                      ]
++                    }
++                  },
++                  "required": [
++                    "status"
++                  ],
++                  "additionalProperties": false
++                }
++              }
++            }
++          },
++          "default": {
++            "description": "Error. Every error response uses the shared envelope.",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/ErrorEnvelope"
++                }
++              }
++            }
++          }
++        },
++        "x-sentinel-access": {
++          "kind": "public"
++        }
++      }
++    },
++    "/health/ready": {
++      "get": {
++        "operationId": "HealthController_ready",
++        "tags": [
++          "Health"
++        ],
++        "summary": "Readiness probe.",
++        "description": "Reports whether every backing dependency is reachable.",
++        "responses": {
++          "200": {
++            "description": "Every dependency is reachable.",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "type": "object",
++                  "properties": {
++                    "status": {
++                      "type": "string",
++                      "enum": [
++                        "ok",
++                        "degraded"
++                      ]
++                    },
++                    "dependencies": {
++                      "type": "object",
++                      "properties": {
++                        "postgres": {
++                          "type": "string",
++                          "enum": [
++                            "ok",
++                            "error"
++                          ]
++                        },
++                        "redis": {
++                          "type": "string",
++                          "enum": [
++                            "ok",
++                            "error"
++                          ]
++                        },
++                        "storage": {
++                          "type": "string",
++                          "enum": [
++                            "ok",
++                            "error"
++                          ]
++                        }
++                      },
++                      "required": [
++                        "postgres",
++                        "redis",
++                        "storage"
++                      ],
++                      "additionalProperties": false
++                    }
++                  },
++                  "required": [
++                    "status",
++                    "dependencies"
++                  ],
++                  "additionalProperties": false
++                }
++              }
++            }
++          },
++          "503": {
++            "description": "At least one dependency is unavailable. The envelope names which, and nothing else."
++          },
++          "default": {
++            "description": "Error. Every error response uses the shared envelope.",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/ErrorEnvelope"
++                }
++              }
++            }
++          }
++        },
++        "x-sentinel-access": {
++          "kind": "public"
++        }
++      }
++    }
++  },
++  "components": {
++    "schemas": {
++      "ErrorEnvelope": {
++        "type": "object",
++        "properties": {
++          "error": {
++            "type": "object",
++            "properties": {
++              "code": {
++                "type": "string",
++                "enum": [
++                  "UNAUTHENTICATED",
++                  "INVALID_CREDENTIALS",
++                  "SESSION_EXPIRED",
++                  "MFA_REQUIRED",
++                  "MFA_INVALID",
++                  "EMAIL_NOT_VERIFIED",
++                  "ACCOUNT_LOCKED",
++                  "INVALID_API_KEY",
++                  "API_KEY_EXPIRED",
++                  "CSRF_TOKEN_INVALID",
++                  "PERMISSION_DENIED",
++                  "NOT_A_MEMBER",
++                  "ORGANIZATION_SUSPENDED",
++                  "RESOURCE_NOT_FOUND",
++                  "VALIDATION_ERROR",
++                  "UNKNOWN_FIELD",
++                  "INVALID_STATE_TRANSITION",
++                  "VERSION_CONFLICT",
++                  "DUPLICATE_RESOURCE",
++                  "SCOPE_VIOLATION",
++                  "ASSET_NOT_VERIFIED",
++                  "ASSET_VERIFICATION_EXPIRED",
++                  "TARGET_DENIED_BY_POLICY",
++                  "PROFILE_NOT_PERMITTED",
++                  "ENGINE_NOT_AVAILABLE",
++                  "SCAN_ALREADY_RUNNING",
++                  "SCAN_NOT_CANCELLABLE",
++                  "QUOTA_EXCEEDED",
++                  "PLAN_LIMIT_REACHED",
++                  "FEATURE_NOT_AVAILABLE",
++                  "PAYMENT_REQUIRED",
++                  "SUBSCRIPTION_INACTIVE",
++                  "RATE_LIMITED",
++                  "INTERNAL_ERROR",
++                  "SERVICE_UNAVAILABLE",
++                  "DEPENDENCY_UNAVAILABLE"
++                ]
++              },
++              "message": {
++                "type": "string"
++              },
++              "details": {
++                "type": "object",
++                "additionalProperties": {}
++              },
++              "requestId": {
++                "type": "string"
++              },
++              "documentation": {
++                "type": "string",
++                "format": "uri"
++              }
++            },
++            "required": [
++              "code",
++              "message",
++              "requestId"
++            ],
++            "additionalProperties": false
++          }
++        },
++        "required": [
++          "error"
++        ],
++        "additionalProperties": false
++      }
++    }
++  }
++}
+diff --git a/apps/api/package.json b/apps/api/package.json
+index 4fa47ca..777e19f 100644
+--- a/apps/api/package.json
++++ b/apps/api/package.json
+@@ -1,35 +1,37 @@
+ {
+   "name": "@sentinel/api",
+   "version": "0.0.0",
+   "private": true,
+   "type": "module",
+   "main": "./dist/main.js",
+   "scripts": {
+     "build": "tsc -p tsconfig.build.json",
+     "typecheck": "tsc -p tsconfig.json --noEmit",
+     "lint": "eslint src",
++    "openapi:generate": "tsc -p tsconfig.build.json && dotenv -e ../../.env -- node dist/openapi/cli.js",
+     "start": "node dist/main.js"
+   },
+   "dependencies": {
+     "@nestjs/common": "^11.2.1",
+     "@nestjs/core": "^11.2.1",
+     "@nestjs/platform-express": "^11.2.1",
+     "@sentinel/config": "workspace:*",
+     "@sentinel/contracts": "workspace:*",
+     "@sentinel/db": "workspace:*",
+     "@sentinel/observability": "workspace:*",
+     "@sentinel/storage": "workspace:*",
+     "ioredis": "^5.11.1",
+     "reflect-metadata": "^0.2.2",
+     "rxjs": "^7.8.2",
+-    "zod": "^3.25.76"
++    "zod": "^3.25.76",
++    "zod-to-json-schema": "^3.25.2"
+   },
+   "devDependencies": {
+     "@nestjs/testing": "^11.2.1",
+     "@types/express": "^5.0.6",
+     "@types/supertest": "^7.2.1",
+     "dotenv": "^16.6.1",
+     "supertest": "^7.2.2",
+     "typescript": "^5.9.3"
+   }
+ }
+diff --git a/apps/api/src/app-setup.ts b/apps/api/src/app-setup.ts
+index 45a28d9..148147d 100644
+--- a/apps/api/src/app-setup.ts
++++ b/apps/api/src/app-setup.ts
+@@ -33,20 +33,50 @@ function crossCuttingMiddleware(app: NestExpressApplication): MiddlewareHandler[
+   return [
+     (request, response, next) => {
+       requestId.use(request, response, next);
+     },
+     (request, response, next) => {
+       securityHeaders.use(request, response, next);
+     },
+   ];
+ }
+ 
++/**
++ * Where every route in this application lives.
++ *
++ * Separated from `configureApp` because `configureApp` also needs the DI
++ * container (it reads the logger and the CSP mode out of it), while routing is
++ * pure configuration. A test that only cares about paths — the route-inventory
++ * and access-assertion specs — can therefore apply the *real* prefix and
++ * versioning to a two-controller application without standing up the whole
++ * graph, instead of hard-coding a second copy of these values that would
++ * quietly stop matching production.
++ */
++export function applyRouting(app: NestExpressApplication): void {
++  app.setGlobalPrefix('api', {
++    // Health probes are deliberately outside `/api/v1`: monitoring.md §5 and
++    // backend.md §8 both write the unprefixed paths, and a probe URL that moves
++    // when the API version moves breaks a deployment on the day it changes.
++    //
++    // `{*splat}` is path-to-regexp v8 syntax. Measured on this stack (Nest 11.2
++    // / Express 5.2 / path-to-regexp 8.4), the Express 4 form `health/(.*)`
++    // also works here — Nest evaluates prefix exclusions with its own matcher
++    // rather than through Express's router, so v8's stricter syntax does not
++    // reach it. The v8 form is used anyway. A bare `health` does NOT work: it
++    // excludes only the exact path, and /health/live goes back under the
++    // prefix. app.integration.spec.ts asserts both directions.
++    exclude: [{ path: 'health/{*splat}', method: RequestMethod.ALL }],
++  });
++
++  app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });
++}
++
+ /**
+  * Applies everything that is a property of the HTTP surface rather than of a
+  * module, so the integration test can build the same application the process
+  * does and assert against it. A bootstrap that only exists inside `bootstrap()`
+  * is a bootstrap no test has ever seen.
+  */
+ export function configureApp(app: NestExpressApplication): NestExpressApplication {
+   // First, before anything else this function does and — because `configureApp`
+   // runs before `app.init()` — before Nest registers its body parser. That
+   // ordering is the point: a malformed request body is rejected by the parser
+@@ -63,36 +93,21 @@ export function configureApp(app: NestExpressApplication): NestExpressApplicatio
+   // per-response, so it is gone even on a response that never reaches the
+   // middleware chain. transport-and-headers.md §2.
+   app.disable('x-powered-by');
+   // `Cache-Control: no-store` and an `ETag` are a contradiction: the API tells
+   // the client never to store the response, then hands it a revalidation token
+   // for the copy it was told not to keep. Express computes the tag by hashing
+   // every response body, which for this service means hashing tenant data on
+   // every request for no benefit. transport-and-headers.md §2.
+   app.set('etag', false);
+ 
+-  app.setGlobalPrefix('api', {
+-    // Health probes are deliberately outside `/api/v1`: monitoring.md §5 and
+-    // backend.md §8 both write the unprefixed paths, and a probe URL that moves
+-    // when the API version moves breaks a deployment on the day it changes.
+-    //
+-    // `{*splat}` is path-to-regexp v8 syntax. Measured on this stack (Nest 11.2
+-    // / Express 5.2 / path-to-regexp 8.4), the Express 4 form `health/(.*)`
+-    // also works here — Nest evaluates prefix exclusions with its own matcher
+-    // rather than through Express's router, so v8's stricter syntax does not
+-    // reach it. The v8 form is used anyway. A bare `health` does NOT work: it
+-    // excludes only the exact path, and /health/live goes back under the
+-    // prefix. app.integration.spec.ts asserts both directions.
+-    exclude: [{ path: 'health/{*splat}', method: RequestMethod.ALL }],
+-  });
+-
+-  app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });
++  applyRouting(app);
+ 
+   const logger = app.get<Logger>(LOGGER);
+   // Nest's own bootstrap and ExceptionsHandler output is human-formatted, which
+   // would make this process emit two log formats and would put an unredacted
+   // stack on stdout. monitoring.md §2.
+   app.useLogger(new NestLoggerBridge(logger));
+   app.useGlobalFilters(new AllExceptionsFilter(logger));
+   app.useGlobalInterceptors(new LoggingInterceptor(logger));
+   app.enableShutdownHooks();
+ 
+diff --git a/apps/api/src/app.integration.spec.ts b/apps/api/src/app.integration.spec.ts
+index 4e35ebd..226bb38 100644
+--- a/apps/api/src/app.integration.spec.ts
++++ b/apps/api/src/app.integration.spec.ts
+@@ -1,34 +1,19 @@
+ import 'reflect-metadata';
+ import type { Server } from 'node:http';
+-import { fileURLToPath } from 'node:url';
+ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+ import request from 'supertest';
+-import { config as loadDotenv } from 'dotenv';
+ import { Controller, Get, type INestApplication } from '@nestjs/common';
+-import { Test } from '@nestjs/testing';
+ import type { NestExpressApplication } from '@nestjs/platform-express';
+ import { errorEnvelopeSchema } from '@sentinel/contracts';
+ import { Public } from './common/decorators/access.decorator.js';
+-import { AppModule } from './app.module.js';
+-import { configureApp } from './app-setup.js';
+-
+-// The live compose stack is the system under test. `.env` is the same file the
+-// developer's own `pnpm dev` reads, so drift between the two is caught here
+-// rather than in production.
+-loadDotenv({ path: fileURLToPath(new URL('../../../.env', import.meta.url)) });
+-// environments.md §1: the test environment logs nothing unless a test asks for
+-// it, and enforces CSP rather than merely reporting it — a policy that is only
+-// ever report-only where it is asserted is a policy no test has seen block
+-// anything.
+-process.env.NODE_ENV = 'test';
+-process.env.APP_ENV = 'test';
++import { buildApp as buildRealApp } from './testing/build-app.js';
+ 
+ /**
+  * A handler that fails the way real code fails, so the 500 path is exercised
+  * against a realistic payload rather than `new Error('x')`. Carries a
+  * constraint name, an internal host, a database role, and a credential.
+  */
+ class RealisticInternalError extends Error {
+   readonly code = 'P2002';
+   readonly meta = { target: ['Finding_organizationId_fingerprint_key'] };
+   readonly clientVersion = '6.19.3';
+@@ -50,31 +35,21 @@ class BoomController {
+     throw new Error('connect ECONNREFUSED 10.42.0.7:5432');
+   }
+ 
+   @Public()
+   @Get('secret')
+   secret(): never {
+     throw new Error('upstream rejected redis://sentinel:hunter2@10.42.0.9:6379');
+   }
+ }
+ 
+-async function buildApp(): Promise<NestExpressApplication> {
+-  const moduleRef = await Test.createTestingModule({
+-    imports: [AppModule],
+-    controllers: [BoomController],
+-  }).compile();
+-
+-  const app = moduleRef.createNestApplication<NestExpressApplication>();
+-  configureApp(app);
+-  await app.init();
+-  return app;
+-}
++const buildApp = (): Promise<NestExpressApplication> => buildRealApp([BoomController]);
+ 
+ const serverOf = (app: INestApplication): Server => app.getHttpServer() as Server;
+ 
+ /** `supertest`'s `body` is `any`. One cast, in one place, with a name. */
+ const jsonOf = (response: { body: unknown }): Record<string, unknown> =>
+   response.body as Record<string, unknown>;
+ 
+ interface DetailedBody {
+   status: string;
+   checkedAt: string;
+diff --git a/apps/api/src/app.module.ts b/apps/api/src/app.module.ts
+index 44b6655..38aef2f 100644
+--- a/apps/api/src/app.module.ts
++++ b/apps/api/src/app.module.ts
+@@ -1,33 +1,48 @@
+ import { Module } from '@nestjs/common';
+-import { APP_GUARD } from '@nestjs/core';
++import { APP_GUARD, DiscoveryModule } from '@nestjs/core';
+ import { RateLimitGuard } from './common/guards/rate-limit.guard.js';
+ import { ConfigModule } from './infrastructure/config/config.module.js';
+ import { PrismaModule } from './infrastructure/prisma/prisma.module.js';
+ import { RedisModule } from './infrastructure/redis/redis.module.js';
+ import { StorageModule } from './infrastructure/storage/storage.module.js';
+ import { HealthModule } from './modules/health/health.module.js';
++import { OpenApiModule } from './openapi/openapi.module.js';
+ 
+ /**
+  * The composition root.
+  *
+  * The cross-cutting middleware chain is deliberately NOT registered here.
+  * `MiddlewareConsumer.forRoutes()` resolves its paths *under the global prefix*,
+  * so `{ path: '*splat' }` covered only `/api/<seg>/**` and `/health/<seg>/**` —
+  * `/`, `/a/b`, `/healthz` and a body-parse failure all answered with no security
+  * headers and no request ID. Both middlewares are now registered with
+  * `app.use()` in `configureApp` (`app-setup.ts`), which puts them ahead of
+  * Nest's body parser and outside the prefix entirely.
+  * security/transport-and-headers.md §2, architecture/backend.md §3.
+  */
+ @Module({
+-  imports: [ConfigModule, PrismaModule, RedisModule, StorageModule, HealthModule],
++  // `DiscoveryModule` is what lets the boot-time access assertion enumerate
++  // every controller. Imported here rather than only inside `OpenApiModule`
++  // because the assertion is a property of the whole application, and a
++  // security check that works only while some unrelated module happens to be
++  // imported is a check waiting to be switched off by a refactor.
++  // architecture/backend.md §3.
++  imports: [
++    DiscoveryModule,
++    ConfigModule,
++    PrismaModule,
++    RedisModule,
++    StorageModule,
++    HealthModule,
++    OpenApiModule,
++  ],
+   providers: [
+     // Global, not opt-in. A limiter a route has to remember to ask for is a
+     // limiter that is missing from the route nobody thought about — and the
+     // table in abuse-prevention.md §1 has a default for the general API
+     // precisely so there is an answer for every endpoint. `@RateLimit()`
+     // narrows the class; its absence means `generalSession`, not "unlimited".
+     { provide: APP_GUARD, useClass: RateLimitGuard },
+   ],
+ })
+ export class AppModule {}
+diff --git a/apps/api/src/common/access-assertion.spec.ts b/apps/api/src/common/access-assertion.spec.ts
+new file mode 100644
+index 0000000..2e4e6f2
+--- /dev/null
++++ b/apps/api/src/common/access-assertion.spec.ts
+@@ -0,0 +1,171 @@
++import { describe, expect, it } from 'vitest';
++import { Controller, Delete, Get, Post } from '@nestjs/common';
++import { buildRoutingApp } from '../testing/routing-app.js';
++import { Public, RequirePermission } from './decorators/access.decorator.js';
++import {
++  assertEveryRouteDeclaresAccess,
++  findRoutesWithoutAccessDeclaration,
++  type RouteDescriptor,
++} from './access-assertion.js';
++
++const route = (over: Partial<RouteDescriptor>): RouteDescriptor => ({
++  controller: 'HealthController',
++  handler: 'live',
++  method: 'GET',
++  path: '/health/live',
++  access: undefined,
++  ...over,
++});
++
++describe('findRoutesWithoutAccessDeclaration', () => {
++  it('passes when every route declares its access', () => {
++    expect(
++      findRoutesWithoutAccessDeclaration([
++        route({ access: { kind: 'public' } }),
++        route({ handler: 'list', access: { kind: 'permission', permission: 'finding.read' } }),
++      ]),
++    ).toEqual([]);
++  });
++
++  it('reports a route with no declaration', () => {
++    const offender = route({ controller: 'FindingsController', handler: 'destroy' });
++    expect(findRoutesWithoutAccessDeclaration([offender])).toEqual([offender]);
++  });
++
++  it('lists every offender, not just the first — one boot should reveal all of them', () => {
++    const offenders = [route({ handler: 'a' }), route({ handler: 'b' }), route({ handler: 'c' })];
++    expect(
++      findRoutesWithoutAccessDeclaration([...offenders, route({ access: { kind: 'public' } })]),
++    ).toHaveLength(3);
++  });
++
++  it('treats @Public as a declaration, not as an absence of one', () => {
++    expect(findRoutesWithoutAccessDeclaration([route({ access: { kind: 'public' } })])).toEqual([]);
++  });
++});
++
++/**
++ * Everything below runs the assertion against a real Nest application.
++ *
++ * The pure tests above can only prove that a list is filtered correctly. They
++ * say nothing about whether the list is ever populated — and an assertion that
++ * inspects zero routes passes every time, which is the failure mode this whole
++ * task exists to avoid. These build an application containing a route that is
++ * genuinely undeclared and watch the check refuse to start.
++ */
++@Controller('declared')
++class DeclaredController {
++  @Public()
++  @Get()
++  list(): string {
++    return 'ok';
++  }
++
++  @RequirePermission('finding.read')
++  @Get(':id')
++  one(): string {
++    return 'ok';
++  }
++}
++
++@Controller('findings')
++class FindingsController {
++  @Public()
++  @Get()
++  list(): string {
++    return 'ok';
++  }
++
++  @Delete(':id')
++  destroy(): string {
++    return 'ok';
++  }
++
++  @Post()
++  create(): string {
++    return 'ok';
++  }
++}
++
++const messageOf = (act: () => void): string => {
++  try {
++    act();
++  } catch (error: unknown) {
++    return error instanceof Error ? error.message : String(error);
++  }
++  throw new Error('Expected assertEveryRouteDeclaresAccess to throw, and it did not.');
++};
++
++describe('assertEveryRouteDeclaresAccess', () => {
++  it('refuses a router with no routes rather than passing vacuously', async () => {
++    // The trap, made into a test. Nest registers nothing until `init()` runs,
++    // and `listen()` runs it implicitly — so an assertion written "immediately
++    // before listen" would look at an empty router and approve it. Without this
++    // guard the whole control is decorative.
++    const app = await buildRoutingApp([FindingsController]);
++    try {
++      const message = messageOf(() => {
++        assertEveryRouteDeclaresAccess(app);
++      });
++      expect(message).toContain('would pass');
++      expect(message).toContain('app.init()');
++    } finally {
++      await app.close();
++    }
++  });
++
++  it('accepts an application whose every route declares its access', async () => {
++    const app = await buildRoutingApp([DeclaredController]);
++    await app.init();
++    try {
++      expect(() => {
++        assertEveryRouteDeclaresAccess(app);
++      }).not.toThrow();
++    } finally {
++      await app.close();
++    }
++  });
++
++  it('refuses to start, naming every undeclared route and where it lives', async () => {
++    const app = await buildRoutingApp([DeclaredController, FindingsController]);
++    await app.init();
++    try {
++      const message = messageOf(() => {
++        assertEveryRouteDeclaresAccess(app);
++      });
++
++      expect(message).toContain('Startup refused: 2 route(s) declare no access requirement.');
++      expect(message).toContain('DELETE /api/v1/findings/:id   FindingsController.destroy');
++      expect(message).toContain('POST   /api/v1/findings       FindingsController.create');
++      // The declared routes are not in the report, including the sibling
++      // handler on the very same controller.
++      expect(message).not.toContain('FindingsController.list');
++      expect(message).not.toContain('DeclaredController');
++      expect(message).toContain('.claude/architecture/backend.md §3');
++    } finally {
++      await app.close();
++    }
++  });
++
++  it('refuses when a route exists that the check cannot see', async () => {
++    // A route registered straight onto Express carries no controller metadata,
++    // so the inventory misses it entirely. Without the router cross-check the
++    // assertion would happily approve an application containing an endpoint it
++    // never looked at.
++    const app = await buildRoutingApp([DeclaredController]);
++    await app.init();
++    const express = app.getHttpAdapter().getInstance() as unknown as {
++      get: (path: string, handler: () => void) => void;
++    };
++    express.get('/rogue', () => {});
++    try {
++      const message = messageOf(() => {
++        assertEveryRouteDeclaresAccess(app);
++      });
++      expect(message).toContain('does not match the routes Nest registered');
++      expect(message).toContain('GET /rogue');
++    } finally {
++      await app.close();
++    }
++  });
++});
+diff --git a/apps/api/src/common/access-assertion.ts b/apps/api/src/common/access-assertion.ts
+new file mode 100644
+index 0000000..98fdf81
+--- /dev/null
++++ b/apps/api/src/common/access-assertion.ts
+@@ -0,0 +1,105 @@
++import type { INestApplication } from '@nestjs/common';
++import {
++  byMethodThenPath,
++  describeRoutes,
++  registeredRouterRoutes,
++  type RouteDescriptor,
++} from './route-inventory.js';
++
++export type { RouteDescriptor };
++
++const DOCUMENT_REFERENCE = 'See .claude/architecture/backend.md §3.';
++
++/**
++ * Every route that declares neither `@Public()` nor `@RequirePermission()`.
++ *
++ * Returns all of them rather than the first, because a boot that reports one
++ * offender at a time turns a ten-route mistake into ten restarts.
++ */
++export function findRoutesWithoutAccessDeclaration(
++  routes: readonly RouteDescriptor[],
++): RouteDescriptor[] {
++  return routes.filter((route) => route.access === undefined);
++}
++
++function formatOffenders(offenders: readonly RouteDescriptor[]): string {
++  const sorted = [...offenders].sort(byMethodThenPath);
++  const pathWidth = Math.max(...sorted.map((route) => route.path.length));
++  return [
++    `Startup refused: ${sorted.length} route(s) declare no access requirement.`,
++    '',
++    ...sorted.map(
++      (route) =>
++        `  ${route.method.padEnd(6)} ${route.path.padEnd(pathWidth)}   ${route.controller}.${route.handler}`,
++    ),
++    '',
++    'Every route must declare @Public() or @RequirePermission(...). Missing',
++    'authorization is a boot failure here rather than a production discovery.',
++    DOCUMENT_REFERENCE,
++  ].join('\n');
++}
++
++function assertInventoryMatchesRouter(
++  routes: readonly RouteDescriptor[],
++  registered: readonly string[],
++): void {
++  const described = new Set(routes.map((route) => `${route.method} ${route.path}`));
++  const registeredSet = new Set(registered);
++  const undescribed = [...registeredSet].filter((route) => !described.has(route)).sort();
++  const unregistered = [...described].filter((route) => !registeredSet.has(route)).sort();
++  if (undescribed.length === 0 && unregistered.length === 0) return;
++
++  throw new Error(
++    [
++      'Startup refused: the checked route inventory does not match the routes Nest registered.',
++      '',
++      ...(undescribed.length === 0
++        ? []
++        : ['  Registered but not checked:', ...undescribed.map((route) => `    ${route}`)]),
++      ...(unregistered.length === 0
++        ? []
++        : ['  Checked but not registered:', ...unregistered.map((route) => `    ${route}`)]),
++      '',
++      'The access check reads controller metadata; this compares that reading against',
++      "Express's own router. A mismatch means the check is inspecting something other",
++      'than the application that is about to serve traffic, so its result means nothing.',
++      DOCUMENT_REFERENCE,
++    ].join('\n'),
++  );
++}
++
++/**
++ * A route without an explicit access declaration crashes startup.
++ *
++ * This lands in Phase 1, with one module, on purpose. Added in Phase 2 with
++ * thirty routes already written, it would start life with a backlog of
++ * offenders and get commented out on the first bad afternoon.
++ *
++ * **Call this after `await app.init()`, never merely "before `listen`".** Nest
++ * registers no route until `init()` runs, and `listen()` runs it implicitly, so
++ * an assertion placed immediately before `listen` inspects an empty router and
++ * passes without checking anything — a boot check that cannot fail is worse
++ * than no boot check, because it is believed. The empty-router guard below
++ * exists so that mistake is a loud failure rather than a silent pass.
++ */
++export function assertEveryRouteDeclaresAccess(app: INestApplication): void {
++  const registered = registeredRouterRoutes(app);
++  if (registered.length === 0) {
++    throw new Error(
++      [
++        'Startup refused: no routes are registered, so this assertion would pass',
++        'without checking anything.',
++        '',
++        'Nest registers routes during `app.init()`, which `app.listen()` calls',
++        'implicitly — call `await app.init()` first, then assert, then listen.',
++        DOCUMENT_REFERENCE,
++      ].join('\n'),
++    );
++  }
++
++  const routes = describeRoutes(app);
++  assertInventoryMatchesRouter(routes, registered);
++
++  const offenders = findRoutesWithoutAccessDeclaration(routes);
++  if (offenders.length > 0) throw new Error(formatOffenders(offenders));
++}
+diff --git a/apps/api/src/common/decorators/openapi.decorator.ts b/apps/api/src/common/decorators/openapi.decorator.ts
+new file mode 100644
+index 0000000..ff63909
+--- /dev/null
++++ b/apps/api/src/common/decorators/openapi.decorator.ts
+@@ -0,0 +1,57 @@
++import { SetMetadata } from '@nestjs/common';
++import type { ZodType, ZodTypeDef } from 'zod';
++
++/**
++ * Any Zod schema. Deliberately not Zod's own `ZodTypeAny`, which is
++ * `ZodType<any, ...>` — coding-standards.md §1 bans `any` without a written
++ * justification, and there is none here: nothing in this codebase reads a
++ * documented schema's inferred type, so `unknown` costs nothing.
++ */
++export type DocumentedSchema = ZodType<unknown, ZodTypeDef, unknown>;
++
++/**
++ * The metadata key under which a route describes itself for the published
++ * OpenAPI document.
++ *
++ * architecture/backend.md §7 says the document is generated "from the Zod
++ * contracts **and decorators**", and this is the decorator half. It carries the
++ * Zod schema itself rather than a hand-written JSON Schema, so the description
++ * a client reads and the schema the server would validate against are the same
++ * object — §6's "the schema is the source of truth, never a hand-written
++ * interface alongside it" applied to documentation.
++ *
++ * `@nestjs/swagger` is deliberately not used: it does not read Zod, so every
++ * route would have to declare its shape twice — once for validation and once
++ * for documentation — which is the drift this key exists to prevent.
++ */
++export const OPENAPI_METADATA_KEY = 'sentinel:openapi';
++
++/**
++ * One documented response. `schema` is optional because a status code is worth
++ * documenting on its own: `/health/ready` returning 503 is part of its contract
++ * even though its body is the shared error envelope every route already
++ * documents.
++ */
++export interface ApiResponseDeclaration {
++  readonly status: number;
++  readonly description: string;
++  readonly schema?: DocumentedSchema;
++}
++
++export interface ApiDocDeclaration {
++  readonly summary: string;
++  readonly description?: string;
++  readonly responses: readonly ApiResponseDeclaration[];
++}
++
++/**
++ * Describes a route in the generated OpenAPI document.
++ *
++ * Method-only, and deliberately optional: unlike `@Public()` /
++ * `@RequirePermission()`, a missing declaration here is a thinner document, not
++ * a security hole, so it is not worth a boot failure. A route without it still
++ * appears in the document — the path list comes from the router, not from this
++ * decorator — it simply carries no summary and no response bodies.
++ */
++export const ApiDoc = (declaration: ApiDocDeclaration): MethodDecorator =>
++  SetMetadata<string, ApiDocDeclaration>(OPENAPI_METADATA_KEY, declaration);
+diff --git a/apps/api/src/common/route-inventory.spec.ts b/apps/api/src/common/route-inventory.spec.ts
+new file mode 100644
+index 0000000..60c7629
+--- /dev/null
++++ b/apps/api/src/common/route-inventory.spec.ts
+@@ -0,0 +1,142 @@
++import { describe, expect, it } from 'vitest';
++import { Controller, Delete, Get, Post, VERSION_NEUTRAL, Version } from '@nestjs/common';
++import type { NestExpressApplication } from '@nestjs/platform-express';
++import { buildRoutingApp } from '../testing/routing-app.js';
++import { Public, RequirePermission } from './decorators/access.decorator.js';
++import { ApiDoc } from './decorators/openapi.decorator.js';
++import { describeRoutes, registeredRouterRoutes } from './route-inventory.js';
++
++@Controller({ path: 'health', version: VERSION_NEUTRAL })
++class ProbeController {
++  @Public()
++  @Get('live')
++  live(): string {
++    return 'ok';
++  }
++}
++
++@RequirePermission('finding.read')
++@Controller('findings')
++class FindingsController {
++  @Get()
++  @ApiDoc({ summary: 'Lists findings.', responses: [] })
++  list(): string {
++    return 'ok';
++  }
++
++  @Get(':id')
++  one(): string {
++    return 'ok';
++  }
++
++  @RequirePermission('finding.delete')
++  @Delete(':id')
++  destroy(): string {
++    return 'ok';
++  }
++
++  @Version('2')
++  @Post()
++  create(): string {
++    return 'ok';
++  }
++
++  /** Not a route: no HTTP method decorator, so it must not appear. */
++  helper(): string {
++    return 'ok';
++  }
++}
++
++const withApp = async (
++  body: (app: NestExpressApplication) => void | Promise<void>,
++): Promise<void> => {
++  const app = await buildRoutingApp([ProbeController, FindingsController]);
++  await app.init();
++  try {
++    await body(app);
++  } finally {
++    await app.close();
++  }
++};
++
++describe('describeRoutes', () => {
++  it('reports the same routes Express registered, with the same paths', async () => {
++    // The one assertion that matters: the inventory is derived from decorator
++    // metadata, and metadata is exactly what survives when routing breaks. If
++    // these two ever disagree, the access assertion is checking a fiction.
++    await withApp((app) => {
++      const described = describeRoutes(app)
++        .map((route) => `${route.method} ${route.path}`)
++        .sort();
++      expect(described).toEqual(registeredRouterRoutes(app));
++      expect(described).toEqual([
++        'DELETE /api/v1/findings/:id',
++        'GET /api/v1/findings',
++        'GET /api/v1/findings/:id',
++        'GET /health/live',
++        'POST /api/v2/findings',
++      ]);
++    });
++  });
++
++  it('applies the global prefix, its health exclusion, and the version segment', async () => {
++    await withApp((app) => {
++      const paths = describeRoutes(app).map((route) => route.path);
++      // Version-neutral and prefix-excluded, exactly as production routes it.
++      expect(paths).toContain('/health/live');
++      // A method-level @Version overrides the controller's default.
++      expect(paths).toContain('/api/v2/findings');
++    });
++  });
++
++  it('reads a class-level declaration and lets a handler override it', async () => {
++    await withApp((app) => {
++      const routes = describeRoutes(app);
++      const byHandler = (handler: string) => routes.find((route) => route.handler === handler);
++
++      expect(byHandler('live')?.access).toEqual({ kind: 'public' });
++      expect(byHandler('list')?.access).toEqual({ kind: 'permission', permission: 'finding.read' });
++      expect(byHandler('destroy')?.access).toEqual({
++        kind: 'permission',
++        permission: 'finding.delete',
++      });
++    });
++  });
++
++  it('carries the OpenAPI declaration and omits methods that are not routes', async () => {
++    await withApp((app) => {
++      const routes = describeRoutes(app);
++      expect(routes.find((route) => route.handler === 'list')?.doc?.summary).toBe(
++        'Lists findings.',
++      );
++      expect(routes.find((route) => route.handler === 'one')?.doc).toBeUndefined();
++      expect(routes.some((route) => route.handler === 'helper')).toBe(false);
++    });
++  });
++
++  it('names the controller class and the handler method', async () => {
++    await withApp((app) => {
++      expect(describeRoutes(app)).toContainEqual(
++        expect.objectContaining({
++          controller: 'FindingsController',
++          handler: 'destroy',
++          method: 'DELETE',
++          path: '/api/v1/findings/:id',
++        }),
++      );
++    });
++  });
++});
++
++describe('registeredRouterRoutes', () => {
++  it('is empty before init, which is what makes the boot-order guard necessary', async () => {
++    const app = await buildRoutingApp([ProbeController]);
++    try {
++      expect(registeredRouterRoutes(app)).toEqual([]);
++      await app.init();
++      expect(registeredRouterRoutes(app)).toEqual(['GET /health/live']);
++    } finally {
++      await app.close();
++    }
++  });
++});
+diff --git a/apps/api/src/common/route-inventory.ts b/apps/api/src/common/route-inventory.ts
+new file mode 100644
+index 0000000..a7826ba
+--- /dev/null
++++ b/apps/api/src/common/route-inventory.ts
+@@ -0,0 +1,196 @@
++import { RequestMethod } from '@nestjs/common';
++import type { INestApplication } from '@nestjs/common';
++// `VERSION_METADATA` and `VersionValue` are not on `@nestjs/common`'s barrel,
++// only on these two — the same subpaths Nest's own router reads them from.
++import { METHOD_METADATA, PATH_METADATA, VERSION_METADATA } from '@nestjs/common/constants.js';
++import type { VersionValue } from '@nestjs/common/interfaces/index.js';
++import { ApplicationConfig, DiscoveryService, MetadataScanner } from '@nestjs/core';
++// Not part of `@nestjs/core`'s public index, and imported here on purpose.
++// This class *is* the path assembly Nest's own router uses — global prefix,
++// prefix exclusions, URI version segment, slash normalisation — so borrowing it
++// means the inventory cannot disagree with the routes Nest registered. The
++// alternative was a second implementation of the same 60 lines, which is
++// exactly the drift architecture/backend.md §3 asks this assertion to prevent.
++// If a Nest upgrade moves the file, the API fails to start rather than starting
++// with a silently wrong inventory, and `assertEveryRouteDeclaresAccess` also
++// compares its result against the live router on every boot.
++import { RoutePathFactory } from '@nestjs/core/router/route-path-factory.js';
++import { ACCESS_METADATA_KEY, type AccessDeclaration } from './decorators/access.decorator.js';
++import { OPENAPI_METADATA_KEY, type ApiDocDeclaration } from './decorators/openapi.decorator.js';
++
++/** One HTTP route, as the boot-time access assertion reports it. */
++export interface RouteDescriptor {
++  readonly controller: string;
++  readonly handler: string;
++  readonly method: string;
++  readonly path: string;
++  readonly access: AccessDeclaration | undefined;
++}
++
++/**
++ * A route plus everything else read off it in the same pass.
++ *
++ * One walk, two readers: the access assertion and the OpenAPI generator both
++ * describe "the routes this application has", and two independent walks would
++ * eventually disagree about which routes those are.
++ */
++export interface RegisteredRoute extends RouteDescriptor {
++  readonly doc: ApiDocDeclaration | undefined;
++}
++
++/**
++ * The subset of a controller class this module touches. Written out rather than
++ * using `InstanceWrapper['metatype']` (`Type<any> | Function | null`) so the
++ * `any` never enters, and so the two members actually read are visible.
++ */
++interface ControllerClass {
++  readonly name: string;
++  readonly prototype: object;
++}
++
++const asPaths = (value: unknown): string[] => {
++  if (typeof value === 'string') return [value];
++  if (Array.isArray(value))
++    return value.filter((entry): entry is string => typeof entry === 'string');
++  return [];
++};
++
++/**
++ * Builds the route inventory from controller metadata.
++ *
++ * Takes the two collaborators rather than the application so that the
++ * `/api/v1/openapi.json` handler — which has a `DiscoveryService` and an
++ * `ApplicationConfig` injected but no `INestApplication` — can call it too.
++ * Both are ordinary providers: Nest registers `ApplicationConfig` in every
++ * module, and `DiscoveryService` comes from `DiscoveryModule`.
++ */
++export function describeRoutesFrom(
++  discovery: DiscoveryService,
++  config: ApplicationConfig,
++): RegisteredRoute[] {
++  const factory = new RoutePathFactory(config);
++  const scanner = new MetadataScanner();
++  const versioningOptions = config.getVersioning();
++  const globalPrefix = config.getGlobalPrefix();
++  const routes: RegisteredRoute[] = [];
++
++  for (const wrapper of discovery.getControllers()) {
++    const controller = wrapper.metatype as ControllerClass | null | undefined;
++    if (controller === null || controller === undefined) continue;
++
++    const controllerPaths = asPaths(Reflect.getMetadata(PATH_METADATA, controller));
++    // Nest resolves a controller's version to the configured default when the
++    // controller declares none — see `RoutesResolver#getVersionMetadata`. A
++    // route inventory that skipped that step would report `/api/things` for a
++    // controller Nest publishes at `/api/v1/things`.
++    const controllerVersion =
++      versioningOptions === undefined
++        ? undefined
++        : ((Reflect.getMetadata(VERSION_METADATA, controller) as VersionValue | undefined) ??
++          versioningOptions.defaultVersion);
++
++    for (const handlerName of scanner.getAllMethodNames(controller.prototype)) {
++      const handler: unknown = (controller.prototype as Record<string, unknown>)[handlerName];
++      if (typeof handler !== 'function') continue;
++
++      const requestMethod = Reflect.getMetadata(METHOD_METADATA, handler) as
++        RequestMethod | undefined;
++      const methodPaths = asPaths(Reflect.getMetadata(PATH_METADATA, handler));
++      if (requestMethod === undefined || methodPaths.length === 0) continue;
++
++      // Method metadata wins over class metadata, matching how Nest's own
++      // `Reflector.getAllAndOverride` resolves a decorator applied at both
++      // levels — a `@Public()` handler inside a `@RequirePermission()`
++      // controller is public.
++      const access = (Reflect.getMetadata(ACCESS_METADATA_KEY, handler) ??
++        Reflect.getMetadata(ACCESS_METADATA_KEY, controller)) as AccessDeclaration | undefined;
++      const doc = Reflect.getMetadata(OPENAPI_METADATA_KEY, handler) as
++        ApiDocDeclaration | undefined;
++      const methodVersion = Reflect.getMetadata(VERSION_METADATA, handler) as
++        VersionValue | undefined;
++
++      for (const ctrlPath of controllerPaths) {
++        for (const methodPath of methodPaths) {
++          const paths = factory.create(
++            {
++              ctrlPath,
++              methodPath,
++              globalPrefix,
++              // Spread rather than assigned: `exactOptionalPropertyTypes`
++              // forbids passing an explicit `undefined` for an optional field.
++              ...(controllerVersion === undefined ? {} : { controllerVersion }),
++              ...(methodVersion === undefined ? {} : { methodVersion }),
++              ...(versioningOptions === undefined ? {} : { versioningOptions }),
++            },
++            requestMethod,
++          );
++
++          for (const path of paths) {
++            routes.push({
++              controller: controller.name,
++              handler: handlerName,
++              method: RequestMethod[requestMethod],
++              path,
++              access,
++              doc,
++            });
++          }
++        }
++      }
++    }
++  }
++
++  return routes.sort(byMethodThenPath);
++}
++
++/** Sorted so the assertion's error message and the OpenAPI document are stable. */
++export function byMethodThenPath(a: RouteDescriptor, b: RouteDescriptor): number {
++  const left = `${a.method} ${a.path}`;
++  const right = `${b.method} ${b.path}`;
++  return left < right ? -1 : left > right ? 1 : 0;
++}
++
++export function describeRoutes(app: INestApplication): RegisteredRoute[] {
++  return describeRoutesFrom(
++    app.get(DiscoveryService, { strict: false }),
++    app.get(ApplicationConfig, { strict: false }),
++  );
++}
++
++/** Just enough of Express 5's router to read back what was registered on it. */
++interface ExpressLayer {
++  readonly route?: { readonly path: unknown; readonly methods: Record<string, boolean> };
++}
++interface ExpressInstance {
++  readonly router?: { readonly stack?: readonly ExpressLayer[] };
++}
++
++/**
++ * `"<METHOD> <path>"` for every route the HTTP adapter has actually registered,
++ * read back off Express's own router.
++ *
++ * This is the control for the inventory above: the inventory is derived from
++ * decorator metadata, and metadata is exactly the thing that is still there
++ * when routing has stopped working. Comparing the two turns a wrong inventory
++ * into a boot failure instead of an assertion that quietly checks nothing.
++ *
++ * Empty until `app.init()` runs — which is the point; see
++ * `assertEveryRouteDeclaresAccess`.
++ */
++export function registeredRouterRoutes(app: INestApplication): string[] {
++  // `getInstance()` is typed `any`; naming the two members read keeps that
++  // `any` from spreading past this line.
++  const instance = app.getHttpAdapter().getInstance() as unknown as ExpressInstance;
++  const found: string[] = [];
++
++  for (const layer of instance.router?.stack ?? []) {
++    if (layer.route === undefined) continue;
++    for (const [method, registered] of Object.entries(layer.route.methods)) {
++      if (registered !== true) continue;
++      const name = method === '_all' ? 'ALL' : method.toUpperCase();
++      for (const path of asPaths(layer.route.path)) found.push(`${name} ${path}`);
++    }
++  }
++
++  return found.sort();
++}
+diff --git a/apps/api/src/main.ts b/apps/api/src/main.ts
+index 29639c8..953ee78 100644
+--- a/apps/api/src/main.ts
++++ b/apps/api/src/main.ts
+@@ -1,30 +1,49 @@
+ import 'reflect-metadata';
+ import { NestFactory } from '@nestjs/core';
+ import type { NestExpressApplication } from '@nestjs/platform-express';
+ import { type ApiEnv, apiEnvSchema, loadEnv } from '@sentinel/config';
+ import { createLogger, type Logger } from '@sentinel/observability';
+ import { AppModule } from './app.module.js';
+ import { configureApp } from './app-setup.js';
++import { assertEveryRouteDeclaresAccess } from './common/access-assertion.js';
+ import { ENV, LOGGER } from './infrastructure/tokens.js';
+ 
+ async function bootstrap(): Promise<void> {
+   // First, before anything binds a port or opens a pool: a missing or malformed
+   // variable must crash startup naming the variable, not surface later as a
+   // confusing runtime failure. environments.md §3.
+   loadEnv(apiEnvSchema);
+ 
+   const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true });
+   configureApp(app);
+ 
+   const env = app.get<ApiEnv>(ENV);
+   const logger = app.get<Logger>(LOGGER);
++
++  // Explicitly, and before the assertion: Nest registers no route until
++  // `init()` runs. `listen()` runs it implicitly, so an assertion written
++  // "immediately before listen" would inspect an empty router and pass without
++  // checking anything. `listen()` below sees `isInitialized` and does not
++  // repeat the work.
++  await app.init();
++  try {
++    assertEveryRouteDeclaresAccess(app);
++  } catch (error: unknown) {
++    // `init()` has already opened the database pool, and an open pool keeps the
++    // event loop alive: without this the process would set a failing exit code
++    // and then sit there forever, which an orchestrator reads as "starting",
++    // not as "crashed". Closing turns the refusal into an actual exit.
++    await app.close();
++    throw error;
++  }
++
+   await app.listen(env.API_PORT);
+   logger.info({ port: env.API_PORT, appEnv: env.APP_ENV }, 'API listening');
+ }
+ 
+ // Deliberately not top-level `await`: keeping the entry point free of it is
+ // what leaves the CommonJS fallback described in the Phase 1 plan available
+ // without a rewrite, and it costs nothing here.
+ void bootstrap().catch((error: unknown) => {
+   process.exitCode = 1;
+   // The configured logger may not exist yet — this is the path a bad
+diff --git a/apps/api/src/modules/health/health.contracts.ts b/apps/api/src/modules/health/health.contracts.ts
+new file mode 100644
+index 0000000..5220cca
+--- /dev/null
++++ b/apps/api/src/modules/health/health.contracts.ts
+@@ -0,0 +1,46 @@
++import { z } from 'zod';
++import type { DetailedReport, ReadinessReport } from './health.service.js';
++
++/**
++ * The health endpoints' response bodies, as Zod schemas, for the published
++ * OpenAPI document.
++ *
++ * These live beside the module rather than in `packages/contracts` because
++ * nothing else consumes them: the contracts package is what the frontend and
++ * the API share (backend.md §6), and no browser reads a readiness probe. An
++ * operator's `curl` and a Kubernetes probe are the clients here.
++ *
++ * Each schema is annotated with the type the handler actually returns, so the
++ * documentation cannot drift from the implementation without failing to
++ * compile — adding a field to `ReadinessReport` and forgetting it here stops
++ * the build rather than quietly publishing a stale shape.
++ */
++const dependencyStatusSchema = z.enum(['ok', 'error']);
++
++const overallStatusSchema = z.enum(['ok', 'degraded']);
++
++export const livenessReportSchema = z.object({ status: z.literal('ok') });
++
++export const readinessReportSchema: z.ZodType<ReadinessReport> = z.object({
++  status: overallStatusSchema,
++  dependencies: z.object({
++    postgres: dependencyStatusSchema,
++    redis: dependencyStatusSchema,
++    storage: dependencyStatusSchema,
++  }),
++});
++
++const probeSchema = z.object({
++  status: dependencyStatusSchema,
++  latencyMs: z.number().nonnegative(),
++});
++
++export const detailedReportSchema: z.ZodType<DetailedReport> = z.object({
++  status: overallStatusSchema,
++  checkedAt: z.string().datetime(),
++  dependencies: z.object({
++    postgres: probeSchema,
++    redis: probeSchema,
++    storage: probeSchema,
++  }),
++});
+diff --git a/apps/api/src/modules/health/health.controller.ts b/apps/api/src/modules/health/health.controller.ts
+index 4de2166..de5579e 100644
+--- a/apps/api/src/modules/health/health.controller.ts
++++ b/apps/api/src/modules/health/health.controller.ts
+@@ -1,15 +1,21 @@
+ import { Controller, Get, Inject, VERSION_NEUTRAL } from '@nestjs/common';
+ import { ERROR_CODES } from '@sentinel/contracts';
+ import { Public } from '../../common/decorators/access.decorator.js';
++import { ApiDoc } from '../../common/decorators/openapi.decorator.js';
+ import { RateLimitExempt } from '../../common/decorators/rate-limit.decorator.js';
+ import { DomainError } from '../../common/errors/domain-error.js';
++import {
++  detailedReportSchema,
++  livenessReportSchema,
++  readinessReportSchema,
++} from './health.contracts.js';
+ import { type DetailedReport, HealthService, type ReadinessReport } from './health.service.js';
+ 
+ /**
+  * `VERSION_NEUTRAL`, and excluded from the global `api` prefix in `main.ts`, so
+  * these answer at `/health/live`, `/health/ready` and `/health/detailed` —
+  * the paths operations/monitoring.md §5 and architecture/backend.md §8 both
+  * write. A probe URL that moves with an API version is a probe URL that breaks
+  * a deployment on the day the version changes.
+  */
+ @Controller({ path: 'health', version: VERSION_NEUTRAL })
+@@ -24,31 +30,54 @@ export class HealthController {
+    * outage. monitoring.md §5.
+    *
+    * `@RateLimitExempt()` is part of that guarantee, not an optimisation: the
+    * rate-limit guard reaches Redis, so a limited liveness route would depend on
+    * a backing service. The exemption is asserted by a test that watches for
+    * Redis traffic while probing, because the property previously held only
+    * because no scope of the default class happened to resolve.
+    */
+   @Public()
+   @RateLimitExempt()
++  @ApiDoc({
++    summary: 'Liveness probe.',
++    description: 'Reports that the process is running. Touches no dependency.',
++    responses: [
++      { status: 200, description: 'The process is alive.', schema: livenessReportSchema },
++    ],
++  })
+   @Get('live')
+   live(): { status: 'ok' } {
+     return { status: 'ok' };
+   }
+ 
+   /**
+    * Readiness gates traffic and deploys. A degraded result is a 503 carrying the
+    * per-dependency verdict in the shared error envelope, so the same body shape
+    * serves an operator reading it by hand and a client parsing it.
+    */
+   @Public()
++  @ApiDoc({
++    summary: 'Readiness probe.',
++    description: 'Reports whether every backing dependency is reachable.',
++    responses: [
++      {
++        status: 200,
++        description: 'Every dependency is reachable.',
++        schema: readinessReportSchema,
++      },
++      {
++        status: 503,
++        description:
++          'At least one dependency is unavailable. The envelope names which, and nothing else.',
++      },
++    ],
++  })
+   @Get('ready')
+   async ready(): Promise<ReadinessReport> {
+     const report = await this.health.checkDependencies();
+     if (report.status !== 'ok') {
+       throw new DomainError(
+         ERROR_CODES.DEPENDENCY_UNAVAILABLE,
+         'One or more dependencies are unavailable.',
+         503,
+         { dependencies: report.dependencies },
+       );
+@@ -63,15 +92,22 @@ export class HealthController {
+    * monitoring.md §5 specifies this endpoint as **authenticated**, carrying
+    * queue depth, worker heartbeats, and migration state. None of those exist in
+    * Phase 1, and neither does authentication. Shipping the operator payload
+    * behind a decorator that no guard yet reads would be an open infrastructure
+    * map with a comment claiming otherwise, so the endpoint deliberately ships
+    * with the narrowest possible superset of `/health/ready`: which dependency,
+    * how long it took. The queue, worker, and migration fields arrive in the
+    * same change as the guard that protects them, not before.
+    */
+   @Public()
++  @ApiDoc({
++    summary: 'Operator detail.',
++    description: 'Readiness plus a per-dependency probe latency.',
++    responses: [
++      { status: 200, description: 'Readiness with timings.', schema: detailedReportSchema },
++    ],
++  })
+   @Get('detailed')
+   detailed(): Promise<DetailedReport> {
+     return this.health.detailed();
+   }
+ }
+diff --git a/apps/api/src/openapi/cli.ts b/apps/api/src/openapi/cli.ts
+new file mode 100644
+index 0000000..2045e25
+--- /dev/null
++++ b/apps/api/src/openapi/cli.ts
+@@ -0,0 +1,51 @@
++import 'reflect-metadata';
++import { writeFileSync } from 'node:fs';
++import { fileURLToPath } from 'node:url';
++import { NestFactory } from '@nestjs/core';
++import type { NestExpressApplication } from '@nestjs/platform-express';
++import { apiEnvSchema, loadEnv } from '@sentinel/config';
++import { createLogger } from '@sentinel/observability';
++import { AppModule } from '../app.module.js';
++import { configureApp } from '../app-setup.js';
++import { generateOpenApiDocument } from './generate.js';
++
++/**
++ * The committed artefact, resolved relative to this file so it lands in the
++ * same place whether the script runs from `src` or from `dist`.
++ */
++export const OPENAPI_DOCUMENT_PATH = fileURLToPath(new URL('../../openapi.json', import.meta.url));
++
++/**
++ * Writes `apps/api/openapi.json`.
++ *
++ * `app.init()` is deliberately **not** called. Initialisation is what opens the
++ * database pool and registers routes; generation needs neither, because the
++ * document is built from controller metadata. Keeping it out means a
++ * regeneration in CI or on a laptop does not require Postgres, Redis or MinIO
++ * to be running — only a valid environment for the container to build.
++ */
++async function main(): Promise<void> {
++  loadEnv(apiEnvSchema);
++
++  const app = await NestFactory.create<NestExpressApplication>(AppModule, { logger: false });
++  configureApp(app);
++
++  const document = generateOpenApiDocument(app);
++  // Two-space JSON with a trailing newline, which is what the test compares
++  // against and what `.prettierignore` leaves alone.
++  writeFileSync(OPENAPI_DOCUMENT_PATH, `${JSON.stringify(document, null, 2)}\n`, 'utf8');
++
++  await app.close();
++  createLogger({ service: 'api', level: 'info', pretty: false }).info(
++    { path: OPENAPI_DOCUMENT_PATH, routes: Object.keys(document.paths).length },
++    'OpenAPI document written',
++  );
++}
++
++void main().catch((error: unknown) => {
++  process.exitCode = 1;
++  createLogger({ service: 'api', level: 'fatal', pretty: false }).fatal(
++    { err: error },
++    'OpenAPI generation failed',
++  );
++});
+diff --git a/apps/api/src/openapi/generate.integration.spec.ts b/apps/api/src/openapi/generate.integration.spec.ts
+new file mode 100644
+index 0000000..064d808
+--- /dev/null
++++ b/apps/api/src/openapi/generate.integration.spec.ts
+@@ -0,0 +1,96 @@
++import 'reflect-metadata';
++import { readFileSync } from 'node:fs';
++import { afterAll, beforeAll, describe, expect, it } from 'vitest';
++import request from 'supertest';
++import type { NestExpressApplication } from '@nestjs/platform-express';
++import {
++  assertEveryRouteDeclaresAccess,
++  findRoutesWithoutAccessDeclaration,
++} from '../common/access-assertion.js';
++import { describeRoutes, registeredRouterRoutes } from '../common/route-inventory.js';
++import { buildApp } from '../testing/build-app.js';
++import { generateOpenApiDocument } from './generate.js';
++
++/**
++ * The real application, with every module, routed by the real `configureApp`.
++ *
++ * The unit lane proves these functions behave correctly on inputs it
++ * constructs. This proves they see *this* application — the one that serves
++ * traffic — which is the half a hand-built fixture can never establish.
++ */
++let app: NestExpressApplication;
++
++beforeAll(async () => {
++  app = await buildApp();
++}, 60_000);
++
++afterAll(async () => {
++  await app.close();
++});
++
++describe('the boot-time access assertion, against the real application', () => {
++  it('sees a non-empty inventory containing the routes this API actually has', () => {
++    const paths = describeRoutes(app).map((route) => route.path);
++    expect(paths.length).toBeGreaterThan(0);
++    expect(paths).toEqual(
++      expect.arrayContaining([
++        '/health/live',
++        '/health/ready',
++        '/health/detailed',
++        '/api/v1/openapi.json',
++      ]),
++    );
++    // And the inventory is the router's, not a hopeful description of it.
++    expect(
++      describeRoutes(app)
++        .map((route) => `${route.method} ${route.path}`)
++        .sort(),
++    ).toEqual(registeredRouterRoutes(app));
++  });
++
++  it('passes, because every route in this application declares its access', () => {
++    expect(findRoutesWithoutAccessDeclaration(describeRoutes(app))).toEqual([]);
++    expect(() => {
++      assertEveryRouteDeclaresAccess(app);
++    }).not.toThrow();
++  });
++});
++
++describe('the OpenAPI document', () => {
++  it('the committed openapi.json matches what the code generates', () => {
++    // The whole point of committing it: `pnpm --filter @sentinel/api
++    // openapi:generate` is the only way this file changes, so a contract change
++    // arrives as a reviewable diff rather than as a surprise for a client.
++    const generated = generateOpenApiDocument(app);
++    const committed = JSON.parse(
++      readFileSync(new URL('../../openapi.json', import.meta.url), 'utf8'),
++    ) as unknown;
++    expect(generated).toEqual(committed);
++  });
++
++  it('documents every registered route', () => {
++    const document = generateOpenApiDocument(app);
++    expect(Object.keys(document.paths)).toEqual(
++      expect.arrayContaining(['/health/live', '/health/ready', '/health/detailed']),
++    );
++
++    // Stronger than the containment check above, and the reason drift is
++    // impossible: the document's path list is compared against Express's own
++    // router, so a route that exists but is undocumented fails here.
++    const documented = Object.entries(document.paths)
++      .flatMap(([path, item]) =>
++        Object.keys(item).map((method) => `${method.toUpperCase()} ${path}`),
++      )
++      .sort();
++    expect(documented).toEqual(registeredRouterRoutes(app));
++  });
++
++  it('is served, unauthenticated, at /api/v1/openapi.json', () => {
++    return request(app.getHttpServer())
++      .get('/api/v1/openapi.json')
++      .expect(200)
++      .expect((response: { body: unknown }) => {
++        expect(response.body).toEqual(generateOpenApiDocument(app));
++      });
++  });
++});
+diff --git a/apps/api/src/openapi/generate.spec.ts b/apps/api/src/openapi/generate.spec.ts
+new file mode 100644
+index 0000000..12720d1
+--- /dev/null
++++ b/apps/api/src/openapi/generate.spec.ts
+@@ -0,0 +1,160 @@
++import { describe, expect, it } from 'vitest';
++import { z } from 'zod';
++import type { RegisteredRoute } from '../common/route-inventory.js';
++import { buildOpenApiDocument } from './generate.js';
++
++const route = (over: Partial<RegisteredRoute>): RegisteredRoute => ({
++  controller: 'HealthController',
++  handler: 'live',
++  method: 'GET',
++  path: '/health/live',
++  access: { kind: 'public' },
++  doc: undefined,
++  ...over,
++});
++
++describe('buildOpenApiDocument', () => {
++  it('describes the document as the dialect it actually emits', () => {
++    const document = buildOpenApiDocument([route({})]);
++    expect(document.openapi).toBe('3.0.3');
++    expect(document.info.title).toBe('Sentinel API');
++    expect(document.info.version).toBe('1');
++  });
++
++  it('gives every route an operation under its own path and method', () => {
++    const document = buildOpenApiDocument([
++      route({}),
++      route({ handler: 'ready', path: '/health/ready' }),
++      route({
++        controller: 'ScansController',
++        handler: 'create',
++        method: 'POST',
++        path: '/api/v1/scans',
++      }),
++    ]);
++
++    expect(Object.keys(document.paths)).toEqual(['/api/v1/scans', '/health/live', '/health/ready']);
++    expect(document.paths['/api/v1/scans']?.['post']?.operationId).toBe('ScansController_create');
++    expect(document.paths['/health/live']?.['get']?.tags).toEqual(['Health']);
++  });
++
++  it('keeps two methods on one path side by side', () => {
++    const document = buildOpenApiDocument([
++      route({
++        controller: 'ScansController',
++        handler: 'create',
++        method: 'POST',
++        path: '/api/v1/scans',
++      }),
++      route({
++        controller: 'ScansController',
++        handler: 'list',
++        method: 'GET',
++        path: '/api/v1/scans',
++      }),
++    ]);
++    expect(Object.keys(document.paths['/api/v1/scans'] ?? {})).toEqual(['get', 'post']);
++  });
++
++  it('orders paths and methods independently of the order routes arrive in', () => {
++    // The committed artefact is diffed in CI. An ordering that depended on
++    // module import order would produce a diff on every regeneration, and a
++    // diff gate that always fires is a diff gate nobody reads.
++    const forwards = buildOpenApiDocument([
++      route({ path: '/a' }),
++      route({ path: '/b' }),
++      route({ handler: 'create', method: 'POST', path: '/a' }),
++    ]);
++    const backwards = buildOpenApiDocument([
++      route({ handler: 'create', method: 'POST', path: '/a' }),
++      route({ path: '/b' }),
++      route({ path: '/a' }),
++    ]);
++    expect(JSON.stringify(forwards)).toBe(JSON.stringify(backwards));
++  });
++
++  it('documents the shared error envelope once and points every route at it', () => {
++    const document = buildOpenApiDocument([route({}), route({ path: '/health/ready' })]);
++
++    const envelope = document.components.schemas['ErrorEnvelope'];
++    expect(envelope).toMatchObject({
++      type: 'object',
++      properties: { error: { type: 'object', required: ['code', 'message', 'requestId'] } },
++    });
++
++    for (const path of Object.keys(document.paths)) {
++      expect(document.paths[path]?.['get']?.responses['default']?.content).toEqual({
++        'application/json': { schema: { $ref: '#/components/schemas/ErrorEnvelope' } },
++      });
++    }
++  });
++
++  it('converts a declared Zod response schema into the response body', () => {
++    const document = buildOpenApiDocument([
++      route({
++        doc: {
++          summary: 'Liveness probe.',
++          description: 'Touches no dependency.',
++          responses: [
++            {
++              status: 200,
++              description: 'Alive.',
++              schema: z.object({ status: z.literal('ok') }),
++            },
++          ],
++        },
++      }),
++    ]);
++
++    const operation = document.paths['/health/live']?.['get'];
++    expect(operation?.summary).toBe('Liveness probe.');
++    expect(operation?.description).toBe('Touches no dependency.');
++    expect(operation?.responses['200']).toEqual({
++      description: 'Alive.',
++      content: {
++        'application/json': {
++          schema: {
++            type: 'object',
++            properties: { status: { type: 'string', enum: ['ok'] } },
++            required: ['status'],
++            additionalProperties: false,
++          },
++        },
++      },
++    });
++  });
++
++  it('documents a status code declared without a body', () => {
++    const document = buildOpenApiDocument([
++      route({
++        doc: {
++          summary: 'Readiness probe.',
++          responses: [{ status: 503, description: 'A dependency is unavailable.' }],
++        },
++      }),
++    ]);
++    expect(document.paths['/health/live']?.['get']?.responses['503']).toEqual({
++      description: 'A dependency is unavailable.',
++    });
++  });
++
++  it('publishes the access declaration so an authorization change shows up in the diff', () => {
++    const document = buildOpenApiDocument([
++      route({ access: { kind: 'permission', permission: 'finding.read' } }),
++    ]);
++    expect(document.paths['/health/live']?.['get']?.['x-sentinel-access']).toEqual({
++      kind: 'permission',
++      permission: 'finding.read',
++    });
++  });
++
++  it('still documents a route that declared nothing, rather than dropping it', () => {
++    // The path list comes from the router, not from `@ApiDoc`. A route that
++    // forgot to describe itself must still appear, or the document would
++    // silently under-report the API's surface.
++    const document = buildOpenApiDocument([route({ doc: undefined })]);
++    const operation = document.paths['/health/live']?.['get'];
++    expect(operation?.summary).toBeUndefined();
++    expect(Object.keys(operation?.responses ?? {})).toEqual(['default']);
++  });
++});
+diff --git a/apps/api/src/openapi/generate.ts b/apps/api/src/openapi/generate.ts
+new file mode 100644
+index 0000000..ee0c295
+--- /dev/null
++++ b/apps/api/src/openapi/generate.ts
+@@ -0,0 +1,144 @@
++import type { INestApplication } from '@nestjs/common';
++import { errorEnvelopeSchema } from '@sentinel/contracts';
++import { zodToJsonSchema } from 'zod-to-json-schema';
++import type { AccessDeclaration } from '../common/decorators/access.decorator.js';
++import type { DocumentedSchema } from '../common/decorators/openapi.decorator.js';
++import { describeRoutes, type RegisteredRoute } from '../common/route-inventory.js';
++
++/**
++ * OpenAPI 3.0, not 3.1, because `zod-to-json-schema`'s `openApi3` target emits
++ * the 3.0 dialect (`nullable`, no `$schema`). Claiming 3.1 while emitting 3.0
++ * shapes would be a document that lies about itself.
++ */
++const OPENAPI_VERSION = '3.0.3';
++
++const ERROR_ENVELOPE = 'ErrorEnvelope';
++
++/**
++ * The version of the *contract*, which is the thing `/api/v1` names — not the
++ * build. A document whose `info.version` moved with every release would produce
++ * a CI diff on every release, which is how a diff gate gets ignored.
++ */
++const CONTRACT_VERSION = '1';
++
++export interface OpenApiResponse {
++  readonly description: string;
++  readonly content?: Record<string, { readonly schema: Record<string, unknown> }>;
++}
++
++export interface OpenApiOperation {
++  readonly operationId: string;
++  readonly tags: readonly string[];
++  readonly summary?: string;
++  readonly description?: string;
++  readonly responses: Record<string, OpenApiResponse>;
++  /**
++   * The route's access declaration, published as a vendor extension.
++   *
++   * There is no `securitySchemes` entry to point at yet — authentication is
++   * Phase 2 — and inventing one would describe a control that does not exist.
++   * Publishing the declaration instead makes an authorization change visible in
++   * the committed document's diff, which is the review step backend.md §7 is
++   * asking for.
++   */
++  readonly 'x-sentinel-access'?: AccessDeclaration;
++}
++
++export interface OpenApiDocument {
++  readonly openapi: string;
++  readonly info: {
++    readonly title: string;
++    readonly version: string;
++    readonly description: string;
++  };
++  readonly paths: Record<string, Record<string, OpenApiOperation>>;
++  readonly components: { readonly schemas: Record<string, unknown> };
++}
++
++const toJsonSchema = (schema: DocumentedSchema): Record<string, unknown> =>
++  zodToJsonSchema(schema, { target: 'openApi3', $refStrategy: 'none' });
++
++function responsesFor(route: RegisteredRoute): Record<string, OpenApiResponse> {
++  const responses: Record<string, OpenApiResponse> = {};
++
++  const declared = [...(route.doc?.responses ?? [])].sort((a, b) => a.status - b.status);
++  for (const response of declared) {
++    responses[String(response.status)] = {
++      description: response.description,
++      ...(response.schema === undefined
++        ? {}
++        : { content: { 'application/json': { schema: toJsonSchema(response.schema) } } }),
++    };
++  }
++
++  // Every route, unconditionally: the global exception filter guarantees that
++  // any error this API returns is the shared envelope (backend.md §5), so it is
++  // part of every route's contract whether or not the route remembered to say
++  // so. This is also the link to the Zod contracts §7 asks for — the schema
++  // below is `packages/contracts`' own, not a copy of it.
++  responses['default'] = {
++    description: 'Error. Every error response uses the shared envelope.',
++    content: { 'application/json': { schema: { $ref: `#/components/schemas/${ERROR_ENVELOPE}` } } },
++  };
++
++  return responses;
++}
++
++function operationFor(route: RegisteredRoute): OpenApiOperation {
++  return {
++    operationId: `${route.controller}_${route.handler}`,
++    tags: [route.controller.replace(/Controller$/, '')],
++    ...(route.doc === undefined ? {} : { summary: route.doc.summary }),
++    ...(route.doc?.description === undefined ? {} : { description: route.doc.description }),
++    responses: responsesFor(route),
++    ...(route.access === undefined ? {} : { 'x-sentinel-access': route.access }),
++  };
++}
++
++/**
++ * Builds the document from an already-collected route inventory.
++ *
++ * Split from `generateOpenApiDocument` so the shape of the document can be
++ * asserted against hand-built routes — including routes this codebase cannot
++ * have, such as one carrying a permission — without standing up an application.
++ */
++export function buildOpenApiDocument(routes: readonly RegisteredRoute[]): OpenApiDocument {
++  const paths: Record<string, Record<string, OpenApiOperation>> = {};
++
++  // Sorted by path, then method, so the committed artefact changes only when
++  // the API does. An unstable key order would make every regeneration a diff.
++  const sorted = [...routes].sort((a, b) => {
++    if (a.path !== b.path) return a.path < b.path ? -1 : 1;
++    return a.method < b.method ? -1 : a.method > b.method ? 1 : 0;
++  });
++
++  for (const route of sorted) {
++    const item = (paths[route.path] ??= {});
++    item[route.method.toLowerCase()] = operationFor(route);
++  }
++
++  return {
++    openapi: OPENAPI_VERSION,
++    info: {
++      title: 'Sentinel API',
++      version: CONTRACT_VERSION,
++      description:
++        'Multi-tenant security testing, penetration-test management, and vulnerability management.',
++    },
++    paths,
++    components: { schemas: { [ERROR_ENVELOPE]: toJsonSchema(errorEnvelopeSchema) } },
++  };
++}
++
++/**
++ * The published description of this API, derived from the routes the
++ * application actually has.
++ *
++ * The path list comes from the router's own metadata rather than from a table
++ * maintained alongside it, so the document cannot describe a route that was
++ * deleted or miss one that was added — which is the only way "diffed in CI"
++ * (backend.md §7) means anything.
++ */
++export function generateOpenApiDocument(app: INestApplication): OpenApiDocument {
++  return buildOpenApiDocument(describeRoutes(app));
++}
+diff --git a/apps/api/src/openapi/openapi.controller.ts b/apps/api/src/openapi/openapi.controller.ts
+new file mode 100644
+index 0000000..e0655b6
+--- /dev/null
++++ b/apps/api/src/openapi/openapi.controller.ts
+@@ -0,0 +1,47 @@
++import { Controller, Get, Inject } from '@nestjs/common';
++import { ApplicationConfig, DiscoveryService } from '@nestjs/core';
++import { Public } from '../common/decorators/access.decorator.js';
++import { ApiDoc } from '../common/decorators/openapi.decorator.js';
++import { describeRoutesFrom } from '../common/route-inventory.js';
++import { buildOpenApiDocument, type OpenApiDocument } from './generate.js';
++
++/**
++ * Serves the OpenAPI description at `/api/v1/openapi.json`.
++ *
++ * architecture/backend.md §7 and the specification both write that path with no
++ * environment qualifier, so it is served in every environment. That is a
++ * deliberate call and not an oversight: the document describes the shape of a
++ * public API surface, it names no host, no dependency and no internal
++ * identifier, and a description that is only available where nobody looks at it
++ * is a description that goes stale.
++ *
++ * Generated per process rather than read from the committed `openapi.json`, so
++ * what is served is what this build actually routes. The committed file is
++ * asserted equal to this in `generate.integration.spec.ts` and diffed in CI.
++ */
++@Controller('openapi.json')
++export class OpenApiController {
++  private cached: OpenApiDocument | undefined;
++
++  constructor(
++    @Inject(DiscoveryService) private readonly discovery: DiscoveryService,
++    @Inject(ApplicationConfig) private readonly config: ApplicationConfig,
++  ) {}
++
++  /**
++   * `@Public()` because this route is reached without authentication — and
++   * because the boot assertion refuses to start otherwise, which makes this
++   * controller its own smallest test.
++   */
++  @Public()
++  @ApiDoc({
++    summary: 'The OpenAPI description of this API.',
++    responses: [{ status: 200, description: 'The OpenAPI 3.0 document.' }],
++  })
++  @Get()
++  read(): OpenApiDocument {
++    // Cached after the first request: the route inventory is a full walk of
++    // every controller's metadata, and it cannot change while the process runs.
++    return (this.cached ??= buildOpenApiDocument(describeRoutesFrom(this.discovery, this.config)));
++  }
++}
+diff --git a/apps/api/src/openapi/openapi.module.ts b/apps/api/src/openapi/openapi.module.ts
+new file mode 100644
+index 0000000..b993349
+--- /dev/null
++++ b/apps/api/src/openapi/openapi.module.ts
+@@ -0,0 +1,11 @@
++import { Module } from '@nestjs/common';
++import { DiscoveryModule } from '@nestjs/core';
++import { OpenApiController } from './openapi.controller.js';
++
++/**
++ * `DiscoveryModule` is imported for the controller's own injection of
++ * `DiscoveryService`; `AppModule` imports it separately for the boot-time
++ * access assertion, which resolves the same provider off the application.
++ */
++@Module({ imports: [DiscoveryModule], controllers: [OpenApiController] })
++export class OpenApiModule {}
+diff --git a/apps/api/src/testing/build-app.ts b/apps/api/src/testing/build-app.ts
+new file mode 100644
+index 0000000..84573de
+--- /dev/null
++++ b/apps/api/src/testing/build-app.ts
+@@ -0,0 +1,43 @@
++import 'reflect-metadata';
++import { fileURLToPath } from 'node:url';
++import type { Type } from '@nestjs/common';
++import type { NestExpressApplication } from '@nestjs/platform-express';
++import { Test } from '@nestjs/testing';
++import { config as loadDotenv } from 'dotenv';
++import { AppModule } from '../app.module.js';
++import { configureApp } from '../app-setup.js';
++
++// The live compose stack is the system under test. `.env` is the same file the
++// developer's own `pnpm dev` reads, so drift between the two is caught here
++// rather than in production.
++loadDotenv({ path: fileURLToPath(new URL('../../../../.env', import.meta.url)) });
++// environments.md §1: the test environment logs nothing unless a test asks for
++// it, and enforces CSP rather than merely reporting it — a policy that is only
++// ever report-only where it is asserted is a policy no test has seen block
++// anything.
++process.env.NODE_ENV = 'test';
++process.env.APP_ENV = 'test';
++
++/**
++ * The real application — every module, the real `configureApp` — built the way
++ * `bootstrap()` builds it, for the integration lane.
++ *
++ * Shared rather than copied into each spec: a second copy is a second
++ * bootstrap, and the whole point of `configureApp` is that the application a
++ * test asserts against is the application the process runs.
++ *
++ * `controllers` adds throwaway controllers alongside the real ones, for
++ * behaviour that needs a route the product does not have (a handler that
++ * throws, say).
++ */
++export async function buildApp(controllers: readonly Type[] = []): Promise<NestExpressApplication> {
++  const moduleRef = await Test.createTestingModule({
++    imports: [AppModule],
++    controllers: [...controllers],
++  }).compile();
++
++  const app = moduleRef.createNestApplication<NestExpressApplication>();
++  configureApp(app);
++  await app.init();
++  return app;
++}
+diff --git a/apps/api/src/testing/routing-app.ts b/apps/api/src/testing/routing-app.ts
+new file mode 100644
+index 0000000..5e63bac
+--- /dev/null
++++ b/apps/api/src/testing/routing-app.ts
+@@ -0,0 +1,36 @@
++import 'reflect-metadata';
++import type { Type } from '@nestjs/common';
++import { DiscoveryModule } from '@nestjs/core';
++import type { NestExpressApplication } from '@nestjs/platform-express';
++import { Test } from '@nestjs/testing';
++import { applyRouting } from '../app-setup.js';
++
++/**
++ * An application containing nothing but the given controllers, routed exactly
++ * the way production routes.
++ *
++ * Purpose-built controllers rather than the real `AppModule`: the route
++ * inventory and the boot-time access assertion have to be provable against a
++ * route that is *missing* its declaration, and no such route exists in this
++ * codebase — the assertion is what stops one existing. Building a two-line
++ * offender here is the only way to watch the check actually fail.
++ *
++ * The graph touches no Postgres, Redis or S3, so this belongs in the unit lane;
++ * anything that needs the real module graph uses `build-app.ts` and the
++ * integration lane instead.
++ *
++ * Deliberately **not** initialised: `app.init()` is what registers routes, and
++ * whether the caller remembered to run it is itself under test.
++ */
++export async function buildRoutingApp(
++  controllers: readonly Type[],
++): Promise<NestExpressApplication> {
++  const moduleRef = await Test.createTestingModule({
++    imports: [DiscoveryModule],
++    controllers: [...controllers],
++  }).compile();
++
++  const app = moduleRef.createNestApplication<NestExpressApplication>({ logger: false });
++  applyRouting(app);
++  return app;
++}
+diff --git a/apps/api/tsconfig.build.json b/apps/api/tsconfig.build.json
+index 43f7ed3..fa05a70 100644
+--- a/apps/api/tsconfig.build.json
++++ b/apps/api/tsconfig.build.json
+@@ -1,4 +1,6 @@
+ {
+   "extends": "./tsconfig.json",
+-  "exclude": ["src/**/*.spec.ts", "src/**/*.integration.spec.ts"]
++  // `src/testing` is harness, not product: it is imported only by specs, and
++  // emitting it would ship dotenv and the test bootstrap in the runtime image.
++  "exclude": ["src/**/*.spec.ts", "src/**/*.integration.spec.ts", "src/testing/**/*.ts"]
+ }
+diff --git a/eslint.config.js b/eslint.config.js
+index f09705b..5db6c22 100644
+--- a/eslint.config.js
++++ b/eslint.config.js
+@@ -129,20 +129,27 @@ export default tseslint.config(
+   // others, and so it cannot silently spread to a sibling module.
+   {
+     files: ['apps/api/src/infrastructure/prisma/**/*.ts'],
+     rules: { 'no-restricted-imports': 'off' },
+   },
+   // tests may assert on console, use the unscoped client to set up fixtures, and
+   // read process.env directly to build child-process environments for Prisma
+   // migrations and Testcontainers — a test harness is not application code.
+   // packages/db/src/testing is the shared Testcontainers harness (Task 6):
+   // not itself a spec file, but reused by every integration spec for exactly
+-  // this reason, so it gets the same exemption.
++  // this reason, so it gets the same exemption. apps/api/src/testing is the
++  // same thing for the API: it builds the real application for a spec, which
++  // means loading `.env` and pinning NODE_ENV/APP_ENV to `test`.
+   {
+-    files: ['**/*.spec.ts', '**/*.integration.spec.ts', 'packages/db/src/testing/**/*.ts'],
++    files: [
++      '**/*.spec.ts',
++      '**/*.integration.spec.ts',
++      'packages/db/src/testing/**/*.ts',
++      'apps/api/src/testing/**/*.ts',
++    ],
+     rules: {
+       'no-restricted-imports': 'off',
+       '@typescript-eslint/no-non-null-assertion': 'off',
+       'no-restricted-properties': 'off',
+     },
+   },
+ );
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index c1cd39d..716af64 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -76,20 +76,23 @@ importers:
+         version: 5.11.1
+       reflect-metadata:
+         specifier: ^0.2.2
+         version: 0.2.2
+       rxjs:
+         specifier: ^7.8.2
+         version: 7.8.2
+       zod:
+         specifier: ^3.25.76
+         version: 3.25.76
++      zod-to-json-schema:
++        specifier: ^3.25.2
++        version: 3.25.2(zod@3.25.76)
+     devDependencies:
+       '@nestjs/testing':
+         specifier: ^11.2.1
+         version: 11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.2.1)(@nestjs/platform-express@11.2.1)
+       '@types/express':
+         specifier: ^5.0.6
+         version: 5.0.6
+       '@types/supertest':
+         specifier: ^7.2.1
+         version: 7.2.1
+@@ -1759,20 +1762,21 @@ packages:
+     resolution: {integrity: sha512-Uhdk5sfqcee/9H/rCOJikYz67o0a2Tw2hGRPOG2Y1R2dg7brRe1uG0yaNQDHu+TO/uQPF/5eCapvYSmHUjt7JQ==}
+     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+ 
+   eslint-visitor-keys@5.0.1:
+     resolution: {integrity: sha512-tD40eHxA35h0PEIZNeIjkHoDR4YjjJp34biM0mDvplBe//mB+IHCqHDGV7pxF+7MklTvighcCPPZC7ynWyjdTA==}
+     engines: {node: ^20.19.0 || ^22.13.0 || >=24}
+ 
+   eslint@9.39.5:
+     resolution: {integrity: sha512-DgZS62aPLXKlnxILS/AYCoRvHaZeXceIzlXPkkGGzJWSow1aEk0lbTlxUSlyjC8jcaKxAdOnTDz+o1JFSBsyjw==}
+     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
++    deprecated: This version is no longer supported. Please see https://eslint.org/version-support for other options.
+     hasBin: true
+     peerDependencies:
+       jiti: '*'
+     peerDependenciesMeta:
+       jiti:
+         optional: true
+ 
+   espree@10.4.0:
+     resolution: {integrity: sha512-j6PAQ2uUr79PZhBjP5C5fhl8e39FmRnOjsD5lGnWrFU8i2G776tBK7+nP8KuQUTTyAZUwfQqXAgrVH5MbH9CYQ==}
+     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+@@ -3164,20 +3168,25 @@ packages:
+     engines: {node: '>=12'}
+ 
+   yocto-queue@0.1.0:
+     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
+     engines: {node: '>=10'}
+ 
+   zip-stream@6.0.1:
+     resolution: {integrity: sha512-zK7YHHz4ZXpW89AHXUPbQVGKI7uvkd3hzusTdotCg1UxyaVtg0zFJSTfW/Dq5f7OBBVnq6cZIaC8Ti4hb6dtCA==}
+     engines: {node: '>= 14'}
+ 
++  zod-to-json-schema@3.25.2:
++    resolution: {integrity: sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA==}
++    peerDependencies:
++      zod: ^3.25.28 || ^4
++
+   zod@3.25.76:
+     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+ 
+ snapshots:
+ 
+   '@aws-sdk/checksums@3.1000.28':
+     dependencies:
+       '@aws-sdk/core': 3.977.8
+       '@aws-sdk/types': 3.974.4
+       '@smithy/core': 3.33.2
+@@ -6517,11 +6526,15 @@ snapshots:
+       yargs-parser: 21.1.1
+ 
+   yocto-queue@0.1.0: {}
+ 
+   zip-stream@6.0.1:
+     dependencies:
+       archiver-utils: 5.0.2
+       compress-commons: 6.0.2
+       readable-stream: 4.7.0
+ 
++  zod-to-json-schema@3.25.2(zod@3.25.76):
++    dependencies:
++      zod: 3.25.76
++
+   zod@3.25.76: {}

@@ -301,11 +301,26 @@ of them a false factual claim in newly written prose — the twelfth instance of
 branch, and the fifth introduced while correcting an earlier one. **The commands were never the
 problem; the sentences written about them were.** Next session starts Phase 2.
 
-The execution ledger — every ruling with its cost if wrong, every review finding, per-task
-briefs and reports, and the review diffs — lives in
-`.superpowers/sdd/2026-08-20-phase-1-foundation/`. **That directory is gitignored and exists
-only on the machine that built it.** `progress.md` is the file to read first; it ends with the
-current pause state and the carry-forward rulings for Tasks 15–16.
+The execution ledger is
+[`docs/superpowers/ledger/phase-1/`](../../docs/superpowers/ledger/phase-1/). `progress.md` is the
+file to read first.
+
+**Two corrections to what this paragraph used to say, both found by auditing the directory on
+2026-08-24 rather than by re-reading the sentence.** It located the ledger at
+`.superpowers/sdd/2026-08-20-phase-1-foundation/` and called it "gitignored and exists only on the
+machine that built it" — true when written, and no longer: all 71 files were moved into the tracked
+tree above on 2026-08-24, verified byte-for-byte (2,817,988 bytes both sides), with the flat
+`task-N-brief.md` naming reshaped into zero-padded `task-NN/` folders to match Phase 2's. Ledgers
+are not gitignored any more, in any phase.
+
+And it claimed the ledger holds "every ruling with its cost if wrong, every review finding, per-task
+briefs and reports". It does not. **Only tasks 13, 14 and 15 have a review document** — tasks 1–12
+have a brief and a report and nothing else — **and Task 16 left no entry at all**, so `progress.md`
+ends at `HEAD 97cedb0`, twelve commits behind. Task 16's *work* is real and verified above with
+commands and a CI run ID; only its ledger entry is missing. The discipline decayed after Task 12 and
+nothing caught it, because nothing in CI or in review can see an ignored directory. That is the
+concrete reason Phase 2's ledger is tracked. Full audit:
+[`docs/superpowers/ledger/phase-1/README.md`](../../docs/superpowers/ledger/phase-1/README.md).
 
 Known outstanding. **None of it blocks Phase 1, which is complete.** All of it is owed to a later
 phase or to the operator:
@@ -546,12 +561,14 @@ checkpoint exists to close it.
   asserts anything. And **the reviewer's first pass is citation, not code**: re-verify every claim
   against the repository before opening a diff. Both rules exist because Phase 1's recurring
   defect was never the commands, it was the sentences written about them.
-- **The execution ledger is committed**, at
-  [`docs/superpowers/ledger/phase-2/`](../../docs/superpowers/ledger/phase-2/), unlike Phase 1's,
-  which sits in `.superpowers/` (excluded at `.gitignore:81`) and exists only on the machine that
-  built it. The safeguard that makes a committed ledger safe rather than a second source of false
-  claims: **a ledger entry never moves a status and is never cited as evidence that something
-  works.** This file, backed by captured command output, remains the only authority on status.
+- **Ledgers are committed and never gitignored**, one folder per phase under
+  [`docs/superpowers/ledger/`](../../docs/superpowers/ledger/) — `phase-1/` and `phase-2/` today.
+  Phase 1's was recovered out of gitignored `.superpowers/` on 2026-08-24; `.superpowers/` itself
+  stays ignored as the subagent tooling's scratch space, and anything written there that belongs in
+  the record is moved into the phase folder as part of the task. The safeguard that makes a
+  committed ledger safe rather than a second source of false claims: **a ledger entry never moves a
+  status and is never cited as evidence that something works.** This file, backed by captured
+  command output, remains the only authority on status.
 - **Every migration is generated with `prisma migrate dev --create-only` and its SQL reviewed by
   the operator before it is applied.** Task 1 is why this matters immediately: Prisma cannot detect
   a column rename and will emit `DROP COLUMN` + `ADD COLUMN` for `Session.expiresAt` →

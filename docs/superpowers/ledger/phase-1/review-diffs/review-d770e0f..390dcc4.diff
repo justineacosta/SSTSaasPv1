@@ -1,0 +1,467 @@
+# Review package: d770e0f..HEAD
+
+## Commits
+390dcc4 fix(config): split tsconfig into typecheck and build projects
+9fd13c6 feat(config): Zod-validated environment with boot-time failure
+
+## Files changed
+ eslint.config.js                            |  9 ++++
+ packages/config/package.json                | 26 ++++++++++
+ packages/config/src/env.spec.ts             | 80 +++++++++++++++++++++++++++++
+ packages/config/src/env.ts                  | 51 ++++++++++++++++++
+ packages/config/src/index.ts                |  3 ++
+ packages/config/src/load-env.ts             | 39 ++++++++++++++
+ packages/config/tsconfig.build.json         |  4 ++
+ packages/config/tsconfig.json               |  5 ++
+ packages/config/tsconfig/base.json          | 24 +++++++++
+ packages/config/tsconfig/library.build.json |  4 ++
+ packages/config/tsconfig/library.json       |  5 ++
+ packages/config/tsconfig/nest.json          |  7 +++
+ packages/config/tsconfig/nextjs.json        | 10 ++++
+ pnpm-lock.yaml                              | 15 ++++++
+ 14 files changed, 282 insertions(+)
+
+## Diff
+diff --git a/eslint.config.js b/eslint.config.js
+index 18f1f8b..50cdb1a 100644
+--- a/eslint.config.js
++++ b/eslint.config.js
+@@ -10,27 +10,36 @@ export default tseslint.config(
+       '**/.next/**',
+       '**/.turbo/**',
+       '**/coverage/**',
+       'packages/db/generated/**',
+     ],
+   },
+   js.configs.recommended,
+   ...tseslint.configs.recommendedTypeChecked,
+   {
+     languageOptions: {
++      // Each package's tsconfig.json (the one this project service discovers)
++      // includes every src/**/*.ts, spec files included — so the project
++      // service always finds them, at any nesting depth. Emission is kept
++      // spec-free by a separate tsconfig.build.json instead of by excluding
++      // specs from the main tsconfig. See packages/config/tsconfig.json vs.
++      // packages/config/tsconfig.build.json for the split.
+       parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
+     },
+     plugins: { import: importPlugin },
+     rules: {
+       // coding-standards.md §1 — no `any` without written justification
+       '@typescript-eslint/no-explicit-any': 'error',
+       '@typescript-eslint/no-non-null-assertion': 'error',
++      // Destructuring a key off an object purely to omit it from a `...rest`
++      // (a common way to build negative-case test fixtures) is not dead code.
++      '@typescript-eslint/no-unused-vars': ['error', { ignoreRestSiblings: true }],
+       // §5 — no floating promises
+       '@typescript-eslint/no-floating-promises': 'error',
+       '@typescript-eslint/no-misused-promises': 'error',
+       // §6 — no console.log; use the structured logger
+       'no-console': 'error',
+       // §6 — no alert/confirm/prompt
+       'no-restricted-globals': [
+         'error',
+         { name: 'alert', message: 'Use the design system dialog.' },
+         { name: 'confirm', message: 'Use ConfirmDialog.' },
+diff --git a/packages/config/package.json b/packages/config/package.json
+new file mode 100644
+index 0000000..3b4fe60
+--- /dev/null
++++ b/packages/config/package.json
+@@ -0,0 +1,26 @@
++{
++  "name": "@sentinel/config",
++  "version": "0.0.0",
++  "private": true,
++  "type": "module",
++  "main": "./dist/index.js",
++  "types": "./dist/index.d.ts",
++  "exports": {
++    ".": {
++      "types": "./dist/index.d.ts",
++      "default": "./dist/index.js"
++    },
++    "./tsconfig/*": "./tsconfig/*"
++  },
++  "scripts": {
++    "build": "tsc -p tsconfig.build.json",
++    "typecheck": "tsc -p tsconfig.json --noEmit",
++    "lint": "eslint src"
++  },
++  "dependencies": {
++    "zod": "^3.24.0"
++  },
++  "devDependencies": {
++    "typescript": "^5.7.0"
++  }
++}
+diff --git a/packages/config/src/env.spec.ts b/packages/config/src/env.spec.ts
+new file mode 100644
+index 0000000..9b0e8de
+--- /dev/null
++++ b/packages/config/src/env.spec.ts
+@@ -0,0 +1,80 @@
++import { describe, expect, it } from 'vitest';
++import { EnvValidationError, loadEnv } from './load-env.js';
++import { apiEnvSchema, sharedEnvSchema } from './env.js';
++
++const validShared = {
++  NODE_ENV: 'development',
++  APP_ENV: 'development',
++  LOG_LEVEL: 'debug',
++};
++
++const validApi = {
++  ...validShared,
++  API_PORT: '3001',
++  API_BASE_URL: 'http://localhost:3001',
++  WEB_BASE_URL: 'http://localhost:3000',
++  DATABASE_URL: 'postgresql://u:p@localhost:5432/sentinel?schema=public',
++  DIRECT_DATABASE_URL: 'postgresql://o:p@localhost:5432/sentinel?schema=public',
++  REDIS_URL: 'redis://localhost:6379',
++  STORAGE_ENDPOINT: 'http://localhost:9000',
++  STORAGE_REGION: 'us-east-1',
++  STORAGE_ACCESS_KEY_ID: 'k',
++  STORAGE_SECRET_ACCESS_KEY: 's',
++  STORAGE_FORCE_PATH_STYLE: 'true',
++  STORAGE_BUCKET_EVIDENCE: 'evidence',
++  STORAGE_BUCKET_REPORTS: 'reports',
++  STORAGE_BUCKET_UPLOADS: 'uploads',
++  STORAGE_BUCKET_EXPORTS: 'exports',
++  MAIL_HOST: 'localhost',
++  MAIL_PORT: '1025',
++  MAIL_FROM: 'Sentinel <no-reply@sentinel.local>',
++};
++
++describe('loadEnv', () => {
++  it('parses a valid environment', () => {
++    const env = loadEnv(apiEnvSchema, validApi);
++    expect(env.API_PORT).toBe(3001);
++    expect(env.STORAGE_FORCE_PATH_STYLE).toBe(true);
++  });
++
++  it('names every missing variable in the error', () => {
++    const { DATABASE_URL, REDIS_URL, ...incomplete } = validApi;
++    expect(() => loadEnv(apiEnvSchema, incomplete)).toThrow(EnvValidationError);
++    try {
++      loadEnv(apiEnvSchema, incomplete);
++    } catch (error) {
++      const err = error as EnvValidationError;
++      expect(err.variables).toContain('DATABASE_URL');
++      expect(err.variables).toContain('REDIS_URL');
++      expect(err.message).toContain('DATABASE_URL');
++    }
++  });
++
++  it('rejects a malformed URL and names the variable', () => {
++    expect(() => loadEnv(apiEnvSchema, { ...validApi, API_BASE_URL: 'not-a-url' })).toThrow(
++      /API_BASE_URL/,
++    );
++  });
++
++  it('rejects an APP_ENV outside the allowed set', () => {
++    expect(() => loadEnv(sharedEnvSchema, { ...validShared, APP_ENV: 'prod' })).toThrow(/APP_ENV/);
++  });
++
++  it('distinguishes APP_ENV from NODE_ENV', () => {
++    const env = loadEnv(sharedEnvSchema, {
++      ...validShared,
++      NODE_ENV: 'production',
++      APP_ENV: 'staging',
++    });
++    expect(env.NODE_ENV).toBe('production');
++    expect(env.APP_ENV).toBe('staging');
++  });
++
++  it('never includes a variable value in the error message', () => {
++    try {
++      loadEnv(apiEnvSchema, { ...validApi, DATABASE_URL: 'postgresql://user:hunter2@bad' });
++    } catch (error) {
++      expect((error as Error).message).not.toContain('hunter2');
++    }
++  });
++});
+diff --git a/packages/config/src/env.ts b/packages/config/src/env.ts
+new file mode 100644
+index 0000000..9cf700f
+--- /dev/null
++++ b/packages/config/src/env.ts
+@@ -0,0 +1,51 @@
++import { z } from 'zod';
++
++/** Coerces the string "true"/"false" that every env var actually is into a boolean. */
++const booleanFromString = z.enum(['true', 'false']).transform((value) => value === 'true');
++
++const port = z.coerce.number().int().min(1).max(65_535);
++
++export const sharedEnvSchema = z.object({
++  NODE_ENV: z.enum(['development', 'test', 'production']),
++  // APP_ENV is deliberately separate from NODE_ENV: staging and production both
++  // run with NODE_ENV=production but differ in ways that matter — feature flag
++  // defaults, log verbosity, and whether the deny list covers our own hosts.
++  // See .claude/operations/environments.md §3.
++  APP_ENV: z.enum(['development', 'test', 'staging', 'production']),
++  LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error', 'fatal']).default('info'),
++});
++
++export const apiEnvSchema = sharedEnvSchema.extend({
++  API_PORT: port,
++  API_BASE_URL: z.string().url(),
++  WEB_BASE_URL: z.string().url(),
++
++  DATABASE_URL: z.string().min(1).startsWith('postgresql://'),
++  DIRECT_DATABASE_URL: z.string().min(1).startsWith('postgresql://'),
++
++  REDIS_URL: z.string().min(1).startsWith('redis://'),
++
++  STORAGE_ENDPOINT: z.string().url(),
++  STORAGE_REGION: z.string().min(1),
++  STORAGE_ACCESS_KEY_ID: z.string().min(1),
++  STORAGE_SECRET_ACCESS_KEY: z.string().min(1),
++  STORAGE_FORCE_PATH_STYLE: booleanFromString,
++  STORAGE_BUCKET_EVIDENCE: z.string().min(1),
++  STORAGE_BUCKET_REPORTS: z.string().min(1),
++  STORAGE_BUCKET_UPLOADS: z.string().min(1),
++  STORAGE_BUCKET_EXPORTS: z.string().min(1),
++
++  MAIL_HOST: z.string().min(1),
++  MAIL_PORT: port,
++  MAIL_FROM: z.string().min(1),
++});
++
++export const webEnvSchema = sharedEnvSchema.extend({
++  WEB_PORT: port,
++  WEB_BASE_URL: z.string().url(),
++  API_BASE_URL: z.string().url(),
++});
++
++export type SharedEnv = z.infer<typeof sharedEnvSchema>;
++export type ApiEnv = z.infer<typeof apiEnvSchema>;
++export type WebEnv = z.infer<typeof webEnvSchema>;
+diff --git a/packages/config/src/index.ts b/packages/config/src/index.ts
+new file mode 100644
+index 0000000..a3b3629
+--- /dev/null
++++ b/packages/config/src/index.ts
+@@ -0,0 +1,3 @@
++export { apiEnvSchema, sharedEnvSchema, webEnvSchema } from './env.js';
++export type { ApiEnv, SharedEnv, WebEnv } from './env.js';
++export { EnvValidationError, loadEnv } from './load-env.js';
+diff --git a/packages/config/src/load-env.ts b/packages/config/src/load-env.ts
+new file mode 100644
+index 0000000..beee817
+--- /dev/null
++++ b/packages/config/src/load-env.ts
+@@ -0,0 +1,39 @@
++import type { z } from 'zod';
++
++/**
++ * Thrown at boot when configuration is missing or malformed.
++ *
++ * The message names the offending variables and NEVER their values — an env
++ * validation error is one of the easiest places to accidentally log a
++ * connection string containing a password.
++ */
++export class EnvValidationError extends Error {
++  readonly variables: string[];
++
++  constructor(variables: string[], detail: string) {
++    super(`Invalid environment configuration.\n${detail}`);
++    this.name = 'EnvValidationError';
++    this.variables = variables;
++  }
++}
++
++/**
++ * Parses and validates configuration. Call once, at boot. A service must never
++ * run half-configured and fail confusingly later.
++ */
++export function loadEnv<TSchema extends z.ZodTypeAny>(
++  schema: TSchema,
++  source: Record<string, string | undefined> = process.env,
++): z.infer<TSchema> {
++  const result = schema.safeParse(source);
++  if (result.success) return result.data as z.infer<TSchema>;
++
++  const issues = result.error.issues;
++  const variables = [...new Set(issues.map((issue) => String(issue.path[0] ?? '(root)')))].sort();
++  // Report the variable name and the rule it broke — never the value it held.
++  const detail = issues
++    .map((issue) => `  ${String(issue.path[0] ?? '(root)')}: ${issue.message}`)
++    .join('\n');
++
++  throw new EnvValidationError(variables, detail);
++}
+diff --git a/packages/config/tsconfig.build.json b/packages/config/tsconfig.build.json
+new file mode 100644
+index 0000000..2b875a8
+--- /dev/null
++++ b/packages/config/tsconfig.build.json
+@@ -0,0 +1,4 @@
++{
++  "extends": "./tsconfig.json",
++  "exclude": ["src/**/*.spec.ts", "src/**/*.spec.tsx", "src/**/*.integration.spec.ts"]
++}
+diff --git a/packages/config/tsconfig.json b/packages/config/tsconfig.json
+new file mode 100644
+index 0000000..5ee9c86
+--- /dev/null
++++ b/packages/config/tsconfig.json
+@@ -0,0 +1,5 @@
++{
++  "extends": "../../tsconfig.base.json",
++  "compilerOptions": { "rootDir": "src", "outDir": "dist" },
++  "include": ["src/**/*.ts"]
++}
+diff --git a/packages/config/tsconfig/base.json b/packages/config/tsconfig/base.json
+new file mode 100644
+index 0000000..3e809e1
+--- /dev/null
++++ b/packages/config/tsconfig/base.json
+@@ -0,0 +1,24 @@
++{
++  "$schema": "https://json.schemastore.org/tsconfig",
++  "compilerOptions": {
++    "target": "ES2023",
++    "lib": ["ES2023"],
++    "module": "nodenext",
++    "moduleResolution": "nodenext",
++    "strict": true,
++    "noUncheckedIndexedAccess": true,
++    "noImplicitOverride": true,
++    "exactOptionalPropertyTypes": true,
++    "noFallthroughCasesInSwitch": true,
++    "noUnusedLocals": true,
++    "noUnusedParameters": true,
++    "esModuleInterop": true,
++    "forceConsistentCasingInFileNames": true,
++    "skipLibCheck": true,
++    "declaration": true,
++    "declarationMap": true,
++    "sourceMap": true,
++    "isolatedModules": true,
++    "verbatimModuleSyntax": true
++  }
++}
+diff --git a/packages/config/tsconfig/library.build.json b/packages/config/tsconfig/library.build.json
+new file mode 100644
+index 0000000..74c4e20
+--- /dev/null
++++ b/packages/config/tsconfig/library.build.json
+@@ -0,0 +1,4 @@
++{
++  "extends": "./library.json",
++  "exclude": ["src/**/*.spec.ts", "src/**/*.spec.tsx", "src/**/*.integration.spec.ts"]
++}
+diff --git a/packages/config/tsconfig/library.json b/packages/config/tsconfig/library.json
+new file mode 100644
+index 0000000..7b6976c
+--- /dev/null
++++ b/packages/config/tsconfig/library.json
+@@ -0,0 +1,5 @@
++{
++  "extends": "../../../tsconfig.base.json",
++  "compilerOptions": { "rootDir": "src", "outDir": "dist" },
++  "include": ["src/**/*.ts"]
++}
+diff --git a/packages/config/tsconfig/nest.json b/packages/config/tsconfig/nest.json
+new file mode 100644
+index 0000000..50bf13f
+--- /dev/null
++++ b/packages/config/tsconfig/nest.json
+@@ -0,0 +1,7 @@
++{
++  "extends": "./base.json",
++  "compilerOptions": {
++    "experimentalDecorators": true,
++    "emitDecoratorMetadata": true
++  }
++}
+diff --git a/packages/config/tsconfig/nextjs.json b/packages/config/tsconfig/nextjs.json
+new file mode 100644
+index 0000000..9064842
+--- /dev/null
++++ b/packages/config/tsconfig/nextjs.json
+@@ -0,0 +1,10 @@
++{
++  "extends": "./base.json",
++  "compilerOptions": {
++    "jsx": "preserve",
++    "lib": ["ES2023", "DOM", "DOM.Iterable"],
++    "module": "esnext",
++    "moduleResolution": "bundler",
++    "noEmit": true
++  }
++}
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 2e4dcd6..9ed1ee1 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -35,20 +35,30 @@ importers:
+       typescript:
+         specifier: ^5.7.0
+         version: 5.9.3
+       typescript-eslint:
+         specifier: ^8.20.0
+         version: 8.67.0(eslint@9.39.5)(typescript@5.9.3)
+       vitest:
+         specifier: ^3.0.0
+         version: 3.2.7(@types/node@22.20.1)
+ 
++  packages/config:
++    dependencies:
++      zod:
++        specifier: ^3.24.0
++        version: 3.25.76
++    devDependencies:
++      typescript:
++        specifier: ^5.7.0
++        version: 5.9.3
++
+ packages:
+ 
+   '@emnapi/core@1.10.0':
+     resolution: {integrity: sha512-yq6OkJ4p82CAfPl0u9mQebQHKPJkY7WrIuk205cTYnYe+k2Z8YBh11FrbRG/H6ihirqcacOgl2BIO8oyMQLeXw==}
+ 
+   '@emnapi/runtime@1.10.0':
+     resolution: {integrity: sha512-ewvYlk86xUoGI0zQRNq/mC+16R1QeDlKQy21Ki3oSYXNgLb45GV1P6A0M+/s6nyCuNDqe5VpaY84BzXGwVbwFA==}
+ 
+   '@emnapi/wasi-threads@1.2.1':
+     resolution: {integrity: sha512-uTII7OYF+/Mes/MrcIOYp5yOtSMLBWSIoLPpcgwipoiKbli6k322tcoFsxoIIxPDqW01SQGAgko4EzZi2BNv2w==}
+@@ -1737,20 +1747,23 @@ packages:
+     hasBin: true
+ 
+   word-wrap@1.2.5:
+     resolution: {integrity: sha512-BN22B5eaMMI9UMtjrGd5g5eCYPpCPDUy0FJXbYsaT5zYxjFOckS53SQDE3pWkVoWpHXVb3BrYcEN4Twa55B5cA==}
+     engines: {node: '>=0.10.0'}
+ 
+   yocto-queue@0.1.0:
+     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
+     engines: {node: '>=10'}
+ 
++  zod@3.25.76:
++    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
++
+ snapshots:
+ 
+   '@emnapi/core@1.10.0':
+     dependencies:
+       '@emnapi/wasi-threads': 1.2.1
+       tslib: 2.8.1
+     optional: true
+ 
+   '@emnapi/runtime@1.10.0':
+     dependencies:
+@@ -3551,10 +3564,12 @@ snapshots:
+       isexe: 2.0.0
+ 
+   why-is-node-running@2.3.0:
+     dependencies:
+       siginfo: 2.0.0
+       stackback: 0.0.2
+ 
+   word-wrap@1.2.5: {}
+ 
+   yocto-queue@0.1.0: {}
++
++  zod@3.25.76: {}

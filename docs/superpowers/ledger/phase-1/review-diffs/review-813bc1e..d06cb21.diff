@@ -1,0 +1,890 @@
+# Review package: 813bc1e..d06cb21
+
+## Commits
+d06cb21 fix(api): reproduce Nest's full path assembly, and close four gaps around it
+
+## Files changed
+ .claude/architecture/backend.md                   | 14 ++--
+ .claude/product/roadmap.md                        | 16 +++-
+ apps/api/package.json                             |  1 +
+ apps/api/src/common/access-assertion.spec.ts      | 22 ++++++
+ apps/api/src/common/route-inventory.spec.ts       | 54 +++++++++++++
+ apps/api/src/common/route-inventory.ts            | 92 +++++++++++++++++++----
+ apps/api/src/main.ts                              |  8 +-
+ apps/api/src/modules/health/health.contracts.ts   | 20 ++++-
+ apps/api/src/modules/health/health.controller.ts  |  3 +-
+ apps/api/src/openapi/generate.integration.spec.ts | 12 +++
+ apps/api/src/openapi/generate.spec.ts             | 33 ++++++--
+ apps/api/src/openapi/generate.ts                  | 38 +++++++++-
+ apps/api/src/openapi/openapi.controller.ts        | 15 +++-
+ pnpm-lock.yaml                                    |  3 +
+ 14 files changed, 294 insertions(+), 37 deletions(-)
+
+## Diff
+diff --git a/.claude/architecture/backend.md b/.claude/architecture/backend.md
+index 140ff6c..fe6c048 100644
+--- a/.claude/architecture/backend.md
++++ b/.claude/architecture/backend.md
+@@ -84,25 +84,29 @@ assertion that reads it is `assertEveryRouteDeclaresAccess` in
+ in one message rather than the first, so one boot reveals the whole backlog.
+ 
+ Two properties of it are load-bearing and are asserted by tests, because both failure modes are
+ silent:
+ 
+ - **It runs after an explicit `await app.init()`, not merely "before `listen`".** Nest registers
+   no route until `init()` runs, and `listen()` runs it implicitly — so an assertion placed
+   immediately before `listen` inspects an empty router and passes without checking anything. The
+   assertion therefore refuses to run at all against a router with no routes.
+ - **It compares its own inventory against Express's router on every boot.** The inventory is
+-  built from controller metadata (`apps/api/src/common/route-inventory.ts`, which borrows Nest's
+-  own `RoutePathFactory` so the paths cannot disagree with the ones Nest registered). Metadata is
+-  exactly what survives when routing breaks, so a route registered outside that metadata, or a
+-  path assembled differently by a future Nest, is a boot failure rather than a route the check
+-  quietly never looked at.
++  built from controller metadata (`apps/api/src/common/route-inventory.ts`), reusing *both*
++  halves of what Nest does to a path: its own `RoutePathFactory` for assembly, then the HTTP
++  adapter's `normalizePath` — the step that rewrites legacy syntax such as `*` into `{*path}`,
++  and whose omission would make a legal `@Get('*')` refuse to boot. Metadata is exactly what
++  survives when routing breaks, so a route registered outside that metadata — including one
++  registered directly on Express with a non-string path — or a path assembled differently by a
++  future Nest, is a boot failure rather than a route the check quietly never looked at. The
++  comparison is what makes that guarantee real: nothing here relies on the reproduction being
++  correct, only on the two agreeing.
+ 
+ The check lands in Phase 1 with one module on purpose. Added in Phase 2 with thirty routes
+ already written, it would start life with a backlog of offenders and get switched off.
+ 
+ ## 4. Transactions
+ 
+ Any multi-write operation runs in one transaction, and the audit event is part of it. If the
+ change rolls back, so does the record of it.
+ 
+ Side effects — queue enqueue, email, webhook dispatch, realtime publish — happen **after
+diff --git a/.claude/product/roadmap.md b/.claude/product/roadmap.md
+index 9f79348..084fc8e 100644
+--- a/.claude/product/roadmap.md
++++ b/.claude/product/roadmap.md
+@@ -33,23 +33,33 @@ env loading), `packages/observability` (structured logging with redaction),
+ (S3-compatible adapter with mandatory tenant key prefixes), and `packages/db` (Prisma schema,
+ migrations, the mandatory tenant-scoped client, and PostgreSQL row-level security — the
+ two-layer tenant isolation control the whole roadmap depends on, covered by 40+ integration
+ tests and 20+ unit tests against a real Postgres 16).
+ 
+ **`apps/api` now boots.** A NestJS application with the request-ID middleware, the
+ security-header and CSP middleware, the global error-envelope filter, the structured logging
+ interceptor, the Zod validation pipe, the `@Public()`/`@RequirePermission()` access
+ decorators, and a `health` module answering `/health/live`, `/health/ready` and
+ `/health/detailed` against the live Postgres, Redis and MinIO stack. It has **no
+-authentication, no authorization guard, and no business endpoint**: the only routes are the
+-health probes. The boot-time assertion that every route declares its access is not written
+-yet, so the access decorators are metadata nothing reads.
++authentication and no business endpoint**: the only routes are the health probes and the
++OpenAPI document.
++
++The boot-time assertion that every route declares its access is now built: a route declaring
++neither `@Public()` nor `@RequirePermission()` refuses startup with an error naming every
++offender, and the inventory it checks is cross-checked against Express's own router on each
++boot so it cannot pass by inspecting nothing. `@Public()` is therefore load-bearing today.
++**`@RequirePermission()` is still metadata no guard reads** — the authorization guard is
++Phase 2 — so declaring a permission records an intention, it does not enforce one.
++
++The OpenAPI document is generated from the route inventory and the Zod contracts, served at
++`/api/v1/openapi.json`, and committed as `apps/api/openapi.json`; a test asserts the committed
++file is byte-identical to what the code generates. The CI diff of that file arrives in Task 14.
+ 
+ Rate limiting is built and globally registered — a Redis sliding window over the table in
+ `security/abuse-prevention.md` §1 — but it limits **nothing today**, and that distinction
+ matters more than the checkmark. No route carries any limit class: the only routes that exist
+ are the health probes, and liveness is deliberately exempt from the limiter so that it depends
+ on no backing service. What Phase 1 delivers
+ is a control that is correct and tested in advance of the endpoints it will govern, not a
+ control that is currently governing anything.
+ 
+ There is no `apps/web`, nothing is deployed, and no request reaches this code from outside a
+diff --git a/apps/api/package.json b/apps/api/package.json
+index 777e19f..e921b26 100644
+--- a/apps/api/package.json
++++ b/apps/api/package.json
+@@ -24,14 +24,15 @@
+     "reflect-metadata": "^0.2.2",
+     "rxjs": "^7.8.2",
+     "zod": "^3.25.76",
+     "zod-to-json-schema": "^3.25.2"
+   },
+   "devDependencies": {
+     "@nestjs/testing": "^11.2.1",
+     "@types/express": "^5.0.6",
+     "@types/supertest": "^7.2.1",
+     "dotenv": "^16.6.1",
++    "dotenv-cli": "^7.4.0",
+     "supertest": "^7.2.2",
+     "typescript": "^5.9.3"
+   }
+ }
+diff --git a/apps/api/src/common/access-assertion.spec.ts b/apps/api/src/common/access-assertion.spec.ts
+index 2e4e6f2..7acdade 100644
+--- a/apps/api/src/common/access-assertion.spec.ts
++++ b/apps/api/src/common/access-assertion.spec.ts
+@@ -161,11 +161,33 @@ describe('assertEveryRouteDeclaresAccess', () => {
+     try {
+       const message = messageOf(() => {
+         assertEveryRouteDeclaresAccess(app);
+       });
+       expect(message).toContain('does not match the routes Nest registered');
+       expect(message).toContain('GET /rogue');
+     } finally {
+       await app.close();
+     }
+   });
++
++  it('refuses a rogue route even when its path is not a string', async () => {
++    // The same scenario as above with a RegExp instead of a string. Express
++    // accepts one; the inventory can never produce one; so filtering it out
++    // would have left the cross-check — the last line of defence — with a blind
++    // spot exactly where out-of-band registration lives.
++    const app = await buildRoutingApp([DeclaredController]);
++    await app.init();
++    const express = app.getHttpAdapter().getInstance() as unknown as {
++      get: (path: RegExp, handler: () => void) => void;
++    };
++    express.get(/rogue/, () => {});
++    try {
++      const message = messageOf(() => {
++        assertEveryRouteDeclaresAccess(app);
++      });
++      expect(message).toContain('does not match the routes Nest registered');
++      expect(message).toContain('<unrecognised path: rogue>');
++    } finally {
++      await app.close();
++    }
++  });
+ });
+diff --git a/apps/api/src/common/route-inventory.spec.ts b/apps/api/src/common/route-inventory.spec.ts
+index 60c7629..5ad5d20 100644
+--- a/apps/api/src/common/route-inventory.spec.ts
++++ b/apps/api/src/common/route-inventory.spec.ts
+@@ -40,20 +40,35 @@ class FindingsController {
+   create(): string {
+     return 'ok';
+   }
+ 
+   /** Not a route: no HTTP method decorator, so it must not appear. */
+   helper(): string {
+     return 'ok';
+   }
+ }
+ 
++/**
++ * Legacy path syntax, which Express 5 does not accept and the adapter's
++ * `normalizePath` rewrites on the way into the router. Nothing in the product
++ * uses it today — which is exactly why the inventory could skip that step and
++ * stay green.
++ */
++@Controller('legacy')
++class LegacyPathController {
++  @Public()
++  @Get('*')
++  wildcard(): string {
++    return 'ok';
++  }
++}
++
+ const withApp = async (
+   body: (app: NestExpressApplication) => void | Promise<void>,
+ ): Promise<void> => {
+   const app = await buildRoutingApp([ProbeController, FindingsController]);
+   await app.init();
+   try {
+     await body(app);
+   } finally {
+     await app.close();
+   }
+@@ -121,22 +136,61 @@ describe('describeRoutes', () => {
+           controller: 'FindingsController',
+           handler: 'destroy',
+           method: 'DELETE',
+           path: '/api/v1/findings/:id',
+         }),
+       );
+     });
+   });
+ });
+ 
++describe('describeRoutes and legacy path syntax', () => {
++  it('reports the path the router holds, not the one the factory built', async () => {
++    // `RoutePathFactory` produces `/api/v1/legacy/*`; Express holds
++    // `/api/v1/legacy/{*path}` because the adapter's `normalizePath` converted
++    // it. An inventory that skipped that step would make a legal route
++    // unbootable, with an error blaming the checker rather than the cause.
++    const app = await buildRoutingApp([LegacyPathController]);
++    await app.init();
++    try {
++      const described = describeRoutes(app).map((route) => `${route.method} ${route.path}`);
++      expect(described).toEqual(registeredRouterRoutes(app));
++      expect(described).toEqual(['GET /api/v1/legacy/{*path}']);
++    } finally {
++      await app.close();
++    }
++  });
++});
++
+ describe('registeredRouterRoutes', () => {
+   it('is empty before init, which is what makes the boot-order guard necessary', async () => {
+     const app = await buildRoutingApp([ProbeController]);
+     try {
+       expect(registeredRouterRoutes(app)).toEqual([]);
+       await app.init();
+       expect(registeredRouterRoutes(app)).toEqual(['GET /health/live']);
+     } finally {
+       await app.close();
+     }
+   });
++
++  it('counts a path it cannot describe rather than ignoring it', async () => {
++    // Express accepts a RegExp; Nest never emits one, so a regex path can only
++    // come from registration that bypassed controller metadata — the exact case
++    // the cross-check exists to catch. Filtering it out would put the blind spot
++    // in the last line of defence.
++    const app = await buildRoutingApp([ProbeController]);
++    await app.init();
++    const express = app.getHttpAdapter().getInstance() as unknown as {
++      get: (path: RegExp, handler: () => void) => void;
++    };
++    express.get(/rogue/, () => {});
++    try {
++      expect(registeredRouterRoutes(app)).toEqual([
++        'GET /health/live',
++        'GET <unrecognised path: rogue>',
++      ]);
++    } finally {
++      await app.close();
++    }
++  });
+ });
+diff --git a/apps/api/src/common/route-inventory.ts b/apps/api/src/common/route-inventory.ts
+index a7826ba..b5894a6 100644
+--- a/apps/api/src/common/route-inventory.ts
++++ b/apps/api/src/common/route-inventory.ts
+@@ -1,26 +1,28 @@
+ import { RequestMethod } from '@nestjs/common';
+ import type { INestApplication } from '@nestjs/common';
+ // `VERSION_METADATA` and `VersionValue` are not on `@nestjs/common`'s barrel,
+ // only on these two — the same subpaths Nest's own router reads them from.
+ import { METHOD_METADATA, PATH_METADATA, VERSION_METADATA } from '@nestjs/common/constants.js';
+ import type { VersionValue } from '@nestjs/common/interfaces/index.js';
+ import { ApplicationConfig, DiscoveryService, MetadataScanner } from '@nestjs/core';
+ // Not part of `@nestjs/core`'s public index, and imported here on purpose.
+ // This class *is* the path assembly Nest's own router uses — global prefix,
+-// prefix exclusions, URI version segment, slash normalisation — so borrowing it
+-// means the inventory cannot disagree with the routes Nest registered. The
+-// alternative was a second implementation of the same 60 lines, which is
+-// exactly the drift architecture/backend.md §3 asks this assertion to prevent.
+-// If a Nest upgrade moves the file, the API fails to start rather than starting
+-// with a silently wrong inventory, and `assertEveryRouteDeclaresAccess` also
+-// compares its result against the live router on every boot.
++// prefix exclusions, URI version segment, slash normalisation. The alternative
++// was a second implementation of the same 60 lines, which is exactly the drift
++// architecture/backend.md §3 asks this assertion to prevent. If a Nest upgrade
++// moves the file, the API fails to start rather than starting with a silently
++// wrong inventory.
++//
++// It is only *half* of what Nest does, though: the router then registers
++// `adapter.normalizePath(path)` (`router-explorer.js`), which is why every
++// caller must supply that step too — see `PathNormaliser` below.
+ import { RoutePathFactory } from '@nestjs/core/router/route-path-factory.js';
+ import { ACCESS_METADATA_KEY, type AccessDeclaration } from './decorators/access.decorator.js';
+ import { OPENAPI_METADATA_KEY, type ApiDocDeclaration } from './decorators/openapi.decorator.js';
+ 
+ /** One HTTP route, as the boot-time access assertion reports it. */
+ export interface RouteDescriptor {
+   readonly controller: string;
+   readonly handler: string;
+   readonly method: string;
+   readonly path: string;
+@@ -48,32 +50,72 @@ interface ControllerClass {
+   readonly prototype: object;
+ }
+ 
+ const asPaths = (value: unknown): string[] => {
+   if (typeof value === 'string') return [value];
+   if (Array.isArray(value))
+     return value.filter((entry): entry is string => typeof entry === 'string');
+   return [];
+ };
+ 
++/**
++ * The second half of Nest's path assembly.
++ *
++ * `RoutePathFactory` builds the path; the router then registers
++ * `adapter.normalizePath(path)`, and the Express adapter's implementation runs
++ * `LegacyRouteConverter.tryConvert`, which rewrites legacy syntax — `*` becomes
++ * `{*path}`, `+` becomes `*path`, `(.*)` becomes `{*path}`. For a path with no
++ * legacy syntax it is the identity, which is why the four routes this API has
++ * today would not notice its absence.
++ *
++ * The first `@Get('*')` anyone writes would notice: the inventory would hold
++ * `/api/v1/x/*`, Express would hold `/api/v1/x/{*path}`, and
++ * `assertEveryRouteDeclaresAccess` would refuse to boot a perfectly valid route
++ * with a message blaming the checker. A security control that fails that way on
++ * a legal route is a security control someone switches off.
++ *
++ * Required rather than defaulted to the identity: a default is how a caller
++ * silently gets the wrong answer, and there are only two callers.
++ */
++export type PathNormaliser = (path: string) => string;
++
++/**
++ * The normaliser for an application's own HTTP adapter.
++ *
++ * `normalizePath` is optional on the `HttpServer` interface; an adapter without
++ * one registers paths verbatim, so the identity is the correct fallback rather
++ * than a guess.
++ */
++export const adapterPathNormaliser =
++  (adapter: { normalizePath?: (path: string) => string }): PathNormaliser =>
++  (path) =>
++    adapter.normalizePath?.(path) ?? path;
++
+ /**
+  * Builds the route inventory from controller metadata.
+  *
+- * Takes the two collaborators rather than the application so that the
+- * `/api/v1/openapi.json` handler — which has a `DiscoveryService` and an
+- * `ApplicationConfig` injected but no `INestApplication` — can call it too.
+- * Both are ordinary providers: Nest registers `ApplicationConfig` in every
+- * module, and `DiscoveryService` comes from `DiscoveryModule`.
++ * Takes its collaborators rather than the application so that the
++ * `/api/v1/openapi.json` handler — which has these injected but no
++ * `INestApplication` — can call it too. All three are ordinary providers: Nest
++ * registers `ApplicationConfig` in every module, `DiscoveryService` comes from
++ * `DiscoveryModule`, and `HttpAdapterHost` supplies the normaliser.
++ *
++ * Between `RoutePathFactory` and `normalizePath` this reproduces both halves of
++ * what Nest's router does with a path, so the inventory agrees with the routes
++ * Nest registered. That agreement is asserted rather than assumed:
++ * `assertEveryRouteDeclaresAccess` compares this result against Express's own
++ * router on every boot, and refuses to start on any difference.
+  */
+ export function describeRoutesFrom(
+   discovery: DiscoveryService,
+   config: ApplicationConfig,
++  normalizePath: PathNormaliser,
+ ): RegisteredRoute[] {
+   const factory = new RoutePathFactory(config);
+   const scanner = new MetadataScanner();
+   const versioningOptions = config.getVersioning();
+   const globalPrefix = config.getGlobalPrefix();
+   const routes: RegisteredRoute[] = [];
+ 
+   for (const wrapper of discovery.getControllers()) {
+     const controller = wrapper.metatype as ControllerClass | null | undefined;
+     if (controller === null || controller === undefined) continue;
+@@ -123,21 +165,22 @@ export function describeRoutesFrom(
+               ...(versioningOptions === undefined ? {} : { versioningOptions }),
+             },
+             requestMethod,
+           );
+ 
+           for (const path of paths) {
+             routes.push({
+               controller: controller.name,
+               handler: handlerName,
+               method: RequestMethod[requestMethod],
+-              path,
++              // The path as the router holds it, not as the factory built it.
++              path: normalizePath(path),
+               access,
+               doc,
+             });
+           }
+         }
+       }
+     }
+   }
+ 
+   return routes.sort(byMethodThenPath);
+@@ -147,31 +190,52 @@ export function describeRoutesFrom(
+ export function byMethodThenPath(a: RouteDescriptor, b: RouteDescriptor): number {
+   const left = `${a.method} ${a.path}`;
+   const right = `${b.method} ${b.path}`;
+   return left < right ? -1 : left > right ? 1 : 0;
+ }
+ 
+ export function describeRoutes(app: INestApplication): RegisteredRoute[] {
+   return describeRoutesFrom(
+     app.get(DiscoveryService, { strict: false }),
+     app.get(ApplicationConfig, { strict: false }),
++    adapterPathNormaliser(app.getHttpAdapter()),
+   );
+ }
+ 
+ /** Just enough of Express 5's router to read back what was registered on it. */
+ interface ExpressLayer {
+   readonly route?: { readonly path: unknown; readonly methods: Record<string, boolean> };
+ }
+ interface ExpressInstance {
+   readonly router?: { readonly stack?: readonly ExpressLayer[] };
+ }
+ 
++/**
++ * Every path on one registered layer, including the ones this module cannot
++ * describe.
++ *
++ * Express accepts a `RegExp` — `express.get(/^\/rogue/, ...)` — and Nest never
++ * emits one, so a non-string path can only come from registration that
++ * bypassed the controller metadata entirely. That is precisely the case the
++ * cross-check exists to catch, so dropping it would put the blind spot in the
++ * last line of defence. Rendered as a string that no described route can ever
++ * equal, it becomes a mismatch and refuses the boot.
++ */
++const registeredPathsOf = (value: unknown): string[] => {
++  if (typeof value === 'string') return [value];
++  const unrecognised = (entry: unknown): string =>
++    `<unrecognised path: ${entry instanceof RegExp ? entry.source : String(entry)}>`;
++  if (Array.isArray(value))
++    return value.map((entry: unknown) => (typeof entry === 'string' ? entry : unrecognised(entry)));
++  return [unrecognised(value)];
++};
++
+ /**
+  * `"<METHOD> <path>"` for every route the HTTP adapter has actually registered,
+  * read back off Express's own router.
+  *
+  * This is the control for the inventory above: the inventory is derived from
+  * decorator metadata, and metadata is exactly the thing that is still there
+  * when routing has stopped working. Comparing the two turns a wrong inventory
+  * into a boot failure instead of an assertion that quietly checks nothing.
+  *
+  * Empty until `app.init()` runs — which is the point; see
+@@ -181,16 +245,16 @@ export function registeredRouterRoutes(app: INestApplication): string[] {
+   // `getInstance()` is typed `any`; naming the two members read keeps that
+   // `any` from spreading past this line.
+   const instance = app.getHttpAdapter().getInstance() as unknown as ExpressInstance;
+   const found: string[] = [];
+ 
+   for (const layer of instance.router?.stack ?? []) {
+     if (layer.route === undefined) continue;
+     for (const [method, registered] of Object.entries(layer.route.methods)) {
+       if (registered !== true) continue;
+       const name = method === '_all' ? 'ALL' : method.toUpperCase();
+-      for (const path of asPaths(layer.route.path)) found.push(`${name} ${path}`);
++      for (const path of registeredPathsOf(layer.route.path)) found.push(`${name} ${path}`);
+     }
+   }
+ 
+   return found.sort();
+ }
+diff --git a/apps/api/src/main.ts b/apps/api/src/main.ts
+index 953ee78..240b54c 100644
+--- a/apps/api/src/main.ts
++++ b/apps/api/src/main.ts
+@@ -26,21 +26,27 @@ async function bootstrap(): Promise<void> {
+   // checking anything. `listen()` below sees `isInitialized` and does not
+   // repeat the work.
+   await app.init();
+   try {
+     assertEveryRouteDeclaresAccess(app);
+   } catch (error: unknown) {
+     // `init()` has already opened the database pool, and an open pool keeps the
+     // event loop alive: without this the process would set a failing exit code
+     // and then sit there forever, which an orchestrator reads as "starting",
+     // not as "crashed". Closing turns the refusal into an actual exit.
+-    await app.close();
++    try {
++      await app.close();
++    } catch {
++      // Whatever went wrong shutting down, the refusal is the error the
++      // operator needs — it names the undeclared routes. Swallowing the close
++      // failure keeps it from replacing that message.
++    }
+     throw error;
+   }
+ 
+   await app.listen(env.API_PORT);
+   logger.info({ port: env.API_PORT, appEnv: env.APP_ENV }, 'API listening');
+ }
+ 
+ // Deliberately not top-level `await`: keeping the entry point free of it is
+ // what leaves the CommonJS fallback described in the Phase 1 plan available
+ // without a rewrite, and it costs nothing here.
+diff --git a/apps/api/src/modules/health/health.contracts.ts b/apps/api/src/modules/health/health.contracts.ts
+index 5220cca..914b61c 100644
+--- a/apps/api/src/modules/health/health.contracts.ts
++++ b/apps/api/src/modules/health/health.contracts.ts
+@@ -3,31 +3,43 @@ import type { DetailedReport, ReadinessReport } from './health.service.js';
+ 
+ /**
+  * The health endpoints' response bodies, as Zod schemas, for the published
+  * OpenAPI document.
+  *
+  * These live beside the module rather than in `packages/contracts` because
+  * nothing else consumes them: the contracts package is what the frontend and
+  * the API share (backend.md §6), and no browser reads a readiness probe. An
+  * operator's `curl` and a Kubernetes probe are the clients here.
+  *
+- * Each schema is annotated with the type the handler actually returns, so the
+- * documentation cannot drift from the implementation without failing to
+- * compile — adding a field to `ReadinessReport` and forgetting it here stops
+- * the build rather than quietly publishing a stale shape.
++ * Two different bindings, and it is worth being exact about what each buys:
++ *
++ * - `livenessReportSchema` is the **source of truth**. `HealthController.live`
++ *   returns the inferred `LivenessReport`, so the schema and the response
++ *   cannot differ in either direction.
++ * - `readinessReportSchema` and `detailedReportSchema` are annotated
++ *   `z.ZodType<T>` against types `health.service.ts` already owns. That check is
++ *   **one-directional**: adding a field to `ReadinessReport` and forgetting it
++ *   here fails to compile, but adding a field *here* that the handler never
++ *   returns stays assignable and would publish silently. Those two reports are
++ *   assembled by the service from probe results rather than parsed from a
++ *   schema, so type-first is the honest direction; the gap is real and is why
++ *   the integration test asserts the served body's key shape separately.
+  */
+ const dependencyStatusSchema = z.enum(['ok', 'error']);
+ 
+ const overallStatusSchema = z.enum(['ok', 'degraded']);
+ 
+ export const livenessReportSchema = z.object({ status: z.literal('ok') });
+ 
++/** Inferred, not declared alongside: the schema above is the only definition. */
++export type LivenessReport = z.infer<typeof livenessReportSchema>;
++
+ export const readinessReportSchema: z.ZodType<ReadinessReport> = z.object({
+   status: overallStatusSchema,
+   dependencies: z.object({
+     postgres: dependencyStatusSchema,
+     redis: dependencyStatusSchema,
+     storage: dependencyStatusSchema,
+   }),
+ });
+ 
+ const probeSchema = z.object({
+diff --git a/apps/api/src/modules/health/health.controller.ts b/apps/api/src/modules/health/health.controller.ts
+index de5579e..bba4147 100644
+--- a/apps/api/src/modules/health/health.controller.ts
++++ b/apps/api/src/modules/health/health.controller.ts
+@@ -1,18 +1,19 @@
+ import { Controller, Get, Inject, VERSION_NEUTRAL } from '@nestjs/common';
+ import { ERROR_CODES } from '@sentinel/contracts';
+ import { Public } from '../../common/decorators/access.decorator.js';
+ import { ApiDoc } from '../../common/decorators/openapi.decorator.js';
+ import { RateLimitExempt } from '../../common/decorators/rate-limit.decorator.js';
+ import { DomainError } from '../../common/errors/domain-error.js';
+ import {
+   detailedReportSchema,
++  type LivenessReport,
+   livenessReportSchema,
+   readinessReportSchema,
+ } from './health.contracts.js';
+ import { type DetailedReport, HealthService, type ReadinessReport } from './health.service.js';
+ 
+ /**
+  * `VERSION_NEUTRAL`, and excluded from the global `api` prefix in `main.ts`, so
+  * these answer at `/health/live`, `/health/ready` and `/health/detailed` —
+  * the paths operations/monitoring.md §5 and architecture/backend.md §8 both
+  * write. A probe URL that moves with an API version is a probe URL that breaks
+@@ -38,21 +39,21 @@ export class HealthController {
+   @Public()
+   @RateLimitExempt()
+   @ApiDoc({
+     summary: 'Liveness probe.',
+     description: 'Reports that the process is running. Touches no dependency.',
+     responses: [
+       { status: 200, description: 'The process is alive.', schema: livenessReportSchema },
+     ],
+   })
+   @Get('live')
+-  live(): { status: 'ok' } {
++  live(): LivenessReport {
+     return { status: 'ok' };
+   }
+ 
+   /**
+    * Readiness gates traffic and deploys. A degraded result is a 503 carrying the
+    * per-dependency verdict in the shared error envelope, so the same body shape
+    * serves an operator reading it by hand and a client parsing it.
+    */
+   @Public()
+   @ApiDoc({
+diff --git a/apps/api/src/openapi/generate.integration.spec.ts b/apps/api/src/openapi/generate.integration.spec.ts
+index 064d808..c4d606f 100644
+--- a/apps/api/src/openapi/generate.integration.spec.ts
++++ b/apps/api/src/openapi/generate.integration.spec.ts
+@@ -61,20 +61,32 @@ describe('the OpenAPI document', () => {
+     // The whole point of committing it: `pnpm --filter @sentinel/api
+     // openapi:generate` is the only way this file changes, so a contract change
+     // arrives as a reviewable diff rather than as a surprise for a client.
+     const generated = generateOpenApiDocument(app);
+     const committed = JSON.parse(
+       readFileSync(new URL('../../openapi.json', import.meta.url), 'utf8'),
+     ) as unknown;
+     expect(generated).toEqual(committed);
+   });
+ 
++  it('matches it byte for byte, not merely in structure', () => {
++    // `toEqual` above is blind to key order and to formatting, so a
++    // regeneration that only reordered keys would satisfy it and still produce
++    // a diff in the CI gate that Task 14 adds. This test and that gate have to
++    // agree about what "matches" means, so this compares the exact bytes
++    // `cli.ts` writes. `.gitattributes` pins checkouts to LF, so the newline is
++    // stable across platforms.
++    const serialised = `${JSON.stringify(generateOpenApiDocument(app), null, 2)}
++`;
++    expect(readFileSync(new URL('../../openapi.json', import.meta.url), 'utf8')).toBe(serialised);
++  });
++
+   it('documents every registered route', () => {
+     const document = generateOpenApiDocument(app);
+     expect(Object.keys(document.paths)).toEqual(
+       expect.arrayContaining(['/health/live', '/health/ready', '/health/detailed']),
+     );
+ 
+     // Stronger than the containment check above, and the reason drift is
+     // impossible: the document's path list is compared against Express's own
+     // router, so a route that exists but is undocumented fails here.
+     const documented = Object.entries(document.paths)
+diff --git a/apps/api/src/openapi/generate.spec.ts b/apps/api/src/openapi/generate.spec.ts
+index 12720d1..31894fb 100644
+--- a/apps/api/src/openapi/generate.spec.ts
++++ b/apps/api/src/openapi/generate.spec.ts
+@@ -54,34 +54,37 @@ describe('buildOpenApiDocument', () => {
+       }),
+     ]);
+     expect(Object.keys(document.paths['/api/v1/scans'] ?? {})).toEqual(['get', 'post']);
+   });
+ 
+   it('orders paths and methods independently of the order routes arrive in', () => {
+     // The committed artefact is diffed in CI. An ordering that depended on
+     // module import order would produce a diff on every regeneration, and a
+     // diff gate that always fires is a diff gate nobody reads.
+     const forwards = buildOpenApiDocument([
+-      route({ path: '/a' }),
+-      route({ path: '/b' }),
++      route({ handler: 'a', path: '/a' }),
++      route({ handler: 'b', path: '/b' }),
+       route({ handler: 'create', method: 'POST', path: '/a' }),
+     ]);
+     const backwards = buildOpenApiDocument([
+       route({ handler: 'create', method: 'POST', path: '/a' }),
+-      route({ path: '/b' }),
+-      route({ path: '/a' }),
++      route({ handler: 'b', path: '/b' }),
++      route({ handler: 'a', path: '/a' }),
+     ]);
+     expect(JSON.stringify(forwards)).toBe(JSON.stringify(backwards));
+   });
+ 
+   it('documents the shared error envelope once and points every route at it', () => {
+-    const document = buildOpenApiDocument([route({}), route({ path: '/health/ready' })]);
++    const document = buildOpenApiDocument([
++      route({}),
++      route({ handler: 'ready', path: '/health/ready' }),
++    ]);
+ 
+     const envelope = document.components.schemas['ErrorEnvelope'];
+     expect(envelope).toMatchObject({
+       type: 'object',
+       properties: { error: { type: 'object', required: ['code', 'message', 'requestId'] } },
+     });
+ 
+     for (const path of Object.keys(document.paths)) {
+       expect(document.paths[path]?.['get']?.responses['default']?.content).toEqual({
+         'application/json': { schema: { $ref: '#/components/schemas/ErrorEnvelope' } },
+@@ -150,11 +153,31 @@ describe('buildOpenApiDocument', () => {
+ 
+   it('still documents a route that declared nothing, rather than dropping it', () => {
+     // The path list comes from the router, not from `@ApiDoc`. A route that
+     // forgot to describe itself must still appear, or the document would
+     // silently under-report the API's surface.
+     const document = buildOpenApiDocument([route({ doc: undefined })]);
+     const operation = document.paths['/health/live']?.['get'];
+     expect(operation?.summary).toBeUndefined();
+     expect(Object.keys(operation?.responses ?? {})).toEqual(['default']);
+   });
++
++  it('refuses a document in which two operations share an operationId', () => {
++    // One handler can legitimately serve several paths — `@Get(['a', 'b'])` or
++    // `@Version(['1', '2'])` — and every route it produces is named after that
++    // handler. Duplicate operationIds make the document invalid, and a client
++    // generator handed one silently emits a single method.
++    expect(() => buildOpenApiDocument([route({ path: '/a' }), route({ path: '/b' })])).toThrowError(
++      /duplicate operationId\(s\)[\s\S]*HealthController_live/,
++    );
++  });
++
++  it('accepts the same handler name on two different controllers', () => {
++    // Only the pair is a collision; the controller name is part of the id.
++    expect(() =>
++      buildOpenApiDocument([
++        route({ path: '/a' }),
++        route({ controller: 'ScansController', path: '/b' }),
++      ]),
++    ).not.toThrow();
++  });
+ });
+diff --git a/apps/api/src/openapi/generate.ts b/apps/api/src/openapi/generate.ts
+index ee0c295..f4a5ed3 100644
+--- a/apps/api/src/openapi/generate.ts
++++ b/apps/api/src/openapi/generate.ts
+@@ -95,34 +95,70 @@ function operationFor(route: RegisteredRoute): OpenApiOperation {
+   };
+ }
+ 
+ /**
+  * Builds the document from an already-collected route inventory.
+  *
+  * Split from `generateOpenApiDocument` so the shape of the document can be
+  * asserted against hand-built routes — including routes this codebase cannot
+  * have, such as one carrying a permission — without standing up an application.
+  */
++/**
++ * Refuses a document in which two operations share an `operationId`.
++ *
++ * One handler can legitimately produce several routes — `@Get(['a', 'b'])`, or
++ * `@Version(['1', '2'])` — and every one of them would be named
++ * `Controller_handler`. Duplicate `operationId`s make the document invalid, and
++ * the tools that consume it report that badly or not at all: a client generator
++ * silently emits one method and drops the other. Failing here means the
++ * regeneration script and the committed-document test both refuse before it can
++ * be merged.
++ */
++function assertUniqueOperationIds(operations: readonly OpenApiOperation[]): void {
++  const seen = new Map<string, number>();
++  for (const operation of operations) {
++    seen.set(operation.operationId, (seen.get(operation.operationId) ?? 0) + 1);
++  }
++  const duplicates = [...seen].filter(([, count]) => count > 1).map(([id]) => id);
++  if (duplicates.length === 0) return;
++
++  throw new Error(
++    [
++      `OpenAPI generation refused: ${duplicates.length} duplicate operationId(s).`,
++      '',
++      ...duplicates.map((id) => `  ${id}`),
++      '',
++      'An operationId must be unique. One handler serving several paths or',
++      'several versions produces one operation per path, all named after that',
++      'handler — give each its own handler.',
++    ].join('\n'),
++  );
++}
++
+ export function buildOpenApiDocument(routes: readonly RegisteredRoute[]): OpenApiDocument {
+   const paths: Record<string, Record<string, OpenApiOperation>> = {};
+ 
+   // Sorted by path, then method, so the committed artefact changes only when
+   // the API does. An unstable key order would make every regeneration a diff.
+   const sorted = [...routes].sort((a, b) => {
+     if (a.path !== b.path) return a.path < b.path ? -1 : 1;
+     return a.method < b.method ? -1 : a.method > b.method ? 1 : 0;
+   });
+ 
++  const operations: OpenApiOperation[] = [];
+   for (const route of sorted) {
++    const operation = operationFor(route);
++    operations.push(operation);
+     const item = (paths[route.path] ??= {});
+-    item[route.method.toLowerCase()] = operationFor(route);
++    item[route.method.toLowerCase()] = operation;
+   }
++  assertUniqueOperationIds(operations);
+ 
+   return {
+     openapi: OPENAPI_VERSION,
+     info: {
+       title: 'Sentinel API',
+       version: CONTRACT_VERSION,
+       description:
+         'Multi-tenant security testing, penetration-test management, and vulnerability management.',
+     },
+     paths,
+diff --git a/apps/api/src/openapi/openapi.controller.ts b/apps/api/src/openapi/openapi.controller.ts
+index e0655b6..972db5c 100644
+--- a/apps/api/src/openapi/openapi.controller.ts
++++ b/apps/api/src/openapi/openapi.controller.ts
+@@ -1,15 +1,15 @@
+ import { Controller, Get, Inject } from '@nestjs/common';
+-import { ApplicationConfig, DiscoveryService } from '@nestjs/core';
++import { ApplicationConfig, DiscoveryService, HttpAdapterHost } from '@nestjs/core';
+ import { Public } from '../common/decorators/access.decorator.js';
+ import { ApiDoc } from '../common/decorators/openapi.decorator.js';
+-import { describeRoutesFrom } from '../common/route-inventory.js';
++import { adapterPathNormaliser, describeRoutesFrom } from '../common/route-inventory.js';
+ import { buildOpenApiDocument, type OpenApiDocument } from './generate.js';
+ 
+ /**
+  * Serves the OpenAPI description at `/api/v1/openapi.json`.
+  *
+  * architecture/backend.md §7 and the specification both write that path with no
+  * environment qualifier, so it is served in every environment. That is a
+  * deliberate call and not an oversight: the document describes the shape of a
+  * public API surface, it names no host, no dependency and no internal
+  * identifier, and a description that is only available where nobody looks at it
+@@ -19,29 +19,38 @@ import { buildOpenApiDocument, type OpenApiDocument } from './generate.js';
+  * what is served is what this build actually routes. The committed file is
+  * asserted equal to this in `generate.integration.spec.ts` and diffed in CI.
+  */
+ @Controller('openapi.json')
+ export class OpenApiController {
+   private cached: OpenApiDocument | undefined;
+ 
+   constructor(
+     @Inject(DiscoveryService) private readonly discovery: DiscoveryService,
+     @Inject(ApplicationConfig) private readonly config: ApplicationConfig,
++    // The document must describe the paths the router holds, which means
++    // applying the adapter's own `normalizePath` exactly as the router does.
++    @Inject(HttpAdapterHost) private readonly adapterHost: HttpAdapterHost,
+   ) {}
+ 
+   /**
+    * `@Public()` because this route is reached without authentication — and
+    * because the boot assertion refuses to start otherwise, which makes this
+    * controller its own smallest test.
+    */
+   @Public()
+   @ApiDoc({
+     summary: 'The OpenAPI description of this API.',
+     responses: [{ status: 200, description: 'The OpenAPI 3.0 document.' }],
+   })
+   @Get()
+   read(): OpenApiDocument {
+     // Cached after the first request: the route inventory is a full walk of
+     // every controller's metadata, and it cannot change while the process runs.
+-    return (this.cached ??= buildOpenApiDocument(describeRoutesFrom(this.discovery, this.config)));
++    return (this.cached ??= buildOpenApiDocument(
++      describeRoutesFrom(
++        this.discovery,
++        this.config,
++        adapterPathNormaliser(this.adapterHost.httpAdapter),
++      ),
++    ));
+   }
+ }
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 716af64..054facc 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -92,20 +92,23 @@ importers:
+         version: 11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.2.1)(@nestjs/platform-express@11.2.1)
+       '@types/express':
+         specifier: ^5.0.6
+         version: 5.0.6
+       '@types/supertest':
+         specifier: ^7.2.1
+         version: 7.2.1
+       dotenv:
+         specifier: ^16.6.1
+         version: 16.6.1
++      dotenv-cli:
++        specifier: ^7.4.0
++        version: 7.4.4
+       supertest:
+         specifier: ^7.2.2
+         version: 7.2.2
+       typescript:
+         specifier: ^5.9.3
+         version: 5.9.3
+ 
+   packages/config:
+     dependencies:
+       zod:
