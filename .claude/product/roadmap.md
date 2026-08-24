@@ -8,13 +8,13 @@ code was written.
 Status vocabulary (specification §79): **Implemented** / **Partially Implemented** /
 **Not Implemented** / **Blocked**.
 
-## Current state — 2026-08-22
+## Current state — 2026-08-24
 
 | Phase | Scope | Status |
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
-| 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22 |
-| 2 | Identity | **Not Implemented** |
+| 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
+| 2 | Identity | **Not Implemented** — planned 2026-08-24, no code written |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -491,6 +491,61 @@ permission guards, invitations, organisation switching, `/settings/security`.
 
 *Exit:* the full authentication journey passes E2E; the authorization matrix test passes for
 every existing endpoint; sessions revoke immediately.
+
+#### Where Phase 2 starts — read this before resuming
+
+**Status is Not Implemented and nothing below changes that.** A plan is not an implementation.
+No Phase 2 code exists: `apps/api/src/modules/` still contains only `health`, and `apps/web`'s
+`(auth)` route group still holds a layout with no routes under it.
+
+**Phase 1 was re-verified on 2026-08-24 at commit `40852c1` before this plan was written**, per
+`sentinel-phase` step 2 — a status is a claim until a command proves it. All four exit criteria
+were re-run and passed: `pnpm install --frozen-lockfile`, `pnpm build` and `pnpm test` from a
+**genuine clean clone** into a scratch directory (exit 0, 32 files / **414** tests, 5.14s); the
+compose stack `Up (healthy)` on all four services; all four migrations applying to a **freshly
+created empty database**; and CI run **`32707474182`** on `40852c1` concluding `success`. Docker
+Desktop was not running at session start and was started, so criteria 2 and 3 are proven rather
+than skipped.
+
+Two figures have **moved** since Task 16 measured them, and both older numbers stay in this file
+because they were correct for the commit they describe: the unit suite is now **414 tests** where
+the Task 16 table records 403 — the E2E and CSP work in `53c3b0d`–`7479d31` added specs — and a
+clean-clone `pnpm test` now takes **5.14s** against the 8.8s recorded there. Neither is a
+correction of a false claim; they are the same measurement on a later tree.
+
+The plan is
+[`docs/superpowers/plans/2026-08-24-phase-2-identity.md`](../../docs/superpowers/plans/2026-08-24-phase-2-identity.md)
+— **18 tasks** on branch `feat/phase-2-identity`, to be executed subagent-driven the way Phase 1
+was: a fresh implementer per task, then a separate adversarial reviewer, then scoped re-reviews
+per fix round. Order: 1 schema and migrations · 2 contracts · 3 password hashing and breach check
+· 4 single-use tokens · 5 mail · 6 sessions · 7 authentication guard, CSRF and CORS · 8
+registration and verification · 9 login and lockout · 10 password reset · 11 TOTP MFA and
+recovery codes · 12 tenant resolution and the authorization guard · 13 organisations and
+switching · 14 memberships and roles · 15 invitations · 16 web auth screens · 17 web app shell
+and `/settings/security` · 18 E2E journey, docs and this file.
+
+**Six decisions were taken before the plan was written**, four of them by the operator:
+
+| Decision | Choice | ADR |
+|---|---|---|
+| Argon2 implementation | `@node-rs/argon2` — prebuilt Rust/napi binaries, no node-gyp on Windows or CI | 0014, owed by Task 3 |
+| Password breach check | Real HIBP k-anonymity client, env-flagged, off in test, **fails open** | 0015, owed by Task 3 |
+| Email delivery | Mailer port with an SMTP adapter against Mailpit; Resend deferred to the first staging deploy | 0016, owed by Task 5 |
+| Web↔API credentials | Explicit CORS allowlist with `credentials: true`, not a Next-side proxy | 0017, owed by Task 7 |
+| Pending MFA credential | A `Session` row in `PENDING_MFA` status, not a Redis-only token | 0018, owed by Task 11 |
+| Journey UI scope | Full — register, verify, login, MFA, reset, org switcher, `/settings/security`. The exit criterion says E2E, and there is no E2E without screens | — |
+
+**Two Phase 1 residuals are owed to Task 1** and are the first thing it does: `Membership`'s full
+unique index over a soft-deleting table, which makes re-inviting a removed member fail with a
+duplicate-key error, and `packages/db/src/id.ts`'s docstring example, which is not a valid ID.
+They are recorded in two different places, which is worth knowing before hunting for them: the
+`id.ts` one is a bullet in Known outstanding above, while the `Membership` one is a `KNOWN ISSUE`
+comment on the model in `packages/db/prisma/schema.prisma` and appears nowhere in this file. That
+comment assigns it to Task 16, which did not do it — Phase 2 owns membership management end to
+end, so it lands in Task 1 here.
+
+**API keys are deliberately not in Phase 2.** The `Principal` union defines the `apiKey` arm so
+downstream guards are written once, but no key is issued, accepted, or stored in this phase.
 
 ### Phase 3 — SaaS core
 Projects, assets, **asset ownership verification**, scope and scope rules with the
