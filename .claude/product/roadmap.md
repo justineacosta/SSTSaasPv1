@@ -509,6 +509,17 @@ every existing endpoint; sessions revoke immediately.
 
 #### Where Phase 2 starts — read this before resuming
 
+**If you were told "Start Task N", read these four things in this order and then begin.** Nothing
+else is needed, and re-verifying Phase 1 is not part of it:
+
+1. This section, for what Phase 2 is and how it is executed.
+2. [`docs/superpowers/ledger/phase-2/progress.md`](../../docs/superpowers/ledger/phase-2/progress.md)
+   — the task table and the **pause state**, which names the next action. Read this first among the
+   Phase 2 documents; it is the handoff.
+3. The plan's **Execution protocol** section, which is binding on every task.
+4. The plan's section for **your task only**, plus the previous task's ledger entry at
+   `docs/superpowers/ledger/phase-2/task-NN/`.
+
 **Status is Not Implemented and nothing below changes that.** A plan is not an implementation.
 No Phase 2 code exists: `apps/api/src/modules/` still contains only `health`, and `apps/web`'s
 `(auth)` route group still holds a layout with no routes under it.

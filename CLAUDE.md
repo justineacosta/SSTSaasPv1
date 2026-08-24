@@ -143,7 +143,9 @@ what remains. A file that exists is not a feature that works.
 
 Phases are built one per session where convenient. A new session reads `CLAUDE.md` (loaded
 automatically), then [`.claude/product/roadmap.md`](.claude/product/roadmap.md) for what is
-actually built, then the phase's own documents. Saying "Start Phase N" is enough.
+actually built, then the phase's own documents. Saying **"Start Phase N"** is enough — or, once
+that phase has a plan and is being built one task per session, **"Start Task N"**. Either way
+`roadmap.md`'s section for the phase names the read order and the next action.
 
 `roadmap.md` is the single source of truth for status and is updated **in the same change that
 moves the status** — a stale roadmap makes a resuming session rebuild what exists or skip what
