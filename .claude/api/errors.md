@@ -1,11 +1,19 @@
 # API errors
 
-> **Status: Partially Implemented (Phase 1, extended in Phase 2 Task 2).** §1, §2, §5 and §6 are
-> enforced by `AllExceptionsFilter` and `ZodValidationPipe` in `apps/api`. §3's codes exist in
+> **Status: Partially Implemented (Phase 1, extended in Phase 2 Tasks 2 and 3).** §1, §2, §5 and §6
+> are enforced by `AllExceptionsFilter` and `ZodValidationPipe` in `apps/api`. §3's codes exist in
 > `@sentinel/contracts`. §7's "every documented code has at least one test that produces it"
 > is **still not** met: most codes have no endpoint that can raise them yet. `UNKNOWN_FIELD`
 > stopped being one of them in Phase 2 Task 2 — see §2 — but it is raised by the pipe's unit
 > spec, not by any endpoint, because Phase 2 has not shipped one that takes a body.
+>
+> Task 3 added `PASSWORD_BREACHED` and a `PasswordBreachedError` that returns it at 422, per §2's
+> status table in [`conventions.md`](conventions.md) — a valid shape failing a domain rule. It has
+> **no producer endpoint** either; Task 8 is where registration first raises it.
+>
+> **§3's code list and `ERROR_CODES` in `@sentinel/contracts` are independent lists with no parity
+> spec between them.** A code added to one and not the other drifts silently, which has already
+> happened twice in this phase with other registries. Add to both.
 
 ## 1. Envelope
 

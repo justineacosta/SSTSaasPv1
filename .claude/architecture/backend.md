@@ -29,6 +29,13 @@ src/
 
 Each module owns `*.controller.ts`, `*.service.ts`, `*.repository.ts`, `dto/`, and tests.
 
+**A module may legitimately have fewer of those, and one already does.** `auth/` shipped in Phase 2
+Task 3 with two services, no controller and no repository: the password and breach-check services
+are pure functions of their inputs, and the endpoints that call them arrive in Tasks 8–10. Shipping
+a controller before the authentication guard (Task 7) would mean an unguarded route existing for
+several tasks, which is why its absence is deliberate rather than incomplete. The list above is what
+a module owns *when it has that concern*, not a checklist every directory must satisfy.
+
 **Dependency rules**, enforced by an import-boundary lint rule so they cannot erode:
 modules depend on `common` and `infrastructure` freely; cross-module dependencies go through
 the other module's **service**, never its repository; no circular dependencies; the domain
