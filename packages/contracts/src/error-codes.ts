@@ -27,6 +27,16 @@ export const ERROR_CODES = {
   // attempt, which is why it sits here rather than in the Auth group above.
   // 422 (api/conventions.md §2: valid shape, failed a domain rule). ADR-0015.
   PASSWORD_BREACHED: 'PASSWORD_BREACHED',
+  // ONE CODE FOR FOUR OUTCOMES, DELIBERATELY. A verification, reset or
+  // invitation token that is unknown, expired, already consumed, or superseded
+  // by a newer one all produce this and the same message. Splitting it would
+  // make the consume endpoint an oracle: "expired" confirms the token once
+  // existed, which confirms the address is registered, which is what
+  // security/authentication.md §6's "response is identical whether or not the
+  // address exists" forbids. 422 (api/conventions.md §2: valid shape, failed a
+  // domain rule) — the token passed opaqueTokenSchema, it just is not
+  // redeemable.
+  TOKEN_INVALID: 'TOKEN_INVALID',
 
   // Domain — security testing
   SCOPE_VIOLATION: 'SCOPE_VIOLATION',

@@ -324,6 +324,7 @@
                   "VERSION_CONFLICT",
                   "DUPLICATE_RESOURCE",
                   "PASSWORD_BREACHED",
+                  "TOKEN_INVALID",
                   "SCOPE_VIOLATION",
                   "ASSET_NOT_VERIFIED",
                   "ASSET_VERIFICATION_EXPIRED",
