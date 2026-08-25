@@ -4,8 +4,18 @@ import { type Argon2Parameters, parseArgon2Phc, PasswordService } from './passwo
 /**
  * Deliberately small parameters. Every assertion in this file is about which
  * numbers are embedded in a PHC string and how they compare, which is
- * independent of how expensive the numbers are — and the unit suite is not the
- * place to spend 250ms per hash. The production starting point (m=64MiB, t=3,
+ * independent of how expensive the numbers are.
+ *
+ * ~250ms is the tuning *target* in `security/authentication.md` §2, not a cost
+ * anything here has measured; ADR-0014 records the target as untuned. Measured
+ * 2026-08-25 on the development machine (Windows 11 x64, Node v26.7.0, 12
+ * logical CPUs), the configured defaults cost 37.4 ms per `hashSync` and
+ * 36.0 ms per verification. Measured for this file specifically, same date and
+ * machine: it runs in **146 ms** at the parameters below, and **1288 ms** when
+ * every parameter set in it is crudely substituted with the configured
+ * defaults. So real parameters would cost about a second here — not
+ * prohibitive, and the reduction is a CI-headroom choice on a shared runner
+ * rather than a local necessity. The production starting point (m=64MiB, t=3,
  * p=4) is fixed in `apiEnvSchema`'s defaults, and `env.spec.ts` is where that
  * is asserted.
  */

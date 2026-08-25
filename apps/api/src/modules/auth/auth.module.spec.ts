@@ -9,9 +9,15 @@ import { BreachCheckService } from './breach-check.service.js';
 import { PasswordService } from './password.service.js';
 
 /**
- * The env fields `AuthModule` reads, and nothing else. Reduced Argon2
- * parameters: this spec is about wiring, and the production ones would cost
- * ~250ms of real hashing per module build for no additional assurance.
+ * The env fields `AuthModule` reads, and nothing else.
+ *
+ * Reduced Argon2 parameters, because this spec is about wiring and the cost
+ * buys no additional assurance. The real cost of the configured defaults,
+ * measured 2026-08-25 on the development machine (Windows 11 x64, Node
+ * v26.7.0, 12 logical CPUs): **37.4 ms** for the one `hashSync` a module build
+ * performs. ~250ms is the tuning target in `security/authentication.md` §2,
+ * which ADR-0014 records as untuned — it is not an observed cost, and an
+ * earlier version of this comment asserted it as one (review 3c5d694, F3).
  */
 const env = {
   PASSWORD_ARGON2_MEMORY_KIB: 1024,
