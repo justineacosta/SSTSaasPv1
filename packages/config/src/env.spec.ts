@@ -109,7 +109,12 @@ describe('loadEnv', () => {
     // it. This is what makes the guarantee scale to every schema future tasks add,
     // instead of relying on someone remembering to test the next field by hand.
     const sentinel = 'S3CR3T-SENTINEL-VALUE';
-    const keys = Object.keys(apiEnvSchema.shape);
+    // `.innerType()`, not `.shape`: `apiEnvSchema` is a ZodEffects since the
+    // m >= 8p refinement was added, and a ZodEffects has no `.shape` — the same
+    // hazard carry-forward ruling 15 records for
+    // `updateOrganizationRequestSchema`. `.innerType()` returns the wrapped
+    // object, so this property test keeps covering every key.
+    const keys = Object.keys(apiEnvSchema.innerType().shape);
     const leaked: string[] = [];
     let throwCount = 0;
 
@@ -217,6 +222,55 @@ describe('password configuration', () => {
     expect(env.PASSWORD_ARGON2_PARALLELISM).toBe(8);
     expect(env.PASSWORD_BREACH_CHECK_ENABLED).toBe(true);
     expect(env.PASSWORD_BREACH_CHECK_TIMEOUT_MS).toBe(500);
+  });
+
+  it('refuses a memory cost below the Argon2 8 x parallelism floor, naming both variables', () => {
+    // m=8 with p=4 passes every per-field rule and then throws
+    // `Memory cost is too small` from napi inside PasswordService's constructor
+    // at Nest boot, naming neither variable (review 3c5d694, finding F9).
+    let error: EnvValidationError | undefined;
+    try {
+      loadEnv(apiEnvSchema, {
+        ...validApi,
+        PASSWORD_ARGON2_MEMORY_KIB: '8',
+        PASSWORD_ARGON2_PARALLELISM: '4',
+      });
+    } catch (caught) {
+      error = caught as EnvValidationError;
+    }
+
+    expect(error).toBeInstanceOf(EnvValidationError);
+    expect(error?.variables).toContain('PASSWORD_ARGON2_MEMORY_KIB');
+    expect(error?.variables).toContain('PASSWORD_ARGON2_PARALLELISM');
+    // Actionable, not merely "invalid": 8 x 4 = 32, and 8 / 8 = 1.
+    expect(error?.message).toContain('must be at least 32');
+    expect(error?.message).toContain('must be at most 1');
+  });
+
+  it.each([
+    // The exact boundary, measured against @node-rs/argon2@2.1.0 on 2026-08-25:
+    // m=31/p=4 throws, m=32/p=4 is fine, m=24/p=3 is fine, m=8/p=1 is fine.
+    ['32', '4'],
+    ['24', '3'],
+    ['8', '1'],
+  ])('accepts m=%s with p=%s, which is exactly on or above the 8p floor', (memory, parallelism) => {
+    expect(() =>
+      loadEnv(apiEnvSchema, {
+        ...validApi,
+        PASSWORD_ARGON2_MEMORY_KIB: memory,
+        PASSWORD_ARGON2_PARALLELISM: parallelism,
+      }),
+    ).not.toThrow();
+  });
+
+  it('refuses m=31 with p=4, one below the floor', () => {
+    expect(() =>
+      loadEnv(apiEnvSchema, {
+        ...validApi,
+        PASSWORD_ARGON2_MEMORY_KIB: '31',
+        PASSWORD_ARGON2_PARALLELISM: '4',
+      }),
+    ).toThrow(/PASSWORD_ARGON2_MEMORY_KIB/);
   });
 
   it.each([
