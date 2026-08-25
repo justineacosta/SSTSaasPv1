@@ -26,11 +26,15 @@ export const emailSchema = z.string().trim().toLowerCase().email().max(254);
  * here, and `auth.spec.ts` asserts that a 12-character all-lowercase password
  * is accepted so that anyone "helpfully" adding one sees a test go red.
  *
- * The maximum is 256. §2 says "no maximum below 128", which is a floor on the
- * maximum rather than the maximum itself: 128 exactly would refuse a real
- * generated passphrase, and no maximum at all hands an attacker a cheap
- * Argon2id CPU-exhaustion vector, because hashing cost rises with input length.
- * 256 satisfies the documented floor and bounds the cost.
+ * The maximum of 256 is NOT from that document. §2 states a minimum and the
+ * absence of composition rules; it says nothing about an upper bound, so the
+ * bound is a Task 2 orchestrator ruling and is recorded as one rather than
+ * dressed up as documentation. Its argument: an unbounded password is an
+ * Argon2id CPU-exhaustion vector at an unauthenticated endpoint, because
+ * hashing cost rises with input length, while a bound tight enough to matter
+ * would refuse a real generated passphrase. 256 is the compromise. If the
+ * security document later states its own maximum, that number wins over this
+ * one and this comment goes with it.
  *
  * NOT trimmed, unlike `emailSchema`. Leading and trailing whitespace is
  * legitimate password material; trimming it would silently change what the
