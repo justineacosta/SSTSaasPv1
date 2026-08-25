@@ -274,7 +274,16 @@ describe('C1/C2: relation traversal is invisible to layer 1, caught by layer 2 (
     await withTenantTransaction(app, orgA, (tx) =>
       tx.user.update({
         where: { id: userShared },
-        data: { memberships: { updateMany: { where: {}, data: { status: 'REMOVED' } } } },
+        // `deletedAt` accompanies `status` because
+        // Membership_status_deletedAt_agree_check requires the pair to agree:
+        // a bare `status: 'REMOVED'` is now an invalid write rather than a
+        // neutral one. The property under test is unchanged — the nested write
+        // must reach only the caller's own tenant's membership.
+        data: {
+          memberships: {
+            updateMany: { where: {}, data: { status: 'REMOVED', deletedAt: new Date() } },
+          },
+        },
       } as never),
     );
 
@@ -285,8 +294,14 @@ describe('C1/C2: relation traversal is invisible to layer 1, caught by layer 2 (
     expect(rowA?.status).toBe('REMOVED');
     expect(rowB?.status).toBe('ACTIVE');
 
-    // restore for later tests in this file
-    await owner.membership.update({ where: { id: membershipSharedA }, data: { status: 'ACTIVE' } });
+    // Restore for later tests in this file. `deletedAt` must be cleared, not
+    // just `status` reset: the row was soft-deleted by the write above, and
+    // Membership_status_deletedAt_agree_check rejects an ACTIVE row that still
+    // carries a deletedAt. Undoing a removal means undoing both halves of it.
+    await owner.membership.update({
+      where: { id: membershipSharedA },
+      data: { status: 'ACTIVE', deletedAt: null },
+    });
   });
 
   it("nested write (deleteMany): only the caller's own tenant's membership is deleted", async () => {
