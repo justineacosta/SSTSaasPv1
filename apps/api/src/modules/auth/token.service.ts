@@ -67,11 +67,18 @@ interface VerificationTokenDelegate {
   findUnique(args: { where: { tokenHash: string } }): Promise<{ userId: string } | null>;
 }
 
+/**
+ * The transaction handle, which needs one capability the delegate cannot give:
+ * a lock. See `issue` for why supersede-then-insert is unsound without it.
+ */
+export interface VerificationTokenTransaction {
+  verificationToken: VerificationTokenDelegate;
+  $queryRaw(query: TemplateStringsArray, ...values: unknown[]): Promise<unknown>;
+}
+
 export interface VerificationTokenStore {
   verificationToken: VerificationTokenDelegate;
-  $transaction<T>(
-    run: (tx: { verificationToken: VerificationTokenDelegate }) => Promise<T>,
-  ): Promise<T>;
+  $transaction<T>(run: (tx: VerificationTokenTransaction) => Promise<T>): Promise<T>;
 }
 
 export interface IssueTokenInput {
@@ -166,6 +173,33 @@ export class TokenService {
    * **The order inside the transaction is not interchangeable.** Superseding
    * after the insert would match the row just written — `consumedAt IS NULL` is
    * true of it — and consume the new token at birth.
+   *
+   * **The transaction alone does not make supersession hold, and the advisory
+   * lock is what does.** This is the defect the first round of this task
+   * shipped and the review proved. Under Postgres's default READ COMMITTED, a
+   * second transaction's `UPDATE ... WHERE consumedAt IS NULL` cannot see the
+   * first transaction's uncommitted `INSERT`, so it supersedes nothing and both
+   * rows commit live — measured at 24 of 25 rounds by the reviewer and 10 of 10
+   * by `token.service.integration.spec.ts`'s own probe before this line existed.
+   * `@@index([userId, purpose])` is not unique, so the database did not
+   * arbitrate either, and §6's "invalidated by a newer token" was a
+   * sequential-only promise.
+   *
+   * `pg_advisory_xact_lock` rather than `SELECT ... FOR UPDATE` on the `User`
+   * row: token issuance would otherwise take a row lock on `User` and contend
+   * with every ordinary write to that user — `lastLoginAt` on the login path,
+   * which Task 9 is about to add. The lock is keyed on the same pair the
+   * invariant is about, is released by commit or rollback with no unlock path
+   * to forget, and needs no migration. `hashtext` collisions are possible and
+   * harmless: the cost of one is that two unrelated users serialise their token
+   * issuance for the few milliseconds this transaction lasts.
+   *
+   * **A partial unique index on `(userId, purpose) WHERE consumedAt IS NULL` is
+   * the stronger control and is deliberately not here.** It would make the
+   * invariant the database's rather than this method's, but it turns the loser
+   * of a race into a P2002 the caller must catch and retry, and it costs a
+   * hand-written migration — Prisma can neither create nor drop a partial index
+   * (Task 1, carry-forward ruling 4). Recorded as owed rather than skipped.
    */
   async issue(input: IssueTokenInput): Promise<IssuedToken> {
     const { userId, purpose } = input;
@@ -175,6 +209,14 @@ export class TokenService {
     const id = newId('vtk');
 
     await this.store.$transaction(async (tx) => {
+      // Parameterised by the tagged template, not interpolated into SQL.
+      //
+      // The lock call sits in a subquery so the result set is a plain `int`:
+      // `pg_advisory_xact_lock` returns `void`, and `$queryRaw` fails on it with
+      // "Failed to deserialize column of type 'void'" — which is a Prisma
+      // deserialisation error raised AFTER the lock has been taken, so it would
+      // have aborted the transaction while looking like a SQL mistake.
+      await tx.$queryRaw`SELECT 1 AS locked FROM (SELECT pg_advisory_xact_lock(hashtext(${`vtk:${userId}:${purpose}`}))) AS lock_taken`;
       await tx.verificationToken.updateMany({
         where: { userId, purpose, consumedAt: null },
         data: { consumedAt: issuedAt },
