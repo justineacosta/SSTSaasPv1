@@ -58,7 +58,13 @@ const prismaStub: VerificationTokenStore & {
   $connect: () => Promise.resolve(),
   $disconnect: () => Promise.resolve(),
   verificationToken,
-  $transaction: (run) => run({ verificationToken }),
+  // `$queryRaw` is the advisory lock `issue` takes before superseding. This
+  // spec only proves the module wires up and resolves, so the stub returns an
+  // empty result set rather than pretending to lock anything — the lock's real
+  // behaviour is asserted in token.service.spec.ts (that it is issued, first,
+  // and on the right key) and in the integration spec's ten-round race (that it
+  // works).
+  $transaction: (run) => run({ verificationToken, $queryRaw: () => Promise.resolve([]) }),
 };
 
 /** Stands in for the application's global `ConfigModule`. */
