@@ -12,7 +12,7 @@ Branch: `feat/phase-2-identity`
 |---|---|---|---|
 | 1 | Identity schema, migrations, registry, Membership partial-unique fix | subagent | **Done** — [brief](task-01/brief.md) · [report](task-01/report.md) · [review](task-01/review.md) |
 | 2 | `packages/contracts` — identity contracts, Principal, TenantContext | subagent | **Done** — [brief](task-02/brief.md) · [report](task-02/report.md) · [review](task-02/review.md) · [rulings](task-02/rulings.md) |
-| 3 | Password hashing and the breach check | subagent | Not started |
+| 3 | Password hashing and the breach check | subagent | **Done** — [brief](task-03/brief.md) · [report](task-03/report.md) · [review](task-03/review.md) · [rulings](task-03/rulings.md) |
 | 4 | Single-use secret tokens | subagent | Not started |
 | 5 | Mail infrastructure and templates | subagent | Not started |
 | 6 | Session service | chained with 7 | Not started |
@@ -137,6 +137,61 @@ Full reasoning and cost-if-wrong for each is in [`task-02/rulings.md`](task-02/r
 
 19. **MFA enrolment contracts do not exist and Task 11 owns them.** Task 2 defined only
     `mfa/verify`, which `api/authentication.md` §2 documents exactly.
+
+### From Task 3
+
+Full reasoning and cost-if-wrong for each is in [`task-03/rulings.md`](task-03/rulings.md).
+
+20. **Argon2 parameters live in `apiEnvSchema`, not in constants and not in `sharedEnvSchema`.**
+    ADR-0014's reason is operational tuning. The second reason emerged during the task: config-held
+    parameters are what let the timing proof run cheaply enough to live in the unit suite at all.
+
+21. **`verify()` takes a nullable stored hash, and that signature is the security control.**
+    `verify(storedHash: string | null, password)` performs a full Argon2id verification against a
+    dummy built from live parameters when the hash is `null`. **Task 9 cannot express "no such user,
+    skip the hash" without deliberately not calling this function.** Wrap it if the shape is
+    awkward; never add an overload that lets the caller skip verification.
+
+22. **The timing spec runs at reduced Argon2 parameters, and the reason originally written beside
+    it was false.** The brief justified the reduction on production parameters costing "minutes";
+    measured, a verification is ~36 ms and the spec would cost ~1.9 s. The reduction stands on a
+    different argument — the property is parameter-independent, so real parameters buy CI flake
+    risk rather than proof. **A decision can be right while the reason written beside it is false,
+    and the false reason is still a defect.**
+
+23. **250 ms is a documented target, never an observed cost.** ADR-0014 says the target is untuned.
+    No comment, report or document may state it as a measurement. Same class as ruling 11.
+
+24. **Timing equality holds against the dummy, not against legacy hashes after a parameter raise.**
+    A pre-raise stored hash verifies at old, cheaper parameters while an absent account verifies at
+    current ones — measured 35.9 ms vs 7.7 ms, 4.6×. It is an enumeration oracle pointing the
+    opposite way from the one Task 3 closes, and **it opens on the day an operator raises the
+    parameters. Binds Task 9.**
+
+25. **A corrupted stored credential is silently indistinguishable from a wrong password.**
+    `runVerification` swallows every argon2 error, correctly (the message derives from the stored
+    hash). Nothing logs it. **Task 9 owns adding a safe signal**, where a user id exists to attach.
+
+26. **`PasswordBreachedError` already exists — Task 8 must not build a second.** 422 per
+    `api/conventions.md` §2, code `PASSWORD_BREACHED`, and its spec pins that nothing hex-shaped
+    reaches the message or details.
+
+27. **`PASSWORD_BREACHED` is in both error lists, which still have no parity spec between them.**
+    Same shape as rulings 5 and 13. Any later task adding a code adds it to both; a task with spare
+    room should build the spec, following `packages/db/src/enum-parity.spec.ts`.
+
+28. **The breach check is off by default and fails open, so no task may assume it ran.** Tasks 8
+    and 10 treat a breached password as a refusal that *may* happen, never as a guarantee that a
+    stored password is unbreached. **Owed and not built:** a metric and alert on the fail-open rate —
+    ADR-0015 names its absence as a real gap.
+
+29. **`needsRehash` is one-directional and false whenever `valid` is false.** A hash stronger than
+    current configuration is never downgraded; a credential that just failed is never rehashed.
+
+30. **`apiEnvSchema` is now a `ZodEffects` — the same trap as ruling 15.** `.extend()`,
+    `.partial()`, `.merge()` and `.shape` are unavailable. **A later task adding an API environment
+    variable adds it inside the base object, before the refinement.** `pnpm typecheck` catches a
+    mistake here.
 
 ## Pause state
 
