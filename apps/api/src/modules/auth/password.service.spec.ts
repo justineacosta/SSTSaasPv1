@@ -52,15 +52,40 @@ describe('PasswordService rehashing', () => {
     });
   });
 
+  // Each row differs from its raised service on EXACTLY the named axis, and the
+  // rows are written as explicit stored/raised pairs for that reason. An
+  // earlier version compared every row against one raised service of
+  // {8192, 2, 2}, so the memory-cost and time-cost rows also differed on
+  // parallelism and passed on that clause alone — deleting either of the other
+  // two comparisons from `needsRehash` left the whole unit project green
+  // (review 3c5d694, finding F1, mutations E and F). A test whose title claims
+  // independence has to be independent.
   it.each([
-    ['a lower memory cost', { memoryCostKib: 4096, timeCost: 2, parallelism: 1 }],
-    ['a lower time cost', { memoryCostKib: 8192, timeCost: 1, parallelism: 1 }],
-    ['a lower parallelism', { memoryCostKib: 8192, timeCost: 2, parallelism: 1 }],
-  ])('flags %s independently of the other two axes', async (_name, weaker) => {
-    const stored = await new PasswordService(weaker).hash(PASSWORD);
-    const raised = new PasswordService({ memoryCostKib: 8192, timeCost: 2, parallelism: 2 });
-    expect(await raised.verify(stored, PASSWORD)).toEqual({ valid: true, needsRehash: true });
-  });
+    [
+      'a lower memory cost',
+      { memoryCostKib: 4096, timeCost: 2, parallelism: 1 },
+      { memoryCostKib: 8192, timeCost: 2, parallelism: 1 },
+    ],
+    [
+      'a lower time cost',
+      { memoryCostKib: 8192, timeCost: 1, parallelism: 1 },
+      { memoryCostKib: 8192, timeCost: 2, parallelism: 1 },
+    ],
+    [
+      'a lower parallelism',
+      { memoryCostKib: 8192, timeCost: 2, parallelism: 1 },
+      { memoryCostKib: 8192, timeCost: 2, parallelism: 2 },
+    ],
+  ])(
+    'flags %s independently of the other two axes',
+    async (_name, weaker: Argon2Parameters, raised: Argon2Parameters) => {
+      const stored = await new PasswordService(weaker).hash(PASSWORD);
+      expect(await new PasswordService(raised).verify(stored, PASSWORD)).toEqual({
+        valid: true,
+        needsRehash: true,
+      });
+    },
+  );
 
   it('leaves a hash stronger than current configuration alone', async () => {
     // Lowering a configured parameter must never rewrite an existing
