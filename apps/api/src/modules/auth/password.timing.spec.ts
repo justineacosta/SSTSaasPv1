@@ -46,11 +46,16 @@ const SAMPLES = 21;
  * Six more by the reviewer (3c5d694, finding F6): 0.0269, 0.0269, **0.0737**,
  * 0.0106, 0.0536, 0.0081. Medians ranged 7.4–10.1 ms.
  *
- * **Worst observed spread over all eleven: 7.37%**, so the headroom at 0.25 is
- * about **3.4×**, not the 5× an earlier version of this comment claimed off the
- * first five runs alone. Still ample, and recorded at the true figure so nobody
- * later tightens the tolerance on the strength of a number that was never the
- * worst.
+ * Six more by the re-reviewer: worst **0.0784**. Seventeen runs in total.
+ *
+ * **Do not quote a headroom multiple off these numbers, and do not tighten the
+ * tolerance towards the worst one.** Every batch of samples so far has found a
+ * new maximum — 4.86% off the first five, 7.37% off eleven, 7.84% off
+ * seventeen — which is what an unbounded jitter distribution does, and is
+ * exactly why the two earlier versions of this comment each quoted a headroom
+ * ("5×", then "3.4×") that the next batch invalidated. The observed maxima
+ * bound nothing; they only show the order of magnitude. 0.25 is set from the
+ * *gap* argument below, not from a multiple of the worst sample.
  *
  * The headroom is deliberate. This assertion is not trying to resolve a few
  * percent of scheduler jitter on a shared CI runner; it is trying to catch a

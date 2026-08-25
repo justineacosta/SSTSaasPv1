@@ -4,6 +4,7 @@ import { createLogger, type Logger } from '@sentinel/observability';
 import {
   type BreachCheckOptions,
   BreachCheckService,
+  fetchRangeTransport,
   type HibpRangeTransport,
   type RangeResponse,
 } from './breach-check.service.js';
@@ -289,5 +290,62 @@ describe('BreachCheckService logging', () => {
     );
     await service.isBreached(PASSWORD);
     expect(logLines()).toHaveLength(0);
+  });
+});
+
+/**
+ * The default transport is the one piece of this module the harness above never
+ * exercises — every other spec injects a fake, deliberately, so that no spec
+ * touches the network. That left `redirect: 'error'` as a security property with
+ * nothing standing behind it: the re-review of the fix round measured that
+ * deleting the line leaves the whole file green (review 3c5d694, re-review
+ * section).
+ *
+ * These two tests close that. `globalThis.fetch` is stubbed rather than called,
+ * so this still reaches no network.
+ */
+describe('fetchRangeTransport', () => {
+  function stubFetch(): { init: () => RequestInit | undefined; restore: () => void } {
+    const original = globalThis.fetch;
+    let seen: RequestInit | undefined;
+    globalThis.fetch = ((_url: string, init?: RequestInit) => {
+      seen = init;
+      return Promise.resolve(new Response('', { status: 200 }));
+    }) as typeof fetch;
+    return { init: () => seen, restore: () => void (globalThis.fetch = original) };
+  }
+
+  it('refuses to follow a redirect', async () => {
+    const { init, restore } = stubFetch();
+    try {
+      await fetchRangeTransport('https://api.pwnedpasswords.com/range/ABF7A', {
+        headers: { 'Add-Padding': 'true' },
+        signal: AbortSignal.timeout(1_000),
+      });
+
+      // A followed redirect goes wherever the responding server points,
+      // including loopback, link-local and metadata ranges, and this repository
+      // has no SSRF guard yet. Deleting the property from the service must turn
+      // this red.
+      expect(init()?.redirect).toBe('error');
+    } finally {
+      restore();
+    }
+  });
+
+  it('passes the caller headers and abort signal through unchanged', async () => {
+    const { init, restore } = stubFetch();
+    const signal = AbortSignal.timeout(1_000);
+    try {
+      await fetchRangeTransport('https://api.pwnedpasswords.com/range/ABF7A', {
+        headers: { 'Add-Padding': 'true' },
+        signal,
+      });
+
+      expect(init()?.headers).toEqual({ 'Add-Padding': 'true' });
+      expect(init()?.signal).toBe(signal);
+    } finally {
+      restore();
+    }
   });
 });
