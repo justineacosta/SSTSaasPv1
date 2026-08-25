@@ -195,34 +195,46 @@ Full reasoning and cost-if-wrong for each is in [`task-03/rulings.md`](task-03/r
 
 ## Pause state
 
-**2026-08-25 — Task 2 complete and verified; Task 3 is next.**
+**2026-08-25 — Task 3 complete and verified; Task 4 is next.**
 
-Task 2 landed the identity wire contracts in `packages/contracts` — `auth.ts`, `organizations.ts`,
-`memberships.ts`, `invitations.ts`, `principal.ts`, `tenant-context.ts`, `timestamps.ts`, a
-rebuilt `ids.ts` with one source-of-truth prefix map, and a bounded list query — plus the four
-new prefixes in `packages/db`'s `ID_PREFIXES`, two parity specs guarding the prefix and enum
-restatements against silent drift, and a producer for `UNKNOWN_FIELD` in `ZodValidationPipe`.
-Evidence is in `roadmap.md`; the commands and exit codes are in [`task-02/report.md`](task-02/report.md).
+Task 3 landed `PasswordService` and `BreachCheckService` in `apps/api/src/modules/auth/`, six
+environment variables on `apiEnvSchema`, the `PASSWORD_BREACHED` code in both error lists, a 422
+`PasswordBreachedError` with no producer until Task 8, and ADRs
+[0014](../../../../.claude/decisions/ADR-0014-argon2-implementation.md) and
+[0015](../../../../.claude/decisions/ADR-0015-password-breach-check-fails-open.md) — both written
+and committed **before** the implementation, deliberately. Evidence is in `roadmap.md`; the commands
+and exit codes are in [`task-03/report.md`](task-03/report.md).
 
-**Eleven review findings, two of them High, and both High ones were false sentences rather than
-bad code** — a quotation attributed to a document that does not contain it, and a wrong cause
-given for a commit. That is the same defect class that produced twelve instances during Phase 1.
-All eleven are dispositioned in [`task-02/review.md`](task-02/review.md).
+**Three Medium findings, eight Low, no High — and for the first time on this branch, the citation
+pass found no false sentence about a document.** Roughly forty claims checked, no invented
+quotation, no misattribution. Both Medium code findings were tests that stayed green under a real
+violation, which is Task 2's defect shape found in two new places and fixed. Dispositions are in
+[`task-03/rulings.md`](task-03/rulings.md).
 
-**Nothing authenticates anybody yet.** `apps/api/src/modules/` still contains only `health`, the
-committed `openapi.json` still publishes four routes, and `apps/web/app/(auth)/` still holds a
-layout with no routes under it. A schema is not an endpoint.
+**The worst finding was the orchestrator's own brief**, not the implementer's work: it justified
+reducing the timing spec's Argon2 parameters on a cost that was wrong by about 100×. Ruling 22.
 
-**The branch is on `origin` and CI is green.** `feat/phase-2-identity` at `6d6b582`, PR #5 against
-`main`, CI run `32804873458` concluding `success` on `ubuntu-latest`. The operator moved the first
-CI run forward from Checkpoint A because Task 3 introduces the first native binary dependency.
-Evidence and the GitGuardian false-positive determination are in `roadmap.md`, which remains the
-only authority on status.
+**Nothing authenticates anybody yet.** `apps/api/src/modules/` now holds `auth` beside `health`, but
+`AuthModule` registers two providers and **no controller**; the committed `openapi.json` still
+publishes four routes, and `apps/web/app/(auth)/` still holds a layout with no routes under it. A
+service nothing calls is not a feature.
 
-**Next action:** Task 3 — password hashing (`@node-rs/argon2`) and the HIBP breach check, with
-ADR-0014 and ADR-0015 — in a new session, starting with `sentinel-phase`. It is a self-contained
-task: fresh implementer subagent plus a fresh adversarial reviewer. Read carry-forward rulings 11
-and 16 before starting: **the password ceiling of 256 stands on the Argon2id cost argument, not
-on any sentence in `authentication.md` §2**, and `passwordSchema` in
-`packages/contracts/src/auth.ts` already fixes the policy — Task 3 hashes, it does not redefine
-the rule.
+**Branching changed, and a resuming session must not miss it.** PR #5 was **rebase-merged** into
+`main` on 2026-08-25 at 04:37Z, so `feat/phase-2-identity` is spent history — identical tree,
+duplicate commits. Task 3 was built on **`feat/phase-2-task-03`, cut from `main`**. Cut later tasks
+from `main` the same way, one branch per task.
+
+**Next action:** Task 4 — single-use secret tokens — in a new session, starting with
+`sentinel-phase`. It is a self-contained task: fresh implementer subagent plus a fresh adversarial
+reviewer. It depends on Task 2 only, so nothing from Task 3 blocks it.
+
+Before starting Task 4, read carry-forward rulings **14** (a validation failure must never hide
+behind a different code), **27** (an error code goes into *both* lists, which still have no parity
+spec) and **30** (`apiEnvSchema` is a `ZodEffects` now — add variables inside the base object, not
+by extending it). Ruling 27 matters most: Task 4 mints and hashes tokens, and it is the kind of task
+that adds a code.
+
+**Task 9 inherits two open security items** recorded as rulings 24 and 25, and neither is a defect
+in Task 3's code: timing equality does not hold against stored hashes written before a parameter
+raise, and a corrupted stored credential is silently indistinguishable from a wrong password. Put
+both in Task 9's brief when it is written.
