@@ -62,7 +62,7 @@ describe('membershipResponseSchema', () => {
     expect(membershipResponseSchema.parse(MEMBERSHIP).user.email).toBe('alice@example.com');
   });
 
-  it('matches the Prisma MembershipStatus enum exactly', () => {
+  it('pins the status list and rejects a value outside it (see enum-parity.spec.ts for the schema cross-check)', () => {
     expect([...MEMBERSHIP_STATUSES]).toEqual(['ACTIVE', 'INVITED', 'REMOVED']);
     expect(membershipResponseSchema.safeParse({ ...MEMBERSHIP, status: 'PENDING' }).success).toBe(
       false,
@@ -120,14 +120,14 @@ describe('the collection envelopes', () => {
     expect(
       membershipCollectionSchema.parse({
         data: [MEMBERSHIP],
-        pagination: { nextCursor: null, hasMore: false },
+        pagination: { nextCursor: null, hasMore: false, limit: 50 },
       }).data,
     ).toHaveLength(1);
 
     expect(
       roleCollectionSchema.parse({
         data: [],
-        pagination: { nextCursor: null, hasMore: false },
+        pagination: { nextCursor: null, hasMore: false, limit: 50 },
       }).data,
     ).toHaveLength(0);
   });

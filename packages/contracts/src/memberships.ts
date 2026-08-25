@@ -18,7 +18,12 @@ export const systemRoleSchema = z.enum(SYSTEM_ROLES);
 /**
  * The Prisma `MembershipStatus` enum, restated for the wire for the same reason
  * `ORGANIZATION_STATUSES` is: contracts must not depend on the database
- * package. `memberships.spec.ts` pins the list.
+ * package.
+ *
+ * `memberships.spec.ts` pins this list against a literal beside it, which
+ * catches an edit here and nothing else. The cross-check against
+ * `schema.prisma` is `packages/db/src/enum-parity.spec.ts` — the db package is
+ * the only side that can read both. See the note on `ORGANIZATION_STATUSES`.
  */
 export const MEMBERSHIP_STATUSES = ['ACTIVE', 'INVITED', 'REMOVED'] as const;
 export const membershipStatusSchema = z.enum(MEMBERSHIP_STATUSES);

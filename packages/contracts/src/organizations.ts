@@ -9,9 +9,16 @@ import { isoTimestampSchema } from './timestamps.js';
  * It has to be restated: `packages/contracts` must not depend on
  * `packages/db` — the dependency runs the other way, and the frontend imports
  * this package without a Prisma client anywhere near it. The values are
- * therefore duplicated ON PURPOSE and must match the enum exactly;
- * `organizations.spec.ts` pins the list so a change on one side without the
- * other is visible.
+ * therefore duplicated ON PURPOSE and must match the enum exactly.
+ *
+ * The thing that HOLDS them equal is `packages/db/src/enum-parity.spec.ts`,
+ * which reads the generated DMMF. `organizations.spec.ts` cannot: it has no
+ * access to the schema, so all it does is pin this list against a literal
+ * beside it, which catches an edit here and is blind to an edit in
+ * `schema.prisma`. An earlier version of this comment claimed that spec made
+ * "a change on one side without the other visible"; it did not, and a review
+ * proved it by adding `ARCHIVED` to the Prisma enum and watching every
+ * contracts-side spec stay green.
  */
 export const ORGANIZATION_STATUSES = ['ACTIVE', 'SUSPENDED', 'TERMINATED'] as const;
 export const organizationStatusSchema = z.enum(ORGANIZATION_STATUSES);
@@ -59,6 +66,13 @@ export const createOrganizationRequestSchema = z
  * The refinement rejects `{}`. An empty patch is a request that cannot be
  * satisfied or refused meaningfully, and answering 200 to it teaches a client
  * that its no-op update worked.
+ *
+ * CONSTRAINT FOR WHOEVER ADDS THE NEXT FIELD: `.refine()` makes this a
+ * `ZodEffects`, not a `ZodObject`, so `.extend()`, `.partial()` and `.merge()`
+ * do not exist on it. Task 13 adding `requireMfa` or `enforcedEmailDomain`
+ * must rebuild the object literal above and re-apply `.strict().refine(...)`,
+ * not extend this export. Do NOT drop the refinement to make `.extend()`
+ * available — that would silently re-admit the empty patch this rejects.
  */
 export const updateOrganizationRequestSchema = z
   .object({ name: organizationNameSchema.optional() })
