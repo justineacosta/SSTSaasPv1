@@ -354,8 +354,8 @@ describe('secret token TTL configuration', () => {
     expect(Object.keys(webEnvSchema.shape).filter((key) => key.startsWith('TOKEN_TTL_'))).toEqual(
       [],
     );
-    expect(Object.keys(sharedEnvSchema.shape).filter((key) => key.startsWith('TOKEN_TTL_'))).toEqual(
-      [],
-    );
+    expect(
+      Object.keys(sharedEnvSchema.shape).filter((key) => key.startsWith('TOKEN_TTL_')),
+    ).toEqual([]);
   });
 });

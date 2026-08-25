@@ -3,10 +3,11 @@ import { Test } from '@nestjs/testing';
 import { describe, expect, it } from 'vitest';
 import type { ApiEnv } from '@sentinel/config';
 import { createLogger, type Logger } from '@sentinel/observability';
-import { ENV, LOGGER } from '../../infrastructure/tokens.js';
+import { ENV, LOGGER, PRISMA } from '../../infrastructure/tokens.js';
 import { AuthModule } from './auth.module.js';
 import { BreachCheckService } from './breach-check.service.js';
 import { PasswordService } from './password.service.js';
+import { TokenService, type VerificationTokenStore } from './token.service.js';
 
 /**
  * The env fields `AuthModule` reads, and nothing else.
@@ -26,7 +27,39 @@ const env = {
   PASSWORD_BREACH_CHECK_ENABLED: false,
   PASSWORD_BREACH_CHECK_RANGE_URL: 'https://api.pwnedpasswords.com/range',
   PASSWORD_BREACH_CHECK_TIMEOUT_MS: 2_000,
+  TOKEN_TTL_EMAIL_VERIFICATION_SECONDS: 86_400,
+  TOKEN_TTL_PASSWORD_RESET_SECONDS: 3_600,
+  TOKEN_TTL_INVITATION_SECONDS: 604_800,
 } as unknown as ApiEnv;
+
+/**
+ * Stands in for the real `PRISMA` provider.
+ *
+ * Overridden rather than imported for real: `PrismaModule`'s factory builds a
+ * live client from `env.DATABASE_URL`, and a wiring spec has no business
+ * opening a connection pool. The override is what proves `AuthModule` asks for
+ * `PRISMA` by that token at all — remove `imports: [PrismaModule]` and the
+ * module fails to compile with an unresolved dependency instead of quietly
+ * resolving to nothing.
+ */
+const verificationToken = {
+  create: () => Promise.resolve({}),
+  updateMany: () => Promise.resolve({ count: 0 }),
+  findUnique: () => Promise.resolve(null),
+};
+
+const prismaStub: VerificationTokenStore & {
+  // PrismaModule also registers PrismaLifecycle, whose shutdown hook runs on
+  // moduleRef.close(). Measured: without these two the spec fails with
+  // "this.prisma.$disconnect is not a function".
+  $connect: () => Promise<void>;
+  $disconnect: () => Promise<void>;
+} = {
+  $connect: () => Promise.resolve(),
+  $disconnect: () => Promise.resolve(),
+  verificationToken,
+  $transaction: (run) => run({ verificationToken }),
+};
 
 /** Stands in for the application's global `ConfigModule`. */
 @Global()
@@ -43,14 +76,32 @@ const env = {
 })
 class StubConfigModule {}
 
+function buildModule() {
+  return Test.createTestingModule({ imports: [StubConfigModule, AuthModule] })
+    .overrideProvider(PRISMA)
+    .useValue(prismaStub)
+    .compile();
+}
+
 describe('AuthModule', () => {
-  it('resolves both services from configuration', async () => {
-    const moduleRef = await Test.createTestingModule({
-      imports: [StubConfigModule, AuthModule],
-    }).compile();
+  it('resolves all three services from configuration', async () => {
+    const moduleRef = await buildModule();
 
     expect(moduleRef.get(PasswordService)).toBeInstanceOf(PasswordService);
     expect(moduleRef.get(BreachCheckService)).toBeInstanceOf(BreachCheckService);
+    expect(moduleRef.get(TokenService)).toBeInstanceOf(TokenService);
+    await moduleRef.close();
+  });
+
+  it('builds a token service carrying authentication.md §6 TTLs for all three kinds', async () => {
+    const moduleRef = await buildModule();
+
+    const service = moduleRef.get(TokenService);
+    expect(service.ttlSecondsFor('EMAIL_VERIFICATION')).toBe(86_400);
+    expect(service.ttlSecondsFor('PASSWORD_RESET')).toBe(3_600);
+    // Ruling 8: nothing in this task reads the invitation TTL, so this
+    // assertion is what keeps it from becoming a variable nobody can reach.
+    expect(service.ttlSecondsFor('INVITATION')).toBe(604_800);
     await moduleRef.close();
   });
 
@@ -62,9 +113,7 @@ describe('AuthModule', () => {
   });
 
   it('builds a password service that actually hashes at the configured parameters', async () => {
-    const moduleRef = await Test.createTestingModule({
-      imports: [StubConfigModule, AuthModule],
-    }).compile();
+    const moduleRef = await buildModule();
 
     const service = moduleRef.get(PasswordService);
     const phc = await service.hash('correct horse battery staple');
@@ -73,9 +122,7 @@ describe('AuthModule', () => {
   });
 
   it('builds a breach check that is off, so it never reaches the network', async () => {
-    const moduleRef = await Test.createTestingModule({
-      imports: [StubConfigModule, AuthModule],
-    }).compile();
+    const moduleRef = await buildModule();
 
     // The default is false (ADR-0015). If this ever resolved to true, the
     // provider below would call the real `fetch` transport from a unit test.
