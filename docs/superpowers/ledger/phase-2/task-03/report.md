@@ -215,3 +215,196 @@ line, the enum member), `packages/config/src/env.ts`, `packages/config/src/env.s
 `pnpm-lock.yaml`.
 
 Commits: `25f2292`, `95865ee`, `c9d593a`.
+
+---
+
+## Corrections (2026-08-25, after review 3c5d694)
+
+Appended rather than folded into the body above: that body is a dated record of what was
+observed on 2026-08-25 before the review, and rewriting it would destroy the evidence trail.
+Three numbers in it are wrong. All three were found by the reviewer; each is re-established
+here by its own command.
+
+**C1 — §4 item 2 says "40 tests under `apps/api/src/modules/auth/`". It is 43.**
+`pnpm vitest run --project unit apps/api/src/modules/auth` → `Test Files 5 passed (5)` /
+`Tests 43 passed (43)`. 40 was the count excluding `password-breached.error.spec.ts` (3 tests),
+which is nonetheless in that directory. The figure is still 43 after this fix round: F1 and F2
+changed assertions inside existing tests rather than adding any.
+
+**C2 — §3 says the HIBP citation lives in "the doc comment at lines 54–65" of
+`breach-check.service.ts`. At the commit the report described (`5701461`) it was lines 51–62,
+with the HIBP sentences at 55–61.** Established by
+`git show 5701461:apps/api/src/modules/auth/breach-check.service.ts | sed -n '49,64p'`: the
+`/**` opens at 51, the "A padded entry is discarded" sentence starts at 55, and the ` */`
+closes at 62. Off by three at both ends. Everything §3 says is *in* that comment is in it.
+**Those numbers have since moved again**: after F11 added a doc comment above
+`fetchRangeTransport`, the same block is lines **65–76** with the HIBP sentences at **69–75**
+(`grep -n` on the working tree). A line number in a dated report is a fact about a commit, not
+about the branch.
+
+**C3 — §2's "Worst observed spread 4.86%" is superseded. Over eleven runs the worst is 7.37%.**
+§2's five runs are correctly reported; they were simply not the whole sample. The reviewer ran
+the same procedure six more times on the same machine (review 3c5d694, F6) and saw 0.0269,
+0.0269, **0.0737**, 0.0106, 0.0536, 0.0081. Combined worst: **0.0737**. The headroom at
+`TOLERANCE = 0.25` is therefore about **3.4×**, not the 5× §2 claims. The tolerance value is
+unchanged; the comment in `password.timing.spec.ts` now carries all eleven figures and the
+3.4×.
+
+Not corrected, because they are not errors: §1's exit codes and counts all reproduced under the
+reviewer's independent re-run, and §3's two HIBP quotations were confirmed verbatim by a second
+fetch of `https://haveibeenpwned.com/API/v3`.
+
+---
+
+## Fix round (2026-08-25, review 3c5d694)
+
+Seven findings dispositioned FIX by the orchestrator: F1, F2, F3, F6, F7, F9, F11. F4 and F5
+are the report corrections above. F8 and F10 are Task 9's and were not touched.
+
+### Commands
+
+Sweep run after the last fix commit (`2926b88`), each as `out=$(pnpm <cmd> 2>&1); code=$?`.
+
+| Command | Exit | Output line establishing it |
+| --- | --- | --- |
+| `pnpm format:check` | 0 | `All matched files use Prettier code style!` |
+| `pnpm lint` | 0 | `Tasks: 14 successful, 14 total` |
+| `pnpm typecheck` | 0 | `Tasks: 14 successful, 14 total` |
+| `pnpm test` | 0 | `Test Files 48 passed (48)` / `Tests 594 passed (594)` |
+| `pnpm check:specs` | 0 | `59 spec files, each claimed by exactly one of: unit, integration, ui` |
+| `pnpm check:openapi` | 0 | `"routes":4` / `byte-identical to what the contracts generate` |
+| `pnpm check:registry` | 0 | `14 models, 3 tenant-owned, 1 tenant root, 10 deliberately global` |
+| `pnpm build` | 0 | `Tasks: 8 successful, 8 total` |
+| `pnpm test:integration` | 0 | `Test Files 11 passed (11)` / `Tests 148 passed (148)` |
+| `docker compose ps` | 0 | all four `(healthy)` |
+
+`pnpm test` 589 -> **594** (+5, all in `env.spec.ts` for F9: 23 -> 28). Spec-file count, route
+count, registry count and integration count are all unchanged. **`check:openapi` is still 4
+routes.**
+
+`pnpm test:e2e` was not run, for the reason in §1: this branch touches no `apps/web` path, and
+the fix round added none.
+
+### F1 - the needsRehash axis test is now independent, proven by re-running mutations E and F
+
+Each `it.each` row now carries its own raised service differing on exactly the named axis
+(stored `{4096,2,1}` vs raised `{8192,2,1}`; stored `{8192,1,1}` vs raised `{8192,2,1}`;
+stored `{8192,2,1}` vs raised `{8192,2,2}`). Both mutations were re-applied to
+`password.service.ts` and reverted with `git checkout`:
+
+| Mutation | Scope | Before (reviewer) | After (this fix round) |
+| --- | --- | --- | --- |
+| **E** - delete the memory-cost comparison | file spec | GREEN, `20 passed` | **EXIT=1, `1 failed \| 19 passed`** |
+| **E** | whole `unit` project | GREEN, `45 passed` / `575 passed` | **EXIT=1, `1 failed \| 574 passed (575)`** |
+| **F** - delete the time-cost comparison | file spec | GREEN, `20 passed` | **EXIT=1, `1 failed \| 19 passed`** |
+| **F** | whole `unit` project | not run by reviewer | **EXIT=1, `1 failed \| 574 passed (575)`** |
+
+Both failures report
+`AssertionError: expected { valid: true, needsRehash: false } to deeply equal { valid: true, needsRehash: true }`,
+and each names the right row (`flags a lower memory cost ...`, `flags a lower time cost ...`).
+
+### F2 - log safety now covers all four fail-open paths, proven by re-running mutation D
+
+The four absence assertions are now `expectFailOpenLogIsSafe(lines, reason)`, called from each
+of the four fail-open tests; it also pins `level`, the reason tag and `elapsedMs`, and the
+absence list gained the lower-case digest and suffix.
+
+| Mutation | Before (reviewer) | After |
+| --- | --- | --- |
+| **D** - add `prefix: digest.slice(0, 5)` to the `unexpected-status` failOpen call | **GREEN, `15 passed`** | **EXIT=1, `1 failed \| 14 passed`**, `AssertionError: expected '[{"level":"warn",...' not to contain 'ABF7A'` |
+| **D2** - same leak on the `catch` call site | RED, 1 test | **EXIT=1, `2 failed \| 13 passed`** (that call site serves both `timeout` and `transport-error`) |
+
+The old single-path logging test was replaced by a guard on the guard: it asserts `failOpen` is
+the only thing that logs (one `this.logger.`, three call sites) and that the `FailureReason`
+union contains exactly the four tags the helper ran against, so a fifth outcome turns the file
+red until it has a test.
+
+### F3 - the three "~250 ms" cost sentences, corrected against my own measurement
+
+Re-measured rather than copying the reviewer's 35.9 ms. `node -e` inside `apps/api` against
+`@node-rs/argon2@2.1.0`, 2026-08-25, Windows 11 x64, Node v26.7.0, 12 logical CPUs:
+
+```
+boot hashSync @64MiB/t3/p4 ms= 37.373
+verify @64MiB/t3/p4 mean ms= 35.996 (n=10)
+verify @16MiB/t2/p1 mean ms=  9.207 (n=10)
+```
+
+So the timing spec's 52 verifications are ~1.9 s at the configured defaults, not "minutes" -
+the old comment was wrong by about two orders of magnitude. Measured directly for
+`password.service.spec.ts` as well: **146 ms** as shipped, **1288 ms** with every parameter set
+in it substituted for the defaults.
+
+All three comments now state ~250 ms as the **documented target** in
+`security/authentication.md` §2, which ADR-0014 records as untuned, and give the measured cost
+with its date and hardware. **The reduction stands** - the orchestrator's ruling, recorded in
+the comment with its cost: `ubuntu-latest` is slower and shared, so 1.9 s locally is not a CI
+budget, and the property under test is parameter-independent; if the reduction ever turns out
+to hide a parameter-dependent effect, the proof is weaker than it reads.
+
+### F6, F7 - two comments, no code
+
+F6: the `TOLERANCE` comment now lists all **eleven** runs (my five plus the reviewer's six),
+names **0.0737** as the worst and **~3.4x** as the real headroom. `TOLERANCE` stays 0.25.
+
+F7: the negative control's description now says what it actually bounds. It asserts an early
+return is distinguishable from a real verification and that `TOLERANCE` sits below that
+~1500-4000x gap - a very loose bound, and the reviewer showed `TOLERANCE = 200` stays green
+with the implementation intact. The comment records what it does still buy (a full
+short-circuit cannot be hidden by widening the tolerance: at 200 with the null branch
+short-circuited the test still fails at `relative=3958.5`) and what it does not (a partial
+degradation such as mutation H's `relative=23.7` would pass at 200; only `TOLERANCE`'s own
+value stands against that).
+
+### F9 - m >= 8p validated at the config layer
+
+Boundary measured against `@node-rs/argon2@2.1.0`, not assumed: `m=8/p=4` throws
+`Memory cost is too small`, `m=8/p=1` is fine, `m=31/p=4` throws, `m=32/p=4` is fine,
+`m=24/p=3` is fine. Exactly 8p.
+
+A `.superRefine` on `apiEnvSchema` emits one issue per variable. Observed output:
+
+```
+variables = [ 'PASSWORD_ARGON2_MEMORY_KIB', 'PASSWORD_ARGON2_PARALLELISM' ]
+Invalid environment configuration.
+  PASSWORD_ARGON2_MEMORY_KIB: must be at least 32
+  PASSWORD_ARGON2_PARALLELISM: must be at most 1
+```
+
+`too_small`/`too_big` rather than `custom`: `describeIssue` in `load-env.ts` deliberately never
+reads `issue.message`, so a `custom` issue renders as `failed validation (custom)` and names no
+rule. `load-env.ts` is untouched.
+
+**This makes `apiEnvSchema` a `ZodEffects`, which is carry-forward ruling 15's hazard.**
+`grep -rn "apiEnvSchema"` found one consumer of `.shape` - the existing sentinel-leak property
+test at `env.spec.ts:112` - now reading `.innerType().shape`, with a comment naming the ruling.
+Nothing else in the workspace reads `.shape` or extends this schema. Five spec rows added:
+the failure naming both variables and both bounds, three accepting boundary cases (32/4, 24/3,
+8/1), and the refusal of 31/4.
+
+### F11 - redirect: 'error' on the range fetch
+
+Verified against a local server redirecting to the cloud metadata address:
+
+```
+redirect=follow -> REJECTED: TypeError / connect ENETUNREACH 169.254.169.254:80
+redirect=error  -> REJECTED: TypeError / unexpected redirect
+```
+
+`follow` reached the point of opening a TCP connection to `169.254.169.254` and failed only
+because this machine has no route to it; on a cloud host it would have connected. `error`
+rejects before any connection. ADR-0015's privacy claim never depended on this - a redirect
+target rebuilds the URL, so nothing beyond the five-character prefix could leak either way. A
+rejected redirect surfaces as `transport-error` and fails open like any other transport
+failure.
+
+### Note on an untracked file
+
+`docs/superpowers/ledger/phase-2/task-03/rulings.md` was present and untracked in the working
+tree at the start of this fix round. It is the orchestrator's, written after the review; it was
+committed here verbatim and unedited only so that `git status --short` ends empty, as the fix
+round required.
+
+### Fix-round commits
+
+`3faac77` (F1) · `cd582f2` (F2) · `1fd2fda` (F3, F6, F7) · `98d8a39` (F9) · `2926b88` (F11).
