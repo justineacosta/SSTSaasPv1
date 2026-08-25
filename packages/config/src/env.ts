@@ -68,6 +68,35 @@ const apiEnvObject = sharedEnvSchema.extend({
   PASSWORD_BREACH_CHECK_ENABLED: booleanFromString.default('false'),
   PASSWORD_BREACH_CHECK_TIMEOUT_MS: z.coerce.number().int().min(1).default(2_000),
   PASSWORD_BREACH_CHECK_RANGE_URL: z.string().url().default('https://api.pwnedpasswords.com/range'),
+
+  // Single-use secret tokens -----------------------------------------------
+  //
+  // API-only for the same reason as the password block above: the web app
+  // never mints or redeems a token, and a variable on `sharedEnvSchema` is one
+  // every web deploy must define in order to boot.
+  //
+  // `security/authentication.md` §6 fixes these three durations. They are here
+  // rather than in a constant so an operator can shorten one during an incident
+  // — a reset TTL cut from an hour to five minutes while an inbox compromise is
+  // being contained — without a build and a deploy. Every one carries its §6
+  // default, so nothing existing has to change to keep booting.
+  //
+  // ALL THREE ARE SECONDS, deliberately, rather than `_HOURS` / `_MINUTES` /
+  // `_DAYS` matching §6's prose. One unit means `TokenService` performs one
+  // multiplication for every purpose instead of three different ones, and a
+  // mixed-unit set is how a `60` ends up read as the wrong thing.
+  //
+  // `.int().min(1)` and no maximum: a TTL of zero or less issues a token that
+  // has already expired, which is a boot-time misconfiguration worth refusing.
+  // A long TTL is a policy choice this layer has no basis to overrule.
+  TOKEN_TTL_EMAIL_VERIFICATION_SECONDS: z.coerce.number().int().min(1).default(86_400),
+  TOKEN_TTL_PASSWORD_RESET_SECONDS: z.coerce.number().int().min(1).default(3_600),
+  // Read by Task 15 (invitation acceptance), not by anything in Task 4 —
+  // `Invitation` carries its own `tokenHash` and is tenant-owned, so it never
+  // becomes a `VerificationToken` row. It is declared here anyway because §6
+  // gives all three one discipline, and `SECRET_TOKEN_TTL_SECONDS` in the auth
+  // module exposes all three so the value is reachable rather than dead weight.
+  TOKEN_TTL_INVITATION_SECONDS: z.coerce.number().int().min(1).default(604_800),
 });
 
 /**
