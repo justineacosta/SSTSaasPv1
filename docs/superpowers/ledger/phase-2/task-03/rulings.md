@@ -24,7 +24,35 @@ Severities are the reviewer's. "Fixed" means fixed in the fix round on this bran
 | F8 | Low | Timing equality holds vs. the dummy, not vs. legacy hashes after a raise | **Not fixed — carried forward as Ruling 24.** Task 9 owns it |
 | F9 | Low | Argon2's `m >= 8p` unvalidated; fails from napi at boot, naming neither variable | **Fixed** with a `.superRefine` naming both |
 | F10 | Low | A corrupted stored credential produces no signal at all | **Not fixed — carried forward as Ruling 25.** Task 9 owns it |
-| F11 | Low | `fetchRangeTransport` follows redirects anywhere | **Fixed** — `redirect: 'error'` |
+| F11 | Low | `fetchRangeTransport` follows redirects anywhere | **Fixed** — `redirect: 'error'`, and pinned by a spec in a third round |
+
+## The re-review, and a third round
+
+A scoped re-review of the fix round is appended to [`review.md`](review.md) (`419b7b0`). It
+re-ran every mutation itself rather than accepting the implementer's table: **all seven fixes
+verified fixed, nothing broken or weakened.** F9 was the riskiest and it holds — the `m >= 8p`
+boundary was measured at ten pairs in both directions against argon2 and then the same ten through
+`loadEnv`, accepting and rejecting at exactly the same points.
+
+It raised three non-blocking items, and the orchestrator took all three in a third round
+(`e33fd0a`):
+
+1. **`redirect: 'error'` was unpinned.** Deleting the property left the whole spec file green,
+   because every other test injects a fake transport. Now covered by two tests against the default
+   transport with `globalThis.fetch` stubbed — still no network. **Proven by mutation**: deleting
+   the property gives `EXIT=1, expected undefined to be 'error'`, and the line was restored with
+   `git checkout`. A security property with no failing test behind it is a line waiting to be
+   deleted by someone tidying up.
+2. **The tolerance comment kept quoting a headroom multiple, and each batch invalidated the last** —
+   4.86% off five runs, 7.37% off eleven, 7.84% off seventeen. That is what an unbounded jitter
+   distribution does. The comment now says so and tells the next reader not to derive a multiple
+   from observed maxima at all. **0.25 stands on the gap argument** — a short-circuit measures three
+   orders of magnitude out — **not on a margin over the worst sample.** The value did not change.
+3. **`.env.example` did not name the `m >= 8p` rule** next to the two variables it binds. It does now.
+
+The re-review also recorded two things it explicitly did **not** verify, which is the right way to
+report them: the fix round's historical red/green runs (it reproduced the mechanism, not the runs),
+and the pre-fix `env.spec.ts` count of 23 (derived from the diff, not measured).
 
 **No High findings, and the citation pass found no invented quotation or misattributed sentence.**
 That is worth recording plainly, because it is the first task in this branch's history where it is
@@ -168,7 +196,35 @@ must not downgrade existing credentials. And a credential that just failed verif
 rehashed, which would be nonsense. The plan left both undecided; both are now pinned by tests, and
 the one-directional half survived the reviewer's mutation J.
 
-### 30. `ARGON2ID` is the literal `2`, and the reason is `isolatedModules`
+### 30. `apiEnvSchema` is now a `ZodEffects` — the same trap as carry-forward ruling 15
+
+F9's fix added a `.superRefine` for Argon2's `m >= 8p`, which turns `apiEnvSchema` into a
+`ZodEffects`. **`.extend()`, `.partial()`, `.merge()` and `.shape` are unavailable on it** —
+exactly what ruling 15 records for `updateOrganizationRequestSchema`, now true of the API
+environment schema as well.
+
+One reader existed and was fixed: the sentinel-leak property test in `env.spec.ts` reads
+`.innerType().shape`. The re-reviewer confirmed by whole-repo grep that nothing else reads `.shape`
+and nothing extends or merges `apiEnvSchema` (`e2eEnvSchema` extends `webEnvSchema`, not this one).
+
+**Any later task adding an API environment variable must add it inside the base object before the
+refinement, not by extending the exported schema.**
+
+*Cost if wrong:* a compile error, not a runtime one — `pnpm typecheck` catches it. Cheap, and
+recorded only because the same shape has now bitten twice.
+
+### 31. The `m >= 8p` message uses `too_small`/`too_big`, not a `custom` issue, and that is deliberate
+
+`describeIssue` in `packages/config/src/load-env.ts` never reads `issue.message`, so a `custom`
+issue would have printed `failed validation (custom)` and named no rule. The refinement raises
+`too_small`/`too_big` with derived bounds instead, which routes through the authored-rule path and
+produces two individually actionable sentences naming both variables.
+
+`load-env.ts` was deliberately **not** changed. Giving it a safe `custom` passthrough is a
+reasonable future improvement and is a decision for whoever needs a second refinement, not a
+side-effect of this one.
+
+### 32. `ARGON2ID` is the literal `2`, and the reason is `isolatedModules`
 
 `@node-rs/argon2` declares `Algorithm` as an ambient `const enum`; `tsconfig.base.json` sets
 `isolatedModules: true`, under which a value import of one is a compile error because no runtime
