@@ -102,10 +102,12 @@ describe('ZodValidationPipe', () => {
 
 /**
  * `UNKNOWN_FIELD` (errors.md §3) had no producer anywhere in the repository
- * until this branch: it was a documented code that nothing could raise, which
- * §7 of that document already called out as unmet. `packages/contracts` cannot
- * close it — a schema has no status code — so the split lives here, in the one
- * place that turns a Zod failure into an HTTP error.
+ * until this branch: it was a documented code that nothing could raise. §7 of
+ * that document names no code — it states the general rule that every
+ * documented code has at least one test that produces it, and this code had no
+ * producer for such a test to call. `packages/contracts` cannot close that — a
+ * schema has no status code — so the split lives here, in the one place that
+ * turns a Zod failure into an HTTP error.
  */
 const strictSchema = z
   .object({
