@@ -40,6 +40,41 @@ describe('redact', () => {
     expect(out.note).toBe(REDACTED);
   });
 
+  it('applies the value-shape backstop to a token carried in a URL query parameter', () => {
+    // The measured gap (Phase 2 Task 4, Ruling 9): `token` is a denylisted KEY
+    // fragment, so `{ token }` was always redacted — but the shape that reaches
+    // a real log line is the verification link under an innocent key, and no
+    // value pattern matched a bare base64url string. Whole-value redaction
+    // here, not span redaction: a structured field holding a credential is a
+    // field whose entire contents are suspect.
+    const out = redact({
+      verifyUrl: 'https://app.sentinel.test/auth/verify?token=JFqAQ3-_L-BSZrsbVpMUdX2rKzyH',
+    }) as Record<string, unknown>;
+    expect(out.verifyUrl).toBe(REDACTED);
+  });
+
+  it('applies it to the fragment form and to a later parameter in the string', () => {
+    const out = redact({
+      a: 'https://app.sentinel.test/cb#access_token=JFqAQ3-_L-BSZrsbVpMUdX2rKzyH',
+      b: 'https://app.sentinel.test/accept?org=org_01J&code=JFqAQ3-_L-BSZrsbVpMUdX2rKzyH',
+    }) as Record<string, unknown>;
+    expect(out.a).toBe(REDACTED);
+    expect(out.b).toBe(REDACTED);
+  });
+
+  it('leaves a URL whose parameters are not credentials alone', () => {
+    // The false-positive side. Without this the pattern could quietly swallow
+    // every URL in the logs, and an operator would lose the routes an incident
+    // is traced through. `?code=US` is under the 8-character guard; `tokenize`
+    // is not `token=`.
+    const input = {
+      url: 'https://app.sentinel.test/scans?status=RUNNING&limit=50',
+      country: 'https://app.sentinel.test/x?code=US',
+      similar: 'https://app.sentinel.test/x?tokenize=please-do-not-redact-me',
+    };
+    expect(redact(input)).toEqual(input);
+  });
+
   it('applies the value-shape backstop to a postgres URL containing a password', () => {
     const out = redact({ dsn: 'postgresql://user:hunter2@host:5432/db' }) as Record<
       string,
@@ -93,6 +128,19 @@ describe('redactSecretsInText', () => {
       'exchanging token=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def now',
     );
     expect(out).toBe(`exchanging token=${REDACTED} now`);
+  });
+
+  it('redacts only the token value in a link, keeping the route readable', () => {
+    // Span redaction, not whole-message: the docblock on redactSecretsInText
+    // promises an operator still gets the rest of the sentence, and the route
+    // is the part that makes a log line useful during an incident. This is why
+    // the pattern is written as a lookbehind rather than a capture group.
+    const out = redactSecretsInText(
+      'sending https://app.sentinel.test/auth/reset?token=U32c2rxRXTfuTolNBJYdL332nOS0 to the mailer',
+    );
+    expect(out).toBe(
+      `sending https://app.sentinel.test/auth/reset?token=${REDACTED} to the mailer`,
+    );
   });
 
   it('leaves text with no secret shape byte-identical', () => {

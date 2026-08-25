@@ -34,6 +34,32 @@ const SECRET_VALUE_PATTERNS: RegExp[] = [
   /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:[^\s:/@]+@/i, // any URL with inline credentials
   /\b(?:sk|rk|whsec)_[A-Za-z0-9]{16,}/, // Stripe-style keys
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/, // PEM material
+  // A credential carried as a URL query or fragment parameter.
+  //
+  // Added after measuring the gap, not on suspicion. `SECRET_KEY_FRAGMENTS`
+  // above already catches `{ token: '<raw>' }`, so a spec written that way is
+  // green whatever the token looks like. The shape that actually reaches a log
+  // line is the verification or reset link under an innocent key —
+  // `{ verifyUrl: 'https://app/auth/verify?token=<43 chars of base64url>' }`,
+  // the same string in a `msg`, or the same string as a `%s` argument — and
+  // none of the five patterns above matches a bare base64url value. Measured
+  // 2026-08-26 against a real 256-bit token: three of those four shapes emitted
+  // the token verbatim. A token in a log is a password reset for anyone with
+  // log access, so this is the backstop for the one place a key name cannot
+  // help.
+  //
+  // Lookbehind rather than a capture group so `redactSecretsInText` replaces
+  // only the value: `?token=[redacted]` keeps the sentence and the route
+  // readable, which is what that function's docblock promises. In `redact()`
+  // the whole string is replaced instead, because a structured field that
+  // matches is a field whose entire contents are suspect.
+  //
+  // `{8,}` is the false-positive guard: a two-letter `?code=US` is not a
+  // credential. The parameter names are the ones this product's credentials
+  // actually travel under (§6 tokens, OAuth, API keys); a name not on this
+  // list is not covered, and a bare `token=` outside a URL is not covered
+  // either — both are residual, and neither is the shape Task 5 builds.
+  /(?<=[?&#](?:access_token|refresh_token|id_token|token|api_key|apikey|password|passwd|secret|signature|code|key)=)[^&\s"'#]{8,}/i,
 ];
 
 function keyIsSecret(key: string): boolean {
