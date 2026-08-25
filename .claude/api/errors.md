@@ -81,7 +81,7 @@ when there are real endpoints to raise them.
 
 **Validation:** `VALIDATION_ERROR` (also the fallback for an unmapped client-class status — see
 §2), `UNKNOWN_FIELD`, `INVALID_STATE_TRANSITION`, `VERSION_CONFLICT`, `DUPLICATE_RESOURCE`,
-`PASSWORD_BREACHED`.
+`PASSWORD_BREACHED`, `TOKEN_INVALID`.
 
 **Domain — security-testing specific:** `SCOPE_VIOLATION`, `ASSET_NOT_VERIFIED`,
 `ASSET_VERIFICATION_EXPIRED`, `TARGET_DENIED_BY_POLICY` (global deny list),
