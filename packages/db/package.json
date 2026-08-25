@@ -13,6 +13,10 @@
     "./unscoped": {
       "types": "./dist/unscoped.d.ts",
       "default": "./dist/unscoped.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/postgres-harness.d.ts",
+      "default": "./dist/testing/postgres-harness.js"
     }
   },
   "scripts": {
