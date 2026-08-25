@@ -221,8 +221,12 @@ service nothing calls is not a feature.
 
 **Branching changed, and a resuming session must not miss it.** PR #5 was **rebase-merged** into
 `main` on 2026-08-25 at 04:37Z, so `feat/phase-2-identity` is spent history — identical tree,
-duplicate commits. Task 3 was built on **`feat/phase-2-task-03`, cut from `main`**. Cut later tasks
-from `main` the same way, one branch per task.
+duplicate commits. Task 3 was built on **`feat/phase-2-task-03`, cut from `main`**, and **PR #6
+rebase-merged it into `main` at 15:55Z the same day**. Cut later tasks from `main` the same way,
+one branch per task, one PR per task.
+
+**Task 3 is on `main`.** Start Task 4 from `main`, not from any `feat/` branch — every one of them
+is now behind or duplicate.
 
 **Next action:** Task 4 — single-use secret tokens — in a new session, starting with
 `sentinel-phase`. It is a self-contained task: fresh implementer subagent plus a fresh adversarial

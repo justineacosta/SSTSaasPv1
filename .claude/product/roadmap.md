@@ -791,8 +791,20 @@ one class of defect no local run can observe. It is also the first time the stat
 ran on a shared runner, which is the environment its tolerance was chosen for and the reason the
 spec runs at reduced Argon2 parameters (ruling 22). Both held.
 
-No pull request has been opened for `feat/phase-2-task-03`; the branch is on `origin` with a green
-run, and whether to open and merge one is the operator's call.
+**PR #6 was rebase-merged into `main` on 2026-08-25 at 15:55Z**, on the operator's instruction, with
+CI green on `b9ce0ed` (runs `32868345161` and `32868350906`, both `success`). This paragraph
+originally said no pull request had been opened; that was true when it was written and is recorded
+here rather than deleted. `main` and `feat/phase-2-task-03` have identical trees at
+`71132d6`. **Task 3 is on `main`.**
+
+**GitGuardian failed on PR #6 and was not a merge gate**, exactly as on PR #5. Its findings on this
+branch are the SHA-1 test fixture in `breach-check.service.spec.ts` and the passphrase it derives
+from. Both were checked rather than assumed: `ABF7AAD6438836DBE526AA231ABDE2D0EEF74D42` was
+recomputed and **is** the SHA-1 of `correct horse battery staple`, the published xkcd example, which
+is the whole reason it was chosen as a fixture. Nothing live, nothing to revoke. **The standing cost
+named under PR #5 is now larger, not smaller**: two consecutive pull requests on a security
+product's repository have carried a red security check that everyone is expected to ignore. The
+`.gitguardian.yaml` ignore list naming each match and why is **still not written.**
 
 `main` is protected with `verify` as a required status check, `enforce_admins` enabled, linear
 history required, and force pushes and deletions blocked, so no commit reaches `main` without that
