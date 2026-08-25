@@ -8,6 +8,17 @@ import { uuidv7obj } from 'uuidv7';
  * `fnd` (finding) and `scn` (scan) are registered ahead of the models that
  * will use them (Phase 2+) so downstream packages can reference the full
  * entity vocabulary from Phase 1 without a breaking rename later.
+ *
+ * THIS LIST HAS A TWIN: `ID_SCHEMA_PREFIXES` in `@sentinel/contracts`, which is
+ * what the API *validates* against. Through Phase 1 the two were independent,
+ * nothing compared them, and they drifted. `id-prefix-parity.spec.ts` now fails
+ * when either side gains a prefix the other does not know about — so adding a
+ * prefix here means adding a schema there, or adding an explicit reason to that
+ * spec's `DB_ONLY_PREFIXES` allowlist saying why the client never sees it.
+ *
+ * Every prefix is exactly three characters because `parseIdPrefix` below
+ * matches `[a-z]{3}`. That constraint is why the Phase 2 addition for
+ * `IdentityProviderLink` is `idp` and not `idpl`.
  */
 export const ID_PREFIXES = {
   org: 'org',
@@ -22,6 +33,11 @@ export const ID_PREFIXES = {
   req: 'req',
   fnd: 'fnd',
   scn: 'scn',
+  // Phase 2 identity models (Task 1's schema, Task 2's prefixes).
+  mfa: 'mfa',
+  vtk: 'vtk',
+  rcv: 'rcv',
+  idp: 'idp',
 } as const;
 
 export type IdPrefix = keyof typeof ID_PREFIXES;

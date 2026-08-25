@@ -5,12 +5,19 @@ export type { ErrorEnvelope, FieldError } from './error-envelope.js';
 export { collectionEnvelopeSchema, collectionMetaSchema, paginationSchema } from './pagination.js';
 export type { Pagination } from './pagination.js';
 export {
+  ID_SCHEMA_PREFIXES,
+  identityProviderLinkIdSchema,
   idSchema,
   invitationIdSchema,
   membershipIdSchema,
+  mfaFactorIdSchema,
   organizationIdSchema,
+  recoveryCodeIdSchema,
+  sessionIdSchema,
   userIdSchema,
+  verificationTokenIdSchema,
 } from './ids.js';
+export type { IdSchemaEntity } from './ids.js';
 export {
   PERMISSIONS,
   PROJECT_SCOPED_PERMISSIONS,
