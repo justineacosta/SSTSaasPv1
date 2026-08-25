@@ -184,3 +184,62 @@ describe('e2eEnvSchema / webEnvSchema separation', () => {
     expect(e2e.filter((key) => !web.has(key))).toEqual(['E2E_PORT']);
   });
 });
+
+/**
+ * Task 3's password configuration. ADR-0014 puts the Argon2id parameters in
+ * configuration rather than in a constant; ADR-0015 puts the breach check
+ * behind a flag that defaults to off.
+ */
+describe('password configuration', () => {
+  it('defaults to security/authentication.md §2 starting point, with the breach check off', () => {
+    const env = loadEnv(apiEnvSchema, validApi);
+    expect(env.PASSWORD_ARGON2_MEMORY_KIB).toBe(65_536);
+    expect(env.PASSWORD_ARGON2_TIME_COST).toBe(3);
+    expect(env.PASSWORD_ARGON2_PARALLELISM).toBe(4);
+    // The default that keeps every suite hermetic. Changing it is a security
+    // decision and gets a superseding ADR, not a quiet edit — ADR-0015.
+    expect(env.PASSWORD_BREACH_CHECK_ENABLED).toBe(false);
+    expect(env.PASSWORD_BREACH_CHECK_TIMEOUT_MS).toBe(2_000);
+    expect(env.PASSWORD_BREACH_CHECK_RANGE_URL).toBe('https://api.pwnedpasswords.com/range');
+  });
+
+  it('coerces the numeric parameters an operator raises them to', () => {
+    const env = loadEnv(apiEnvSchema, {
+      ...validApi,
+      PASSWORD_ARGON2_MEMORY_KIB: '131072',
+      PASSWORD_ARGON2_TIME_COST: '5',
+      PASSWORD_ARGON2_PARALLELISM: '8',
+      PASSWORD_BREACH_CHECK_ENABLED: 'true',
+      PASSWORD_BREACH_CHECK_TIMEOUT_MS: '500',
+    });
+    expect(env.PASSWORD_ARGON2_MEMORY_KIB).toBe(131_072);
+    expect(env.PASSWORD_ARGON2_TIME_COST).toBe(5);
+    expect(env.PASSWORD_ARGON2_PARALLELISM).toBe(8);
+    expect(env.PASSWORD_BREACH_CHECK_ENABLED).toBe(true);
+    expect(env.PASSWORD_BREACH_CHECK_TIMEOUT_MS).toBe(500);
+  });
+
+  it.each([
+    ['PASSWORD_ARGON2_MEMORY_KIB', '0'],
+    ['PASSWORD_ARGON2_TIME_COST', '0'],
+    ['PASSWORD_ARGON2_PARALLELISM', '256'],
+    ['PASSWORD_ARGON2_PARALLELISM', 'four'],
+    ['PASSWORD_BREACH_CHECK_TIMEOUT_MS', '-1'],
+    ['PASSWORD_BREACH_CHECK_RANGE_URL', 'not-a-url'],
+    ['PASSWORD_BREACH_CHECK_ENABLED', 'yes'],
+  ])('refuses a %s of %s and names it', (variable, value) => {
+    expect(() => loadEnv(apiEnvSchema, { ...validApi, [variable]: value })).toThrow(
+      new RegExp(variable),
+    );
+  });
+
+  it('keeps the password variables off the schema the web app boots with', () => {
+    // Ruling 2. A variable on `sharedEnvSchema` is one every web deploy must
+    // define in order to start, and `apps/web/src/env.ts` parses at module load.
+    const webKeys = Object.keys(webEnvSchema.shape);
+    expect(webKeys.filter((key) => key.startsWith('PASSWORD_'))).toEqual([]);
+    expect(Object.keys(sharedEnvSchema.shape).filter((key) => key.startsWith('PASSWORD_'))).toEqual(
+      [],
+    );
+  });
+});

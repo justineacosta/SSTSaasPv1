@@ -323,6 +323,7 @@
                   "INVALID_STATE_TRANSITION",
                   "VERSION_CONFLICT",
                   "DUPLICATE_RESOURCE",
+                  "PASSWORD_BREACHED",
                   "SCOPE_VIOLATION",
                   "ASSET_NOT_VERIFIED",
                   "ASSET_VERIFICATION_EXPIRED",
