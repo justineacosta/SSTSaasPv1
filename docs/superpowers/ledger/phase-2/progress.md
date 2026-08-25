@@ -96,13 +96,14 @@ models, three new enums, the `Session.expiresAt` → `idleExpiresAt` rename), th
 and a `has_table_privilege` assertion over the new tables. Evidence is in `roadmap.md`; the
 commands and exit codes are in [`task-01/report.md`](task-01/report.md).
 
-**One thing is outstanding and it is the operator's, not a defect in the work.** The local
-development database at `localhost:5432` is stale: migration A's comment was corrected after it had
-been applied, so its checksum no longer matches and `pnpm db:migrate` will refuse until the database
-is reset. `pnpm db:reset` clears it. Prisma's AI guard blocks an agent from running it (carry-forward
-ruling 3), so the operator runs it or consents in the moment. **Nothing else depends on this** — every
-verification above came from fresh Testcontainers databases, and CI and any fresh clone replay all
-six migrations from empty.
+**The one outstanding item was closed the same day.** The local development database had gone stale —
+migration A's comment was corrected after it had been applied, so its checksum no longer matched and
+`pnpm db:migrate` refused. The operator consented explicitly and the reset ran: six migrations from
+empty, then `pnpm db:seed` separately, because `migrate reset` does **not** seed here (there is no
+`prisma.seed` hook in `package.json`). `pnpm db:migrate` now reports the database in sync.
+
+Carry-forward ruling 3 still stands and is the durable part: an agent cannot run `prisma migrate
+reset` without the user's own consent text, and must never fabricate it.
 
 **Next action:** Task 2 — `packages/contracts` identity contracts, `Principal`, `TenantContext` — in
 a new session, starting with `sentinel-phase`. Read carry-forward rulings 5, 6 and 9 before starting:

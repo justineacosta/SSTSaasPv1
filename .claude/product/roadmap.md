@@ -389,16 +389,32 @@ phase or to the operator:
   assertion cannot drift from the thing it documents, which a copied string in the spec would have.
   The invalid string still appears in the Phase 1 plan, which is a dated historical document and is
   left as written.
-- **The local development database needs `pnpm db:reset`, and only the operator can run it.**
+- ~~**The local development database needs `pnpm db:reset`, and only the operator can run it.**~~
   Phase 2 Task 1 corrected a comment inside migration
   `20260824153519_membership_partial_unique` *after* it had been applied, which changed its
-  checksum, so `pnpm db:migrate` will refuse against the developer database until it is reset.
-  **Nothing else depends on this**: measured on Prisma 6.19.3, `migrate deploy` does not verify
+  checksum, so `pnpm db:migrate` refused against the developer database until it was reset.
+  **Nothing else depended on it**: measured on Prisma 6.19.3, `migrate deploy` does not verify
   checksums and exits 0, so CI, Testcontainers and any fresh clone replay all six migrations from
-  empty and are unaffected. The reason it is the operator's: Prisma 6.19.3 refuses `migrate reset`
-  when it detects an AI agent and demands `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION` set to the
-  literal text of the user's consenting message, explicitly excluding earlier messages. An agent
-  must never fabricate that string.
+  empty and were unaffected. The reason it was the operator's: Prisma 6.19.3 refuses
+  `migrate reset` when it detects an AI agent and demands
+  `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION` set to the literal text of the user's consenting
+  message, explicitly excluding earlier messages. **An agent must never fabricate that string** —
+  that part is permanent, not closed.
+
+  **Closed 2026-08-25.** The operator consented explicitly and the reset ran: six migrations applied
+  from empty, `_prisma_migrations` at six rows with matching checksums, and `pnpm db:migrate` now
+  exits 0 reporting *"Already in sync, no schema change or pending migration was found"* — which is
+  independently a **fourth** confirmation that Prisma sees neither the partial index nor the CHECK
+  constraint as drift, since this is precisely where it would have offered to "fix" them.
+
+  Two things learned that outlive the bullet. **`prisma migrate reset` does not run the seed here** —
+  there is no `prisma.seed` hook in `package.json`, only the root `db:seed` script — so a reset
+  leaves the database with zero roles and zero permissions until `pnpm db:seed` is run separately.
+  It is a two-command operation, and the reset output gives no hint of the missing half. And the
+  problem existed at all only because a comment inside an already-applied migration was corrected in
+  place: an applied migration's text is effectively immutable, so the cheaper habit is to get it
+  right at the gate, before it is applied.
+
 - **Nothing in CI guards the partial index or the CHECK constraint on `Membership`.** Neither is
   expressible in `schema.prisma`, so Prisma cannot see them in either direction — it will not drop
   them, but it also cannot notice their absence. The two real ways to lose them both need a human:
