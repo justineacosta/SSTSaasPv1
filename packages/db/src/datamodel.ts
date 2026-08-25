@@ -88,6 +88,33 @@ export function datamodelModels(): readonly DatamodelModel[] {
   }));
 }
 
+/** One enum declared in `schema.prisma`, reduced to its name and values. */
+export interface DatamodelEnum {
+  readonly name: string;
+  /** Value names in declaration order. `dbName` is dropped: nothing maps one. */
+  readonly values: readonly string[];
+}
+
+/**
+ * The schema's enums, flattened.
+ *
+ * Exists so `enum-parity.spec.ts` can compare `schema.prisma`'s enums against
+ * the constants `@sentinel/contracts` restates for the wire. That comparison
+ * has to read the schema itself — a spec comparing a contracts constant to a
+ * literal typed out beside it proves only that two lines of the same file
+ * agree, and stays green through any change made on the database side.
+ *
+ * Returned as plain strings rather than the DMMF's `{ name, dbName }` objects
+ * for the same reason the rest of this module flattens: a caller that has to
+ * know the DMMF's shape is a caller coupled to a Prisma internal.
+ */
+export function datamodelEnums(): readonly DatamodelEnum[] {
+  return Prisma.dmmf.datamodel.enums.map((declared) => ({
+    name: declared.name,
+    values: declared.values.map((value) => value.name),
+  }));
+}
+
 /** The Prisma client version the datamodel above was read from. */
 export const PRISMA_CLIENT_VERSION: string = Prisma.prismaVersion.client;
 

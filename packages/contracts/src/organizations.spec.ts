@@ -85,7 +85,7 @@ describe('organizationResponseSchema', () => {
     expect(organizationResponseSchema.parse(ORG).slug).toBe('acme-security');
   });
 
-  it('matches the Prisma OrganizationStatus enum exactly', () => {
+  it('pins the status list and rejects a value outside it (see enum-parity.spec.ts for the schema cross-check)', () => {
     expect([...ORGANIZATION_STATUSES]).toEqual(['ACTIVE', 'SUSPENDED', 'TERMINATED']);
     expect(organizationResponseSchema.safeParse({ ...ORG, status: 'DELETED' }).success).toBe(false);
   });
@@ -116,7 +116,7 @@ describe('organizationCollectionSchema', () => {
   it('wraps organisations in the collection envelope', () => {
     const parsed = organizationCollectionSchema.parse({
       data: [ORG],
-      pagination: { nextCursor: null, hasMore: false },
+      pagination: { nextCursor: null, hasMore: false, limit: 50 },
     });
     expect(parsed.data).toHaveLength(1);
   });
