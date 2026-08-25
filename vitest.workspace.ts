@@ -31,6 +31,24 @@ export default defineWorkspace([
       environment: 'node',
       testTimeout: 120_000,
       hookTimeout: 120_000,
+      // DECLARED HERE, ENFORCED BY THE SCRIPT. Vitest resolves the pool's
+      // worker count from the ROOT config, not from a project's: the pool
+      // clamps to one worker on `vitest.config.fileParallelism`
+      // (`node_modules/vitest/dist/chunks/coverage.*.js`, the
+      // `poolOptions.singleFork || !vitest.config.fileParallelism` branch), and
+      // this file declares projects only. So this line has never been in force,
+      // and it was measured not to be: on 2026-08-26 a default `pnpm
+      // test:integration` reported 140.60s of test time inside a 19.72s wall
+      // clock — ten files running at once — and `sliding-window` failed on keys
+      // another spec's cleanup had deleted underneath it. Root `test:integration`
+      // now passes `--no-file-parallelism`, a CLI flag that does reach the root
+      // config; the same run then took 66.76s of wall clock for 58.18s of tests
+      // and passed 12 files / 161 tests twice.
+      //
+      // Kept rather than deleted because it states the requirement these specs
+      // are written against: they share one compose Redis, one MinIO and one
+      // Postgres, and nothing in them is namespaced per worker. Delete this and
+      // a reader has no record that sequential execution is load-bearing.
       fileParallelism: false,
       passWithNoTests: true,
     },
