@@ -32,9 +32,23 @@ export type HibpRangeTransport = (url: string, init: RangeRequestInit) => Promis
 /**
  * The default transport: `fetch`, honouring the abort signal so a slow range
  * lookup releases its socket rather than merely being ignored.
+ *
+ * **`redirect: 'error'`.** A followed redirect goes wherever the responding
+ * server points, including loopback, link-local and cloud metadata ranges, and
+ * no SSRF guard exists in this repository yet — critical security rule 9's
+ * guard is Phase 4's and is written about scanner traffic. Nothing beyond the
+ * five-character prefix could leak either way (the URL is rebuilt by the
+ * redirect target, not carried), so ADR-0015's privacy claim never depended on
+ * this; the foreclosure costs one property and is worth taking in a security
+ * product. A redirect now rejects, which the caller treats as `transport-error`
+ * and fails open on, exactly like any other transport failure.
  */
 export const fetchRangeTransport: HibpRangeTransport = async (url, init) => {
-  const response = await fetch(url, { headers: { ...init.headers }, signal: init.signal });
+  const response = await fetch(url, {
+    headers: { ...init.headers },
+    signal: init.signal,
+    redirect: 'error',
+  });
   return { status: response.status, body: await response.text() };
 };
 
