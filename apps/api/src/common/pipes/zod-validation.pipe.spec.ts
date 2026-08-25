@@ -99,3 +99,89 @@ describe('ZodValidationPipe', () => {
     expect(Object.keys(error.details ?? {})).toEqual(['fields']);
   });
 });
+
+/**
+ * `UNKNOWN_FIELD` (errors.md §3) had no producer anywhere in the repository
+ * until this branch: it was a documented code that nothing could raise, which
+ * §7 of that document already called out as unmet. `packages/contracts` cannot
+ * close it — a schema has no status code — so the split lives here, in the one
+ * place that turns a Zod failure into an HTTP error.
+ */
+const strictSchema = z
+  .object({
+    name: z.string().min(3),
+    nested: z.object({ value: z.string() }).strict(),
+  })
+  .strict();
+
+function failWithStrict(input: unknown): DomainError {
+  try {
+    new ZodValidationPipe(strictSchema).transform(input);
+  } catch (error) {
+    return error as DomainError;
+  }
+  throw new Error('Expected the pipe to reject this input, but it accepted it.');
+}
+
+describe('ZodValidationPipe and unknown fields', () => {
+  it('raises UNKNOWN_FIELD at 400 when every issue is an unrecognised key', () => {
+    const error = failWithStrict({ name: 'abc', nested: { value: 'v' }, organisationId: 'typo' });
+    expect(error.code).toBe(ERROR_CODES.UNKNOWN_FIELD);
+    expect(error.status).toBe(400);
+  });
+
+  it('names the offending key, with the full path the client sent', () => {
+    // Zod puts the PARENT path on an `unrecognized_keys` issue and the keys in
+    // `issue.keys`, so formatting the issue path alone would emit an empty
+    // path and name no field at all — a 400 that says "there is an unknown
+    // field somewhere" is not actionable.
+    const error = failWithStrict({ name: 'abc', nested: { value: 'v', extar: 1 } });
+    expect(fieldsOf(error).map((field) => field.path)).toEqual(['nested.extar']);
+  });
+
+  it('reports one field error per unrecognised key, not one per object', () => {
+    const error = failWithStrict({ name: 'abc', nested: { value: 'v' }, a: 1, b: 2 });
+    const paths = fieldsOf(error).map((field) => field.path);
+    expect(paths.sort()).toEqual(['a', 'b']);
+  });
+
+  it('stays VALIDATION_ERROR when a real validation rule also failed', () => {
+    // A body that both misspells a field AND breaks a rule is a validation
+    // failure. Branching it to UNKNOWN_FIELD would tell the client the only
+    // problem was the spelling, and it would fix the spelling and fail again.
+    const error = failWithStrict({ name: 'ab', nested: { value: 'v' }, extra: 1 });
+    expect(error.code).toBe(ERROR_CODES.VALIDATION_ERROR);
+  });
+
+  it('still lists the unrecognised keys on a mixed failure', () => {
+    // The code is the weaker signal; `details.fields` is what a form binds to.
+    // Losing the unknown key from a mixed failure would make the client's
+    // second attempt fail for the same reason as the first.
+    const error = failWithStrict({ name: 'ab', nested: { value: 'v' }, extra: 1 });
+    const paths = fieldsOf(error).map((field) => field.path);
+    expect(paths).toContain('name');
+    expect(paths).toContain('extra');
+  });
+
+  it('carries the Zod issue code on each unknown-field entry', () => {
+    const error = failWithStrict({ name: 'abc', nested: { value: 'v' }, extra: 1 });
+    expect(fieldsOf(error).map((field) => field.code)).toEqual(['unrecognized_keys']);
+  });
+
+  it('redacts secret-shaped content out of an unknown key name', () => {
+    // The key is the caller's own input and is echoed back in `path` and
+    // `message`. errors.md §5 — client-visible text goes through the same
+    // redaction the logger uses.
+    const error = failWithStrict({
+      name: 'abc',
+      nested: { value: 'v' },
+      'https://user:hunter2@internal.example/cb': 1,
+    });
+    expect(JSON.stringify(error.details)).not.toContain('hunter2');
+  });
+
+  it('carries nothing but fields in details on an unknown-field failure', () => {
+    const error = failWithStrict({ name: 'abc', nested: { value: 'v' }, extra: 1 });
+    expect(Object.keys(error.details ?? {})).toEqual(['fields']);
+  });
+});
