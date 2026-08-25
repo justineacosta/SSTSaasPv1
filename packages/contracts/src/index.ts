@@ -51,6 +51,7 @@ export {
   logoutRequestSchema,
   mfaVerifyRequestSchema,
   mfaVerifyResponseSchema,
+  opaqueTokenSchema,
   PASSWORD_MAX_LENGTH,
   PASSWORD_MIN_LENGTH,
   passwordSchema,
@@ -90,3 +91,61 @@ export type {
   VerifyEmailRequest,
   VerifyEmailResponse,
 } from './auth.js';
+export { isoTimestampSchema } from './timestamps.js';
+export {
+  createOrganizationRequestSchema,
+  listOrganizationsQuerySchema,
+  ORGANIZATION_STATUSES,
+  organizationCollectionSchema,
+  organizationNameSchema,
+  organizationResponseSchema,
+  organizationSlugSchema,
+  organizationStatusSchema,
+  updateOrganizationRequestSchema,
+} from './organizations.js';
+export type {
+  CreateOrganizationRequest,
+  ListOrganizationsQuery,
+  OrganizationCollection,
+  OrganizationResponse,
+  OrganizationStatus,
+  UpdateOrganizationRequest,
+} from './organizations.js';
+export {
+  listMembershipsQuerySchema,
+  MEMBERSHIP_STATUSES,
+  membershipCollectionSchema,
+  membershipResponseSchema,
+  membershipStatusSchema,
+  membershipUserSchema,
+  roleCollectionSchema,
+  roleResponseSchema,
+  systemRoleSchema,
+  updateMembershipRequestSchema,
+} from './memberships.js';
+export type {
+  ListMembershipsQuery,
+  MembershipCollection,
+  MembershipResponse,
+  MembershipStatus,
+  MembershipUser,
+  RoleCollection,
+  RoleResponse,
+  UpdateMembershipRequest,
+} from './memberships.js';
+export {
+  acceptInvitationRequestSchema,
+  acceptInvitationResponseSchema,
+  createInvitationRequestSchema,
+  invitationCollectionSchema,
+  invitationResponseSchema,
+  listInvitationsQuerySchema,
+} from './invitations.js';
+export type {
+  AcceptInvitationRequest,
+  AcceptInvitationResponse,
+  CreateInvitationRequest,
+  InvitationCollection,
+  InvitationResponse,
+  ListInvitationsQuery,
+} from './invitations.js';

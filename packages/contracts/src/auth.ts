@@ -49,7 +49,7 @@ export const passwordSchema = z.string().min(PASSWORD_MIN_LENGTH).max(PASSWORD_M
  * that format a breaking API change for no gain. What this schema is for is
  * refusing an empty or absurd value before it reaches a database lookup.
  */
-const opaqueTokenSchema = z.string().min(1).max(512);
+export const opaqueTokenSchema = z.string().min(1).max(512);
 
 /**
  * The response shape for endpoints whose body `api/authentication.md` does not
