@@ -436,3 +436,339 @@ violate them and they went red every time.
 Task 9's, and F10 (no signal on a corrupt credential) with it.
 
 I fixed nothing and I edited no `.claude/` document or `roadmap.md`.
+
+---
+
+## Re-review of the fix round (2026-08-25)
+
+> **A dated record of what was checked and observed in a second, scoped pass. Not a description
+> of current state — [`roadmap.md`](../../../../../.claude/product/roadmap.md) is the only
+> authority on that.**
+
+Second reviewer, fresh, no stake in the code and none in the review above. Branch
+`feat/phase-2-task-03` at `358db43`; fix round `3faac77..358db43`. Working tree clean at the
+start and at the end. Machine: Windows 11 x64, `node --version` → `v26.7.0`,
+`pnpm --version` → `11.5.0`, 12 logical CPUs. Docker running, all four services `(healthy)`.
+
+**Scope: two questions only** — does each fix fix what it claims, and did any fix break or
+weaken something else. The whole task was not re-reviewed.
+
+**Verdict: the fix round is sound. All seven findings dispositioned FIX are fixed. Nothing was
+broken or weakened, and no correction introduced a false claim.** Three nits and one coverage
+gap are recorded below; none is a defect and none should hold the merge.
+
+Every mutation below was applied to the working tree, run, and reverted with `git checkout`.
+`git status --short` is empty at the end of this re-review.
+
+### F1 — **fixed** [measured]
+
+Each `it.each` row now carries its own raised service (`password.service.spec.ts`, the
+`flags %s independently of the other two axes` block): stored `{4096,2,1}` vs raised
+`{8192,2,1}`; stored `{8192,1,1}` vs `{8192,2,1}`; stored `{8192,2,1}` vs `{8192,2,2}`. I read
+each pair — each differs from its raised service on exactly the named axis.
+
+Mutations E and F re-applied by me, at both scopes:
+
+| Mutation | Command | Result |
+| --- | --- | --- |
+| delete `stored.memoryCostKib < this.parameters.memoryCostKib \|\|` | `pnpm vitest run --project unit apps/api/src/modules/auth/password.service.spec.ts` | **EXIT=1**, `Tests 1 failed \| 19 passed (20)`, `× flags a lower memory cost independently of the other two axes`, `AssertionError: expected { valid: true, needsRehash: false } to deeply equal { valid: true, needsRehash: true }` |
+| same | `pnpm vitest run --project unit` | **EXIT=1**, `Test Files 1 failed \| 44 passed (45)` |
+| delete `stored.timeCost < this.parameters.timeCost \|\|` | file spec | **EXIT=1**, `Tests 1 failed \| 19 passed (20)`, `FAIL … flags a lower time cost independently of the other two axes`, same assertion |
+| same | `pnpm vitest run --project unit` | **EXIT=1**, `Test Files 1 failed \| 44 passed (45)` / `Tests 1 failed \| 579 passed (580)` |
+
+Both were GREEN at both scopes before the fix (F1 above). The implementer's table reported
+`574 passed (575)` for the whole-project runs against my `579 passed (580)`; the difference is
+exactly F9's five new tests, added in a later commit. Consistent, not a discrepancy.
+
+### F2 — **fixed** [measured]
+
+`expectFailOpenLogIsSafe(lines, reason)` is called from all four fail-open tests. I did not take
+that on the call sites — I leaked the prefix at each of the three `failOpen` call sites in turn.
+Command in every row:
+`pnpm vitest run --project unit apps/api/src/modules/auth/breach-check.service.spec.ts`.
+
+| Mutation | Result |
+| --- | --- |
+| `prefix: digest.slice(0, 5)` added to the `unexpected-status` call (`breach-check.service.ts:175`) | **EXIT=1**, `Tests 1 failed \| 14 passed (15)`, `FAIL … allows the password on a 500`, `AssertionError: expected '[{"level":"warn",…' not to contain 'ABF7A'` |
+| same on the `unparseable-body` call (`:181`) | **EXIT=1**, `Tests 1 failed \| 14 passed (15)`, `FAIL … allows the password on a garbage body`, same assertion |
+| same on the `catch` call, `failOpen(reason, …)` (`:188`) | **EXIT=1**, **`Tests 2 failed \| 13 passed (15)`** — `allows the password when the range API times out` **and** `allows the password when the transport throws`, same assertion on both |
+
+Four distinct fail-open outcomes, four distinct red tests. The "three call sites, four reasons"
+claim is correct and I verified it in the implementation rather than from the commit message:
+`unexpected-status` at `:175`, `unparseable-body` at `:181`, and the `catch` at `:188` serving
+both `timeout` and `transport-error` via the `timedOut` flag.
+
+The new guard-on-the-guard was tested, not read. Adding a fifth tag
+(`type FailureReason = 'rate-limited' | 'timeout' | …`): **EXIT=1**, `Tests 1 failed | 14 passed
+(15)`, `FAIL … has no reason tag and no log call site the four tests above do not cover`.
+
+The test the fix deleted asserted length-1, `level`, `elapsedMs` and four absences on one path.
+All of it is now inside the helper, which additionally pins the `reason` tag and adds the
+lower-case digest and suffix. Strictly stronger; nothing was lost.
+
+### F3 — **fixed** [measured]
+
+The three comments now state ~250 ms as the documented target and give a dated,
+hardware-stamped measurement. Both citations checked and true:
+`.claude/security/authentication.md:27` gives "~250ms (starting point: m=64MiB, t=3, p=4)" as a
+tuning target, and `.claude/decisions/ADR-0014-*.md:108` reads "**The ~250ms target is
+untuned.**" No comment now asserts 250 ms as a cost. Ruling 23 is honoured.
+
+Re-measured independently — `node -e` inside `apps/api` against `@node-rs/argon2@2.1.0`:
+
+```
+hashSync @64MiB/t3/p4 ms= 27.847
+verify   @64MiB/t3/p4 mean ms= 35.165   (n=10)
+verify   @16MiB/t2/p1 mean ms=  8.757   (n=10)
+```
+
+against the comments' 37.4 / 36.0 / 9.2. The two verification figures — the ones the "~1.9 s for
+52 verifications, not minutes" conclusion actually rests on — reproduce within 3%. And
+`pnpm vitest run --project unit apps/api/src/modules/auth/password.service.spec.ts` three times
+gave `tests 154ms / 161ms / 164ms` against the comment's 146 ms.
+
+**Nit, recorded not charged.** The 37.4 ms single `hashSync` is above the range I see: five
+fresh processes each performing one cold `hashSync` at the configured defaults gave 27.425,
+28.865, 34.321, 31.191, 27.613 ms. It is a one-sample measurement of a noisy quantity, it is
+labelled with its date and hardware exactly as Ruling 23 requires, and no conclusion depends on
+it. Not a false claim.
+
+The parameter reduction stands per Ruling 22; I did not re-argue it.
+
+### F6 — **fixed**, with an observation the orchestrator should see [measured]
+
+The `TOLERANCE` comment now carries eleven runs. I checked the transcription against both
+sources: the implementer's five (0.0122, 0.0263, 0.0252, 0.0486, 0.0308) match report §2, and
+the six attributed to review `3c5d694` (0.0269, 0.0269, 0.0737, 0.0106, 0.0536, 0.0081) match
+F6's table above, digit for digit. Worst is 0.0737; 0.25 / 0.0737 = 3.39, so "~3.4×" is correct
+arithmetic. "Medians ranged 7.4–10.1 ms" still holds over the combined sample. `TOLERANCE` is
+still `0.25`, `SAMPLES` still 21, `REDUCED` still `{16_384, 2, 1}`, `WARMUP` still 5.
+
+**But I ran the same procedure six more times** — `TOLERANCE` forced to `0.00001`, six isolated
+runs of `pnpm vitest run --project unit apps/api/src/modules/auth/password.timing.spec.ts`:
+
+| Run | existing | absent | relative | shortCircuit |
+| --- | --- | --- | --- | --- |
+| 1 | 8.328 ms | 8.618 ms | 0.0349 | 0.004 ms |
+| 2 | 8.579 ms | 9.174 ms | 0.0693 | 0.006 ms |
+| 3 | 9.675 ms | 8.972 ms | **0.0784** | 0.008 ms |
+| 4 | 8.097 ms | 8.310 ms | 0.0263 | 0.004 ms |
+| 5 | 8.320 ms | 8.520 ms | 0.0240 | 0.004 ms |
+| 6 | 8.406 ms | 7.903 ms | 0.0637 | 0.004 ms |
+
+**0.0784 is worse than the 0.0737 the corrected comment names as the worst.** The sentence is
+not false — it is correctly scoped to "over all eleven" and is a dated observation. What is now
+optimistic is the figure derived from it: over seventeen runs the headroom at 0.25 is **~3.19×**,
+not 3.4×.
+
+The right reading is not that the comment is wrong twice. It is that **the worst-case spread of
+this measurement is not converging** — each batch has produced a new maximum (4.86% → 7.37% →
+7.84%). That supports the conclusion the comment already draws (do not tighten the tolerance)
+and argues against ever quoting a headroom multiple as if it were a property of the tolerance.
+My suggestion, for the orchestrator not for me: keep 0.25, and consider replacing "~3.4×" with
+the observation that repeated sampling keeps finding a new worst. **I fixed nothing.**
+
+### F7 — **fixed** [measured]
+
+The control's comment now states what it bounds and what it does not. I verified both of its
+load-bearing claims rather than reading them. Command in both rows:
+`pnpm vitest run --project unit apps/api/src/modules/auth/password.timing.spec.ts`.
+
+| Claim in the comment | Mutation | Result |
+| --- | --- | --- |
+| `TOLERANCE = 200` with the implementation intact stays green | `TOLERANCE = 200` only | **EXIT=0, `Tests 1 passed (1)`** |
+| `TOLERANCE = 200` plus a short-circuited null branch still fails | also replaced `await this.runVerification(this.dummyHash, password)` in `verify` with a comment | **EXIT=1**, `relative=4514.1364: expected 4514.136363636363 to be less than 200` |
+
+Both true. The reviewer's figure for the second was 3958.5; mine is 4514.1 — same phenomenon,
+run-to-run variation, and the comment says "at relative=3958.5" attributed to that run, which is
+how it should be written.
+
+**Two nits.** The gap the comment calls "~1500-4000×" measured 1209–2101 across my six
+forced-tolerance runs, so the lower end of that range is optimistic. And the `TOLERANCE`
+comment's "a relative difference in the thousands, three orders of magnitude outside this
+tolerance" understates it — 2000 against 0.25 is a factor of 8000, nearly four orders; the
+sentence it replaced said four. Both nits err toward *understating* the test's strength, so
+neither can mislead anyone into trusting it more than it deserves. Recorded, not charged.
+
+### F9 — **fixed** [measured]. This was the highest-risk fix and it holds.
+
+**The boundary, measured at more points than claimed, in both directions.** Against
+`@node-rs/argon2@2.1.0` directly, `hashSync('x', {memoryCost: m, timeCost: 1, parallelism: p,
+algorithm: 2})`:
+
+```
+m=8    p=4   THROWS: Memory cost is too small     m=8    p=1   OK
+m=31   p=4   THROWS: Memory cost is too small     m=32   p=4   OK
+m=23   p=3   THROWS: Memory cost is too small     m=24   p=3   OK
+m=15   p=2   THROWS: Memory cost is too small     m=16   p=2   OK
+m=2039 p=255 THROWS: Memory cost is too small     m=2040 p=255 OK
+```
+
+Exactly 8p, including at the schema's parallelism ceiling. Then the same ten pairs through
+`loadEnv(apiEnvSchema, …)` against the built package — **the schema accepts and rejects at
+exactly the same ten points**, with arithmetically correct messages every time:
+
+```
+m=8    p=4   REJECTED vars=["PASSWORD_ARGON2_MEMORY_KIB","PASSWORD_ARGON2_PARALLELISM"]
+             PASSWORD_ARGON2_MEMORY_KIB: must be at least 32
+             PASSWORD_ARGON2_PARALLELISM: must be at most 1
+m=31   p=4   REJECTED   … must be at least 32   / … must be at most 3
+m=23   p=3   REJECTED   … must be at least 24   / … must be at most 2
+m=15   p=2   REJECTED   … must be at least 16   / … must be at most 1
+m=2039 p=255 REJECTED   … must be at least 2040 / … must be at most 254
+m=8/1, m=16/2, m=24/3, m=32/4, m=2040/255   ACCEPTED
+```
+
+Defaults still load as `65536 / 3 / 4`. Both variables are named, both bounds are given, and
+**each message alone is a sufficient fix** — raising memory to the stated minimum or lowering
+parallelism to the stated maximum each produces a valid pair. The field rule `min(8)` guarantees
+`Math.floor(m / 8) >= 1`, so the `too_big` bound can never be an unsatisfiable "at most 0".
+
+**The `ZodEffects` hazard — carry-forward ruling 15 — verified myself across the whole repo.**
+`grep -rn "apiEnvSchema"` over `.ts/.tsx/.js/.mjs/.cjs/.json/.md`, excluding `node_modules` and
+the ledger, returns:
+
+- `packages/config/src/env.spec.ts:117` — the only `.shape` reader, now `.innerType().shape`,
+  with a comment naming the ruling.
+- `packages/config/src/env.ts:145` (`z.infer`) and `packages/config/src/index.ts:1` (re-export).
+- `apps/api/src/main.ts:15`, `apps/api/src/openapi/cli.ts:29`,
+  `apps/api/src/infrastructure/config/config.module.ts:22` — all `loadEnv(apiEnvSchema)`, whose
+  signature is `<TSchema extends z.ZodTypeAny>`, which a `ZodEffects` satisfies.
+- `apps/api/src/modules/auth/password.service.spec.ts:19` and
+  `.claude/operations/environments.md:54` — prose mentions.
+- Everything else is `apps/api/dist`, `apps/web/.next` and `packages/config/dist` build output.
+
+**Nothing calls `.extend()`, `.merge()`, `.partial()`, `.pick()` or `.omit()` on it.** I checked
+`e2eEnvSchema` specifically, because a chained schema is where this would hide: it extends
+`webEnvSchema`, not `apiEnvSchema`. The implementer's grep claim is accurate, and ruling 15's
+hazard is real here and has been handled.
+
+**The `too_small`/`too_big` workaround in place of a `custom` issue — judged sound.**
+`load-env.ts`'s `describeIssue` deliberately renders only authored rule parameters and never
+`issue.message`; its own doc comment calls that safety-by-construction rather than an audit of
+Zod's error-map text, and `case 'custom'` falls through to `` `failed validation (${issue.code})` ``,
+which names no rule. So the workaround is not a smuggle: on a number field `too_small` and
+`too_big` render as "must be at least N" / "must be at most N", and both statements are
+*literally true* of the dynamic constraint at the values in play — verified at ten points above.
+The one thing lost is that neither message states the *relationship*: an operator sees two bounds
+rather than "memory must be at least 8 × parallelism". `EnvValidationError.variables` names both
+variables and the two lines print together, so the pair is visible and either bound is
+individually actionable. I would not change it, and `load-env.ts` was correctly left untouched.
+
+**Test count.** `pnpm vitest run --project unit packages/config/src/env.spec.ts` → `Tests 28
+passed (28)`. `pnpm vitest run --project unit apps/api/src/modules/auth` → `Test Files 5 passed
+(5)` / `Tests 43 passed (43)`, so C1's corrected 43 still holds and F1/F2 added no test.
+`breach-check.service.spec.ts` is still 15 (F2 removed one and added one). The diff adds exactly
+five rows to `env.spec.ts` (one failure case, three `it.each` boundary rows, one `m=31/p=4`
+refusal), and 594 − 5 = 589 is the pre-fix baseline. **Not independently verified:** I did not
+check out the pre-fix commit to count `env.spec.ts` at 23; that half of the claim rests on the
+diff and on arithmetic, not on a measurement.
+
+### F11 — **fixed** [measured], but unpinned by any test
+
+`redirect: 'error'` is on the real fetch — `breach-check.service.ts:47-53` — and
+`fetchRangeTransport` is the only `fetch` in the module (`grep -rn "fetch(" apps/api/src/modules/auth/`
+→ one hit) and the only transport wired in production
+(`auth.module.ts:49`, `{ provide: HIBP_RANGE_TRANSPORT, useValue: fetchRangeTransport }`). The
+property is a literal written after `headers: { ...init.headers }`, and nothing in the call can
+override it: `init` is read field by field and never spread into the options object. Nothing
+re-enables following.
+
+I reproduced the implementer's evidence with my own local redirect server (a `node:http` server
+answering `302 Location: http://169.254.169.254/latest/meta-data/`):
+
+```
+follow -> REJECTED: TypeError / connect ENETUNREACH 169.254.169.254:80
+error  -> REJECTED: TypeError / unexpected redirect
+```
+
+Identical to the commit message. `follow` genuinely reaches the point of opening a TCP connection
+to the metadata address; `error` rejects before any connection.
+
+**Gap, not a regression: no test pins this.** Deleting the `redirect: 'error'` line leaves
+`pnpm vitest run --project unit apps/api/src/modules/auth/breach-check.service.spec.ts` at
+**EXIT=0, `Tests 15 passed (15)`** — the exact shape F2 was about, one level down. The fix round
+did not introduce it: `fetchRangeTransport` has no test coverage at all, because every spec
+injects a stub, and ADR-0015 line 116 already records that "no test proves the real integration
+works". Pinning it needs an integration test with a real HTTP server, out of this task's scope.
+Worth a carry-forward line rather than a fix here.
+
+### Did any fix break or weaken anything?
+
+**No.** I looked at the four places where these fixes could have cost something.
+
+1. **F2 replaced a test rather than adding one.** Every assertion the deleted test made — length
+   1, `level`, `elapsedMs`, and the password/digest/suffix/prefix absences — is inside
+   `expectFailOpenLogIsSafe`, which now runs on four paths instead of one, plus the `reason` tag
+   and two lower-case absences that did not exist before. Net strictly stronger, proven by the
+   four mutations above.
+2. **The new guard-on-the-guard reads its own source text** via
+   `readFileSync(new URL('./breach-check.service.ts', import.meta.url))`. That is unusual and
+   worth naming: it couples the spec to source formatting and would break if the unit project
+   ever ran against compiled output. It works today (`pnpm test`, `pnpm build` and `check:specs`
+   all green), the `[^;]+` union regex tolerates a reflowed multi-line declaration, and it goes
+   genuinely red on a fifth tag. Acceptable; not a defect.
+3. **F9's `ZodEffects` is the change most able to break something at a distance**, and it did
+   not: `pnpm typecheck` → `Tasks: 14 successful, 14 total`, `ApiEnv` is unchanged because
+   `z.infer` of a `ZodEffects` is the inner output type, and the whole-repo grep above accounts
+   for every reader.
+4. **No `.claude/` document was made false** by any of the seven fixes, and none was edited
+   (`git diff --stat 3c5d694..358db43` touches five source files, two spec-adjacent config files
+   and two ledger files — no `.claude/` path). I checked the three documents the fixes touch on:
+   `development/setup.md:135-138` promises the config layer names the offending variable, which
+   F9 makes *more* true; `security/authentication.md:27` and ADR-0014:108 are quoted accurately
+   by the corrected comments; ADR-0015 makes no claim about redirects that F11 disturbs.
+
+One small omission worth a line: **`.env.example:51-58` documents the three Argon2 variables but
+not the `m >= 8p` relationship.** The boot error names both variables and both bounds, so an
+operator who trips it is not stranded — but the template is where they would look first. A
+one-line comment would close it. Not a defect and not a blocker.
+
+### Exit criteria, re-run by me at `358db43`
+
+Each captured as `out=$(pnpm <cmd> 2>&1); code=$?` — exit code outside a pipe. Working tree
+clean, every mutation reverted, before this sweep.
+
+| Command | My exit | My output line | Fix round's claim | Match |
+| --- | --- | --- | --- | --- |
+| `pnpm format:check` | 0 | `All matched files use Prettier code style!` | same | yes |
+| `pnpm lint` | 0 | `Tasks: 14 successful, 14 total` | same | yes |
+| `pnpm typecheck` | 0 | `Tasks: 14 successful, 14 total` | same | yes |
+| `pnpm test` | 0 | `Test Files 48 passed (48)` / `Tests 594 passed (594)` | same | **yes — 594** |
+| `pnpm check:specs` | 0 | `59 spec files, each claimed by exactly one of: unit, integration, ui` | same | yes |
+| `pnpm check:openapi` | 0 | `"routes":4` / `byte-identical to what the contracts generate` | same | **yes — still 4 routes** |
+| `pnpm check:registry` | 0 | `14 models, 3 tenant-owned, 1 tenant root, 10 deliberately global` | same | yes |
+| `pnpm build` | 0 | `Tasks: 8 successful, 8 total` | same | yes |
+| `pnpm test:integration` | 0 | `Test Files 11 passed (11)` / `Tests 148 passed (148)` | same | yes |
+| `docker compose ps` | 0 | mailpit / minio / postgres / redis all `(healthy)` | same | yes |
+
+`pnpm test:e2e` not run, for the reason already accepted above: no `apps/web` path is touched by
+this branch or by the fix round.
+
+**Not verified by me, and stated as such:** the fix round's historical red/green runs (its own
+mutation table) are runs that happened before these commits existed — I reproduced the mechanism
+of every one of them, but not the runs; and the pre-fix `env.spec.ts` count of 23, which I
+derived from the diff rather than measured.
+
+### What I would tell the orchestrator
+
+The fix round does what it says. Seven findings, seven fixes, and the two that mattered — F1 and
+F2, the only places in this task where a real regression passed a green suite — are now caught by
+mutation at every scope I tried. F9, the riskiest edit, is correct at the exact boundary the
+native library enforces, and its `ZodEffects` fallout is fully accounted for.
+
+Most notably for a branch with this history: **no correction introduced a new false claim.**
+Every replacement sentence I checked against a document says what the document says, and every
+replacement number reproduces under my own measurement. The one figure already overtaken (F6's
+3.4×) was overtaken by new data I generated, not by an error in the sentence.
+
+Nothing here should hold the merge. Three items for a later brief or a ruling, in order of worth:
+
+1. **`redirect: 'error'` is unpinned** — removing it leaves the suite green. Same shape as F2.
+   `fetchRangeTransport` has no coverage at all and ADR-0015 already records that.
+2. **Stop quoting a headroom multiple for `TOLERANCE`.** Three sampling batches have produced
+   three new maxima (4.86% → 7.37% → 7.84%). The tolerance value is right; the multiple is a
+   number that keeps needing correcting.
+3. **`.env.example` could name the `m >= 8p` rule** beside the three Argon2 variables.
+
+I fixed nothing, edited no `.claude/` document, and did not touch `roadmap.md`.
