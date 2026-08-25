@@ -47,9 +47,7 @@ describe('assertUserPrincipal', () => {
     // code reaching it FAILS. A guard that quietly treated an unimplemented
     // API-key principal as authorised would be the worst possible outcome of
     // defining the type early.
-    expect(() => assertUserPrincipal(apiKeyPrincipal)).toThrow(
-      API_KEY_PRINCIPAL_NOT_IMPLEMENTED,
-    );
+    expect(() => assertUserPrincipal(apiKeyPrincipal)).toThrow(API_KEY_PRINCIPAL_NOT_IMPLEMENTED);
     expect(API_KEY_PRINCIPAL_NOT_IMPLEMENTED).toContain(
       'API key principals are not implemented in Phase 2',
     );
