@@ -8,13 +8,13 @@ code was written.
 Status vocabulary (specification §79): **Implemented** / **Partially Implemented** /
 **Not Implemented** / **Blocked**.
 
-## Current state — 2026-08-25
+## Current state — 2026-08-26
 
 | Phase | Scope | Status |
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Not Implemented** — Tasks 1–3 of 18 done 2026-08-25 (schema, migrations, registry, wire contracts, password hashing and the breach check); nothing authenticates anybody yet |
+| 2 | Identity | **Not Implemented** — Tasks 1–4 of 18 done 2026-08-26 (schema, migrations, registry, wire contracts, password hashing, the breach check, and single-use secret tokens); nothing authenticates anybody yet |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -602,9 +602,9 @@ routes under it. Not one of the three exit criteria above is met. Per the plan, 
 not a feature, and a service no endpoint calls is not one either.
 
 `apps/api/src/modules/` now contains `auth` alongside `health`, and the sentence that used to read
-"only `health`" is corrected wherever it appeared. `AuthModule` registers two providers and **no
-controller**: `PasswordService` and `BreachCheckService` are callable from Tasks 8–10 and are called
-by nothing today.
+"only `health`" is corrected wherever it appeared. `AuthModule` registers **three services and no
+controller**: `PasswordService`, `BreachCheckService` and — as of Task 4 — `TokenService`, all of
+them callable from Tasks 6–15 and called by nothing today.
 
 **Task 2 evidence, 2026-08-25 at commit `4788826`.** Every command re-run by the orchestrator on
 the finished tree rather than taken from the implementer's report, with exit codes captured
@@ -820,6 +820,81 @@ asserts the redacting logger removes it. **Nothing to revoke or rotate.** The st
 a security product's repository now carries a permanently red security check, which trains people
 to ignore it — worth closing with a `.gitguardian.yaml` ignore list naming each match and why.
 **That is not done.**
+
+**Task 4 evidence, 2026-08-26 at commit `58fd35a`.** Every command re-run by the orchestrator on
+the finished tree after the fix round, not taken from the implementer's report, with exit codes
+captured outside a pipe.
+
+| Command | Exit | What it proves |
+|---|---|---|
+| `pnpm format:check` | 0 | Prettier style across the workspace. |
+| `pnpm lint` | 0 | 14 tasks. Including the new fence on `@sentinel/db/testing`, which was watched failing on a probe file before it was trusted. |
+| `pnpm typecheck` | 0 | 14 tasks. The types compile — and nothing about behaviour. It is also the only one of the three that caught a stub missing a method (TS2345); `test` and `lint` were both green on it. |
+| `pnpm test` | 0 | **53 files / 645 tests**, up from 48 / 596 at Task 3. |
+| `pnpm check:specs` | 0 | 65 spec files, each claimed by exactly one Vitest project. |
+| `pnpm test:integration` | 0 | **12 files / 163 tests** against real Postgres 16, up from 11 / 148 — the first `apps/api` integration spec to own a migrated database. Five consecutive green runs. |
+| `pnpm build` | 0 | 8 tasks. |
+| `pnpm check:openapi` | 0 | Byte-identical, still **4 routes**. **This is the proof that no endpoint shipped.** |
+| `pnpm check:registry` | 0 | 14 models, unchanged — Task 4 added no table and no migration. |
+| `docker compose ps` | 0 | postgres, redis, minio, mailpit all `Up (healthy)`. |
+
+`pnpm test:e2e` was **not run** and has no row. Task 4 touches no `apps/web` path and ships no
+route, so it cannot reach a rendered page.
+
+What that table licenses and nothing more: a token can be minted, hashed, stored, superseded and
+redeemed exactly once, and the properties that need a real database are asserted against one.
+**It says nothing about any user receiving a link**, because no endpoint issues one and no mail is
+sent — that is Tasks 5, 8 and 10.
+
+**What Task 4 delivered.** Two layers, because §6's one *discipline* is not one table:
+`secret-token.ts` mints 256 bits from `crypto.randomBytes`, base64url-encoded, and hashes with
+SHA-256 — the primitive Task 6 will use for `Session.tokenHash` and Task 15 for
+`Invitation.tokenHash` — and `TokenService` owns `VerificationToken` persistence for the two
+purposes the Prisma enum has. Consumption is a single conditional `updateMany` whose affected-row
+count is the decision, so of two simultaneous redemptions of one reset link exactly one succeeds.
+Three TTLs in seconds on `apiEnvSchema`'s base object. `TOKEN_INVALID` at 422 in both error lists —
+one code for unknown, expired, consumed and superseded alike, because distinguishing them tells an
+attacker the address is registered — with the `ERROR_CODES`↔`api/errors.md` parity spec that
+carry-forward ruling 27 had been asking for since Task 3.
+
+**The review found one High, and it was the task's own defect shape one layer up.** `consume` was
+built correctly and its concurrency test is the best in the phase so far. `issue` was not: its
+supersede-then-insert runs inside a transaction, which is exactly why it looks safe and is not —
+under READ COMMITTED a second transaction cannot see the first's uncommitted `INSERT`, so both
+tokens commit live. Measured at ten pairs out of ten rounds before the fix and one out of ten
+after, with a negative control proving the new lock is not global. **A transaction is not a lock.**
+
+**The redacting logger was measured leaking, and the measurement changed the link format.** Of four
+shapes carrying a real 256-bit token, only the one under a denylisted key name was redacted; the
+token survived verbatim inside a URL under `verifyUrl`, inside a message string, and as a `%s`
+argument. A value-shape pattern now covers a secret in a query parameter — but `key` and `code`
+were deliberately removed from its name list, because `redact()` blanks the **whole** field and
+both collide with this product's own object-storage URLs and error codes. The consequence is a
+constraint on Task 5: **a secret in a link travels as `?token=`**, and a path-segment link is
+covered by nothing.
+
+**Two latent defects were found in Phase 1 code while diagnosing an intermittent suite, and
+neither was Task 4's.** `fileParallelism: false` on the integration project had never been in
+force — Vitest resolves the pool's worker count from the root config, and `vitest.workspace.ts`
+declares projects only. Measured: 140.60s of test time inside a 19.72s wall clock. Underneath it,
+`rate-limit.integration.spec.ts`'s `beforeEach` deletes `ratelimit:login:*`, which is the exact
+namespace `sliding-window.integration.spec.ts` writes its keys in on the one shared compose Redis,
+while its comment claimed the narrowing "protects other suites". Root `test:integration` now passes
+`--no-file-parallelism` and the comment says what is true. `development/testing.md`'s
+"tests are parallel-safe" sentence was corrected in the same change: it is a statement about
+Postgres rows and does not generalise to Redis.
+
+**`@sentinel/db/testing` was added as a package export and arrived unfenced.** It is how an
+`apps/api` integration spec reaches a *migrated* database, which the compose stack is not in CI —
+but `startPostgresHarness()` returns the schema-owner DSN, which no RLS policy applies to. A
+non-spec probe importing it passed both `eslint` and `tsc`. It is now a `no-restricted-imports`
+fence, proven to fire, and `development/coding-standards.md` §6 records it beside the unscoped-client
+rule it belongs with.
+
+**Task 4 is not pushed and has no pull request.** It sits on `feat/phase-2-task-04`, cut from
+`main`, with its history rewritten so `apps/api/openapi.json` moves with the contracts commit that
+changes it — before that, four commits failed `pnpm check:openapi` and a change to the shipped API
+contract sat inside a commit typed `docs(ledger):`. Pushing is the operator's call.
 
 **Checkpoint A falls after Task 12** — the identity API enforced end to end with no UI. At that
 point the branch is pushed, CI must be green on a Linux runner, and this file gets an evidence

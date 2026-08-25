@@ -82,6 +82,20 @@ application can never produce, and tests built on it prove nothing.
 Every test gets its own organisation, so tests are parallel-safe and cross-tenant assertions
 have a real second tenant to assert against.
 
+**That sentence is about Postgres rows, and it does not generalise to the other backing
+services.** The integration suite runs **sequentially** — root `test:integration` passes
+`--no-file-parallelism` — because two spec files sharing the one compose Redis are not isolated
+by a per-test organisation. Phase 2 Task 4 measured what happens without it: the rate-limit
+suite's `beforeEach` deletes `ratelimit:login:*`, the rate-limit *guard* suite writes keys in
+that same namespace, and with files running in parallel the second failed intermittently on
+counts lower than it had just written. The project-level `fileParallelism: false` in
+`vitest.workspace.ts` had never been in force — Vitest resolves the pool's worker count from the
+root config, not a project's — so the suite had been parallel since it was written.
+
+A spec that needs true isolation from a backing service should take its own, as
+`token.service.integration.spec.ts` does with `startPostgresHarness()`. Sequential execution is
+the floor, not the design.
+
 ## 5. Coverage
 
 Coverage is a diagnostic, not a target. The floors that are enforced: domain logic ≥ 90%,

@@ -13,7 +13,7 @@ Branch: `feat/phase-2-identity`
 | 1 | Identity schema, migrations, registry, Membership partial-unique fix | subagent | **Done** — [brief](task-01/brief.md) · [report](task-01/report.md) · [review](task-01/review.md) |
 | 2 | `packages/contracts` — identity contracts, Principal, TenantContext | subagent | **Done** — [brief](task-02/brief.md) · [report](task-02/report.md) · [review](task-02/review.md) · [rulings](task-02/rulings.md) |
 | 3 | Password hashing and the breach check | subagent | **Done** — [brief](task-03/brief.md) · [report](task-03/report.md) · [review](task-03/review.md) · [rulings](task-03/rulings.md) |
-| 4 | Single-use secret tokens | subagent | Not started |
+| 4 | Single-use secret tokens | subagent | **Done** — [brief](task-04/brief.md) · [report](task-04/report.md) · [review](task-04/review.md) · [rulings](task-04/rulings.md) |
 | 5 | Mail infrastructure and templates | subagent | Not started |
 | 6 | Session service | chained with 7 | Not started |
 | 7 | Authentication guard, CSRF, CORS | chained with 6 | Not started |
@@ -193,52 +193,112 @@ Full reasoning and cost-if-wrong for each is in [`task-03/rulings.md`](task-03/r
     variable adds it inside the base object, before the refinement.** `pnpm typecheck` catches a
     mistake here.
 
+### From Task 4
+
+Full reasoning and cost-if-wrong for each is in [`task-04/rulings.md`](task-04/rulings.md).
+
+31. **`issue` holds `pg_advisory_xact_lock(hashtext('vtk:<userId>:<purpose>'))` as the first
+    statement in its transaction.** Without it, supersession does not survive concurrency — under
+    READ COMMITTED a second transaction cannot see the first's uncommitted INSERT, measured at ten
+    live-token pairs out of ten. A transaction is not a lock. **Any later task writing a
+    supersede-then-insert pair against a non-unique index needs the same thing.**
+
+32. **A partial unique index on `(userId, purpose) WHERE consumedAt IS NULL` is owed and not
+    built.** The application lock is currently the only thing holding §6's invariant, so a writer
+    that bypasses `TokenService` reintroduces the defect silently. Needs hand-written SQL — Prisma
+    cannot express it (ruling 4). **The next task that opens a migration owns it.**
+
+33. **The integration suite runs sequentially, and that is load-bearing.** `fileParallelism: false`
+    in `vitest.workspace.ts` had never been in force (Vitest reads the pool's worker count from the
+    root config); root `test:integration` now passes `--no-file-parallelism`. Two suites share the
+    `ratelimit:login:*` namespace on the one compose Redis, and one deletes it in a `beforeEach`.
+    **Do not restore parallelism without namespacing the shared services first**, and prefer a
+    spec's own container (`startPostgresHarness()`) where isolation actually matters.
+
+34. **A secret in a link goes in a `?token=` query parameter.** `key` and `code` were removed from
+    the redaction value-pattern — `redact()` blanks the whole field on a match, and both names
+    collide with object-storage URLs and this repository's own error codes. **Binds Tasks 5 and
+    15:** a link carrying its secret under any other parameter name reaches the logs intact.
+
+35. **`@sentinel/db/testing` is fenced by `no-restricted-imports` and is for spec files only.** It
+    returns the schema-owner DSN, which no RLS policy applies to. Recorded in
+    `coding-standards.md` §6 beside the two rules it sits with.
+
+36. **Redaction residuals, measured and left open.** A token in a **path segment**
+    (`/verify/<token>`) leaks; so does a percent-encoded URL nested in another URL, `?t=<token>`,
+    and `X-Amz-Signature=` (the pattern anchors on `[?&#]` immediately before the name). **Binds
+    Task 5:** build the link as a query parameter, never a path segment.
+
+37. **`consume` asserts nothing about the user it returns.** A `LOCKED` or suspended user's tokens
+    still redeem — the FK cascade only clears a *deleted* user's rows, and ruling 9 already records
+    that there is no RLS behind this table. **Tasks 8, 10 and 15 must check `User.status` after
+    `consume` returns.**
+
+38. **`TokenService` writes no `AuditEvent`, and the raw token never enters one.**
+    `AuditEvent.organizationId` is NOT NULL with a `Restrict` FK, and a registering user has no
+    organisation. **Binds Tasks 8, 10 and 15:** the audit event is the endpoint's to write.
+
+39. **An agent that mutates `schema.prisma` must run `prisma generate` after reverting.** The Task 4
+    reviewer left a `MUTANT_PURPOSE` value in the generated client with a clean `git status`,
+    because `packages/db/generated/` is untracked. `enum-parity.spec.ts` and `check:registry` both
+    caught it. **A clean `git status` is not evidence that a mutation was undone.**
+
+40. **`pnpm test` and `pnpm lint` can both be green while `pnpm typecheck` is not.** A stub missing
+    a method the production type requires (TS2345) survived both. Run all three before claiming a
+    tree is clean.
+
 ## Pause state
 
-**2026-08-25 — Task 3 complete and verified; Task 4 is next.**
+**2026-08-26 — Task 4 complete and verified; Task 5 is next.**
 
-Task 3 landed `PasswordService` and `BreachCheckService` in `apps/api/src/modules/auth/`, six
-environment variables on `apiEnvSchema`, the `PASSWORD_BREACHED` code in both error lists, a 422
-`PasswordBreachedError` with no producer until Task 8, and ADRs
-[0014](../../../../.claude/decisions/ADR-0014-argon2-implementation.md) and
-[0015](../../../../.claude/decisions/ADR-0015-password-breach-check-fails-open.md) — both written
-and committed **before** the implementation, deliberately. Evidence is in `roadmap.md`; the commands
-and exit codes are in [`task-03/report.md`](task-03/report.md).
+Task 4 landed the two-layer secret-token discipline in `apps/api/src/modules/auth/`:
+`secret-token.ts` (mint 256 bits, SHA-256, base64url — the primitive Task 6 will use for
+`Session.tokenHash` and Task 15 for `Invitation.tokenHash`) and `TokenService` (issue and consume
+`VerificationToken` rows for the two purposes the Prisma enum has). Plus `TOKEN_INVALID` in both
+error lists with the parity spec ruling 27 had been asking for since Task 3, three TTL variables
+on `apiEnvSchema`'s base object, and a measured fix to the redacting logger. Evidence is in
+`roadmap.md`; the implementer's commands and exit codes are in [`task-04/report.md`](task-04/report.md).
 
-**Three Medium findings, eight Low, no High — and for the first time on this branch, the citation
-pass found no false sentence about a document.** Roughly forty claims checked, no invented
-quotation, no misattribution. Both Medium code findings were tests that stayed green under a real
-violation, which is Task 2's defect shape found in two new places and fixed. Dispositions are in
-[`task-03/rulings.md`](task-03/rulings.md).
+**One High, three Medium, five Low — and the High was the same defect shape the task existed to
+eliminate, one layer up.** `consume` was built correctly as a conditional update whose affected-row
+count is the decision, and the concurrency test for it is excellent. Nobody pointed the same weapon
+at `issue`, whose supersede-then-insert does not survive concurrency inside a transaction: measured
+at two live tokens in ten rounds of ten before the fix, one in ten after. Ruling 31. The citation
+pass found **no false sentence about a document** for the second task running.
 
-**The worst finding was the orchestrator's own brief**, not the implementer's work: it justified
-reducing the timing spec's Argon2 parameters on a cost that was wrong by about 100×. Ruling 22.
+**The intermittent integration suite is resolved, and it was never Task 4's code.** Two latent
+defects: `fileParallelism: false` had never been in force since the day it was written (Vitest
+resolves the pool's worker count from the root config, not a project's — measured, 140.60s of test
+time inside a 19.72s wall clock), and `rate-limit.integration.spec.ts`'s `beforeEach` deletes
+`ratelimit:login:*`, which is the namespace `sliding-window.integration.spec.ts` writes its keys
+in. Root `test:integration` now passes `--no-file-parallelism`; five consecutive green runs
+against roughly one failure in two before. Ruling 33.
 
-**Nothing authenticates anybody yet.** `apps/api/src/modules/` now holds `auth` beside `health`, but
-`AuthModule` registers two providers and **no controller**; the committed `openapi.json` still
-publishes four routes, and `apps/web/app/(auth)/` still holds a layout with no routes under it. A
-service nothing calls is not a feature.
+**The branch history was rewritten** so `apps/api/openapi.json` moves with the contracts commit
+that changes it. Before that, four commits failed `pnpm check:openapi` and a change to the shipped
+API contract sat inside a commit typed `docs(ledger):`. Ruling 39 in `task-04/rulings.md`. The tree
+was proven byte-identical to the pre-rewrite tree before the backup branch was deleted.
 
-**Branching changed, and a resuming session must not miss it.** PR #5 was **rebase-merged** into
-`main` on 2026-08-25 at 04:37Z, so `feat/phase-2-identity` is spent history — identical tree,
-duplicate commits. Task 3 was built on **`feat/phase-2-task-03`, cut from `main`**, and **PR #6
-rebase-merged it into `main` at 15:55Z the same day**. Cut later tasks from `main` the same way,
-one branch per task, one PR per task.
+**Nothing authenticates anybody yet.** `AuthModule` now registers three services and **no
+controller**; the committed `openapi.json` still publishes four routes, and `apps/web/app/(auth)/`
+still holds a layout with no routes under it. A service nothing calls is not a feature.
 
-**Task 3 is on `main`.** Start Task 4 from `main`, not from any `feat/` branch — every one of them
-is now behind or duplicate.
+**Branching.** Task 4 was built on `feat/phase-2-task-04`, cut from `main`, one branch per task and
+one PR per task. **It is not pushed and no PR exists** — that is the operator's call. Cut Task 5
+from `main` after this merges, not from this branch.
 
-**Next action:** Task 4 — single-use secret tokens — in a new session, starting with
-`sentinel-phase`. It is a self-contained task: fresh implementer subagent plus a fresh adversarial
-reviewer. It depends on Task 2 only, so nothing from Task 3 blocks it.
+**Next action:** Task 5 — mail infrastructure and templates — in a new session, starting with
+`sentinel-phase`. It owes **ADR-0016** (the mailer port and the SMTP-against-Mailpit decision),
+which is written and committed *before* the implementation, as ADRs 0014 and 0015 were.
 
-Before starting Task 4, read carry-forward rulings **14** (a validation failure must never hide
-behind a different code), **27** (an error code goes into *both* lists, which still have no parity
-spec) and **30** (`apiEnvSchema` is a `ZodEffects` now — add variables inside the base object, not
-by extending it). Ruling 27 matters most: Task 4 mints and hashes tokens, and it is the kind of task
-that adds a code.
+Before starting Task 5, read carry-forward rulings **34** and **36**: Task 5 owns the link format,
+and a secret must travel in a `?token=` query parameter. A path-segment link
+(`/verify/<token>`) is covered by no redaction this repository has, and was measured leaking a
+real token verbatim.
 
-**Task 9 inherits two open security items** recorded as rulings 24 and 25, and neither is a defect
-in Task 3's code: timing equality does not hold against stored hashes written before a parameter
-raise, and a corrupted stored credential is silently indistinguishable from a wrong password. Put
-both in Task 9's brief when it is written.
+**Tasks 8, 10 and 15 inherit three items** — rulings 37 (check `User.status` after `consume`), 38
+(the `AuditEvent` is the endpoint's, and the raw token never enters its metadata) and 32 (the
+partial unique index is owed by whichever task next opens a migration). Put them in those briefs
+when they are written.
+
+**Task 9 still inherits rulings 24 and 25** from Task 3, unchanged.
