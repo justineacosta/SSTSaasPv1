@@ -21,6 +21,8 @@ re-litigated every six months by someone who cannot see why the obvious option w
 | [0011](ADR-0011-prefixed-uuidv7-identifiers.md) | Prefixed UUIDv7 identifiers, generated in application code | Accepted |
 | [0012](ADR-0012-node-26-runtime-pin.md) | Node 26 pinned for development and CI, engines >= 22 | Accepted |
 | [0013](ADR-0013-dependency-release-age-cooldown.md) | A 24-hour release-age cooldown on every dependency, declared explicitly | Accepted |
+| [0014](ADR-0014-argon2-implementation.md) | Argon2id via `@node-rs/argon2`, parameters held in configuration | Accepted |
+| [0015](ADR-0015-password-breach-check-fails-open.md) | The password breach check calls HIBP by k-anonymity, and fails open | Accepted |
 
 ## When to write one
 
