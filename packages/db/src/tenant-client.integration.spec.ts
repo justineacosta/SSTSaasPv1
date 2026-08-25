@@ -72,25 +72,50 @@ describe('tenant-scoped client', () => {
   });
 
   it('rewrites findUnique by a compound unique key, not just by id', async () => {
-    // M3 (review): Membership.@@unique([organizationId, userId]) is exactly
-    // the shape Phase 2's membership lookups will use — findUnique's `where`
-    // for it is `{ organizationId_userId: { organizationId, userId } }`, a
-    // nested compound object, not a flat `id`. The old findFirst-rewrite
-    // merged the scope predicate as a sibling of that nested object, which
-    // findFirst's WhereInput has no field for. The current design (run the
-    // original query unmodified, check the result) never touches `where` at
-    // all, so this shape was never at risk — this test is what proves that.
+    // M3 (review): a compound `@@unique` is exactly the shape Phase 2's
+    // lookups will use — findUnique's `where` for it is a nested compound
+    // object (`{ organizationId_email: { organizationId, email } }`), not a
+    // flat `id`. The old findFirst-rewrite merged the scope predicate as a
+    // sibling of that nested object, which findFirst's WhereInput has no
+    // field for. The current design (run the original query unmodified, check
+    // the result) never touches `where` at all, so this shape was never at
+    // risk — this test is what proves that.
+    //
+    // Phase 2 Task 1: this was written against
+    // `Membership.@@unique([organizationId, userId])`, which no longer exists
+    // — Membership's uniqueness is now a partial unique index in SQL, so
+    // Prisma generates no compound `where` input for it. Retargeted to
+    // Invitation's `@@unique([organizationId, email])`, the other compound
+    // unique on a tenant-owned model. The property under test is the shape of
+    // the `where`, not which table carries it.
+    const invitationB = newId('inv');
+    await root.invitation.create({
+      data: {
+        id: invitationB,
+        organizationId: orgB,
+        email: 'compound-unique@example.test',
+        roleId,
+        tokenHash: `hash_${invitationB}`,
+        invitedByUserId: userB,
+        expiresAt: new Date(Date.now() + 86_400_000),
+      },
+    });
+
     const asOrgA = createTenantClient(root, { organizationId: orgA });
-    const deniedToA = await asOrgA.membership.findUnique({
-      where: { organizationId_userId: { organizationId: orgB, userId: userB } },
+    const deniedToA = await asOrgA.invitation.findUnique({
+      where: {
+        organizationId_email: { organizationId: orgB, email: 'compound-unique@example.test' },
+      },
     });
     expect(deniedToA).toBeNull();
 
     const asOrgB = createTenantClient(root, { organizationId: orgB });
-    const grantedToB = await asOrgB.membership.findUnique({
-      where: { organizationId_userId: { organizationId: orgB, userId: userB } },
+    const grantedToB = await asOrgB.invitation.findUnique({
+      where: {
+        organizationId_email: { organizationId: orgB, email: 'compound-unique@example.test' },
+      },
     });
-    expect(grantedToB?.id).toBe(membershipB);
+    expect(grantedToB?.id).toBe(invitationB);
   });
 
   it('scopes count', async () => {
@@ -144,9 +169,16 @@ describe('tenant-scoped client', () => {
     });
     expect(ownRow.organizationId).toBe(orgA);
 
+    // `deletedAt` is set alongside `status` because the
+    // Membership_status_deletedAt_agree_check constraint requires the two to
+    // agree — a bare `status: 'REMOVED'` is an invalid write, not a neutral
+    // one, so leaving it out makes this test fail on the payload instead of
+    // exercising the property. This is also what real removal code writes.
+    // The property under test is unchanged: organizationId in `data` must not
+    // override the injected tenant predicate.
     const updated = await db.membership.update({
       where: { id: ownRow.id },
-      data: { status: 'REMOVED', organizationId: orgB } as never,
+      data: { status: 'REMOVED', deletedAt: new Date(), organizationId: orgB } as never,
     });
     expect(updated.organizationId).toBe(orgA);
 

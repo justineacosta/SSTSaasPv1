@@ -8,13 +8,13 @@ code was written.
 Status vocabulary (specification §79): **Implemented** / **Partially Implemented** /
 **Not Implemented** / **Blocked**.
 
-## Current state — 2026-08-24
+## Current state — 2026-08-25
 
 | Phase | Scope | Status |
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Not Implemented** — planned 2026-08-24, no code written |
+| 2 | Identity | **Not Implemented** — Task 1 of 18 done 2026-08-25 (schema, migrations, registry); no identity behaviour yet |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -383,6 +383,43 @@ phase or to the operator:
   plan. Found by Task 16 while writing ADR-0011, which uses a generated ID instead. Left unfixed
   only because it is a code change outside Task 16's scope — **ADR-0011 is deliberately worded so
   that fixing it does not disturb the ADR.** A one-line docstring correction closes this.
+
+  **Closed 2026-08-25 by Phase 2 Task 1.** The docstring now shows a real generated ID, and
+  `id.spec.ts` reads `id.ts`'s own source and parses every backticked example in it — so the
+  assertion cannot drift from the thing it documents, which a copied string in the spec would have.
+  The invalid string still appears in the Phase 1 plan, which is a dated historical document and is
+  left as written.
+- **The local development database needs `pnpm db:reset`, and only the operator can run it.**
+  Phase 2 Task 1 corrected a comment inside migration
+  `20260824153519_membership_partial_unique` *after* it had been applied, which changed its
+  checksum, so `pnpm db:migrate` will refuse against the developer database until it is reset.
+  **Nothing else depends on this**: measured on Prisma 6.19.3, `migrate deploy` does not verify
+  checksums and exits 0, so CI, Testcontainers and any fresh clone replay all six migrations from
+  empty and are unaffected. The reason it is the operator's: Prisma 6.19.3 refuses `migrate reset`
+  when it detects an AI agent and demands `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION` set to the
+  literal text of the user's consenting message, explicitly excluding earlier messages. An agent
+  must never fabricate that string.
+- **Nothing in CI guards the partial index or the CHECK constraint on `Membership`.** Neither is
+  expressible in `schema.prisma`, so Prisma cannot see them in either direction — it will not drop
+  them, but it also cannot notice their absence. The two real ways to lose them both need a human:
+  `prisma db push`, which builds from `schema.prisma` alone and never replays migration history, and
+  someone "restoring" the `@@unique` line that is missing on purpose. Today the only defences are a
+  schema comment and `packages/db/src/membership-soft-delete.integration.spec.ts` going red.
+  The operator approved adding a cheap-lane CI check on 2026-08-24; it is not built.
+- **Self-serve account deletion has no design and is not in Phase 2's eighteen tasks.**
+  `Membership.userId` and `Invitation.invitedByUserId` are both `onDelete: Restrict`, so any user
+  who has ever joined an organisation or sent an invitation cannot be removed by a plain `DELETE` —
+  it raises a foreign-key violation. A Phase 1 comment claiming account deletion was "a legitimate
+  Phase 2 flow" was corrected in Task 1 when it was checked. `DELETE` on `User` remains granted to
+  `sentinel_app`, so the path stays open for whoever designs it.
+- **An abandoned MFA enrolment will permanently block re-enrolment.** `MfaFactor`'s
+  `@@unique([userId, type])` counts rows with `confirmedAt = NULL`, which the model's own comment
+  correctly says are *not* enrolled — so a user who starts TOTP setup and closes the tab gets P2002
+  forever. **Task 11 must upsert or delete-then-create.** Found by the Task 1 adversarial review.
+- **`VerificationToken` has no index on `expiresAt`.** `Session` got `@@index([absoluteExpiresAt])`
+  explicitly so expired rows can be swept across all users; the same sweep will want the token
+  tables, and `VerificationToken` is the higher-churn of the two. A "no unbounded queries" concern
+  rather than a correctness one.
 - **CI's supply-chain policy will red the build again, and time was the only fix last time.**
   On commits `21746c5` and `2dad5bb` — the two pushes between `6d97bb5` and `486fc34` that
   triggered runs at all — every run died in 30 seconds at
@@ -520,9 +557,11 @@ else is needed, and re-verifying Phase 1 is not part of it:
 4. The plan's section for **your task only**, plus the previous task's ledger entry at
    `docs/superpowers/ledger/phase-2/task-NN/`.
 
-**Status is Not Implemented and nothing below changes that.** A plan is not an implementation.
-No Phase 2 code exists: `apps/api/src/modules/` still contains only `health`, and `apps/web`'s
-`(auth)` route group still holds a layout with no routes under it.
+**Status is Not Implemented and Task 1 does not change that.** The tables identity will need now
+exist and are proven to migrate, but nothing authenticates anybody: `apps/api/src/modules/` still
+contains only `health`, and `apps/web`'s `(auth)` route group still holds a layout with no routes
+under it. Not one of the three exit criteria above is met. Per the plan, the status moves to
+**Partially Implemented** at Checkpoint A, after Task 12 — a schema is not a feature.
 
 **Phase 1 was re-verified on 2026-08-24 at commit `40852c1` before this plan was written**, per
 `sentinel-phase` step 2 — a status is a claim until a command proves it. All four exit criteria
@@ -600,14 +639,24 @@ checkpoint exists to close it.
 | Pending MFA credential | A `Session` row in `PENDING_MFA` status, not a Redis-only token | 0018, owed by Task 11 |
 | Journey UI scope | Full — register, verify, login, MFA, reset, org switcher, `/settings/security`. The exit criterion says E2E, and there is no E2E without screens | — |
 
-**Two Phase 1 residuals are owed to Task 1** and are the first thing it does: `Membership`'s full
-unique index over a soft-deleting table, which makes re-inviting a removed member fail with a
-duplicate-key error, and `packages/db/src/id.ts`'s docstring example, which is not a valid ID.
-They are recorded in two different places, which is worth knowing before hunting for them: the
-`id.ts` one is a bullet in Known outstanding above, while the `Membership` one is a `KNOWN ISSUE`
-comment on the model in `packages/db/prisma/schema.prisma` and appears nowhere in this file. That
-comment assigns it to Task 16, which did not do it — Phase 2 owns membership management end to
-end, so it lands in Task 1 here.
+**Both Phase 1 residuals landed in Task 1 on 2026-08-25**, and one of them turned out to be
+larger than it was recorded as.
+
+`packages/db/src/id.ts`'s docstring example is fixed — the old one had a 25-character body where
+`ID_BODY_LENGTH` is 26 and contained `U`, `I` and `O`, so `parseIdPrefix()` returned `undefined`
+for the file's own example. `id.spec.ts` now reads `id.ts`'s source and parses every backticked
+example in it, so a copy in the spec cannot drift from the docstring.
+
+`Membership`'s full unique index over a soft-deleting table is replaced by a **partial** unique
+index, `WHERE "deletedAt" IS NULL`, and the `KNOWN ISSUE` comment that described it is gone. The
+larger part: an adversarial review showed the partial index alone **did not** enforce the invariant
+its own comments claimed, because `deletedAt` and `status` were uncorrelated — two rows for one
+`(organizationId, userId)` could both be `status = 'ACTIVE'` if one carried a `deletedAt`, so an
+authorization query written the natural way would see two roles. Migration A therefore also carries
+`CHECK (("deletedAt" IS NULL) = (status <> 'REMOVED'))`, making removed and soft-deleted the same
+fact. **The constraint turned two pre-existing Phase 1 integration tests red on the first run** —
+both wrote `status: 'REMOVED'` without `deletedAt`, which was always semantically wrong and which
+nothing could detect until the invariant was written down.
 
 **API keys are deliberately not in Phase 2.** The `Principal` union defines the `apiKey` arm so
 downstream guards are written once, but no key is issued, accepted, or stored in this phase.

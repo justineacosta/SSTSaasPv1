@@ -43,7 +43,15 @@ function encodeCrockford(bytes: Uint8Array): string {
 }
 
 /**
- * Generates a prefixed UUIDv7 identifier, e.g. `org_01J8XK2P9V3QWERTYUIOPASDF`.
+ * Generates a prefixed UUIDv7 identifier, e.g. `org_01M0T74WZZFY9T2QS56RGF3GQ7`.
+ *
+ * That example is a real `newId('org')` output, and `id.spec.ts` asserts that
+ * every backticked example in this file parses. The previous one did not: its
+ * body was 25 characters where ID_BODY_LENGTH is 26, and it contained U, I and
+ * O — three of the four letters the Crockford alphabet above deliberately
+ * excludes. `parseIdPrefix()` returned undefined for this file's own example.
+ * An illustrative-looking string is exactly the kind that nobody checks, so the
+ * test is what stops it coming back rather than this paragraph.
  *
  * UUIDv7 is time-ordered, so index locality is good on the leading edge of
  * every table — which matters because every hot query in this product sorts by

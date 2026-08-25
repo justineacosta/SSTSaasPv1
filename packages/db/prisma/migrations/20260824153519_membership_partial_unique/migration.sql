@@ -1,0 +1,116 @@
+-- Membership uniqueness: full unique index -> partial unique index, PLUS the
+-- CHECK constraint that makes the index's predicate mean what it says.
+--
+-- Two statements, one invariant, deliberately in one migration. The index says
+-- "at most one LIVE membership per (organizationId, userId)"; the CHECK is what
+-- makes "live" the same fact in both of the columns involved. Split across two
+-- migrations, a database stopped between them would sit in exactly the broken
+-- state described under THE SECOND HALF below — so they land together and this
+-- migration leaves Membership sound on its own.
+--
+-- Membership soft-deletes. Removing a member sets "deletedAt" and moves
+-- "status" to 'REMOVED'; the row stays, because the membership history is part
+-- of the audit trail. A full UNIQUE ("organizationId", "userId") cannot see
+-- that distinction — a removed row still occupies the pair — so re-inviting a
+-- colleague who was previously removed failed with a duplicate-key error on
+-- "Membership_organizationId_userId_key". Verified live in Phase 1 and carried
+-- as a KNOWN ISSUE comment in schema.prisma until now.
+--
+-- The invariant the product actually wants is "at most one LIVE membership per
+-- (organizationId, userId)": two active memberships in one organisation would
+-- give one user two roles there, and every authorization decision downstream
+-- would have to pick one. Removed rows carry no role and no access, so any
+-- number of them is harmless. A partial index states exactly that — it
+-- constrains only the rows where "deletedAt" IS NULL and ignores the rest.
+--
+-- Name: "Membership_organizationId_userId_active_key" follows Prisma's own
+-- <Table>_<column>_<column>_key convention so it reads as a member of the same
+-- family, with "active" naming the predicate. It deliberately does NOT reuse
+-- the old name, so that a full index re-added later under Prisma's own name
+-- would coexist visibly rather than silently replacing this one.
+--
+-- WHAT PRISMA DOES ABOUT THIS INDEX. Nothing. Its engine cannot represent a
+-- partial index, so it does not see one in either direction: it will not create
+-- this index and it will not drop it.
+--
+-- THE MEASUREMENT, STATED SO IT REPRODUCES. Run
+-- `prisma migrate diff --from-url <db> --to-schema-datamodel
+-- prisma/schema.prisma --script` and count the statements mentioning
+-- "Membership". It is ZERO. That is the claim, and it holds regardless of how
+-- far the database lags the schema: measured at 0 against a database in sync
+-- with schema.prisma, where the whole diff was empty, and 0 again against one
+-- two migrations behind, where the diff was 117 lines of unrelated DDL.
+-- Generating the next migration likewise emitted no Membership index statement.
+--
+-- Do not restate this as "the diff is empty". It was empty in the first case
+-- only because that database matched the schema in every other respect; a
+-- reader who runs the command against anything else sees a wall of SQL and
+-- concludes the whole comment is untrustworthy. The count of Membership
+-- statements is the part that is durably true and the part that matters.
+--
+-- CORRECTION, RECORDED RATHER THAN OVERWRITTEN. An earlier draft of this
+-- paragraph said the opposite: that every subsequent `prisma migrate dev` would
+-- report drift and offer to re-add the full `@@unique([organizationId, userId])`,
+-- and that the engineer must decline. That prediction came from the Phase 2
+-- plan and was written here without being run; measurement disproved it. A
+-- second draft then over-claimed in the other direction with the "empty
+-- migration" wording above. Both corrections landed before this file was
+-- committed. Left visible because two wrong drafts tell the next reader more
+-- about this file than a comment that looks like it was right all along.
+--
+-- The two real ways to lose this index both need a human, and both are caught by
+-- packages/db/src/membership-soft-delete.integration.spec.ts going red on
+-- re-invite: `prisma db push`, which builds from schema.prisma alone and never
+-- replays this history; and someone re-adding `@@unique([organizationId, userId])`
+-- to schema.prisma on the assumption it was forgotten. The long version of both,
+-- and the reason there is no `@@unique` line to find, is in the Membership model
+-- comment in schema.prisma — kept there rather than duplicated here, because two
+-- near-identical passages drift apart.
+
+-- THE SECOND HALF — a CHECK constraint making 'REMOVED' and soft-deleted one
+-- fact.
+--
+-- The partial index keys on "deletedAt". "status" is an independent column, and
+-- nothing correlates them, which leaves two divergent states reachable by any
+-- code path that sets one and forgets the other:
+--
+--   * status = 'ACTIVE' with "deletedAt" SET. Outside the index predicate, so
+--     it does not occupy the unique slot, so a SECOND live membership for the
+--     same (organizationId, userId) inserts happily. An authorization query
+--     written the obvious way — WHERE status = 'ACTIVE' — then returns two
+--     memberships and two roles for one user in one organisation, and something
+--     downstream picks one.
+--   * status = 'REMOVED' with "deletedAt" NULL. Inside the predicate, so it
+--     holds the unique slot while claiming to be removed: the Phase 1 re-invite
+--     failure this migration exists to fix, restored by the fix itself.
+--
+-- Both were demonstrated on a throwaway database before this constraint was
+-- written. Covered by packages/db/src/membership-soft-delete.integration.spec.ts,
+-- whose four divergence tests fail without the statement below and pass with it.
+--
+-- The predicate is a biconditional over all three MembershipStatus values, not
+-- only the two above. INVITED is the one that could plausibly be got wrong:
+-- `status <> 'REMOVED'` is TRUE for it, so the constraint requires
+-- "deletedAt" IS NULL — a pending invitation is a LIVE row that legitimately
+-- holds the unique slot, which is what stops the same person being invited
+-- twice. Intended behaviour, so the biconditional is correct as written for
+-- ACTIVE, INVITED and REMOVED alike.
+--
+-- Existing data: zero Membership rows in the development database and zero rows
+-- anywhere violating the predicate, so this applies with no backfill. CLAUDE.md:
+-- "Database integrity belongs in the database... Application code is the second
+-- line, not the first."
+--
+-- Prisma can express a CHECK constraint no more than it can a partial index, so
+-- the measurement paragraph above covers both: zero statements mentioning
+-- "Membership", and zero mentioning this constraint, in either condition tested.
+
+-- DropIndex
+DROP INDEX "Membership_organizationId_userId_key";
+
+-- CreateIndex (hand-written: not expressible in schema.prisma)
+CREATE UNIQUE INDEX "Membership_organizationId_userId_active_key" ON "Membership"("organizationId", "userId") WHERE "deletedAt" IS NULL;
+
+-- AddCheckConstraint (hand-written: not expressible in schema.prisma)
+ALTER TABLE "Membership" ADD CONSTRAINT "Membership_status_deletedAt_agree_check"
+  CHECK (("deletedAt" IS NULL) = (status <> 'REMOVED'));

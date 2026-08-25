@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { ID_PREFIXES, newId, parseIdPrefix } from './id.js';
 
@@ -58,5 +61,39 @@ describe('newId', () => {
 
   it('rejects a well-formed identifier preceded by extra characters', () => {
     expect(parseIdPrefix(`garbage-${newId('org')}`)).toBeUndefined();
+  });
+});
+
+/**
+ * THE DOCSTRING'S OWN EXAMPLES MUST PARSE.
+ *
+ * `newId`'s docstring shipped an illustrative-looking identifier that
+ * `parseIdPrefix()` rejected: 25 body characters where ID_BODY_LENGTH is 26,
+ * and containing U, I and O, three of the four letters the Crockford alphabet
+ * excludes. It survived Phase 1 because no test ever read it.
+ *
+ * This reads id.ts itself and checks every backticked ID-shaped example in the
+ * file, rather than asserting against a copy pasted into this spec — a copy is
+ * a second place to be wrong, and drifts the moment somebody edits only one of
+ * them. The source file is the single copy; this is a reader of it.
+ */
+const ID_EXAMPLE_PATTERN = /`([a-z]{3}_[0-9A-Z]+)`/g;
+
+function docstringExamples(): string[] {
+  const source = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), 'id.ts'), 'utf8');
+  return [...source.matchAll(ID_EXAMPLE_PATTERN)].map(([, example]) => example as string);
+}
+
+describe("id.ts's own documented examples", () => {
+  it('finds at least one example to check, rather than passing vacuously', () => {
+    expect(docstringExamples().length).toBeGreaterThan(0);
+  });
+
+  it('parses every ID-shaped example the file shows', () => {
+    for (const example of docstringExamples()) {
+      expect(parseIdPrefix(example), `docstring example ${example} does not parse`).toBe(
+        example.slice(0, 3),
+      );
+    }
   });
 });

@@ -48,6 +48,29 @@ enum ActorType {
   PLATFORM_ADMIN
 }
 
+/// A session that has passed the password check but not yet the MFA check is
+/// PENDING_MFA: it exists, it is revocable, and it can do nothing but complete
+/// MFA (security/authentication.md §5). Modelling it as a Session status rather
+/// than a separate credential is ADR-0018 — it reuses revocation and makes
+/// "rotate on privilege change" literal rather than analogous.
+enum SessionStatus {
+  PENDING_MFA
+  ACTIVE
+}
+
+/// TOTP is what Phase 2 implements. WEBAUTHN is declared here from the start
+/// because authentication.md §5 requires that adding it be an insert into this
+/// table, not a migration of the authentication model.
+enum MfaFactorType {
+  TOTP
+  WEBAUTHN
+}
+
+enum VerificationPurpose {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+}
+
 // ---------------------------------------------------------------------------
 // Tenant root
 // ---------------------------------------------------------------------------
@@ -59,6 +82,21 @@ model Organization {
   status    OrganizationStatus @default(ACTIVE)
   createdAt DateTime           @default(now()) @db.Timestamptz(6)
   updatedAt DateTime           @updatedAt @db.Timestamptz(6)
+
+  /// Organisations may require MFA of their members. Enforced server-side on
+  /// every request, not only at login (security/authentication.md §5): a member
+  /// without a confirmed factor is forced into enrolment before any other
+  /// action. Read by the Task 12 guards; nothing before that reads it.
+  requireMfa Boolean @default(false)
+
+  /// The Phase 11 SSO hook. security/authentication.md §8 requires this exist
+  /// from Phase 2 with `IdentityProviderLink`, and says why: SAML/OIDC land in
+  /// Phase 11, but re-modelling identity later is the single most expensive
+  /// migration an enterprise SaaS can face, and an optional column costs
+  /// nothing now. When set, an organisation only admits members whose verified
+  /// email is in that domain. NOTHING IN PHASE 2 READS THIS — it is not dead,
+  /// it is early.
+  enforcedEmailDomain String?
 
   memberships Membership[]
   invitations Invitation[]
@@ -83,10 +121,44 @@ model User {
   createdAt       DateTime   @default(now()) @db.Timestamptz(6)
   updatedAt       DateTime   @updatedAt @db.Timestamptz(6)
 
+  /// Brute-force state, per account, per security/authentication.md §7. This is
+  /// ADDITIONAL to the Redis rate limiter, not a substitute: the limiter bounds
+  /// the RATE of attempts and forgets quickly; `failedLoginCount` bounds the
+  /// TOTAL and survives a restart of Redis. An attacker who paces themselves
+  /// under the limiter still trips this.
+  ///
+  /// `lockedUntil` is the temporary, automatic lock and clears itself.
+  /// `status = LOCKED` is the separate administrative one and does not. Do not
+  /// conflate them: reading only `status` misses every brute-force lock.
+  lastLoginAt      DateTime? @db.Timestamptz(6)
+  failedLoginCount Int       @default(0)
+  lockedUntil      DateTime? @db.Timestamptz(6)
+
   credential  Credential?
   sessions    Session[]
   memberships Membership[]
   invitesSent Invitation[] @relation("InvitationInvitedBy")
+
+  // Every relation below is onDelete: Cascade, unlike Membership.userId's
+  // Restrict. The distinction is whether the cascade can cross a tenant
+  // boundary — read the Membership.userId comment for the case where it can.
+  // These four are single-user-owned and carry no organizationId, so there is
+  // no second tenant for a cascade to reach.
+  //
+  // BUT BE PRECISE ABOUT WHEN THEY FIRE. Membership.userId is Restrict and
+  // Invitation.invitedByUserId is Restrict, so a DELETE on a User who has ever
+  // joined an organisation or sent an invitation RAISES a foreign-key
+  // violation — which is every real user of this product. These cascades only
+  // fire for a registered account that never joined anything: an abandoned
+  // signup. They are a correctness backstop for that narrow case, not an
+  // account-deletion mechanism; for everyone else the DELETE fails and the
+  // authentication material is left behind by a failed statement. Real account
+  // deletion must remove memberships and invitations first, through the
+  // tenant-scoped path, and it needs a design that does not exist yet.
+  mfaFactors            MfaFactor[]
+  recoveryCodes         RecoveryCode[]
+  verificationTokens    VerificationToken[]
+  identityProviderLinks IdentityProviderLink[]
 }
 
 model Credential {
@@ -101,22 +173,184 @@ model Credential {
 }
 
 model Session {
-  id        String    @id
-  userId    String
-  tokenHash String    @unique
+  id                   String  @id
+  userId               String
+  tokenHash            String  @unique
   // The organisation the session is currently acting in. Nullable because a
   // user may be signed in before choosing one. A Session is user-owned, not
   // tenant-owned, so it is deliberately NOT in the tenant resource registry.
   activeOrganizationId String?
-  ip        String?
-  userAgent String?
-  expiresAt DateTime  @db.Timestamptz(6)
-  revokedAt DateTime? @db.Timestamptz(6)
+  ip                   String?
+  userAgent            String?
+
+  /// TWO LIFETIMES, TWO COLUMNS. security/authentication.md §3 gives a session
+  /// an absolute lifetime (7 days, 30 with "remember me") AND an idle timeout
+  /// (24h, renewed past the halfway mark). These are different clocks: the idle
+  /// one moves forward every time the session is used, the absolute one never
+  /// does. Phase 1's single `expiresAt` could only be one of them, which is how
+  /// the other silently stops being enforced — renew `expiresAt` on activity
+  /// and the absolute cap is gone; don't, and there is no idle timeout. Renamed
+  /// to `idleExpiresAt` so neither name can be read as the other.
+  idleExpiresAt     DateTime @db.Timestamptz(6)
+  absoluteExpiresAt DateTime @db.Timestamptz(6)
+
+  /// Deliberately has no @default. A session's privilege level must be stated
+  /// by whoever creates it: defaulting to ACTIVE would make "forgot to set the
+  /// status" mint a fully privileged session, which is the wrong direction to
+  /// fail in.
+  status SessionStatus
+
+  lastSeenAt     DateTime  @default(now()) @db.Timestamptz(6)
+  mfaCompletedAt DateTime? @db.Timestamptz(6)
+  rememberMe     Boolean   @default(false)
+  /// The session this one replaced, per §3's "rotated on every privilege
+  /// change" — login, MFA completion, password change, role change. Deliberately
+  /// a plain column and NOT a self-referencing foreign key: the predecessor row
+  /// is routinely revoked and later pruned, and a FK would either block that
+  /// prune or null out the breadcrumb exactly when a rotation chain is being
+  /// reconstructed during an incident.
+  rotatedFromId  String?
+  revokedAt      DateTime? @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Not a rename of Phase 1's @@index([userId, expiresAt]) — that index served
+  // no query Phase 2 actually issues. The token lookup on the hot path is
+  // covered by tokenHash's unique index. What is left is:
+  //   1. list / revoke a user's sessions for /settings/security — userId first,
+  //      most recently used first;
+  //   2. sweep expired sessions across ALL users — which the old composite
+  //      could not serve at all, because userId led it.
+  @@index([userId, lastSeenAt(sort: Desc)])
+  @@index([absoluteExpiresAt])
+}
+
+/// A second factor belonging to one User. MULTI-ROW AND TYPED FROM THE START:
+/// authentication.md §5 requires that adding WebAuthn be an insert here rather
+/// than a migration of the authentication model, which it would be if this were
+/// a `totpSecret` column on User.
+///
+/// `secretEncrypted` is ENCRYPTED, not hashed — the only field in this phase
+/// that is. A TOTP secret must be recoverable to recompute the expected code,
+/// so a one-way hash cannot work here. It is encrypted with the application key
+/// and never logged, never returned by the API, and shown once at enrolment.
+///
+/// A factor with `confirmedAt = NULL` has never proven a code and IS NOT
+/// ENROLLED. §5: the secret is "only persisted as enabled after the user proves
+/// one correct code". Any check for "does this user have MFA" must test
+/// `confirmedAt IS NOT NULL`; counting rows is the wrong query and would let an
+/// abandoned half-enrolment satisfy an organisation's requireMfa.
+model MfaFactor {
+  id               String        @id
+  userId           String
+  type             MfaFactorType
+  secretEncrypted  String
+  /// WHICH KEY ENCRYPTED `secretEncrypted`. Nullable, and nothing in Phase 2
+  /// writes it — NULL means "the application key that was current when this row
+  /// was written", which is the only key that has ever existed.
+  ///
+  /// It exists for the same reason `IdentityProviderLink` does, one level down:
+  /// a column costs nothing now, and retrofitting one is expensive precisely
+  /// when it is needed. Without it, rotating the application key means
+  /// re-encrypting every row in a single migration with no way to tell, part way
+  /// through or after a failure, which rows are on the old key and which on the
+  /// new — the rotation becomes all-or-nothing on a table holding the secrets
+  /// that gate every MFA challenge. With it, rotation is incremental and
+  /// resumable: read the version, decrypt with that key, re-encrypt with the
+  /// current one, bump the version.
+  ///
+  /// Named for the field it describes rather than the row: an MfaFactor of type
+  /// WEBAUTHN holds no encrypted secret at all, and this column has nothing to
+  /// say about it.
+  secretKeyVersion Int?
+  confirmedAt      DateTime?     @db.Timestamptz(6)
+  label            String?
+  lastUsedAt       DateTime?     @db.Timestamptz(6)
+  createdAt        DateTime      @default(now()) @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // One factor per type per user for now. WebAuthn expects several
+  // authenticators per user, so this widens to include a credential
+  // identifier when that lands — additively, which is the point of the table.
+  @@unique([userId, type])
+}
+
+/// Ten single-use codes per user, issued at MFA enrolment and shown once
+/// (authentication.md §5). Argon2id-hashed rather than SHA-256 like the token
+/// tables below, because a recovery code is human-typed and therefore low
+/// entropy relative to a 256-bit random token — it needs the work factor.
+///
+/// `usedAt` rather than deletion: a spent code must stay visible so it cannot
+/// be silently reissued, and so the user can be shown how many remain.
+/// Regeneration deletes the whole set and issues ten new ones.
+model RecoveryCode {
+  id        String    @id
+  userId    String
+  codeHash  String
+  usedAt    DateTime? @db.Timestamptz(6)
   createdAt DateTime  @default(now()) @db.Timestamptz(6)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([userId, expiresAt])
+  @@index([userId, usedAt])
+}
+
+/// Email verification and password reset tokens. ONE TABLE, TWO PURPOSES,
+/// because authentication.md §6 gives all of these the same discipline —
+/// 256-bit random, hashed at rest, single-use, expiring, invalidated by use or
+/// by a newer token — and one table means one implementation of that discipline
+/// to get right rather than two that drift.
+///
+/// `Invitation` is deliberately NOT folded in here despite sharing the
+/// discipline: it is tenant-owned (it carries organizationId, lives under RLS,
+/// and is in TENANT_OWNED_MODELS), and these two are not. Merging them would
+/// put tenant-owned rows in a table with no tenant column.
+///
+/// Only `tokenHash` is stored, so the database cannot mint a valid token.
+model VerificationToken {
+  id         String              @id
+  userId     String
+  purpose    VerificationPurpose
+  tokenHash  String              @unique
+  expiresAt  DateTime            @db.Timestamptz(6)
+  consumedAt DateTime?           @db.Timestamptz(6)
+  createdAt  DateTime            @default(now()) @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Invalidating a user's older tokens of the same purpose when a new one is
+  // issued is a lookup on exactly this pair.
+  @@index([userId, purpose])
+}
+
+/// DO NOT DELETE THIS AS DEAD CODE. NOTHING IN PHASE 2 READS IT, AND THAT IS
+/// EXPECTED.
+///
+/// security/authentication.md §8 and ADR-0005 both require this table exist
+/// from Phase 2 even though SAML 2.0 and OIDC do not land until Phase 11. The
+/// reason is stated in §8: designing these tables now costs nothing, and
+/// re-modelling identity later is the single most expensive migration an
+/// enterprise SaaS can face. A table with no rows is cheap; retrofitting
+/// external identity onto a live user base is not.
+///
+/// `providerId` names the configured provider, `externalId` is the subject as
+/// that provider knows it. Both uniques matter and neither implies the other:
+/// (providerId, externalId) stops two local users claiming one external
+/// identity; (userId, providerId) stops one local user holding two identities
+/// at the same provider.
+model IdentityProviderLink {
+  id         String   @id
+  userId     String
+  providerId String
+  externalId String
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, externalId])
+  @@unique([userId, providerId])
 }
 
 // ---------------------------------------------------------------------------
@@ -185,22 +419,76 @@ model Membership {
   // deletion (Phase 2) must remove the user's memberships, one organisation
   // at a time through the normal tenant-scoped path, before the User row
   // itself can go. DELETE on User is deliberately still granted to
-  // sentinel_app; account deletion is a legitimate Phase 2 flow, not a
-  // platform-admin-only one.
-  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
-  role Role @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  // sentinel_app, so that path stays open for whoever builds it.
+  //
+  // CORRECTED IN PHASE 2, TASK 1. This comment previously ended "account
+  // deletion is a legitimate Phase 2 flow, not a platform-admin-only one".
+  // Checked against the Phase 2 plan when this file was next edited: none of
+  // its eighteen tasks is account deletion, and none is planned. The Restrict
+  // reasoning above is unaffected and stands — what was wrong was only the
+  // claim that a flow exists to satisfy it. It does not. Account deletion needs
+  // its own design: with Restrict here and on Invitation.invitedByUserId, a
+  // plain DELETE on a User who has ever joined an organisation or sent an
+  // invitation raises a foreign-key violation, so deletion has to unwind
+  // memberships and invitations first, one organisation at a time, through the
+  // tenant-scoped path. Recorded rather than quietly rewritten, because the
+  // original sentence was written in Phase 1 and believed until it was
+  // checked.
+  user         User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+  role         Role         @relation(fields: [roleId], references: [id], onDelete: Restrict)
 
-  // KNOWN ISSUE: this is a full unique index, but Membership soft-deletes via
-  // `deletedAt`. It should be a partial index — UNIQUE (organizationId,
-  // userId) WHERE "deletedAt" IS NULL — so a removed member can be re-added.
-  // As written, removing then re-inviting the same (org, user) pair raises a
-  // duplicate-key error on the second insert; verified live. Prisma's schema
-  // language cannot express a partial unique index, so the real fix needs a
-  // hand-written migration plus drift management against `prisma migrate
-  // dev`. Nothing in Phase 1 sets Membership.deletedAt, and Phase 2 owns
-  // membership management end to end, so the fix belongs there — tracked at
-  // Task 16. Do not let this be rediscovered as a bug; it is a known gap.
-  @@unique([organizationId, userId])
+  // UNIQUENESS LIVES IN SQL, NOT HERE — deliberately, and there is no
+  // `@@unique([organizationId, userId])` line below by design.
+  //
+  // The rule is "at most one LIVE membership per (organizationId, userId)".
+  // Membership soft-deletes via `deletedAt`, so a full unique index counts
+  // removed rows too and re-inviting a removed member fails with a duplicate
+  // key. Prisma's schema language cannot express `WHERE "deletedAt" IS NULL`,
+  // so the constraint is a partial unique index created by hand in
+  // `migrations/20260824153519_membership_partial_unique/migration.sql`:
+  // `Membership_organizationId_userId_active_key`.
+  //
+  // A SECOND CONSTRAINT LIVES IN SQL TOO, for the same reason, and in the SAME
+  // migration: the CHECK `("deletedAt" IS NULL) = (status <> 'REMOVED')`, named
+  // `Membership_status_deletedAt_agree_check`. The two ship together because
+  // they are two halves of one invariant — a database stopped between them
+  // would hold the broken state described next. The partial index keys on
+  // `deletedAt` while `status` is an independent column, so without it a row
+  // could be `ACTIVE` and soft-deleted at once — outside the index predicate,
+  // therefore not occupying the unique slot, therefore admitting a second live
+  // membership for the same pair and two roles for one user. The mirror case,
+  // `REMOVED` with a NULL `deletedAt`, holds the slot while claiming to be
+  // removed. The CHECK makes removal one fact instead of two. It is a
+  // biconditional across all three statuses: `INVITED` requires
+  // `deletedAt IS NULL`, because a pending invitation is a live row and should
+  // hold the slot.
+  //
+  // WHAT PRISMA ACTUALLY DOES ABOUT EITHER OF THEM, measured rather than
+  // assumed. Nothing. Its engine can represent neither a partial index nor a
+  // CHECK constraint, so it does not see them in either direction — it will not
+  // create them and it will not drop them. The Phase 2 plan predicted the
+  // opposite for the index (drift reported, the full `@@unique` re-offered);
+  // generating the next migration emitted no Membership statement at all.
+  //
+  // To reproduce: run `prisma migrate diff --from-url <db> --to-schema-datamodel
+  // prisma/schema.prisma --script` and COUNT THE STATEMENTS MENTIONING
+  // "Membership". It is zero. Measured at zero against a database in sync with
+  // this file, where the whole diff came back empty, and zero again against one
+  // two migrations behind, where the diff was 117 lines of unrelated DDL. The
+  // count is the durable claim; "the diff is empty" is not, because that
+  // depended on the database matching this file in every other respect.
+  //
+  // The two real ways to lose this index both need a human:
+  //   1. `prisma db push`, which builds from THIS FILE alone and never replays
+  //      the migration history — the index would simply not exist. Use
+  //      `migrate dev` / `migrate deploy` / `migrate reset`, which all replay.
+  //   2. Someone seeing no `@@unique` here, assuming it was forgotten, and
+  //      adding `@@unique([organizationId, userId])` back. That creates a FULL
+  //      unique index alongside the partial one and re-breaks re-invite. That
+  //      is what this comment exists to prevent — the line is missing on
+  //      purpose.
+  // Either way `src/membership-soft-delete.integration.spec.ts` goes red on
+  // re-invite, which is the signal to come back and read this.
   @@index([organizationId, status])
   @@index([userId])
 }
