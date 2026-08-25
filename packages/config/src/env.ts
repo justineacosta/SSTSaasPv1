@@ -38,6 +38,36 @@ export const apiEnvSchema = sharedEnvSchema.extend({
   MAIL_HOST: z.string().min(1),
   MAIL_PORT: port,
   MAIL_FROM: z.string().min(1),
+
+  // Passwords ---------------------------------------------------------------
+  //
+  // API-only, and deliberately not on `sharedEnvSchema`. `apps/web/src/env.ts`
+  // parses its schema at module load in every environment, so a variable added
+  // to the shared schema becomes one every web deploy must define in order to
+  // boot. The comment above `e2eEnvSchema` records the same rule for `E2E_PORT`.
+  //
+  // Every one of these carries a default, so nothing existing has to change to
+  // keep booting. ADR-0014: the Argon2id parameters live in configuration
+  // rather than in a constant precisely so an operator can raise them — after
+  // tuning on production hardware, which the starting points below have not
+  // been — without a code change, a build, or a deploy. `PasswordService`
+  // reports `needsRehash` against them, so raised parameters take effect on
+  // existing accounts at their owners' next successful login.
+  //
+  // security/authentication.md §2 is where m=64MiB / t=3 / p=4 comes from, and
+  // it names them as a starting point only.
+  PASSWORD_ARGON2_MEMORY_KIB: z.coerce.number().int().min(8).default(65_536),
+  PASSWORD_ARGON2_TIME_COST: z.coerce.number().int().min(1).default(3),
+  PASSWORD_ARGON2_PARALLELISM: z.coerce.number().int().min(1).max(255).default(4),
+
+  // ADR-0015. The flag defaults to **false**, so no test suite anywhere
+  // depends on a third party being reachable and no environment gets the
+  // outbound call by accident; an environment that wants the check turns it on
+  // explicitly. The check fails open on timeout, so the timeout is a latency
+  // budget for registration and password change, not just an error bound.
+  PASSWORD_BREACH_CHECK_ENABLED: booleanFromString.default('false'),
+  PASSWORD_BREACH_CHECK_TIMEOUT_MS: z.coerce.number().int().min(1).default(2_000),
+  PASSWORD_BREACH_CHECK_RANGE_URL: z.string().url().default('https://api.pwnedpasswords.com/range'),
 });
 
 export const webEnvSchema = sharedEnvSchema.extend({

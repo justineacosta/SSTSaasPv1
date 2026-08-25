@@ -23,6 +23,10 @@ export const ERROR_CODES = {
   INVALID_STATE_TRANSITION: 'INVALID_STATE_TRANSITION',
   VERSION_CONFLICT: 'VERSION_CONFLICT',
   DUPLICATE_RESOURCE: 'DUPLICATE_RESOURCE',
+  // A policy refusal of a submitted value, not a failed authentication
+  // attempt, which is why it sits here rather than in the Auth group above.
+  // 422 (api/conventions.md §2: valid shape, failed a domain rule). ADR-0015.
+  PASSWORD_BREACHED: 'PASSWORD_BREACHED',
 
   // Domain — security testing
   SCOPE_VIOLATION: 'SCOPE_VIOLATION',

@@ -72,7 +72,8 @@ when there are real endpoints to raise them.
 `RESOURCE_NOT_FOUND` (also returned for cross-tenant access).
 
 **Validation:** `VALIDATION_ERROR` (also the fallback for an unmapped client-class status — see
-§2), `UNKNOWN_FIELD`, `INVALID_STATE_TRANSITION`, `VERSION_CONFLICT`, `DUPLICATE_RESOURCE`.
+§2), `UNKNOWN_FIELD`, `INVALID_STATE_TRANSITION`, `VERSION_CONFLICT`, `DUPLICATE_RESOURCE`,
+`PASSWORD_BREACHED`.
 
 **Domain — security-testing specific:** `SCOPE_VIOLATION`, `ASSET_NOT_VERIFIED`,
 `ASSET_VERIFICATION_EXPIRED`, `TARGET_DENIED_BY_POLICY` (global deny list),

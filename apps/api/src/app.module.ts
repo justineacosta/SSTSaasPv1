@@ -5,6 +5,7 @@ import { ConfigModule } from './infrastructure/config/config.module.js';
 import { PrismaModule } from './infrastructure/prisma/prisma.module.js';
 import { RedisModule } from './infrastructure/redis/redis.module.js';
 import { StorageModule } from './infrastructure/storage/storage.module.js';
+import { AuthModule } from './modules/auth/auth.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { OpenApiModule } from './openapi/openapi.module.js';
 
@@ -33,6 +34,7 @@ import { OpenApiModule } from './openapi/openapi.module.js';
     PrismaModule,
     RedisModule,
     StorageModule,
+    AuthModule,
     HealthModule,
     OpenApiModule,
   ],
