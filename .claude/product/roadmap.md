@@ -330,6 +330,20 @@ concrete reason Phase 2's ledger is tracked. Full audit:
 Known outstanding. **None of it blocks Phase 1, which is complete.** All of it is owed to a later
 phase or to the operator:
 
+- **`rate-limit.integration.spec.ts` is flaky on CI, and it guards a security control.** Proven
+  rather than assumed on 2026-08-25: CI run `32805306518` on commit `8214466` failed at
+  *"liveness is never rate limited › issues no Redis command at all while probing /health/live"*,
+  and a **re-run of that same job on that same SHA passed**. The commit it failed on changed two
+  markdown files and no code (`git diff --stat 6d6b582 8214466` — 2 files, 34 insertions), and the
+  preceding run on `6d6b582` was green, so nothing in the tree caused it. The failure is not an
+  assertion: it is `Error: Command queue state error. If you can reproduce this, please report it`
+  raised inside `ioredis@5.11.1`'s own `DataHandler.shiftCommand`, which points at a race between
+  the spec's Redis-traffic monitoring connection and the command queue rather than at the rate
+  limiter. **This matters more than an ordinary flake.** The Phase 2 plan's own words for the
+  timing test — "a flaky security test gets deleted" — describe the risk exactly, and rate
+  limiting is one of the controls `security/abuse-prevention.md` §1 depends on. Owed: diagnose the
+  monitoring connection's teardown, not a retry wrapper. Nobody has done it.
+
 - ~~The four bumped GitHub Actions majors have never run on a runner.~~ **Closed 2026-08-22 by
   run `32579100605`** — `checkout@v7`, `setup-node@v7`, `upload-artifact@v7` and
   `pnpm/action-setup@v6` all executed successfully on `ubuntu-latest`, and the Node 20
