@@ -297,3 +297,65 @@ describe('password configuration', () => {
     );
   });
 });
+
+/**
+ * Task 4's single-use token TTLs. `security/authentication.md` §6 fixes the
+ * three durations; configuration is what lets an operator shorten one during an
+ * incident without a deploy.
+ */
+describe('secret token TTL configuration', () => {
+  it('defaults to security/authentication.md §6 exactly', () => {
+    const env = loadEnv(apiEnvSchema, validApi);
+    expect(env.TOKEN_TTL_EMAIL_VERIFICATION_SECONDS).toBe(86_400); // 24h
+    expect(env.TOKEN_TTL_PASSWORD_RESET_SECONDS).toBe(3_600); // 1h
+    expect(env.TOKEN_TTL_INVITATION_SECONDS).toBe(604_800); // 7d
+  });
+
+  it('is expressed in seconds for all three, deliberately, not hours and days', () => {
+    // One unit means the service does one multiplication for every purpose.
+    // A mixed _HOURS/_MINUTES/_DAYS set matching §6's prose is how a `60` gets
+    // read as the wrong thing.
+    const hours = 24;
+    const env = loadEnv(apiEnvSchema, validApi);
+    expect(env.TOKEN_TTL_EMAIL_VERIFICATION_SECONDS).toBe(hours * 60 * 60);
+  });
+
+  it('coerces the shortened values an operator sets during an incident', () => {
+    const env = loadEnv(apiEnvSchema, {
+      ...validApi,
+      TOKEN_TTL_EMAIL_VERIFICATION_SECONDS: '900',
+      TOKEN_TTL_PASSWORD_RESET_SECONDS: '300',
+      TOKEN_TTL_INVITATION_SECONDS: '3600',
+    });
+    expect(env.TOKEN_TTL_EMAIL_VERIFICATION_SECONDS).toBe(900);
+    expect(env.TOKEN_TTL_PASSWORD_RESET_SECONDS).toBe(300);
+    expect(env.TOKEN_TTL_INVITATION_SECONDS).toBe(3_600);
+  });
+
+  it.each([
+    ['TOKEN_TTL_EMAIL_VERIFICATION_SECONDS', '0'],
+    ['TOKEN_TTL_EMAIL_VERIFICATION_SECONDS', '-60'],
+    ['TOKEN_TTL_PASSWORD_RESET_SECONDS', 'one hour'],
+    ['TOKEN_TTL_PASSWORD_RESET_SECONDS', '1.5'],
+    ['TOKEN_TTL_INVITATION_SECONDS', ''],
+  ])('refuses a %s of "%s" and names it', (variable, value) => {
+    // A TTL of 0 or a negative one issues a token that is already expired, so
+    // the floor is 1 rather than 0. There is no ceiling: an operator lengthening
+    // a TTL is a policy decision the config layer has no basis to overrule.
+    expect(() => loadEnv(apiEnvSchema, { ...validApi, [variable]: value })).toThrow(
+      new RegExp(variable),
+    );
+  });
+
+  it('keeps the TTLs off the schema the web app boots with', () => {
+    // Ruling 30's neighbour: same reason as the password block above. The web
+    // app never mints a token, and a variable on sharedEnvSchema is one every
+    // web deploy must define in order to start.
+    expect(Object.keys(webEnvSchema.shape).filter((key) => key.startsWith('TOKEN_TTL_'))).toEqual(
+      [],
+    );
+    expect(Object.keys(sharedEnvSchema.shape).filter((key) => key.startsWith('TOKEN_TTL_'))).toEqual(
+      [],
+    );
+  });
+});
