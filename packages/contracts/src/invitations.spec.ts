@@ -113,7 +113,7 @@ describe('invitationCollectionSchema', () => {
     expect(
       invitationCollectionSchema.parse({
         data: [INVITATION],
-        pagination: { nextCursor: null, hasMore: false },
+        pagination: { nextCursor: null, hasMore: false, limit: 50 },
       }).data,
     ).toHaveLength(1);
   });

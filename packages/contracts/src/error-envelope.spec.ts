@@ -48,7 +48,7 @@ describe('collectionEnvelopeSchema', () => {
     const schema = collectionEnvelopeSchema(z.object({ id: z.string() }));
     const parsed = schema.parse({
       data: [{ id: 'fnd_1' }],
-      pagination: { nextCursor: 'abc', hasMore: true },
+      pagination: { nextCursor: 'abc', hasMore: true, limit: 50 },
       meta: { total: 1284 },
     });
     expect(parsed.data).toHaveLength(1);
@@ -57,7 +57,10 @@ describe('collectionEnvelopeSchema', () => {
 
   it('allows a null cursor on the last page', () => {
     const schema = collectionEnvelopeSchema(z.object({ id: z.string() }));
-    const parsed = schema.parse({ data: [], pagination: { nextCursor: null, hasMore: false } });
+    const parsed = schema.parse({
+      data: [],
+      pagination: { nextCursor: null, hasMore: false, limit: 50 },
+    });
     expect(parsed.pagination.nextCursor).toBeNull();
   });
 });
