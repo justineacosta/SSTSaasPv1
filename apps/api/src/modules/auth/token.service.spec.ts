@@ -16,7 +16,7 @@ const TTL: SecretTokenTtlSeconds = {
 };
 
 interface Call {
-  readonly method: 'create' | 'updateMany' | 'findUnique';
+  readonly method: 'create' | 'updateMany' | 'findUnique' | 'lock';
   readonly args: unknown;
   readonly inTransaction: boolean;
 }
@@ -51,12 +51,29 @@ function recordingStore(updateCounts: number[] = [], row: { userId: string } | n
     },
   };
 
+  /**
+   * Records the advisory lock as a call so its POSITION can be asserted.
+   *
+   * The lock is the whole of the fix for the concurrency defect the first round
+   * shipped, and it is worthless if it is taken after the update it protects.
+   * A double cannot prove the lock works — that needs two real transactions
+   * against real Postgres, which is what the integration spec's ten-round race
+   * is for — but it can prove the statement is issued, inside the transaction,
+   * before anything else.
+   */
+  const queryRaw = (query: TemplateStringsArray, ...values: unknown[]): Promise<unknown> => {
+    calls.push({ method: 'lock', args: { sql: query.join('?'), values }, inTransaction });
+    return Promise.resolve([{ locked: 1 }]);
+  };
+
   const store = {
     verificationToken: delegate,
-    async $transaction<T>(run: (tx: { verificationToken: typeof delegate }) => Promise<T>) {
+    async $transaction<T>(
+      run: (tx: { verificationToken: typeof delegate; $queryRaw: typeof queryRaw }) => Promise<T>,
+    ) {
       inTransaction = true;
       try {
-        return await run({ verificationToken: delegate });
+        return await run({ verificationToken: delegate, $queryRaw: queryRaw });
       } finally {
         inTransaction = false;
       }
@@ -111,8 +128,24 @@ describe('TokenService.issue', () => {
     const { store, calls } = recordingStore([1]);
     await new TokenService(store, TTL).issue({ userId: 'usr_1', purpose: 'PASSWORD_RESET' });
 
-    expect(calls.map((call) => call.method)).toEqual(['updateMany', 'create']);
+    expect(calls.map((call) => call.method)).toEqual(['lock', 'updateMany', 'create']);
     expect(calls.every((call) => call.inTransaction)).toBe(true);
+  });
+
+  it('takes the advisory lock first, keyed on the user and the purpose', async () => {
+    // The fix for the review's High finding. `lock` being first is asserted
+    // above; this pins WHAT is locked, because a lock on the wrong key is a
+    // lock that permits exactly the race it was added to close. Keyed on the
+    // pair the invariant is about — not on the user alone, which would
+    // needlessly serialise a reset against an unrelated verification email.
+    const { store, calls } = recordingStore([0]);
+    await new TokenService(store, TTL).issue({ userId: 'usr_9', purpose: 'PASSWORD_RESET' });
+
+    const lock = calls.find((call) => call.method === 'lock');
+    expect(lock?.args).toEqual({
+      sql: 'SELECT 1 AS locked FROM (SELECT pg_advisory_xact_lock(hashtext(?))) AS lock_taken',
+      values: ['vtk:usr_9:PASSWORD_RESET'],
+    });
   });
 
   it('supersedes only that user and only that purpose', async () => {
@@ -121,7 +154,11 @@ describe('TokenService.issue', () => {
     const { store, calls } = recordingStore([0]);
     await new TokenService(store, TTL).issue({ userId: 'usr_1', purpose: 'EMAIL_VERIFICATION' });
 
-    const { where } = calls[0]?.args as { where: Record<string, unknown> };
+    // Found by method rather than by index: the advisory lock now occupies
+    // position 0, and an index here would silently start asserting against the
+    // wrong statement the next time one is added in front of it.
+    const supersede = calls.find((call) => call.method === 'updateMany');
+    const { where } = supersede?.args as { where: Record<string, unknown> };
     expect(where).toEqual({ userId: 'usr_1', purpose: 'EMAIL_VERIFICATION', consumedAt: null });
   });
 
@@ -136,7 +173,8 @@ describe('TokenService.issue', () => {
     });
 
     expect(JSON.stringify(calls)).not.toContain(issued.token);
-    expect(calls[1]?.args).toMatchObject({
+    const insert = calls.find((call) => call.method === 'create');
+    expect(insert?.args).toMatchObject({
       data: {
         userId: 'usr_1',
         purpose: 'EMAIL_VERIFICATION',
@@ -159,7 +197,8 @@ describe('TokenService.issue', () => {
     expect(issued.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 3_600_000);
     expect(issued.expiresAt.getTime()).toBeLessThanOrEqual(after + 3_600_000);
     // The row carries the same instant that was returned to the caller.
-    expect((calls[1]?.args as { data: { expiresAt: Date } }).data.expiresAt).toEqual(
+    const inserted = calls.find((call) => call.method === 'create');
+    expect((inserted?.args as { data: { expiresAt: Date } }).data.expiresAt).toEqual(
       issued.expiresAt,
     );
   });

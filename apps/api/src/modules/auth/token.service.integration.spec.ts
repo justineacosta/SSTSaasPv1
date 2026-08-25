@@ -225,3 +225,57 @@ describe('two concurrent redemptions of one reset link', () => {
     expect(results.filter((result) => result !== null)).toHaveLength(2);
   });
 });
+
+describe('two concurrent issue calls for the same user and purpose', () => {
+  it('leave exactly one live token — supersession is not a sequential-only promise', async () => {
+    // THE DEFECT THE FIRST ROUND SHIPPED, one layer above the one it was
+    // commissioned to close. `security/authentication.md` §6 says a token is
+    // "invalidated by use or by a newer token", unqualified, and `issue`'s
+    // supersede-then-insert runs inside a transaction — which is exactly why it
+    // looks safe and is not. Under Postgres's default READ COMMITTED, a second
+    // transaction's `UPDATE ... WHERE consumedAt IS NULL` cannot see the first
+    // one's uncommitted `INSERT`, so it supersedes nothing and both rows commit
+    // live. `@@index([userId, purpose])` is not unique, so the database does not
+    // arbitrate either.
+    //
+    // Ten rounds rather than one: a race that resolves correctly by luck once is
+    // a green test, and the reviewer measured this failing 24 times in 25.
+    const userId = newId('usr');
+    await prisma.user.create({ data: { id: userId, email: `race-${userId}@example.test` } });
+
+    const liveCounts: number[] = [];
+    for (let round = 0; round < 10; round += 1) {
+      await Promise.all([
+        service.issue({ userId, purpose: 'PASSWORD_RESET' }),
+        service.issue({ userId, purpose: 'PASSWORD_RESET' }),
+      ]);
+      liveCounts.push(
+        await prisma.verificationToken.count({
+          where: { userId, purpose: 'PASSWORD_RESET', consumedAt: null },
+        }),
+      );
+      await prisma.verificationToken.deleteMany({ where: { userId } });
+    }
+
+    expect(liveCounts).toEqual(Array.from({ length: 10 }, () => 1));
+  });
+
+  it('still supersede across purposes independently — the lock is not global', async () => {
+    // The negative control, matching the one on `consume` above: a fix that
+    // serialised every issue in the process would also make the test above
+    // green, and would be a throughput disaster wearing a passing spec. Two
+    // different purposes for one user must both end up live.
+    const userId = newId('usr');
+    await prisma.user.create({ data: { id: userId, email: `pair-${userId}@example.test` } });
+
+    await Promise.all([
+      service.issue({ userId, purpose: 'PASSWORD_RESET' }),
+      service.issue({ userId, purpose: 'EMAIL_VERIFICATION' }),
+    ]);
+
+    const live = await prisma.verificationToken.count({
+      where: { userId, consumedAt: null },
+    });
+    expect(live).toBe(2);
+  });
+});
