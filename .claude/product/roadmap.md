@@ -14,7 +14,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Not Implemented** — Task 1 of 18 done 2026-08-25 (schema, migrations, registry); no identity behaviour yet |
+| 2 | Identity | **Not Implemented** — Tasks 1–2 of 18 done 2026-08-25 (schema, migrations, registry, wire contracts); no identity behaviour yet |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -34,6 +34,11 @@ env loading), `packages/observability` (structured logging with redaction),
 migrations, the mandatory tenant-scoped client, and PostgreSQL row-level security — the
 two-layer tenant isolation control the whole roadmap depends on, covered by 40+ integration
 tests and 20+ unit tests against a real Postgres 16).
+
+**`packages/contracts` has since grown past that list.** Phase 2 Task 2 added the identity wire
+contracts — authentication, organisation, membership, role and invitation schemas, the `Principal`
+union and `TenantContext` — described under Phase 2 below. They are schemas and types only: **no
+endpoint validates against any of them yet.**
 
 **`apps/api` now boots.** A NestJS application with the request-ID middleware, the
 security-header and CSP middleware, the global error-envelope filter, the structured logging
@@ -573,11 +578,66 @@ else is needed, and re-verifying Phase 1 is not part of it:
 4. The plan's section for **your task only**, plus the previous task's ledger entry at
    `docs/superpowers/ledger/phase-2/task-NN/`.
 
-**Status is Not Implemented and Task 1 does not change that.** The tables identity will need now
-exist and are proven to migrate, but nothing authenticates anybody: `apps/api/src/modules/` still
-contains only `health`, and `apps/web`'s `(auth)` route group still holds a layout with no routes
-under it. Not one of the three exit criteria above is met. Per the plan, the status moves to
-**Partially Implemented** at Checkpoint A, after Task 12 — a schema is not a feature.
+**Status is Not Implemented and Tasks 1–2 do not change that.** The tables identity will need now
+exist and are proven to migrate, and the wire contracts those endpoints will validate against now
+exist too — but nothing authenticates anybody: `apps/api/src/modules/` still contains only
+`health`, the committed `openapi.json` still publishes **4 routes** (three health probes and the
+document itself), and `apps/web`'s `(auth)` route group still holds a layout with no routes under
+it. Not one of the three exit criteria above is met. Per the plan, the status moves to
+**Partially Implemented** at Checkpoint A, after Task 12 — a schema is not a feature, and neither
+is a contract.
+
+**Task 2 evidence, 2026-08-25 at commit `4788826`.** Every command re-run by the orchestrator on
+the finished tree rather than taken from the implementer's report, with exit codes captured
+outside a pipe (`out=$(pnpm <cmd> 2>&1); code=$?`), because `$?` after a pipe reports the last
+stage's status and not the command's.
+
+| Command | Exit | What it proves |
+|---|---|---|
+| `pnpm format:check` | 0 | Prettier style across the workspace. |
+| `pnpm lint` | 0 | 14 tasks. ESLint clean, including the no-raw-hex and tenant-scoping rules. |
+| `pnpm typecheck` | 0 | 14 tasks. The types compile — and nothing about behaviour. |
+| `pnpm test` | 0 | **43 files / 536 tests**, up from 32 / 416 at Task 1. |
+| `pnpm check:specs` | 0 | 54 spec files, each claimed by exactly one Vitest project — no spec runs nothing while printing green. |
+| `pnpm test:integration` | 0 | 11 files / 148 tests against real Postgres 16. **Unchanged from Task 1**, correctly: this task added no integration spec. |
+| `pnpm build` | 0 | 8 tasks. |
+| `pnpm test:e2e` | 0 | 5 passed against a Playwright-owned production build. |
+| `docker compose ps` | 0 | postgres, redis, minio, mailpit all `Up (healthy)`. |
+| `pnpm check:openapi` | 0 | `apps/api/openapi.json` byte-identical to what the contracts generate, still **4 routes**. **This is the proof that no endpoint shipped.** |
+| `pnpm check:registry` | 0 | 14 models, 3 tenant-owned, 1 tenant root, 10 deliberately global. |
+
+What that table licenses and nothing more: the contracts compile, are exported, and behave as
+their specs pin them; the workspace is green. **It says nothing about any endpoint**, because
+there is none.
+
+**What Task 2 delivered.** Zod request and response schemas for the eleven authentication
+endpoints of `api/authentication.md` §2 and Tasks 8–10, plus the organisation, membership, role
+and invitation schemas Tasks 13–15 will use — `.strict()` on every request schema, so an unknown
+field is rejected rather than discarded (`api/conventions.md` §3). `Principal` and `TenantContext`
+as **plain TypeScript types with no Zod schema**, deliberately: a `principalSchema.parse()` would
+mint a principal out of attacker-controlled JSON. The `apiKey` arm of `Principal` is defined and
+throws where it is reached — API keys are not in Phase 2. A password policy of minimum 12,
+maximum 256, **no composition rules**, pinned by a spec asserting a twelve-character all-lowercase
+password is accepted. Both ID prefix registries extended and, for the first time, **cross-checked
+against each other** by a spec that was proven to go red by mutating each side in turn — Task 1's
+carry-forward ruling 5 recorded that they had already drifted with nothing to notice.
+
+**`UNKNOWN_FIELD` stopped being a code nothing could raise.** `ZodValidationPipe` now raises it at
+400 when *every* Zod issue is an unrecognised key, while a mixed failure stays `VALIDATION_ERROR`
+and still lists those keys — a validation failure must never hide behind a different code.
+`api/errors.md` §2 was updated in the same change.
+
+**Eleven review findings, and the two most severe were sentences rather than code.** A comment in
+`auth.ts` quoted `"no maximum below 128"` as coming from `authentication.md` §2; `grep -rn "128"
+.claude/` returns no such string in any authentication document. And the implementer's report gave
+a CRLF cause for a commit that contains no CRLF and does not touch the file it named. Both are
+corrected, and both are the same class as Phase 1's twelve. Three Medium findings were real code
+defects the reviewer proved by measurement rather than argument: two specs claiming to cross-check
+the Prisma enums stayed green when a value was added to `schema.prisma`; the pagination envelope
+omitted the applied `limit` that `pagination.md` §4 requires, so a clamp was indistinguishable
+from a short page; and `tenant-context.spec.ts` passed with its own module deleted. All eleven are
+dispositioned in
+[`docs/superpowers/ledger/phase-2/task-02/review.md`](../../docs/superpowers/ledger/phase-2/task-02/review.md).
 
 **Phase 1 was re-verified on 2026-08-24 at commit `40852c1` before this plan was written**, per
 `sentinel-phase` step 2 — a status is a claim until a command proves it. All four exit criteria

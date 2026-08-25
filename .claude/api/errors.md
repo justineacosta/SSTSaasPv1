@@ -1,9 +1,11 @@
 # API errors
 
-> **Status: Partially Implemented (Phase 1).** §1, §2, §5 and §6 are enforced by
-> `AllExceptionsFilter` and `ZodValidationPipe` in `apps/api`. §3's codes exist in
+> **Status: Partially Implemented (Phase 1, extended in Phase 2 Task 2).** §1, §2, §5 and §6 are
+> enforced by `AllExceptionsFilter` and `ZodValidationPipe` in `apps/api`. §3's codes exist in
 > `@sentinel/contracts`. §7's "every documented code has at least one test that produces it"
-> is **not** met: most codes have no endpoint that can raise them yet.
+> is **still not** met: most codes have no endpoint that can raise them yet. `UNKNOWN_FIELD`
+> stopped being one of them in Phase 2 Task 2 — see §2 — but it is raised by the pipe's unit
+> spec, not by any endpoint, because Phase 2 has not shipped one that takes a body.
 
 ## 1. Envelope
 
@@ -39,6 +41,18 @@ Field errors are returned per field so a client can attach them to inputs:
 
 `path` uses dotted/bracketed notation matching the request body, so the client can map errors
 without guessing.
+
+**A body whose *only* fault is unknown fields returns `UNKNOWN_FIELD`, not `VALIDATION_ERROR`.**
+Every request schema is `.strict()` ([`conventions.md`](conventions.md) §3), so an unrecognised
+key is a rejection rather than a silent discard, and it deserves its own code because the client
+fix is different — a misspelling, or a field from a newer API version — from a value that failed
+a rule. `details.fields` names one entry per offending key, at that key's full path.
+
+The split is deliberately asymmetric: the code is `UNKNOWN_FIELD` only when **every** issue is an
+unrecognised key. A body that both misspells a field and fails a real validation rule returns
+`VALIDATION_ERROR` and still lists the unrecognised keys in `details.fields`. Branching a mixed
+failure to `UNKNOWN_FIELD` would tell a client the spelling was the only problem, and a
+validation failure must never hide behind a different code.
 
 **`details.fields` is optional on this code, and a client must treat it that way.**
 `VALIDATION_ERROR` is also the fallback for a client-class status the code table does not name —

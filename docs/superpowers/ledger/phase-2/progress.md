@@ -11,7 +11,7 @@ Branch: `feat/phase-2-identity`
 | # | Task | Mode | State |
 |---|---|---|---|
 | 1 | Identity schema, migrations, registry, Membership partial-unique fix | subagent | **Done** — [brief](task-01/brief.md) · [report](task-01/report.md) · [review](task-01/review.md) |
-| 2 | `packages/contracts` — identity contracts, Principal, TenantContext | subagent | Not started |
+| 2 | `packages/contracts` — identity contracts, Principal, TenantContext | subagent | **Done** — [brief](task-02/brief.md) · [report](task-02/report.md) · [review](task-02/review.md) · [rulings](task-02/rulings.md) |
 | 3 | Password hashing and the breach check | subagent | Not started |
 | 4 | Single-use secret tokens | subagent | Not started |
 | 5 | Mail infrastructure and templates | subagent | Not started |
@@ -86,26 +86,82 @@ works** — `roadmap.md` is the only authority on status.
     `REMOVED` and soft-deleted the same fact. A bare `status: 'REMOVED'` is now an invalid write.
     **Binds Task 14's removal path.**
 
+### From Task 2
+
+Full reasoning and cost-if-wrong for each is in [`task-02/rulings.md`](task-02/rulings.md).
+
+11. **The plan's password citation is false.** The plan (line 329) and Task 2's brief both say "no
+    maximum below 128, per `authentication.md` §2". `grep -rn "128" .claude/` proves the string is
+    in neither authentication document — `security/authentication.md` §2 says only "Minimum 12
+    characters. No composition rules, no forced rotation." The behaviour shipped is
+    `.min(12).max(256)`, which is right, but **the 256 ceiling stands on the Argon2id input-cost
+    argument alone.** Do not re-quote the phrase. This is the class of defect the phase's prose
+    rules exist for, and it reached a code comment before the reviewer caught it.
+
+12. **`TenantContext` now exists under that name in two packages** — `@sentinel/contracts` (four
+    fields: `organizationId`, `membershipId`, `roleKey`, `permissions`) and `@sentinel/db`
+    (`organizationId` only) — both exported from their package indexes. **A file importing both
+    must alias one.** Unresolved by design; **Task 12 owns deciding** whether the db one is
+    renamed, since Task 12 is where both are used together for the first time.
+
+13. **Restating a Prisma enum in contracts requires a parity spec, not a comment.** Task 2's first
+    round restated three enums and claimed a spec made drift visible; the reviewer disproved it by
+    adding a value to `schema.prisma` and watching both specs stay green.
+    `packages/db/src/enum-parity.spec.ts` now cross-checks against `Prisma.dmmf.datamodel.enums`
+    with a `DB_ONLY_ENUMS` allowlist. **Any later task adding an enum must extend one list or the
+    other**, and adding a *new* Prisma enum turns that spec red until it does. Same rule for ID
+    prefixes via `id-prefix-parity.spec.ts`.
+
+14. **`UNKNOWN_FIELD` now has a producer, and the split is asymmetric.** `ZodValidationPipe`
+    raises it at 400 only when **every** Zod issue is `unrecognized_keys`; a mixed failure stays
+    `VALIDATION_ERROR` and still lists the unrecognised keys in `details.fields`. **Binds every
+    task that adds an endpoint** — a validation failure must never hide behind a different code.
+
+15. **`updateOrganizationRequestSchema` is a `ZodEffects`.** `.extend()`, `.partial()` and
+    `.merge()` are unavailable on it. **Task 13 must rebuild the schema, not extend it**, when it
+    adds `requireMfa` or `enforcedEmailDomain`.
+
+16. **`Principal` and `TenantContext` are plain TypeScript types with no Zod schema, deliberately.**
+    A `principalSchema.parse(req.body)` would mint a principal out of attacker-controlled JSON.
+    **Binds Tasks 7 and 12:** construct them from database state, never parse them. If a principal
+    must reach the wire, define a separate response schema — `sessionResponseSchema` is the
+    existing example, and it deliberately omits `sessionId`.
+
+17. **Timestamps in response schemas are UTC-only** (`z.string().datetime()`, no `offset: true`),
+    per `api/conventions.md` §3's "always UTC". Narrowing had to happen before any endpoint
+    published one; widening later is additive.
+
+18. **`loginRequestSchema` has no `rememberMe`** although `Session.rememberMe` exists from Task 1.
+    **Task 9 owns adding it** — adding an optional field to a `.strict()` schema is additive,
+    removing one is not.
+
+19. **MFA enrolment contracts do not exist and Task 11 owns them.** Task 2 defined only
+    `mfa/verify`, which `api/authentication.md` §2 documents exactly.
+
 ## Pause state
 
-**2026-08-25 — Task 1 complete and verified; Task 2 is next.**
+**2026-08-25 — Task 2 complete and verified; Task 3 is next.**
 
-Task 1 landed the `Membership` partial unique index **and** the CHECK constraint that makes its
-predicate mean what it says, the `id.ts` docstring fix, the identity schema expansion (five new
-models, three new enums, the `Session.expiresAt` → `idleExpiresAt` rename), the registry entries,
-and a `has_table_privilege` assertion over the new tables. Evidence is in `roadmap.md`; the
-commands and exit codes are in [`task-01/report.md`](task-01/report.md).
+Task 2 landed the identity wire contracts in `packages/contracts` — `auth.ts`, `organizations.ts`,
+`memberships.ts`, `invitations.ts`, `principal.ts`, `tenant-context.ts`, `timestamps.ts`, a
+rebuilt `ids.ts` with one source-of-truth prefix map, and a bounded list query — plus the four
+new prefixes in `packages/db`'s `ID_PREFIXES`, two parity specs guarding the prefix and enum
+restatements against silent drift, and a producer for `UNKNOWN_FIELD` in `ZodValidationPipe`.
+Evidence is in `roadmap.md`; the commands and exit codes are in [`task-02/report.md`](task-02/report.md).
 
-**The one outstanding item was closed the same day.** The local development database had gone stale —
-migration A's comment was corrected after it had been applied, so its checksum no longer matched and
-`pnpm db:migrate` refused. The operator consented explicitly and the reset ran: six migrations from
-empty, then `pnpm db:seed` separately, because `migrate reset` does **not** seed here (there is no
-`prisma.seed` hook in `package.json`). `pnpm db:migrate` now reports the database in sync.
+**Eleven review findings, two of them High, and both High ones were false sentences rather than
+bad code** — a quotation attributed to a document that does not contain it, and a wrong cause
+given for a commit. That is the same defect class that produced twelve instances during Phase 1.
+All eleven are dispositioned in [`task-02/review.md`](task-02/review.md).
 
-Carry-forward ruling 3 still stands and is the durable part: an agent cannot run `prisma migrate
-reset` without the user's own consent text, and must never fabricate it.
+**Nothing authenticates anybody yet.** `apps/api/src/modules/` still contains only `health`, the
+committed `openapi.json` still publishes four routes, and `apps/web/app/(auth)/` still holds a
+layout with no routes under it. A schema is not an endpoint.
 
-**Next action:** Task 2 — `packages/contracts` identity contracts, `Principal`, `TenantContext` — in
-a new session, starting with `sentinel-phase`. Read carry-forward rulings 5, 6 and 9 before starting:
-Task 2 owns extending **both** prefix registries, and the plan omits a prefix for
-`IdentityProviderLink`.
+**Next action:** Task 3 — password hashing (`@node-rs/argon2`) and the HIBP breach check, with
+ADR-0014 and ADR-0015 — in a new session, starting with `sentinel-phase`. It is a self-contained
+task: fresh implementer subagent plus a fresh adversarial reviewer. Read carry-forward rulings 11
+and 16 before starting: **the password ceiling of 256 stands on the Argon2id cost argument, not
+on any sentence in `authentication.md` §2**, and `passwordSchema` in
+`packages/contracts/src/auth.ts` already fixes the policy — Task 3 hashes, it does not redefine
+the rule.
