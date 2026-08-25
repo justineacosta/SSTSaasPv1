@@ -18,6 +18,38 @@ function formatPath(path: readonly (string | number)[]): string {
   }, '');
 }
 
+/**
+ * One issue becomes one field error — except an `unrecognized_keys` issue,
+ * which becomes one per key.
+ *
+ * Zod reports every unknown key of one object in a SINGLE issue: the issue's
+ * `path` is the PARENT object's path (empty at the root) and the keys live in
+ * `issue.keys`. Running that through `formatPath` alone produces a field error
+ * with an empty path and a message naming several keys at once — a 400 that
+ * says "there is an unknown field somewhere in your body", which a client
+ * cannot attach to an input and a developer cannot act on.
+ *
+ * So the issue is expanded: one entry per key, each with the full dotted path
+ * of the offending key (`nested.extar`) and a message naming only that key.
+ */
+function toFieldErrors(issue: ZodIssue): FieldError[] {
+  if (issue.code === 'unrecognized_keys') {
+    return issue.keys.map((key) => ({
+      // `path` IS REDACTED HERE AND NOWHERE ELSE IN THIS FILE, deliberately.
+      // For every other issue code the path is built from the schema's own key
+      // names, which are ours. Here the final segment is a key the CALLER
+      // invented, so it is untrusted text on the same footing as `message` —
+      // and a caller who pasted a credentialed URL into a JSON key would
+      // otherwise get it mirrored back into a response that may be logged or
+      // screenshotted. errors.md §5.
+      path: redactSecretsInText(formatPath([...issue.path, key])),
+      code: issue.code,
+      message: redactSecretsInText(`Unrecognized field "${key}".`),
+    }));
+  }
+  return [toFieldError(issue)];
+}
+
 function toFieldError(issue: ZodIssue): FieldError {
   return {
     path: formatPath(issue.path),
@@ -54,10 +86,31 @@ export class ZodValidationPipe<TSchema extends ZodTypeAny> implements PipeTransf
     // inferred output type is the honest one.
     if (result.success) return result.data as TypeOf<TSchema>;
 
-    const fields = result.error.issues.map(toFieldError);
+    const { issues } = result.error;
+    const fields = issues.flatMap(toFieldErrors);
+
+    // EVERY issue, not ANY issue, and the difference matters.
+    //
+    // A body that both misspells a field and breaks a real validation rule is
+    // a validation failure. Reporting it as UNKNOWN_FIELD would tell the
+    // client the only problem was the spelling — it would fix the spelling and
+    // fail again, for a reason the first response never mentioned. Never hide
+    // a validation failure behind a different code.
+    //
+    // The unrecognised keys stay in `details.fields` either way, because the
+    // code is the weaker signal and `fields` is what a form binds to.
+    //
+    // api/conventions.md §8 note: a client branching on VALIDATION_ERROR will
+    // start seeing UNKNOWN_FIELD for a pure unknown-field failure. That is a
+    // contract change, which is why it lands now — before any endpoint ships —
+    // rather than once there is a client to break.
+    const everyIssueIsUnknownField = issues.every((issue) => issue.code === 'unrecognized_keys');
+
     throw new DomainError(
-      ERROR_CODES.VALIDATION_ERROR,
-      'The request contains invalid fields.',
+      everyIssueIsUnknownField ? ERROR_CODES.UNKNOWN_FIELD : ERROR_CODES.VALIDATION_ERROR,
+      everyIssueIsUnknownField
+        ? 'The request contains unknown fields.'
+        : 'The request contains invalid fields.',
       400,
       { fields },
     );
