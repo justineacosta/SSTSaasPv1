@@ -42,19 +42,17 @@ describe('isoTimestampSchema', () => {
     expect(isoTimestampSchema.safeParse('').success).toBe(false);
   });
 
-  it('ALSO accepts an explicit non-UTC offset, which is wider than what the API emits', () => {
-    // Recorded as a known gap rather than left to be discovered. conventions.md
-    // §3 says "ISO 8601 with offset, always UTC", and `{ offset: true }`
-    // enforces the first half but not the second: `+01:00` parses.
-    //
-    // Deliberately NOT narrowed to `Z`-only here. `2026-08-20T15:30:00+01:00`
-    // denotes the same instant as `2026-08-20T14:30:00Z` — it is unambiguous,
-    // which is the property §3 is protecting — so refusing it would buy
-    // house-style uniformity, not correctness, at the price of narrowing a
-    // response shape, and narrowing is the breaking direction under
-    // conventions.md §8. What matters is that the API's own serialisation
-    // emits `Z`; that is a handler-side obligation, and this schema is not the
-    // thing that can enforce it.
-    expect(isoTimestampSchema.safeParse('2026-08-20T14:30:00+01:00').success).toBe(true);
+  it('rejects an explicit non-UTC offset — "always UTC" is enforced, not just documented', () => {
+    // conventions.md §3: "Timestamps ISO 8601 with offset, always UTC
+    // (`2026-08-20T14:30:00Z`)". `+01:00` satisfies "with offset" and violates
+    // "always UTC". This schema types RESPONSES — what the API emits — so it is
+    // the thing that can enforce the second half, and the assertion below is
+    // what stops a non-UTC response reaching a client.
+    expect(isoTimestampSchema.safeParse('2026-08-20T14:30:00+01:00').success).toBe(false);
+    expect(isoTimestampSchema.safeParse('2026-08-20T15:30:00-05:00').success).toBe(false);
+    expect(isoTimestampSchema.safeParse('2026-08-20T14:30:00+00:00').success).toBe(false);
+
+    // The same instant, written the one way §3 permits, still parses.
+    expect(isoTimestampSchema.safeParse('2026-08-20T13:30:00Z').success).toBe(true);
   });
 });

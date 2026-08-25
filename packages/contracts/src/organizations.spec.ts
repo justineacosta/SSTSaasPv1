@@ -90,7 +90,7 @@ describe('organizationResponseSchema', () => {
     expect(organizationResponseSchema.safeParse({ ...ORG, status: 'DELETED' }).success).toBe(false);
   });
 
-  it('requires timestamps to be ISO 8601 strings with an offset', () => {
+  it('requires timestamps to be UTC ISO 8601 strings', () => {
     // conventions.md §3. A `Date` serialises differently in every runtime and
     // a bare local time is ambiguous by an hour twice a year.
     expect(organizationResponseSchema.safeParse({ ...ORG, createdAt: new Date() }).success).toBe(
@@ -99,10 +99,12 @@ describe('organizationResponseSchema', () => {
     expect(
       organizationResponseSchema.safeParse({ ...ORG, createdAt: '2026-08-20T14:30:00' }).success,
     ).toBe(false);
+    // "always UTC" — an explicit non-UTC offset is refused too. See
+    // timestamps.spec.ts for the full behaviour of the shared schema.
     expect(
       organizationResponseSchema.safeParse({ ...ORG, createdAt: '2026-08-20T14:30:00+01:00' })
         .success,
-    ).toBe(true);
+    ).toBe(false);
   });
 });
 
