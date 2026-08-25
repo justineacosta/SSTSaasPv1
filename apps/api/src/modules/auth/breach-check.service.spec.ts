@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { createLogger, type Logger } from '@sentinel/observability';
 import {
@@ -77,6 +78,41 @@ function harness(respond: HibpRangeTransport, options: Partial<BreachCheckOption
 const respondWith = (response: RangeResponse): HibpRangeTransport => {
   return () => Promise.resolve(response);
 };
+
+/**
+ * Every assertion Ruling 7 and critical security rule 6 make about a fail-open
+ * log line, in one place so that all four outcomes get all of them.
+ *
+ * It used to be inline in a single test that exercised only `transport-error`.
+ * Review 3c5d694 (finding F2, mutation D) added `prefix: digest.slice(0, 5)` to
+ * the `unexpected-status` failOpen call — a direct violation of both rules —
+ * and the file stayed GREEN at 15 passed, because nothing checked that branch's
+ * line. `unexpected-status` is both the branch most likely to fire in
+ * production (a 429 or 503 from HIBP) and the only one already passing an
+ * `extra` object, so it is exactly where a future "let me add some context"
+ * edit lands.
+ *
+ * Not the password. Not its SHA-1. Not the suffix. **And not the
+ * five-character prefix**, in either case — the prefix narrows the candidate
+ * space, buys nothing diagnostically, and a log aggregator keeps what it is
+ * handed indefinitely.
+ */
+function expectFailOpenLogIsSafe(lines: Record<string, unknown>[], reason: string): void {
+  expect(lines).toHaveLength(1);
+  const line = lines[0] ?? {};
+  expect(line['level']).toBe('warn');
+  expect(line['reason']).toBe(reason);
+  expect(typeof line['elapsedMs']).toBe('number');
+
+  const serialised = JSON.stringify(lines);
+  expect(serialised).not.toContain(PASSWORD);
+  expect(serialised).not.toContain(DIGEST);
+  expect(serialised).not.toContain(DIGEST.toLowerCase());
+  expect(serialised).not.toContain(SUFFIX);
+  expect(serialised).not.toContain(SUFFIX.toLowerCase());
+  expect(serialised).not.toContain(PREFIX);
+  expect(serialised).not.toContain(PREFIX.toLowerCase());
+}
 
 describe('BreachCheckService k-anonymity', () => {
   it('sends exactly five hex characters of the SHA-1 and nothing else', async () => {
@@ -190,7 +226,7 @@ describe('BreachCheckService fail-open behaviour', () => {
       const pending = service.isBreached(PASSWORD);
       await vi.advanceTimersByTimeAsync(2_000);
       expect(await pending).toBe(false);
-      expect(logLines().map((line) => line['reason'])).toContain('timeout');
+      expectFailOpenLogIsSafe(logLines(), 'timeout');
     } finally {
       vi.useRealTimers();
     }
@@ -201,7 +237,7 @@ describe('BreachCheckService fail-open behaviour', () => {
       respondWith({ status: 500, body: 'Internal Server Error' }),
     );
     expect(await service.isBreached(PASSWORD)).toBe(false);
-    expect(logLines().map((line) => line['reason'])).toContain('unexpected-status');
+    expectFailOpenLogIsSafe(logLines(), 'unexpected-status');
   });
 
   it('allows the password on a garbage body', async () => {
@@ -209,37 +245,42 @@ describe('BreachCheckService fail-open behaviour', () => {
       respondWith({ status: 200, body: '<html><body>Service unavailable</body></html>' }),
     );
     expect(await service.isBreached(PASSWORD)).toBe(false);
-    expect(logLines().map((line) => line['reason'])).toContain('unparseable-body');
+    expectFailOpenLogIsSafe(logLines(), 'unparseable-body');
   });
 
   it('allows the password when the transport throws', async () => {
     const { service, logLines } = harness(() => Promise.reject(new Error('ECONNREFUSED')));
     expect(await service.isBreached(PASSWORD)).toBe(false);
-    expect(logLines().map((line) => line['reason'])).toContain('transport-error');
+    expectFailOpenLogIsSafe(logLines(), 'transport-error');
   });
 });
 
 describe('BreachCheckService logging', () => {
-  it('logs at warn, with an elapsed time and no fragment of the password anywhere', async () => {
-    // Critical security rule 6, and Ruling 7 specifically: not the password,
-    // not its SHA-1, and NOT the five-character prefix either. The prefix
-    // narrows the candidate space and buys nothing diagnostically, and a log
-    // aggregator keeps what it is given forever.
-    const { service, logLines } = harness(() => Promise.reject(new Error('ECONNREFUSED')));
-    await service.isBreached(PASSWORD);
+  // The log-safety assertions themselves live in `expectFailOpenLogIsSafe` and
+  // run inside each of the four fail-open tests above, so every branch that can
+  // write a line is checked rather than one of them.
 
-    const lines = logLines();
-    expect(lines).toHaveLength(1);
-    const line = lines[0] ?? {};
-    expect(line['level']).toBe('warn');
-    expect(typeof line['elapsedMs']).toBe('number');
+  it('has no reason tag and no log call site the four tests above do not cover', () => {
+    // A guard on the guard, and the reason F2 was possible: the four tests
+    // above cover four outcomes, but nothing stopped a fifth outcome — or a
+    // second `logger` call site — from being added and going unchecked.
+    const source = readFileSync(new URL('./breach-check.service.ts', import.meta.url), 'utf8');
 
-    const serialised = JSON.stringify(lines);
-    expect(serialised).not.toContain(PASSWORD);
-    expect(serialised).not.toContain(DIGEST);
-    expect(serialised).not.toContain(SUFFIX);
-    expect(serialised).not.toContain(PREFIX);
-    expect(serialised).not.toContain(PREFIX.toLowerCase());
+    // `failOpen` is the only thing that logs. Three call sites, not four: the
+    // `catch` serves both `timeout` and `transport-error`.
+    expect(source.match(/this\.logger\./g)).toEqual(['this.logger.']);
+    expect(source.match(/this\.failOpen\(/g)).toHaveLength(3);
+
+    // Every member of the FailureReason union is one of the four the helper
+    // ran against. A fifth turns this red until it has a test.
+    const union = /type FailureReason =([^;]+);/.exec(source)?.[1] ?? '';
+    const declared = [...union.matchAll(/'([a-z-]+)'/g)].map((match) => match[1]);
+    expect(declared.sort()).toEqual([
+      'timeout',
+      'transport-error',
+      'unexpected-status',
+      'unparseable-body',
+    ]);
   });
 
   it('logs nothing on a successful lookup', async () => {
