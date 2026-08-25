@@ -158,6 +158,12 @@ All eleven are dispositioned in [`task-02/review.md`](task-02/review.md).
 committed `openapi.json` still publishes four routes, and `apps/web/app/(auth)/` still holds a
 layout with no routes under it. A schema is not an endpoint.
 
+**The branch is on `origin` and CI is green.** `feat/phase-2-identity` at `6d6b582`, PR #5 against
+`main`, CI run `32804873458` concluding `success` on `ubuntu-latest`. The operator moved the first
+CI run forward from Checkpoint A because Task 3 introduces the first native binary dependency.
+Evidence and the GitGuardian false-positive determination are in `roadmap.md`, which remains the
+only authority on status.
+
 **Next action:** Task 3 — password hashing (`@node-rs/argon2`) and the HIBP breach check, with
 ADR-0014 and ADR-0015 — in a new session, starting with `sentinel-phase`. It is a self-contained
 task: fresh implementer subagent plus a fresh adversarial reviewer. Read carry-forward rulings 11
