@@ -62,8 +62,8 @@ and are unaffected; anything that must cover *every* response, routed or not, be
 | Request ID + trace | Middleware; `x-request-id` propagated everywhere including into jobs | Implemented (`traceId` in Phase 4) |
 | Security headers | Middleware; [`../security/transport-and-headers.md`](../security/transport-and-headers.md) §2–§3 | Implemented |
 | Rate limit | Guard, Redis-backed, every declared scope | Implemented (global `APP_GUARD`) |
-| Authenticate | Guard, session cookie or API key -> `Principal` | Not Implemented (Phase 2) |
-| Tenant resolve | Guard, membership + org state -> `TenantContext` | Not Implemented (Phase 2) |
+| Authenticate | Guard, session cookie or API key -> `Principal` | Not Implemented (Phase 2). The `Principal` union is declared in `packages/contracts` as of Task 2; nothing constructs one |
+| Tenant resolve | Guard, membership + org state -> `TenantContext` | Not Implemented (Phase 2). `TenantContext` is declared in `packages/contracts` as of Task 2; nothing constructs one |
 | CSRF | Guard, cookie-authenticated unsafe methods only | Not Implemented (Phase 2) |
 | Validate | Zod pipe against `packages/contracts` schemas | Implemented; no consumer until Phase 2 |
 | Authorize | Guard reading `@RequirePermission` | Decorator implemented and asserted at boot; guard Not Implemented (Phase 2) |

@@ -1,6 +1,11 @@
 # Pagination
 
-> **Status: Designed. Not Implemented.** Phase 1.
+> **Status: Partially Implemented.** §1's response envelope and §4's default of 50, maximum of
+> 100 and clamp-rather-than-reject rule exist as Zod schemas in `@sentinel/contracts`
+> (`paginationSchema`, `listQuerySchema`, `collectionEnvelopeSchema`) as of Phase 2 Task 2.
+> **No endpoint consumes them yet** — there is no list endpoint in the API. Everything else here
+> — the keyset SQL, offset pagination, the cursor encoding, sorting, estimates — is Designed,
+> Not Implemented.
 
 **Every list endpoint paginates. There are no unbounded list endpoints.** A tenant with
 400,000 findings must not be able to ask for all of them, and an endpoint that works fine in

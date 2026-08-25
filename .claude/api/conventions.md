@@ -71,8 +71,15 @@ Single resource returns the object at the top level. Collections use a consisten
 ([`pagination.md`](pagination.md)):
 
 ```jsonc
-{ "data": [ ... ], "pagination": { "nextCursor": "...", "hasMore": true }, "meta": { "total": 1284 } }
+{ "data": [ ... ], "pagination": { "nextCursor": "...", "hasMore": true, "limit": 50 },
+  "meta": { "total": 1284 } }
 ```
+
+`limit` is the limit the server **applied**, not the one the client asked for. A request over the
+maximum is clamped rather than rejected ([`pagination.md`](pagination.md) §4), and without the echo
+a client that asked for 500 and received 100 has no way to tell a clamp from a short page. This
+example omitted `limit` until Phase 2 Task 2, when `paginationSchema` in `@sentinel/contracts`
+gained it — the two documents disagreed and this one was the stale half.
 
 Responses come from explicit DTOs, never raw Prisma models — a relation accidentally included
 cannot leak. Nulls are explicit; a field that exists is always present, even when null. Absent
