@@ -54,9 +54,16 @@ describe('redact', () => {
   });
 
   it('applies it to the fragment form and to a later parameter in the string', () => {
+    // `b` used `&code=` for the invitation link until Task 4's review showed
+    // `code` had to leave the pattern — it blanks whole URLs on this
+    // repository's own SCREAMING_SNAKE error codes. The parameter is `token`
+    // here instead, and that is a CONSTRAINT ON THE LINK FORMAT, not a cosmetic
+    // edit to a fixture: Tasks 5 and 15 build the verification, reset and
+    // invitation URLs, and a link that carries its secret under a parameter
+    // name outside this pattern is a link that reaches the logs intact.
     const out = redact({
       a: 'https://app.sentinel.test/cb#access_token=JFqAQ3-_L-BSZrsbVpMUdX2rKzyH',
-      b: 'https://app.sentinel.test/accept?org=org_01J&code=JFqAQ3-_L-BSZrsbVpMUdX2rKzyH',
+      b: 'https://app.sentinel.test/accept?org=org_01J&token=JFqAQ3-_L-BSZrsbVpMUdX2rKzyH',
     }) as Record<string, unknown>;
     expect(out.a).toBe(REDACTED);
     expect(out.b).toBe(REDACTED);
@@ -71,6 +78,25 @@ describe('redact', () => {
       url: 'https://app.sentinel.test/scans?status=RUNNING&limit=50',
       country: 'https://app.sentinel.test/x?code=US',
       similar: 'https://app.sentinel.test/x?tokenize=please-do-not-redact-me',
+    };
+    expect(redact(input)).toEqual(input);
+  });
+
+  it('leaves the three parameter names that look like credentials and are not', () => {
+    // Task 4 review, M2. The first round's pattern listed `key`, `code` and
+    // `signature`, and the false-positive control above tested none of them
+    // with a realistic value — it proved the 8-character floor and the
+    // `tokenize` prefix boundary, which is a weaker property than it looked.
+    //
+    // These three matter because `redact()` replaces the WHOLE field on a
+    // match, so a hit here does not blank a parameter, it blanks the URL. An
+    // object-storage key is the shape of this product's entire evidence
+    // subsystem, and every error code it defines is SCREAMING_SNAKE over eight
+    // characters.
+    const input = {
+      objectUrl: 'https://minio.test/evidence?key=org/org_01J/report.pdf',
+      callback: 'https://app.sentinel.test/callback?code=VALIDATION_ERROR',
+      presigned: 'https://s3.test/b/o?X-Amz-Signature=deadbeefdeadbeef&X-Amz-Expires=900',
     };
     expect(redact(input)).toEqual(input);
   });
