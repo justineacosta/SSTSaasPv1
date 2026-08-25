@@ -6,14 +6,30 @@ import { type Argon2Parameters, PasswordService } from './password.service.js';
  * account exists." This file is the proof, and it is the reason
  * `PasswordService.verify` takes a nullable stored hash at all.
  *
- * **Reduced parameters, deliberately.** At the configured production starting
- * point (m=64MiB, t=3, p=4, ~250ms per verification) the sample count below
- * would cost minutes. The property under test — that both branches perform one
- * full Argon2id verification — is parameter-independent: it is a statement
- * about which code path runs, not about how expensive the path is. Reducing the
- * cost is therefore a reduction in runtime, not in coverage. Being able to do
- * this at all is the first real payoff of ADR-0014's decision to hold the
- * parameters in configuration rather than in a constant.
+ * **Reduced parameters, because Ruling 5 requires them and CI is not this
+ * machine.** `security/authentication.md` §2 documents a tuning *target* of
+ * ~250ms per verification at m=64MiB / t=3 / p=4; ADR-0014 says in as many
+ * words that the target is untuned, and nothing here has been tuned to it.
+ * What the configured defaults actually cost, measured 2026-08-25 on the
+ * development machine (Windows 11 x64, Node v26.7.0, 12 logical CPUs, via
+ * `node -e` against `@node-rs/argon2` directly): **36.0 ms per verification**
+ * (mean of 10) and 37.4 ms for one `hashSync`. The reduced parameters below
+ * cost **9.2 ms** on the same run.
+ *
+ * So the sample count below would cost roughly 1.9 s at the real defaults on
+ * *this* hardware — inside Ruling 5's 5-second budget, not "minutes". An
+ * earlier version of this comment said minutes, which was wrong by about two
+ * orders of magnitude (review 3c5d694, finding F3).
+ *
+ * The reduction stays anyway, and the orchestrator ruled on it: `ubuntu-latest`
+ * is slower and shared, so a 1.9 s local figure is not a CI budget, and the
+ * property under test — that both branches perform one full Argon2id
+ * verification — is parameter-independent. It is a statement about which code
+ * path runs, not about how expensive the path is, so the reduction buys CI
+ * headroom rather than costing coverage. **Recorded with its cost: if the
+ * reduction ever turns out to hide a parameter-dependent effect, this proof is
+ * weaker than it reads.** Being able to reduce at all is the first real payoff
+ * of ADR-0014's decision to hold the parameters in configuration.
  */
 const REDUCED: Argon2Parameters = { memoryCostKib: 16_384, timeCost: 2, parallelism: 1 };
 
@@ -23,21 +39,24 @@ const SAMPLES = 21;
 /**
  * Maximum permitted relative difference between the two medians.
  *
- * SET FROM MEASUREMENT, not from taste. Five consecutive runs on the
- * development machine (Windows x64, Node v26.7.0) at the parameters above,
- * with the tolerance forced to 0.00001 so every run reported its numbers:
- * relative differences of 0.0122, 0.0263, 0.0252, 0.0486 and 0.0308, on
- * medians between 7.4ms and 10.1ms. Worst observed spread: 4.9%.
+ * SET FROM MEASUREMENT, not from taste. **Eleven runs**, all on the development
+ * machine (Windows 11 x64, Node v26.7.0, 12 logical CPUs) at the parameters
+ * above, with the tolerance forced to 0.00001 so every run reported its
+ * numbers. Five by the implementer: 0.0122, 0.0263, 0.0252, 0.0486, 0.0308.
+ * Six more by the reviewer (3c5d694, finding F6): 0.0269, 0.0269, **0.0737**,
+ * 0.0106, 0.0536, 0.0081. Medians ranged 7.4–10.1 ms.
  *
- * 0.25 is roughly five times that, and the headroom is deliberate. This
- * assertion is not trying to resolve a few percent of scheduler jitter on a
- * shared CI runner; it is trying to catch the one regression that matters,
- * which is someone short-circuiting the absent-account branch into an early
- * return. In the same five runs that branch, when actually short-circuited,
- * measured 0.003–0.006ms against ~7.8ms — a relative difference near 2000,
- * four orders of magnitude outside this tolerance. The negative control at the
- * end of the test measures exactly that and asserts it lands *outside* 0.25,
- * so the number below cannot quietly become one that discriminates nothing.
+ * **Worst observed spread over all eleven: 7.37%**, so the headroom at 0.25 is
+ * about **3.4×**, not the 5× an earlier version of this comment claimed off the
+ * first five runs alone. Still ample, and recorded at the true figure so nobody
+ * later tightens the tolerance on the strength of a number that was never the
+ * worst.
+ *
+ * The headroom is deliberate. This assertion is not trying to resolve a few
+ * percent of scheduler jitter on a shared CI runner; it is trying to catch a
+ * short-circuit of the absent-account branch, which measures 0.003–0.007 ms
+ * against ~7.8 ms — a relative difference in the thousands, three orders of
+ * magnitude outside this tolerance.
  *
  * A tighter tolerance would buy no additional detection and would buy a flaky
  * security test, and a flaky security test gets deleted.
@@ -102,10 +121,24 @@ describe('PasswordService.verify timing equality', () => {
         `shortCircuit=${shortCircuitMedian.toFixed(3)}ms relative=${observed.toFixed(4)}`,
     ).toBeLessThan(TOLERANCE);
 
-    // Without this, the assertion above would still pass if BOTH paths became
-    // free — a tolerance on a ratio says nothing about the magnitude. This is
-    // what gives the test teeth: an early return is at least an order of
-    // magnitude outside the tolerance the real path sits inside.
+    // What this control actually does, stated precisely, because an earlier
+    // version of the comment on TOLERANCE overstated it (review 3c5d694,
+    // finding F7). It asserts that an early return is measurably distinguishable
+    // from a real verification AND that TOLERANCE sits below that gap. The gap
+    // is ~1500-4000×, so as a bound on TOLERANCE it is very loose: the reviewer
+    // set TOLERANCE = 200 with the implementation intact and this file stayed
+    // green.
+    //
+    // It is not useless. It fails if both paths become free (a ratio alone says
+    // nothing about magnitude), and it means a full short-circuit cannot be
+    // hidden by widening TOLERANCE — the regression's own signal and this
+    // bound are the same quantity, which the reviewer confirmed: TOLERANCE=200
+    // plus a short-circuited null branch still fails, at relative=3958.5.
+    //
+    // What it does NOT catch is a widened tolerance hiding a *partial*
+    // degradation. A dummy hash baked at drifted parameters measures
+    // relative=23.7 (reviewer's mutation H) and would sail through at 200.
+    // Only the value of TOLERANCE itself stands against that.
     const controlDifference = relativeDifference(existingMedian, shortCircuitMedian);
     expect(
       controlDifference,
