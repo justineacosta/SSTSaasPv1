@@ -25,3 +25,10 @@ export {
   SYSTEM_ROLES,
 } from './permissions.js';
 export type { Permission, SystemRole } from './permissions.js';
+export {
+  API_KEY_PRINCIPAL_NOT_IMPLEMENTED,
+  assertUserPrincipal,
+  isUserPrincipal,
+} from './principal.js';
+export type { ApiKeyPrincipal, Principal, UserPrincipal } from './principal.js';
+export type { TenantContext } from './tenant-context.js';
