@@ -14,7 +14,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Not Implemented** — Tasks 1–2 of 18 done 2026-08-25 (schema, migrations, registry, wire contracts); no identity behaviour yet |
+| 2 | Identity | **Not Implemented** — Tasks 1–3 of 18 done 2026-08-25 (schema, migrations, registry, wire contracts, password hashing and the breach check); nothing authenticates anybody yet |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -592,14 +592,19 @@ else is needed, and re-verifying Phase 1 is not part of it:
 4. The plan's section for **your task only**, plus the previous task's ledger entry at
    `docs/superpowers/ledger/phase-2/task-NN/`.
 
-**Status is Not Implemented and Tasks 1–2 do not change that.** The tables identity will need now
-exist and are proven to migrate, and the wire contracts those endpoints will validate against now
-exist too — but nothing authenticates anybody: `apps/api/src/modules/` still contains only
-`health`, the committed `openapi.json` still publishes **4 routes** (three health probes and the
-document itself), and `apps/web`'s `(auth)` route group still holds a layout with no routes under
-it. Not one of the three exit criteria above is met. Per the plan, the status moves to
-**Partially Implemented** at Checkpoint A, after Task 12 — a schema is not a feature, and neither
-is a contract.
+**Status is Not Implemented and Tasks 1–3 do not change that.** The tables identity will need now
+exist and are proven to migrate, the wire contracts those endpoints will validate against exist
+too, and as of Task 3 a password can be hashed and a breached one detected — but **nothing
+authenticates anybody**: the committed `openapi.json` still publishes **4 routes** (three health
+probes and the document itself), and `apps/web`'s `(auth)` route group still holds a layout with no
+routes under it. Not one of the three exit criteria above is met. Per the plan, the status moves to
+**Partially Implemented** at Checkpoint A, after Task 12 — a schema is not a feature, a contract is
+not a feature, and a service no endpoint calls is not one either.
+
+`apps/api/src/modules/` now contains `auth` alongside `health`, and the sentence that used to read
+"only `health`" is corrected wherever it appeared. `AuthModule` registers two providers and **no
+controller**: `PasswordService` and `BreachCheckService` are callable from Tasks 8–10 and are called
+by nothing today.
 
 **Task 2 evidence, 2026-08-25 at commit `4788826`.** Every command re-run by the orchestrator on
 the finished tree rather than taken from the implementer's report, with exit codes captured
@@ -653,6 +658,80 @@ from a short page; and `tenant-context.spec.ts` passed with its own module delet
 dispositioned in
 [`docs/superpowers/ledger/phase-2/task-02/review.md`](../../docs/superpowers/ledger/phase-2/task-02/review.md).
 
+**Task 3 evidence, 2026-08-25 at commit `7a7259e`.** Every command re-run by the
+orchestrator on the finished tree, exit codes captured outside a pipe. Task 2 was re-verified the
+same way before Task 3 began — all eleven commands exit 0 at the numbers its own table records.
+
+| Command | Exit | What it proves |
+|---|---|---|
+| `pnpm format:check` | 0 | Prettier style across the workspace. |
+| `pnpm lint` | 0 | 14 tasks. ESLint clean, including the no-`console` and no-`any` rules that bite in these two files. |
+| `pnpm typecheck` | 0 | 14 tasks. The types compile — and nothing about behaviour. |
+| `pnpm test` | 0 | **48 files / 596 tests**, up from 43 / 536 at Task 2. |
+| `pnpm check:specs` | 0 | 59 spec files, each claimed by exactly one Vitest project. |
+| `pnpm test:integration` | 0 | 11 files / 148 tests against real Postgres 16. **Unchanged from Task 2**, correctly: this task added no integration spec. |
+| `pnpm build` | 0 | 8 tasks. |
+| `pnpm check:openapi` | 0 | Byte-identical, still **4 routes**. **This is the proof that no endpoint shipped.** |
+| `pnpm check:registry` | 0 | 14 models, unchanged — Task 3 added no table. |
+| `docker compose ps` | 0 | postgres, redis, minio, mailpit all `Up (healthy)`. |
+
+`pnpm test:e2e` was **not run** and has no row. Task 3 touches no `apps/web` path
+(`git diff --stat main..HEAD -- apps/web` is empty) and ships no route, so it cannot reach a
+rendered page.
+
+What that table licenses and nothing more: two services exist, behave as their specs pin them, and
+are wired into the Nest DI graph. **It says nothing about any user being able to register or log
+in**, because they cannot.
+
+**What Task 3 delivered.** `PasswordService` — Argon2id via `@node-rs/argon2`, parameters held in
+`apiEnvSchema` rather than constants, PHC strings, and `verify()` returning
+`{ valid, needsRehash }` so raising the parameters actually reaches existing accounts at their next
+login. `BreachCheckService` — an HIBP k-anonymity client sending **only the first five hex
+characters** of the password's SHA-1, off by default, 2-second timeout, failing open. A
+`PASSWORD_BREACHED` error code in both `packages/contracts` and `api/errors.md` §3, and a 422
+`PasswordBreachedError` with no producer until Task 8. Six new environment variables, `.env.example`
+updated, and a `.superRefine` enforcing Argon2's `m >= 8p` so a bad pair is a config error naming
+both variables rather than a native-module throw at boot.
+
+**`AuthModule` registers no controller, and two independent checks prove it.** `check:openapi`
+still reports 4 routes, and adding a controller was measured to turn both that check and the module
+spec red.
+
+**The two security claims are specs that were proven to fail.** The reviewer applied eleven
+mutations to the implementation rather than reading the tests and agreeing with them. A
+short-circuited absent-account branch reads a relative timing difference of **4874×** against a
+tolerance of 0.25; a dummy hash baked at drifted parameters reads **23.7×**; a sixth hex character
+and the full digest smuggled as a query parameter both fail the exact-URL assertion. Two places
+were found where a test stayed green under a real violation — `needsRehash`'s memory-cost and
+time-cost axes, and three of the four fail-open log-safety paths — and both were fixed and the
+fixes proven by re-running the mutations that exposed them. A third round then pinned
+`redirect: 'error'`, which a scoped re-review measured as deletable with every spec still green.
+
+**Three Medium findings, eight Low, and — for the first time on this branch — no false sentence
+about a document.** The citation pass checked roughly forty claims and found no invented quotation
+and no misattribution. Phase 1 produced twelve such instances and both of Task 2's High findings
+were prose, so this is a change worth naming rather than assuming.
+
+**The worst finding was the orchestrator's, not the implementer's.** The Task 3 brief justified
+running the timing spec at reduced Argon2 parameters on the grounds that production parameters
+"would cost minutes". Measured on the development machine: **~36 ms per verification**, so the spec
+would cost about 1.9 s — wrong by roughly 100×. The reduction stands on a different and now-written
+argument (the property under test is parameter-independent, so real parameters buy CI flake risk
+rather than proof), and the episode is recorded as carry-forward ruling 22: **a decision can be
+right while the reason written beside it is false, and the false reason is still a defect.**
+
+**Two known gaps were deliberately not closed here, and both are recorded rather than omitted.**
+Timing equality holds against the dummy at *current* parameters but **not** against stored hashes
+written before a parameter raise — a measured 4.6× difference, an enumeration oracle that opens on
+the day an operator does the responsible thing and raises the cost. And a corrupted stored
+credential is silently indistinguishable from a wrong password, with no log line at all. Both bind
+**Task 9** as carry-forward rulings 24 and 25. A third, from ADR-0015: nothing yet meters the rate
+of fail-open breach checks, and a check that has been failing open for a month is functionally a
+check that was removed.
+
+All findings and dispositions:
+[`docs/superpowers/ledger/phase-2/task-03/`](../../docs/superpowers/ledger/phase-2/task-03/).
+
 **Phase 1 was re-verified on 2026-08-24 at commit `40852c1` before this plan was written**, per
 `sentinel-phase` step 2 — a status is a claim until a command proves it. All four exit criteria
 were re-run and passed: `pnpm install --frozen-lockfile`, `pnpm build` and `pnpm test` from a
@@ -680,16 +759,40 @@ and `/settings/security` · 18 E2E journey, doc audit and this file.
 
 **The branch reached CI early, on the operator's instruction, and it is green.** The plan put the
 first CI run at Checkpoint A after Task 12; the operator moved it forward to after Task 2, and the
-reason applies again at Task 3: **Task 3 adds `@node-rs/argon2`, the first native binary dependency
+reason applied again at Task 3: **Task 3 added `@node-rs/argon2`, the first native binary dependency
 in the repository**, and a prebuilt-binary resolution that works on Windows and fails on a Linux
-runner is exactly the class of defect no local run can see.
+runner is exactly the class of defect no local run can see. **The judgement was right and the run
+below proves it was worth making** — though it proved the dependency resolves, not that it was ever
+going to fail.
 
 `feat/phase-2-identity` is pushed to `origin` at `6d6b582` and PR **#5** is open against `main`.
 CI run **`32804873458`** on `6d6b582` concluded **`success`** on `ubuntu-latest` in 3m09s, with
 every stage executed: format, lint, typecheck, unit tests, spec-project coverage, the compose
 stack, integration tests against real Postgres, build, the OpenAPI contract diff, the tenant
-registry check, and the Playwright E2E suite. **This is the first time any Phase 2 commit has been
-built on Linux.** The merge into `main` had not happened when this paragraph was written.
+registry check, and the Playwright E2E suite. **That was the first time any Phase 2 commit had been
+built on Linux.**
+
+**PR #5 was rebase-merged into `main` on 2026-08-25 at 04:37Z**, which supersedes this paragraph's
+original closing sentence that the merge had not happened. `feat/phase-2-identity` is therefore
+spent history: its tree is identical to `main`'s but its twenty commits are duplicates by content.
+**Task 3 was built on a fresh branch, `feat/phase-2-task-03`, cut from `main`** — the phase-branch
+model in the plan does not survive a rebase merge, and later tasks should cut per-task branches from
+`main` the same way.
+
+CI run **`32862806564`** on `7a7259e` concluded **`success`** on `ubuntu-latest` in **4m08s**
+(14:57:54Z → 15:02:02Z), with every stage executed: format, lint, typecheck, unit tests,
+spec-project coverage, the compose stack, integration tests against real Postgres, build, the
+OpenAPI contract diff, the tenant registry check, and the Playwright E2E suite.
+
+**This is the run that matters most in Phase 2 so far**, and it is the reason the operator moved CI
+forward. It is the first time `pnpm install --frozen-lockfile` resolved `@node-rs/argon2`'s prebuilt
+binary on Linux rather than on the Windows development machine — ADR-0014's central risk, and the
+one class of defect no local run can observe. It is also the first time the statistical timing spec
+ran on a shared runner, which is the environment its tolerance was chosen for and the reason the
+spec runs at reduced Argon2 parameters (ruling 22). Both held.
+
+No pull request has been opened for `feat/phase-2-task-03`; the branch is on `origin` with a green
+run, and whether to open and merge one is the operator's call.
 
 `main` is protected with `verify` as a required status check, `enforce_admins` enabled, linear
 history required, and force pushes and deletions blocked, so no commit reaches `main` without that

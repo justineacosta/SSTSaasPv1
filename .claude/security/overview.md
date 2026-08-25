@@ -69,7 +69,8 @@ Updated as each control ships. **This table is the honest answer to "is it secur
 
 | Control | Status | Phase |
 |---|---|---|
-| Password hashing (Argon2id) | Not Implemented | 2 |
+| Password hashing (Argon2id) | Partially Implemented — the service hashes, verifies and reports `needsRehash`, proven by tests; **no caller exists**, so no password is hashed by the running system | 2 |
+| Password breach check (HIBP k-anonymity) | Partially Implemented — the client works and fails open per [ADR-0015](../decisions/ADR-0015-password-breach-check-fails-open.md); **off by default and called by nothing** | 2 |
 | Session management | Not Implemented | 2 |
 | MFA (TOTP + recovery) | Not Implemented | 2 |
 | RBAC + permission guards | Not Implemented | 2 |

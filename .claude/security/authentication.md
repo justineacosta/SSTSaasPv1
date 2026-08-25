@@ -1,7 +1,23 @@
 # Authentication architecture
 
-> **Status: Designed. Not Implemented.** Built in Phase 2. SSO/SCIM in Phase 11.
-> Decision record: [ADR-0005](../decisions/ADR-0005-authentication-model.md).
+> **Status: Designed. Not Implemented, except part of §2.** Built in Phase 2. SSO/SCIM in Phase 11.
+> Decision records: [ADR-0005](../decisions/ADR-0005-authentication-model.md),
+> [ADR-0014](../decisions/ADR-0014-argon2-implementation.md) (Argon2 implementation and where its
+> parameters live), [ADR-0015](../decisions/ADR-0015-password-breach-check-fails-open.md) (the
+> breach check fails open).
+>
+> **What of §2 exists, as of Phase 2 Task 3.** Argon2id hashing and verification with transparent
+> rehash-on-raise, the fixed-dummy verification that equalises login timing for an absent account,
+> and the HIBP k-anonymity breach check. All three are services in `apps/api/src/modules/auth/`
+> with **no caller**: no endpoint, no login path, no registration. The rest of §2 — password change
+> and reset revoking other sessions and emailing the user — is Task 10's.
+>
+> Two limits of what shipped, stated because §2 reads as though they are settled. The ~250 ms
+> figure below is a **tuning target, not a measured cost**; nothing has been tuned, and there is no
+> production hardware to tune against. And "login timing equalised whether or not the account
+> exists" holds against the dummy at *current* parameters — **not** against stored hashes written
+> before a parameter raise, which verify more cheaply until their owners next log in. Task 9 owns
+> closing that.
 
 ## 1. Model
 

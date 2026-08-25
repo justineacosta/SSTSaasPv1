@@ -6,8 +6,9 @@
 >
 > As of Phase 2 Task 2 the §2 request and response shapes exist as Zod schemas in
 > `@sentinel/contracts` (`auth.ts`), together with the `Principal` union of §1. **No endpoint
-> implements any of them** — `apps/api/src/modules/` still contains only `health`, and the
-> committed `openapi.json` still publishes four routes. A schema is not an endpoint. §4 and §5
+> implements any of them** — `apps/api/src/modules/` gained `auth` in Task 3, but it registers two
+> providers and **no controller**, and the committed `openapi.json` still publishes four routes. A
+> schema is not an endpoint, and neither is a service that nothing calls. §4 and §5
 > (API keys) have no contracts at all: API keys are deliberately out of Phase 2's scope, and only
 > the `apiKey` arm of `Principal` exists, defined so downstream guards are written once and
 > throwing where it is reached.
