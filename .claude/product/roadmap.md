@@ -664,6 +664,34 @@ recovery codes · 12 tenant resolution and the authorization guard · 13 organis
 switching · 14 memberships and roles · 15 invitations · 16 web auth screens · 17 web app shell
 and `/settings/security` · 18 E2E journey, doc audit and this file.
 
+**The branch reached CI early, on the operator's instruction, and it is green.** The plan put the
+first CI run at Checkpoint A after Task 12; the operator moved it forward to after Task 2, and the
+reason applies again at Task 3: **Task 3 adds `@node-rs/argon2`, the first native binary dependency
+in the repository**, and a prebuilt-binary resolution that works on Windows and fails on a Linux
+runner is exactly the class of defect no local run can see.
+
+`feat/phase-2-identity` is pushed to `origin` at `6d6b582` and PR **#5** is open against `main`.
+CI run **`32804873458`** on `6d6b582` concluded **`success`** on `ubuntu-latest` in 3m09s, with
+every stage executed: format, lint, typecheck, unit tests, spec-project coverage, the compose
+stack, integration tests against real Postgres, build, the OpenAPI contract diff, the tenant
+registry check, and the Playwright E2E suite. **This is the first time any Phase 2 commit has been
+built on Linux.** The merge into `main` had not happened when this paragraph was written.
+
+`main` is protected with `verify` as a required status check, `enforce_admins` enabled, linear
+history required, and force pushes and deletions blocked, so no commit reaches `main` without that
+run passing.
+
+**GitGuardian reports three secrets on the pull request, and all three are false positives.** It is
+not a required check and does not gate the merge. All three sit in commit `ed7eb03` — the
+2026-08-24 Phase 1 ledger recovery — inside `docs/superpowers/ledger/phase-1/review-diffs/`, and
+none is a live credential: a string in an `it.each` table labelled *"a base64url-ish token"*; the
+`sentinel_local` password of an ephemeral Testcontainers Postgres, which is also in the committed
+compose configuration; and a JWT header with the literal signature `.abc.def`, inside the test that
+asserts the redacting logger removes it. **Nothing to revoke or rotate.** The standing cost is that
+a security product's repository now carries a permanently red security check, which trains people
+to ignore it — worth closing with a `.gitguardian.yaml` ignore list naming each match and why.
+**That is not done.**
+
 **Checkpoint A falls after Task 12** — the identity API enforced end to end with no UI. At that
 point the branch is pushed, CI must be green on a Linux runner, and this file gets an evidence
 table moving Phase 2 to **Partially Implemented** with the gap named: no authentication UI, so the
