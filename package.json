@@ -17,7 +17,7 @@
     "lint": "turbo run lint && eslint scripts",
     "typecheck": "turbo run typecheck && tsc -p tsconfig.json --noEmit",
     "test": "pnpm build:packages && vitest run --project unit --project ui --passWithNoTests",
-    "test:integration": "pnpm build:packages && vitest run --project integration --passWithNoTests",
+    "test:integration": "pnpm build:packages && vitest run --project integration --no-file-parallelism --passWithNoTests",
     "test:e2e": "pnpm --filter @sentinel/web test:e2e",
     "check:openapi": "pnpm build:packages && node scripts/check-openapi-diff.ts",
     "check:registry": "pnpm build:packages && node scripts/check-tenant-registry.ts",

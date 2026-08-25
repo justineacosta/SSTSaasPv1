@@ -171,10 +171,24 @@ const FIXTURE_CLASSES = [
 beforeEach(async () => {
   // Every request in this suite arrives from the same loopback address, so the
   // per-IP buckets would otherwise carry over between tests. Scanned rather
-  // than KEYS, and narrowed to this suite's own classes: the compose Redis is
-  // shared with every other integration suite. Note this does NOT protect a
-  // developer's running app — these are exactly the classes it would populate —
-  // it protects other suites, and keeps the scan bounded.
+  // than KEYS, which keeps the scan bounded.
+  //
+  // **This does NOT protect other suites, and an earlier version of this
+  // comment claimed it did.** `FIXTURE_CLASSES` includes `login`, and
+  // `sliding-window.integration.spec.ts:13` builds its keys as
+  // `slidingWindowKey('login', 'perIp', randomUUID())` — `ratelimit:login:perIp:*`,
+  // squarely inside the pattern this loop deletes. Both suites share the one
+  // compose Redis. While integration files ran in parallel that made
+  // `sliding-window` fail intermittently on counts lower than it had just
+  // written (`expected 1 to be 2`, `expected +0 to be 5`), which cost most of a
+  // session to diagnose because the deletion happens in a different file.
+  //
+  // What protects it now is sequential execution — root `test:integration`
+  // passes `--no-file-parallelism`, see the comment on the integration project
+  // in `vitest.workspace.ts`. That is a real guard, not a coincidence, but it
+  // is the ONLY one: restore parallelism and this loop reaches into that suite
+  // again. Nor does it protect a developer's running app, whose own buckets are
+  // exactly these classes.
   for (const className of FIXTURE_CLASSES) {
     let cursor = '0';
     do {
