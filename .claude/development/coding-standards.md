@@ -75,6 +75,11 @@ These have ESLint rules, not just good intentions:
   covers both the `unscoped` module and the generated client path it wraps
   (`packages/db/generated/client`) — fencing only the former left the direct import clean, which
   a Task 14 review demonstrated with a probe file.
+- No import of `@sentinel/db/testing` outside spec files. The Testcontainers harness returns the
+  **schema-owner** connection string, which no RLS policy applies to, so an unfenced import is a
+  second route to the capability the rule above exists to deny — plus a devDependency and a Docker
+  container on a request path. Added in Phase 2 Task 4, whose review found the export arriving
+  unfenced and proved it with a non-spec probe that passed both `eslint` and `tsc`.
 - No `dangerouslySetInnerHTML` outside the reviewed markdown renderer.
 - No raw hex colours in `packages/ui` or `apps/web` components — reference a design token
   custom property instead (Task 12). Arbitrary spacing values are not yet lint-enforced.

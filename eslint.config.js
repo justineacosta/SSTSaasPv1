@@ -81,6 +81,29 @@ export default tseslint.config(
             // that claim was false for the direct path. A security document
             // describing a control that does not exist is the defect class this
             // branch keeps re-introducing.
+            // The Testcontainers harness, fenced for the same reason as the two
+            // entries around it (Task 4 review, M3). `@sentinel/db/testing` was
+            // added as a package export so an `apps/api` integration spec could
+            // reach a migrated Postgres, and it arrived unfenced: a probe file
+            // that was not a spec imported `startPostgresHarness` with eslint
+            // and tsc both exiting 0.
+            //
+            // Three reasons it does not belong in application code, worst
+            // first. `startPostgresHarness()` hands back `ownerUrl` — the
+            // schema-owner connection string, which is not subject to RLS, and
+            // is exactly the capability `@sentinel/db/unscoped` is fenced to
+            // prevent. `@testcontainers/postgresql` is a devDependency, so an
+            // application import resolves in CI and fails on a --prod install.
+            // And the harness shells out to `prisma migrate deploy` and starts
+            // a Docker container, neither of which belongs on a request path.
+            //
+            // Spec files are exempt further down, which is the only place this
+            // import is legitimate.
+            {
+              group: ['@sentinel/db/testing', '**/testing/postgres-harness.js'],
+              message:
+                'The Testcontainers harness is for spec files only — it exposes the schema-owner DSN and needs Docker. See security/tenant-isolation.md §2.',
+            },
             {
               group: ['**/generated/client', '**/generated/client/*'],
               message:

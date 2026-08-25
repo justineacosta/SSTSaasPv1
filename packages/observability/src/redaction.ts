@@ -56,10 +56,23 @@ const SECRET_VALUE_PATTERNS: RegExp[] = [
   //
   // `{8,}` is the false-positive guard: a two-letter `?code=US` is not a
   // credential. The parameter names are the ones this product's credentials
-  // actually travel under (§6 tokens, OAuth, API keys); a name not on this
-  // list is not covered, and a bare `token=` outside a URL is not covered
-  // either — both are residual, and neither is the shape Task 5 builds.
-  /(?<=[?&#](?:access_token|refresh_token|id_token|token|api_key|apikey|password|passwd|secret|signature|code|key)=)[^&\s"'#]{8,}/i,
+  // actually travel under (§6 tokens, API keys); a name not on this list is not
+  // covered, and a bare `token=` outside a URL is not covered either — both are
+  // residual, and neither is the shape Task 5 builds.
+  //
+  // **`key` and `code` were on this list for one round and were removed**
+  // (Task 4 review, M2). In `redact()` a match replaces the ENTIRE structured
+  // field, not the matched span, so `?key=` would have blanked whole URLs — and
+  // `?key=` is the shape an object-storage URL takes, in a product whose entire
+  // evidence subsystem is built on object keys prefixed `org/{organizationId}/`.
+  // `?code=` collides with this repository's own SCREAMING_SNAKE error codes,
+  // every one of which clears the eight-character floor. Both were measured
+  // blanking realistic non-credentials. The cost of removing them is an OAuth
+  // authorization code in a query string, which nothing issues today; Phase 11
+  // owns re-adding `code` with a shape that excludes an all-caps error name.
+  // Over-redaction is not the safe direction here — a log the operator cannot
+  // read is the failure `redactSecretsInText`'s docblock argues against.
+  /(?<=[?&#](?:access_token|refresh_token|id_token|token|api_key|apikey|password|passwd|secret|signature)=)[^&\s"'#]{8,}/i,
 ];
 
 function keyIsSecret(key: string): boolean {
