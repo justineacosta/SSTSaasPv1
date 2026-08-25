@@ -15,7 +15,7 @@ export const sharedEnvSchema = z.object({
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error', 'fatal']).default('info'),
 });
 
-export const apiEnvSchema = sharedEnvSchema.extend({
+const apiEnvObject = sharedEnvSchema.extend({
   API_PORT: port,
   API_BASE_URL: z.string().url(),
   WEB_BASE_URL: z.string().url(),
@@ -68,6 +68,47 @@ export const apiEnvSchema = sharedEnvSchema.extend({
   PASSWORD_BREACH_CHECK_ENABLED: booleanFromString.default('false'),
   PASSWORD_BREACH_CHECK_TIMEOUT_MS: z.coerce.number().int().min(1).default(2_000),
   PASSWORD_BREACH_CHECK_RANGE_URL: z.string().url().default('https://api.pwnedpasswords.com/range'),
+});
+
+/**
+ * Argon2 additionally requires **memory >= 8 x parallelism**, a relationship no
+ * per-field rule can express.
+ *
+ * Without this, `PASSWORD_ARGON2_MEMORY_KIB=8 PASSWORD_ARGON2_PARALLELISM=4`
+ * passes every rule above and then throws `Memory cost is too small` from a
+ * native module inside `PasswordService`'s constructor at Nest boot — a message
+ * that names neither variable. `development/setup.md` promises that a malformed
+ * variable crashes at boot naming the variable; that promise is this layer's to
+ * keep, not napi's. Measured 2026-08-25 against `@node-rs/argon2@2.1.0`:
+ * m=8/p=4 throws, m=8/p=1 is fine, m=31/p=4 throws, m=32/p=4 is fine, and
+ * m=24/p=3 is fine — the boundary is exactly 8p.
+ *
+ * Two issues, one per variable, so `EnvValidationError.variables` names both
+ * and an operator can see which pair is in conflict. `too_small`/`too_big`
+ * rather than `custom` because `describeIssue` in `load-env.ts` deliberately
+ * never reads `issue.message` — it renders only authored rule parameters — so a
+ * `custom` issue would print "failed validation (custom)" and say nothing. The
+ * bounds below are the rule's own parameters; the rule is genuinely dynamic,
+ * and a cost parameter bounded to 1..255 is not a credential.
+ */
+export const apiEnvSchema = apiEnvObject.superRefine((env, ctx) => {
+  const minimumMemory = env.PASSWORD_ARGON2_PARALLELISM * 8;
+  if (env.PASSWORD_ARGON2_MEMORY_KIB >= minimumMemory) return;
+
+  ctx.addIssue({
+    code: z.ZodIssueCode.too_small,
+    minimum: minimumMemory,
+    type: 'number',
+    inclusive: true,
+    path: ['PASSWORD_ARGON2_MEMORY_KIB'],
+  });
+  ctx.addIssue({
+    code: z.ZodIssueCode.too_big,
+    maximum: Math.floor(env.PASSWORD_ARGON2_MEMORY_KIB / 8),
+    type: 'number',
+    inclusive: true,
+    path: ['PASSWORD_ARGON2_PARALLELISM'],
+  });
 });
 
 export const webEnvSchema = sharedEnvSchema.extend({
