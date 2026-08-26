@@ -14,7 +14,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Not Implemented** — Tasks 1–4 of 18 done 2026-08-26 (schema, migrations, registry, wire contracts, password hashing, the breach check, and single-use secret tokens); nothing authenticates anybody yet |
+| 2 | Identity | **Not Implemented** — Tasks 1–5 of 18 done 2026-08-26 (schema, migrations, registry, wire contracts, password hashing, the breach check, single-use secret tokens, and the mailer with seven templates); nothing authenticates anybody yet, and no email has a caller |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -911,6 +911,100 @@ match and why remains **unwritten**, and the standing cost recorded under PRs #5
 larger again: a security product's repository has now carried a red security check on every pull
 request it has ever had.
 
+**Task 5 evidence, 2026-08-26 at commit `0088852`.** Every command re-run by the orchestrator on
+the finished tree after the fix round, not taken from the implementer's report, with exit codes
+captured outside a pipe.
+
+| Command | Exit | What it proves |
+|---|---|---|
+| `pnpm format:check` | 0 | Prettier style across the workspace. |
+| `pnpm lint` | 0 | 14 tasks, uncached. |
+| `pnpm typecheck` | 0 | 14 tasks. |
+| `pnpm test` | 0 | **60 files / 828 tests**, up from 53 / 645 at Task 4. |
+| `pnpm check:specs` | 0 | 73 spec files, each claimed by exactly one Vitest project. |
+| `pnpm test:integration` | 0 | **13 files / 169 tests** against the real compose stack, up from 12 / 163. The new file sends real SMTP to Mailpit. |
+| `pnpm build` | 0 | 8 tasks. |
+| `pnpm check:openapi` | 0 | Byte-identical, still **4 routes**. **This is the proof that no endpoint shipped.** |
+| `pnpm check:registry` | 0 | 14 models, unchanged — Task 5 added no table and no migration. |
+| `docker compose ps` | 0 | postgres, redis, minio, mailpit all `Up (healthy)`. |
+
+`pnpm test:e2e` was **not run** and has no row. Task 5 touches no `apps/web` path and ships no
+route, so it cannot reach a rendered page. It does change `webEnvSchema`, which `apps/web` boots
+on — the scheme constraint described below — and that is covered by unit specs against both
+schemas, not by a browser.
+
+What that table licenses and nothing more: an email can be rendered in both parts and delivered
+over real SMTP to a real server, and read back from that server with its recipient, subject, both
+MIME parts and its `?token=` value intact. **It says nothing about any user receiving mail**,
+because `Mailer.send` has no caller outside a spec — that is Tasks 8, 10, 11 and 15.
+
+**What Task 5 delivered.** A `Mailer` port with a single SMTP adapter behind a DI token, and seven
+templates behind a registry. Seven rather than the plan's six because MFA enabled and MFA disabled
+became separate templates, which the brief permitted. Three carry a live single-use credential in a
+`?token=` query parameter — discharging Task 4's rulings 34 and 36, which measured a path-segment
+token leaking verbatim through the redacting logger — and four are notices carrying no link at all,
+which is a deliberate widening of the brief: the phishing pretext for "your password was changed"
+is a link, so those messages contain none.
+
+**The registry is the load-bearing idea and it was verified destructively, not read.** Both sample
+tables are `Record<EmailTemplateId, …>`, so a template added without its samples is a compile
+error, and every rule — non-empty parts, a text part that is prose rather than stripped markup, no
+unreplaced placeholder, no remote asset, an escaped attacker-chosen display name — is asserted by
+iterating the registry rather than by six copied blocks. The reviewer added a deliberately broken
+template: **eight assertions fired**, naming every planted defect; leaving it unclassified fired a
+ninth; omitting it from the sample table produced the promised `TS2741`.
+
+**The review found one High, and it was in a control nobody asked for.** `SmtpMailer` volunteered a
+guard refusing a recipient containing CR, LF or NUL. It did not refuse a **comma**, and nodemailer
+parses `to` as an address *list* — measured as two `RCPT TO` commands from one `send`, and against
+the real compose Mailpit an attacker address on the right of the comma received a password-reset
+message. The same probe established the guard was the only line of defence below Zod, because
+nodemailer does not refuse a CRLF recipient on its own either. The guard now enforces *one address*.
+**A guard that half-holds is still better than the absent guard it replaced**, and its existence is
+what gave the review something specific to attack.
+
+**Two false sentences reached the implementer's report, and the citation pass caught both.** The
+dangerous one claimed Task 15 would add "the seventh template" when the registry already holds
+seven and the invitation is one of them, built here — and it was written into four code docblocks
+and proposed for the ledger's carry-forward section, which is the propagation path that produced
+five of Phase 1's twelve instances. Every other claim in that report — every command, exit code,
+file line count and commit SHA — was re-run rather than read, and reproduced exactly.
+
+**A measured leak was closed at the config layer, and a residual was deliberately left open.**
+`z.string().url()` delegates to `new URL()`, which accepts any scheme: `javascript:alert(1)` passed
+`WEB_BASE_URL` validation and landed byte-identical in an email `href`, because `escapeHtml`
+touches neither `:` nor `(` nor `)`. Both base URLs on **both** schemas — the API's and the web
+app's, which declare their own copies — are now constrained to http/https, and `renderEmail`
+refuses a non-http action URL as well. Underneath that fix sat a Zod behaviour worth recording: a
+failed `.url()` check marks a result **dirty**, not aborted, so a `superRefine` still runs over the
+invalid value, and an unguarded `new URL()` there threw a raw `TypeError` past `loadEnv`'s error
+envelope. **A Phase 1 spec caught it** — the one asserting no sentinel value ever reaches an error
+message.
+
+The residual left open: a relay that quotes a token back **stripped of its URL** puts it in
+`err.message` and `err.stack`. Measured. A token inside a rejected `?token=` URL *is* redacted, and
+the primary control — the adapter logging no body, ever — is intact. It is not closed because
+widening the value pattern is exactly what Task 4's ruling 34 records as dangerous: `redact()`
+blanks the whole matched field, which is why `key` and `code` had to be removed from it.
+
+**Mail delivery has no retry, no queue, and no alert, and that is the largest honest gap.**
+ADR-0016 names it and `architecture/integrations.md` §7 now names it. A failed verification email is
+survivable — Task 8 owes a resend path — but a failed *security notice* means the signal that would
+reveal an account takeover never arrives, and nothing detects that. Phase 4's queue owns it.
+
+**Task 5 is on `feat/phase-2-task-05`, unpushed, with no pull request.** Cut from `main` at
+`c641b9d`. **ADR-0016 was committed before any implementation commit** — `09:28:54` against a first
+implementation commit at `09:38:20` — and the reviewer verified that ordering rather than taking it
+on trust, along with the fact that the brief has one commit and was never amended, so its twelve
+rulings were not back-filled.
+
+**One residual needs an operator decision.** A live-format 256-bit token was committed verbatim in
+the implementer's report; it is redacted there now, but remains reachable in this branch's history
+at `aaa6d39` and `d5161c5`. It is inert — minted for a Mailpit send, no `VerificationToken` row was
+written, no account exists — but the branch is unpushed, so purging it by history rewrite is still
+cheap, and a repository already carrying a red GitGuardian check on every pull request it has ever
+had does not need a genuine-looking secret added to the pile.
+
 **Checkpoint A falls after Task 12** — the identity API enforced end to end with no UI. At that
 point the branch is pushed, CI must be green on a Linux runner, and this file gets an evidence
 table moving Phase 2 to **Partially Implemented** with the gap named: no authentication UI, so the
@@ -957,7 +1051,7 @@ checkpoint exists to close it.
 |---|---|---|
 | Argon2 implementation | `@node-rs/argon2` — prebuilt Rust/napi binaries, no node-gyp on Windows or CI | 0014, owed by Task 3 |
 | Password breach check | Real HIBP k-anonymity client, env-flagged, off in test, **fails open** | 0015, owed by Task 3 |
-| Email delivery | Mailer port with an SMTP adapter against Mailpit; Resend deferred to the first staging deploy | 0016, owed by Task 5 |
+| Email delivery | Mailer port with an SMTP adapter against Mailpit; Resend deferred to the first staging deploy | 0016, **written** in Task 5 |
 | Web↔API credentials | Explicit CORS allowlist with `credentials: true`, not a Next-side proxy | 0017, owed by Task 7 |
 | Pending MFA credential | A `Session` row in `PENDING_MFA` status, not a Redis-only token | 0018, owed by Task 11 |
 | Journey UI scope | Full — register, verify, login, MFA, reset, org switcher, `/settings/security`. The exit criterion says E2E, and there is no E2E without screens | — |
