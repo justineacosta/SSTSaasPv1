@@ -283,9 +283,11 @@ was proven byte-identical to the pre-rewrite tree before the backup branch was d
 controller**; the committed `openapi.json` still publishes four routes, and `apps/web/app/(auth)/`
 still holds a layout with no routes under it. A service nothing calls is not a feature.
 
-**Branching.** Task 4 was built on `feat/phase-2-task-04`, cut from `main`, one branch per task and
-one PR per task. **It is not pushed and no PR exists** — that is the operator's call. Cut Task 5
-from `main` after this merges, not from this branch.
+**Branching. Task 4 is on `main`.** Built on `feat/phase-2-task-04`, cut from `main`, one branch
+per task and one PR per task. **PR #8 was rebase-merged on 2026-08-26 at 01:10Z** (merge commit
+`3473a6d`) and the branch was deleted, so `feat/phase-2-task-04` is spent history. CI was green on
+`ubuntu-latest` before the merge (run `32917703646`, 3m24s), with the integration stage reporting
+12 files / 163 tests. **Cut Task 5 from `main`.**
 
 **Next action:** Task 5 — mail infrastructure and templates — in a new session, starting with
 `sentinel-phase`. It owes **ADR-0016** (the mailer port and the SMTP-against-Mailpit decision),
