@@ -891,10 +891,25 @@ non-spec probe importing it passed both `eslint` and `tsc`. It is now a `no-rest
 fence, proven to fire, and `development/coding-standards.md` §6 records it beside the unscoped-client
 rule it belongs with.
 
-**Task 4 is not pushed and has no pull request.** It sits on `feat/phase-2-task-04`, cut from
-`main`, with its history rewritten so `apps/api/openapi.json` moves with the contracts commit that
-changes it — before that, four commits failed `pnpm check:openapi` and a change to the shipped API
-contract sat inside a commit typed `docs(ledger):`. Pushing is the operator's call.
+**Task 4 is on `main`.** Built on `feat/phase-2-task-04`, cut from `main`, with its history
+rewritten before pushing so `apps/api/openapi.json` moves with the contracts commit that changes
+it — before that, four commits failed `pnpm check:openapi` and a change to the shipped API contract
+sat inside a commit typed `docs(ledger):`. **PR #8 was rebase-merged on 2026-08-26 at 01:10Z**
+(merge commit `3473a6d`) and the branch was deleted. An earlier version of this paragraph said the
+branch was unpushed with no pull request; that was true when it was written and is recorded here
+rather than deleted.
+
+**CI was green on a Linux runner before the merge** — run `32917703646`, `ubuntu-latest`, 3m24s,
+conclusion `success`. The stage worth naming is integration: **12 files / 163 tests in 48.64s of
+wall clock for 42.20s of tests**, which is sequential execution behaving on CI exactly as it does
+locally, and which is also the first proof that `startPostgresHarness()` works in a runner where
+the compose database has no migrations applied.
+
+**GitGuardian failed on PR #8, making it three consecutive pull requests.** It is still not a
+required check and still did not gate the merge. The `.gitguardian.yaml` ignore list naming each
+match and why remains **unwritten**, and the standing cost recorded under PRs #5 and #6 is now
+larger again: a security product's repository has now carried a red security check on every pull
+request it has ever had.
 
 **Checkpoint A falls after Task 12** — the identity API enforced end to end with no UI. At that
 point the branch is pushed, CI must be green on a Linux runner, and this file gets an evidence
