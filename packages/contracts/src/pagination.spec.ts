@@ -65,7 +65,7 @@ describe('listQuerySchema', () => {
   });
 
   it('accepts an opaque cursor and does not attempt to interpret it', () => {
-    const cursor = 'eyJzIjoiMjAyNi0wOC0yMFQxNDozMDowMFoiLCJpIjoiZm5kXzAxSiJ9';
+    const cursor = 'FIXTURE-not-a-real-cursor-0000000000000000000000000000000';
     expect(listQuerySchema.parse({ cursor }).cursor).toBe(cursor);
   });
 

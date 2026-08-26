@@ -906,10 +906,23 @@ locally, and which is also the first proof that `startPostgresHarness()` works i
 the compose database has no migrations applied.
 
 **GitGuardian failed on PR #8, as it had on PRs #5 and #6.** It is still not a required check and
-still did not gate the merge. The `.gitguardian.yaml` ignore list naming each match and why remains
-**unwritten**, and the standing cost recorded under PRs #5 and #6 stands: three of the four code
-pull requests to date have carried a red security check on a security product's own repository,
-which trains people to ignore it.
+still did not gate the merge.
+
+**The `.gitguardian.yaml` ignore list this file recorded as owed from PR #5 was never written, and
+it is no longer owed — it would not have worked.** `ignored_matches` in that file is read by the
+**ggshield CLI**, which this repository does not run. The failing check is the GitGuardian **GitHub
+App**, driven from the dashboard and cleared by a check-run skip action or by resolving the incident
+there; a file in the repository never enters into it. Writing one would have produced a control that
+looks like a control and does nothing, which is worse than an absent one.
+
+**The model of the problem recorded here was also wrong.** This file said the findings were the
+three phase-1 `review-diffs` matches. Reading each check run's own output shows four different sets:
+**#5** three in `review-diffs/`, **#6** a `Generic Password` in `auth.module.spec.ts`, **#8** four
+`Generic High Entropy Secret` in `redaction.spec.ts`, **#10** two in the email spec fixtures. The
+recurring cause is **credential-shaped test fixtures**, and not one finding across four pull
+requests was a real credential. What replaces the ignore list is `pnpm check:secrets`
+(`scripts/check-secret-shaped-literals.ts`), a shape rule over committed files that fails before a
+push rather than after one.
 
 **Correction, 2026-08-26, made while verifying the claim rather than repeating it.** An earlier
 version of this paragraph said PR #8 made it "three consecutive pull requests" and that the

@@ -71,6 +71,17 @@ jobs:
       - name: Spec-project coverage
         run: pnpm check:specs
 
+      # Credential-shaped literals in committed files. Not a secret scanner —
+      # a shape rule, and it sits in the cheap lane because it needs no build,
+      # no services and about a second. Three of this repository's four code
+      # pull requests failed a third-party secret scanner on test fixtures that
+      # looked like credentials and were not; this catches that class before a
+      # push instead of after one. scripts/check-secret-shaped-literals.ts
+      # carries the full account, including why a .gitguardian.yaml ignore list
+      # would not have worked.
+      - name: Credential-shaped literals
+        run: pnpm check:secrets
+
       # The integration suites are the only gate that proves the tenant-isolation
       # layer, the storage adapter and the API pipeline actually work against
       # real services rather than mocks — so CI has to stand the same stack up

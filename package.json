@@ -21,6 +21,7 @@
     "test:e2e": "pnpm --filter @sentinel/web test:e2e",
     "check:openapi": "pnpm build:packages && node scripts/check-openapi-diff.ts",
     "check:registry": "pnpm build:packages && node scripts/check-tenant-registry.ts",
+    "check:secrets": "node scripts/check-secret-shaped-literals.ts",
     "check:specs": "node scripts/check-vitest-projects.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

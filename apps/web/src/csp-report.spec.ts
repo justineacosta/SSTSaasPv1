@@ -97,7 +97,7 @@ describe('sanitizeReportedUrl', () => {
   it.each([
     ['a UUID', '123e4567-e89b-12d3-a456-426614174000'],
     ["this repo's prefixed UUIDv7", 'finding_01h9zqk4m8n2p5r7t9v1x3y5z7'],
-    ['a base64url-ish token', 'Ab3xY7pQ9wZ2mK5nR8tV1sD4'],
+    ['a base64url-ish token', 'FIXTUREnotarealtoken0000'],
     ['a long hex string', '9f8b7c6d5e4f3a2b1c0d9e8f'],
   ])('masks %s in the path', (_label, segment) => {
     expect(sanitizeReportedUrl(`https://app.example.com/invitations/${segment}`)).toBe(

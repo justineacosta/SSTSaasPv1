@@ -48,6 +48,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Shannon entropy in bits per character.
@@ -58,7 +59,7 @@ import { readFileSync } from 'node:fs';
  * 4.9 and 4.8, the leaked ledger token 4.9, and their replacements — which keep
  * the length and charset but repeat characters — score 3.4.
  */
-function shannonEntropy(value: string): number {
+export function shannonEntropy(value: string): number {
   const counts = new Map<string, number>();
   for (const character of value) counts.set(character, (counts.get(character) ?? 0) + 1);
 
@@ -118,7 +119,7 @@ const ENTROPY_CEILING = 4.2;
  * dropping the class requirement — flags every commit SHA in `docs/`, which
  * would get the check switched off within a week.
  */
-function mixesCharacterClasses(value: string): boolean {
+export function mixesCharacterClasses(value: string): boolean {
   return /[a-z]/.test(value) && /[A-Z]/.test(value) && /[0-9]/.test(value);
 }
 
@@ -152,9 +153,22 @@ const EXCLUDED_PATHS = [
   // this check is noise.
   /^pnpm-lock\.yaml$/,
   /(^|\/)package-lock\.json$/,
+  // Ledgers and plans are **dated records of what was measured at the time**,
+  // and `docs/superpowers/ledger/README.md` says they are never rewritten. Some
+  // of what they quote is real captured output — Task 4's report contains two
+  // live-format tokens minted during its own redaction measurements, which this
+  // check found and GitGuardian never did. Those are redacted in the working
+  // tree, but the raw values are already in `main`'s history and cannot be
+  // purged under branch protection, so a check that failed on them would fail
+  // forever. Excluded by path with that stated, rather than left to rot as a
+  // permanent red.
+  //
+  // `.claude/` is deliberately NOT excluded: it is living documentation, it is
+  // edited freely, and a credential-shaped example there is fixable.
+  /^docs\/superpowers\//,
 ];
 
-interface Finding {
+export interface Finding {
   readonly file: string;
   readonly line: number;
   readonly value: string;
@@ -172,14 +186,17 @@ function trackedFiles(): string[] {
     .filter((path) => !EXCLUDED_PATHS.some((pattern) => pattern.test(path)));
 }
 
-function scan(file: string): Finding[] {
+/**
+ * The rule itself, over content rather than a path, so the spec can exercise it
+ * without a filesystem. Everything above is tuning; this is the whole check.
+ */
+export function findSecretShapedLiterals(file: string, content: string): Finding[] {
   const findings: Finding[] = [];
-  const lines = readFileSync(file, 'utf8').split('\n');
 
-  lines.forEach((line, index) => {
-    // The check's own source and spec describe the rule and necessarily
-    // contain examples of what it matches. Skipping by marker rather than by
-    // filename so the rule stays true of any file that opts out explicitly.
+  content.split(/\r?\n/).forEach((line, index) => {
+    // A line that declares itself a fixture opts out. Skipping by marker rather
+    // than by filename keeps the rule true of any file, including this script
+    // and its spec, which necessarily contain examples of what it matches.
     if (DELIBERATELY_FAKE.test(line)) return;
 
     for (const match of line.matchAll(CANDIDATE)) {
@@ -196,47 +213,59 @@ function scan(file: string): Finding[] {
   return findings;
 }
 
-const findings = trackedFiles().flatMap(scan);
+function scan(file: string): Finding[] {
+  return findSecretShapedLiterals(file, readFileSync(file, 'utf8'));
+}
 
-if (findings.length > 0) {
-  // eslint-disable-next-line no-console
-  console.error(
-    `check:secrets FAILED — ${String(findings.length)} credential-shaped literal(s) in committed files.\n`,
-  );
+function main(): void {
+  const findings = trackedFiles().flatMap(scan);
 
-  for (const finding of findings) {
-    // The value is truncated deliberately. If one of these ever IS a real
-    // credential, this output lands in CI logs, and printing it in full would
-    // be the thing the check exists to prevent.
-    const preview = `${finding.value.slice(0, 6)}…${finding.value.slice(-4)}`;
+  if (findings.length > 0) {
     // eslint-disable-next-line no-console
     console.error(
-      `  ${finding.file}:${String(finding.line)} — ${String(finding.value.length)} chars, entropy ${finding.entropy.toFixed(2)} (${preview})`,
+      `check:secrets FAILED — ${String(findings.length)} credential-shaped literal(s) in committed files.\n`,
     );
+
+    for (const finding of findings) {
+      // The value is truncated deliberately. If one of these ever IS a real
+      // credential, this output lands in CI logs, and printing it in full would
+      // be the thing the check exists to prevent.
+      const preview = `${finding.value.slice(0, 6)}…${finding.value.slice(-4)}`;
+      // eslint-disable-next-line no-console
+      console.error(
+        `  ${finding.file}:${String(finding.line)} — ${String(finding.value.length)} chars, entropy ${finding.entropy.toFixed(2)} (${preview})`,
+      );
+    }
+
+    // eslint-disable-next-line no-console
+    console.error(
+      [
+        '',
+        'A string with a credential’s shape does not belong in a committed file,',
+        'even when it is inert. Three of this repository’s four code pull requests',
+        'failed a secret scanner on exactly this, and none held a real credential.',
+        '',
+        'If it is a fixture: keep the length and charset the test needs and drop the',
+        'entropy — FIXTURE_not_a_real_token-0000000000 passes and still exercises',
+        'base64url handling.',
+        '',
+        'If it is a real credential: it does not go in the repository at all, and',
+        'redacting it in the working tree is not enough — a scanner reads every',
+        'commit in a pull request, not the final tree. See ruling 63.',
+      ].join('\n'),
+    );
+
+    process.exit(1);
   }
 
   // eslint-disable-next-line no-console
-  console.error(
-    [
-      '',
-      'A string with a credential’s shape does not belong in a committed file,',
-      'even when it is inert. Three of this repository’s four code pull requests',
-      'failed a secret scanner on exactly this, and none held a real credential.',
-      '',
-      'If it is a fixture: keep the length and charset the test needs and drop the',
-      'entropy — FIXTURE_not_a_real_token-0000000000 passes and still exercises',
-      'base64url handling.',
-      '',
-      'If it is a real credential: it does not go in the repository at all, and',
-      'redacting it in the working tree is not enough — a scanner reads every',
-      'commit in a pull request, not the final tree. See ruling 63.',
-    ].join('\n'),
+  console.log(
+    `check:secrets OK — ${String(trackedFiles().length)} tracked files, no credential-shaped literals.`,
   );
-
-  process.exit(1);
 }
 
-// eslint-disable-next-line no-console
-console.log(
-  `check:secrets OK — ${String(trackedFiles().length)} tracked files, no credential-shaped literals.`,
-);
+// Only run when invoked as a script. The spec imports this module for its pure
+// functions, and importing a module must not run a process-exiting check.
+if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main();
+}
