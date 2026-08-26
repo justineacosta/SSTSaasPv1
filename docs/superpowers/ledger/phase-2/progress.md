@@ -342,11 +342,14 @@ publishes **four routes**. The mailer has no caller: `Mailer.send` is invoked by
 nothing else, so the six notice and verification messages exist as templates and a transport, not as
 mail any user receives. `apps/web/app/(auth)/` still holds a layout with no routes under it.
 
-**One residual is the operator's to decide.** A live-format 256-bit token was committed verbatim in
-`report.md` and is redacted there now, but it remains reachable in this branch's history at
-`aaa6d39` and `d5161c5`. It is inert — minted for a Mailpit send, no `VerificationToken` row, no
-account — but purging it means a history rewrite, and the branch is unpushed so that is still cheap.
-Ruling 57. **Task 4's precedent is a backup branch plus a tree diff before the backup is deleted.**
+**A live-format token reached the ledger, and the history was rewritten to purge it.** It was
+redacted in the working tree by `0088852`, but survived at `aaa6d39` and `d5161c5`; since `main`
+blocks force pushes and requires linear history, the merge would have made it permanent. The
+operator chose the rewrite before the branch was pushed. Tree byte-identical to the pre-rewrite tree
+(`4f1ff58…` both sides, empty diff against the backup), full suite re-run afterwards, backup deleted
+only then. Ruling 57. **The value was inert** — minted for a Mailpit send, no `VerificationToken`
+row, no account — and it was purged anyway, because a repository already carrying a red GitGuardian
+check on every pull request it has had does not need a genuine-looking secret added to the pile.
 
 **Branching. Task 5 is on `feat/phase-2-task-05`, cut from `main` at `c641b9d`, unpushed, with no
 pull request.** One branch per task and one PR per task, as Tasks 1–4 were.
