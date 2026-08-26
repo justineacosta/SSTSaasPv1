@@ -16,3 +16,14 @@ export const ARGON2_PARAMETERS = 'SENTINEL_ARGON2_PARAMETERS';
 export const BREACH_CHECK_OPTIONS = 'SENTINEL_BREACH_CHECK_OPTIONS';
 export const HIBP_RANGE_TRANSPORT = 'SENTINEL_HIBP_RANGE_TRANSPORT';
 export const SECRET_TOKEN_TTL_SECONDS = 'SENTINEL_SECRET_TOKEN_TTL_SECONDS';
+/** The five session durations of `security/authentication.md` §3 and §5. */
+export const SESSION_POLICY = 'SENTINEL_SESSION_POLICY';
+/**
+ * The session lookup cache, as a port rather than a class.
+ *
+ * `SessionService` must not know it is talking to Redis: the whole promise of
+ * ADR-0005's fallback is that an unreachable cache degrades to Postgres, and a
+ * service holding an `ioredis` client is a service that can be handed one that
+ * throws. The token is what keeps `RedisSessionCache` substitutable.
+ */
+export const SESSION_CACHE = 'SENTINEL_SESSION_CACHE';
