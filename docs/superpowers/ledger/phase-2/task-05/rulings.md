@@ -252,10 +252,20 @@ actually need — 43 characters, base64url charset including the `_` and `-` tha
 construction — and none of the entropy. 121 template tests pass unchanged, because the value was
 always opaque to them.
 
-**The dashboard was not readable from here, so the identification is by shape and count rather than
-by reading GitGuardian's own output.** Two findings, two constants of credential shape, and the
-remaining candidates (`relay-secret`, `S3CR3T-RELAY-PASSWORD`) are dictionary-shaped and low
-entropy. If the next run still fails, that inference was wrong and the finding is elsewhere.
+**The identification was by shape and count, and the check output later confirmed both files** —
+`Generic High Entropy Secret`, one per file, exactly as inferred. The dashboard itself was never
+readable from here; the check run's own markdown output was, via
+`gh api …/check-runs`, and that is where the correction below came from.
+
+**The first fix was incomplete, and the reason is worth keeping.** Changing the constant at the tip
+of the branch left the old value in `1cd9b0a`, the commit that introduced it — and **GitGuardian
+scans every commit in a pull request, not the final tree.** The re-run therefore reported the same
+two findings, still citing `1cd9b0a`. This is the identical mistake ruling 57 had already paid for
+one hour earlier: a value redacted in the working tree is not a value removed from history. Fixed
+by a second `filter-branch` over the range, with the same two checks — tree hash
+`5d6fe5ead4ca026e70bfac49e6c08444022fc204` on both sides, empty diff against the backup — and the
+full suite re-run before the backup was deleted. **The branch was force-pushed**, which is
+permitted because only `main` carries branch protection.
 
 This is ruling 57's lesson one layer over, and the pair is worth reading together. There, a **real**
 token sat in a ledger and cost a history rewrite. Here, a string that was **never a credential at
