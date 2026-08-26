@@ -82,14 +82,44 @@ describe('renderEmail', () => {
     for (const forbidden of ['<img', 'src=', '<link', '@import', 'url(', 'background=']) {
       expect(html).not.toContain(forbidden);
     }
-    // The only absolute URL permitted anywhere in the markup is the action's,
-    // and it lives in an href the recipient chooses to follow.
-    const urls = html.match(/https?:\/\/[^\s"'<>]+/g) ?? [];
-    expect(urls).toEqual(['https://app.sentinel.test/verify-email?token=abc']);
+    // The only absolute URL anywhere in the markup is the action's, and it
+    // reaches the network only if the recipient chooses to follow it. Deduped
+    // rather than counted: the action deliberately appears twice, once as the
+    // button and once as the bare address beneath it.
+    const urls = new Set(html.match(/https?:\/\/[^\s"'<>]+/g) ?? []);
+    expect([...urls]).toEqual(['https://app.sentinel.test/verify-email?token=abc']);
   });
 
   it('declares a character set so a non-ASCII display name is not mojibake', () => {
     expect(renderEmail(content).html).toContain('charset="utf-8"');
+  });
+
+  it('strips CRLF out of the subject, which is where header injection lands', () => {
+    // The subject is the one rendered value that leaves as an SMTP header, and
+    // a header is terminated by CRLF. An organisation name reaches the
+    // invitation subject, so `Acme\r\nBcc: attacker@evil.test` would otherwise
+    // be an added recipient the sender never chose. `escapeHtml` is no help
+    // here — a subject is never markup.
+    const email = renderEmail({
+      ...content,
+      subject: 'Acme\r\nBcc: attacker@evil.test',
+    });
+    expect(email.subject).toBe('Acme Bcc: attacker@evil.test');
+    expect(email.subject).not.toContain('\r');
+    expect(email.subject).not.toContain('\n');
+  });
+
+  it('collapses any control character in the subject, not only CR and LF', () => {
+    // A bare LF is enough on some relays, and a NUL can truncate a header in a
+    // C parser downstream. Matching the whole control range costs nothing.
+    expect(renderEmail({ ...content, subject: 'a\u0000b\u000bc\u007fd' }).subject).toBe('a b c d');
+  });
+
+  it('keeps the sanitised subject as the first line of the text part', () => {
+    // Otherwise the header and the body would disagree about the name of the
+    // message, which is exactly what an injection attempt wants.
+    const email = renderEmail({ ...content, subject: 'Acme\r\nBcc: x@evil.test' });
+    expect(email.text.split('\n')[0]).toBe(email.subject);
   });
 });
 
