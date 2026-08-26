@@ -218,9 +218,22 @@ describe.each(IDS)('template %s', (id) => {
     // templates and all three are attacker-controlled.
     const { html } = HOSTILE[id]();
     expect(html).not.toContain('<script>');
-    expect(html).not.toContain('onmouseover=');
     expect(html).toContain('&lt;script&gt;');
     expect(html).toContain('&quot;');
+    // `onmouseover=` on its own is the wrong assertion and an earlier version of
+    // this test used it: the payload's `"` is escaped, so the literal text
+    // `onmouseover=` survives as inert content followed by `&quot;` and the
+    // test failed on correct output. What actually matters is that the payload
+    // cannot *start an attribute*, which needs a quote character it no longer
+    // has.
+    expect(html).not.toContain('onmouseover="');
+    // The general form of the same property, and the one that does not depend
+    // on guessing this particular payload: an attacker-chosen value contributes
+    // no quote character to the markup at all, so the quote count is identical
+    // to the benign render's. Every attribute delimiter in the output came from
+    // the layout.
+    const quotes = (part: string): number => (part.match(/"/g) ?? []).length;
+    expect(quotes(html)).toBe(quotes(SAMPLES[id]().html));
   });
 
   it('does not leak the payload through the subject line either', () => {
