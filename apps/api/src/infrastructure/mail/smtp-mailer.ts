@@ -1,5 +1,6 @@
 import { createTransport } from 'nodemailer';
 import type { Mailer, OutgoingMail, SentMail } from './mailer.port.js';
+import { sanitizeSubject } from './subject.js';
 
 /**
  * The one adapter behind the `Mailer` port, and the only file in this codebase
@@ -171,7 +172,14 @@ export class SmtpMailer implements Mailer {
       const result = await this.transport.sendMail({
         from: this.config.from,
         to: mail.to,
-        subject: mail.subject,
+        // M2 (Task 5 review). `renderEmail` sanitises every subject a template
+        // produces, and `OutgoingMail` is a plain interface a caller can fill
+        // in without going near a template — so the header this adapter writes
+        // is sanitised here too. Same argument as `toTransportOptions`
+        // duplicating the credential-pair rule the env schema already enforces:
+        // a control that lives one layer up is a control the next caller
+        // bypasses. Running it twice is a no-op.
+        subject: sanitizeSubject(mail.subject),
         text: mail.text,
         html: mail.html,
       });

@@ -1,3 +1,4 @@
+import { sanitizeSubject } from '../../../infrastructure/mail/subject.js';
 import { escapeHtml } from './escape-html.js';
 
 /**
@@ -127,31 +128,6 @@ function renderText(content: EmailContent): string {
     blocks.push('', `${content.action.label}: ${content.action.url}`);
   blocks.push('', '--', content.footer.join('\n'));
   return `${blocks.join('\n')}\n`;
-}
-
-/**
- * The subject is the one rendered value that leaves as an SMTP **header**, and
- * a header is terminated by CRLF.
- *
- * Two of these subjects interpolate an attacker-chosen string — an organisation
- * name into the invitation, and nothing else today, but the next template to be
- * written will not know that. A name containing `\r\n` in a header value is
- * header injection: `Subject: Acme\r\nBcc: attacker@evil.test` adds a
- * recipient the sender never chose. `escapeHtml` does not help here, because
- * the subject is never markup.
- *
- * nodemailer's own MIME encoder also refuses newlines in a header, which makes
- * this the *second* line of defence rather than the only one — deliberately, on
- * the same reasoning as ruling 47: a control that exists only inside a
- * dependency is a control that changes when the dependency does. Every control
- * character is collapsed rather than dropped, so an injected fragment cannot be
- * silently rejoined into a plausible subject.
- */
-// eslint-disable-next-line no-control-regex -- matching control characters is the point.
-const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]+/g;
-
-function sanitizeSubject(subject: string): string {
-  return subject.replace(CONTROL_CHARACTERS, ' ').trim();
 }
 
 export function renderEmail(content: EmailContent): RenderedEmail {
