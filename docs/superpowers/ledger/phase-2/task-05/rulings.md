@@ -236,3 +236,37 @@ failure means the signal the notice exists to deliver never arrives, and nothing
 **Owed by Phase 4**, which brings BullMQ; mail delivery belongs on a queue with retries and a
 dead-letter path at that point. **Cost if wrong:** an account takeover proceeds unseen because the
 notice that would have revealed it failed to send and nobody knew.
+
+## Ruling 63 — a test fixture standing in for a secret must look like a fixture
+
+GitGuardian failed PR #10 with "2 secrets uncovered from the scan of 23 commits" — the branch's own
+range, so these were new rather than the three pre-existing phase-1 findings. Two constants of
+exactly credential shape, 43 characters of random base64url, indistinguishable from what
+`mintSecretToken` actually produces:
+
+- `links.spec.ts` — `const TOKEN = 'HXQ2…'`
+- `registry.spec.ts` — `const TOKEN = 'Kd93…'`
+
+Both replaced with `FIXTURE_not_a_real_token-<file>_000…`, which keeps everything the specs
+actually need — 43 characters, base64url charset including the `_` and `-` that must survive URL
+construction — and none of the entropy. 121 template tests pass unchanged, because the value was
+always opaque to them.
+
+**The dashboard was not readable from here, so the identification is by shape and count rather than
+by reading GitGuardian's own output.** Two findings, two constants of credential shape, and the
+remaining candidates (`relay-secret`, `S3CR3T-RELAY-PASSWORD`) are dictionary-shaped and low
+entropy. If the next run still fails, that inference was wrong and the finding is elsewhere.
+
+This is ruling 57's lesson one layer over, and the pair is worth reading together. There, a **real**
+token sat in a ledger and cost a history rewrite. Here, a string that was **never a credential at
+all** turned a security product's own security check red — which is the more instructive case,
+because no amount of "it isn't actually a secret" makes the check green or makes the next reader
+trust it. **Cost if wrong:** none to behaviour; the fixture is opaque to every assertion that uses
+it.
+
+**Owed and still not written: `.gitguardian.yaml`.** `roadmap.md` has recorded it as owed since
+PR #5, and this task did not write it either — it is not Task 5's, because the three findings it
+must name live in `docs/superpowers/ledger/phase-1/review-diffs/` on `main`. The standing cost is
+unchanged and now larger: a security product's repository has carried a red security check on every
+pull request it has ever had, which trains people to ignore it.
+

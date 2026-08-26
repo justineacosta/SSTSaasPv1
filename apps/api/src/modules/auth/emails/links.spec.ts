@@ -22,6 +22,22 @@ import { buildTokenLink, TOKEN_LINK_PATHS, type TokenLinkKind } from './links.js
  */
 
 const BASE = 'https://app.sentinel.test';
+/**
+ * A deliberately LOW-ENTROPY fixture, and that is the point.
+ *
+ * It keeps a real token's shape — 43 characters of base64url, including the
+ * `_` and `-` that must survive URL construction — while being unmistakably
+ * fake to a human and to a secret scanner. The previous value here was random
+ * base64url, indistinguishable from a live credential, and GitGuardian flagged
+ * this file and `registry.spec.ts` as the two uncovered secrets on PR #10.
+ *
+ * Same lesson as ruling 57 one layer over: a credential-shaped string in a
+ * committed file costs something even when it is inert. There it was a real
+ * token in a ledger and cost a history rewrite; here it is a fixture that was
+ * never a credential at all, and it still turned a security product's own
+ * security check red. **A test fixture standing in for a secret should look
+ * like a fixture.**
+ */
 const TOKEN = 'FIXTURE_not_a_real_token-links_000000000000';
 const KINDS = Object.keys(TOKEN_LINK_PATHS) as TokenLinkKind[];
 

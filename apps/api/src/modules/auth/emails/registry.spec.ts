@@ -24,6 +24,22 @@ import {
  * one table rather than two.
  */
 
+/**
+ * A deliberately LOW-ENTROPY fixture, and that is the point.
+ *
+ * It keeps a real token's shape — 43 characters of base64url, including the
+ * `_` and `-` that must survive URL construction — while being unmistakably
+ * fake to a human and to a secret scanner. The previous value here was random
+ * base64url, indistinguishable from a live credential, and GitGuardian flagged
+ * this file and `links.spec.ts` as the two uncovered secrets on PR #10.
+ *
+ * Same lesson as ruling 57 one layer over: a credential-shaped string in a
+ * committed file costs something even when it is inert. There it was a real
+ * token in a ledger and cost a history rewrite; here it is a fixture that was
+ * never a credential at all, and it still turned a security product's own
+ * security check red. **A test fixture standing in for a secret should look
+ * like a fixture.**
+ */
 const TOKEN = 'FIXTURE_not_a_real_token-registry_000000000';
 const BASE_URL = 'https://app.sentinel.test';
 const OCCURRED_AT = new Date('2026-08-26T09:41:07.512Z');
