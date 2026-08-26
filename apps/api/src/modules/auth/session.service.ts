@@ -379,7 +379,12 @@ function expiryOf(session: ResolvedSession, now: Date): SessionResolution | unde
 @Injectable()
 export class SessionService {
   constructor(
-    private readonly repository: SessionRepository,
+    // Injected by its class token explicitly, like every other dependency in
+    // this module. Nest's implicit type-based resolution needs
+    // `emitDecoratorMetadata`, which the Vitest transform does not produce —
+    // the module spec fails to compile with "argument at index [0]" rather than
+    // failing at boot, which is a worse place to find out.
+    @Inject(SessionRepository) private readonly repository: SessionRepository,
     @Inject(SESSION_CACHE) private readonly cache: SessionCache,
     @Inject(SESSION_POLICY) private readonly policy: SessionPolicy,
     @Inject(LOGGER) private readonly logger: Logger,

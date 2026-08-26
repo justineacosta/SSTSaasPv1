@@ -1,6 +1,7 @@
 # Authentication architecture
 
-> **Status: Designed. Not Implemented, except part of §2.** Built in Phase 2. SSO/SCIM in Phase 11.
+> **Status: Designed. Not Implemented, except part of §2 and the service layer of §3.** Built in
+> Phase 2. SSO/SCIM in Phase 11.
 > Decision records: [ADR-0005](../decisions/ADR-0005-authentication-model.md),
 > [ADR-0014](../decisions/ADR-0014-argon2-implementation.md) (Argon2 implementation and where its
 > parameters live), [ADR-0015](../decisions/ADR-0015-password-breach-check-fails-open.md) (the
@@ -18,6 +19,28 @@
 > exists" holds against the dummy at *current* parameters — **not** against stored hashes written
 > before a parameter raise, which verify more cheaply until their owners next log in. Task 9 owns
 > closing that.
+>
+> **What of §3 exists, as of Phase 2 Task 6.** `SessionService`, `SessionRepository`,
+> `RedisSessionCache` and `cookies.ts` in `apps/api/src/modules/auth/` — issue, resolve, rotate,
+> revoke, `revokeAllForUser`, `revokeAllForUserInOrganization`, both lifetimes, rolling renewal, and
+> the cookie serialiser. Every bullet in §3 below has a test at the layer where it can fail, twenty
+> of them against a real Postgres and the compose Redis.
+>
+> **Nothing calls any of it.** No endpoint issues a session, no guard reads one, and **no cookie has
+> ever reached a browser** — `serialiseSessionCookie`'s output has been produced in specs and by one
+> throwaway probe, and attached to no response. `AuthModule` registers no controller and
+> `pnpm check:openapi` still reports four routes. Task 7 builds the guard, Task 9 the login,
+> Task 10 the password paths, Task 11 the MFA completion, Tasks 13 and 14 the organisation switch
+> and the member removal. Until then §3 describes a mechanism with no user.
+>
+> Three limits, stated because §3 reads as settled. **Revocation's immediacy has one residual**: if
+> Redis is unreachable at the moment of revocation the row is revoked but its cache entry cannot be
+> poisoned, so an entry cached before the outage can serve until it expires — bounded by
+> `SESSION_CACHE_TTL_SECONDS`, default 60. **The pending-MFA lifetime and the cache TTL are choices,
+> not quotations**: §5 says only "short-lived" and ADR-0005 says only "a short TTL", so ten minutes
+> and sixty seconds were picked here and are configuration. And **`PENDING_MFA` is enforced by
+> nothing yet** — the status is recorded and its short lifetime applies, but the rule that such a
+> session authenticates nothing except the MFA endpoint is Task 7's.
 
 ## 1. Model
 
@@ -65,8 +88,26 @@ this class of data.
   their sessions from `/settings/security`.
 - **Rotated on every privilege change**: login, MFA completion, password change, role
   change. This is the session-fixation defence.
-- Redis caches the session lookup with a short TTL; **revocation deletes the cache entry
+- Redis caches the session lookup with a short TTL; **revocation reaches the cache entry
   and the row together**, so revocation is immediate rather than eventually consistent.
+
+**How revocation reaches the cache, corrected in Task 6 after measuring it.** Deleting the
+cache entry does not achieve the bullet above, in either order relative to the row: a
+resolve that has already read a live row from Postgres can land its cache write *after* the
+delete, leaving a live entry for a revoked session until the TTL expires. Measured — with a
+`DEL`-then-`SET` cache, a resolve raced against a revocation left the session's JSON payload
+on the key and the next resolve returned it as valid. So revocation writes a **tombstone**
+over the key, and every live write goes through a Lua script that refuses to run over one;
+Redis executes a script atomically, so there is no interleaving in which a live entry can
+replace a tombstone. Both cases are in
+`apps/api/src/modules/auth/session.service.integration.spec.ts`.
+
+Two other properties that are not visible in the bullets. A session's **absolute expiry is
+inherited across a rotation, not restarted** — otherwise the seven-day cap would bound
+nothing for a user who changes their password weekly; the exception is `PENDING_MFA` ->
+`ACTIVE`, where the pending session's few minutes were never the user's session lifetime.
+And **`Session.status` has no database default**, deliberately, so every insert states
+whether the session it is creating is privileged.
 
 ## 4. CSRF
 

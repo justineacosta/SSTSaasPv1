@@ -195,8 +195,11 @@ describe('revocation is immediate', () => {
       markRead = resolve;
     });
     const paused = new Proxy(repository, {
-      get(target, property, receiver: unknown) {
-        if (property !== 'findByTokenHash') return Reflect.get(target, property, receiver);
+      // `unknown`, not the inferred `any`: `Reflect.get` is typed `any`, and
+      // `@typescript-eslint/no-unsafe-return` is right to refuse it.
+      get(target, property, receiver: unknown): unknown {
+        if (property !== 'findByTokenHash')
+          return Reflect.get(target, property, receiver) as unknown;
         return async (tokenHash: string) => {
           const row = await target.findByTokenHash(tokenHash);
           markRead();

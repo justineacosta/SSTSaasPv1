@@ -3,10 +3,11 @@ import { Test } from '@nestjs/testing';
 import { describe, expect, it } from 'vitest';
 import type { ApiEnv } from '@sentinel/config';
 import { createLogger, type Logger } from '@sentinel/observability';
-import { ENV, LOGGER, PRISMA } from '../../infrastructure/tokens.js';
+import { ENV, LOGGER, PRISMA, REDIS } from '../../infrastructure/tokens.js';
 import { AuthModule } from './auth.module.js';
 import { BreachCheckService } from './breach-check.service.js';
 import { PasswordService } from './password.service.js';
+import { SessionService } from './session.service.js';
 import { TokenService, type VerificationTokenStore } from './token.service.js';
 
 /**
@@ -30,6 +31,12 @@ const env = {
   TOKEN_TTL_EMAIL_VERIFICATION_SECONDS: 86_400,
   TOKEN_TTL_PASSWORD_RESET_SECONDS: 3_600,
   TOKEN_TTL_INVITATION_SECONDS: 604_800,
+  SESSION_ABSOLUTE_LIFETIME_SECONDS: 604_800,
+  SESSION_REMEMBER_ME_LIFETIME_SECONDS: 2_592_000,
+  SESSION_IDLE_TIMEOUT_SECONDS: 86_400,
+  SESSION_PENDING_MFA_LIFETIME_SECONDS: 600,
+  SESSION_CACHE_TTL_SECONDS: 60,
+  REDIS_URL: 'redis://127.0.0.1:6399',
 } as unknown as ApiEnv;
 
 /**
@@ -67,6 +74,23 @@ const prismaStub: VerificationTokenStore & {
   $transaction: (run) => run({ verificationToken, $queryRaw: () => Promise.resolve([]) }),
 };
 
+/**
+ * Stands in for the real `REDIS` provider, for `PrismaModule`'s reason.
+ *
+ * `RedisModule`'s factory builds a live ioredis client, and a wiring spec has
+ * no business opening a socket. Overriding it is also what proves `AuthModule`
+ * asks for `REDIS` at all — drop `RedisModule` from its imports and the module
+ * fails to compile with an unresolved dependency rather than quietly resolving
+ * to nothing.
+ */
+const redisStub = {
+  get: () => Promise.resolve(null),
+  set: () => Promise.resolve('OK'),
+  eval: () => Promise.resolve(1),
+  quit: () => Promise.resolve('OK'),
+  disconnect: () => undefined,
+};
+
 /** Stands in for the application's global `ConfigModule`. */
 @Global()
 @Module({
@@ -86,16 +110,32 @@ function buildModule() {
   return Test.createTestingModule({ imports: [StubConfigModule, AuthModule] })
     .overrideProvider(PRISMA)
     .useValue(prismaStub)
+    .overrideProvider(REDIS)
+    .useValue(redisStub)
     .compile();
 }
 
 describe('AuthModule', () => {
-  it('resolves all three services from configuration', async () => {
+  it('resolves all four services from configuration', async () => {
     const moduleRef = await buildModule();
 
     expect(moduleRef.get(PasswordService)).toBeInstanceOf(PasswordService);
     expect(moduleRef.get(BreachCheckService)).toBeInstanceOf(BreachCheckService);
     expect(moduleRef.get(TokenService)).toBeInstanceOf(TokenService);
+    expect(moduleRef.get(SessionService)).toBeInstanceOf(SessionService);
+    await moduleRef.close();
+  });
+
+  it('does not export the session repository', async () => {
+    // `SessionRepository` is `SessionService`'s Postgres access. A consumer
+    // holding it could revoke a row without poisoning the cache entry that
+    // would go on serving it, which is the one thing the whole cache design
+    // exists to prevent.
+    const moduleRef = await buildModule();
+    const exported = Reflect.getMetadata('exports', AuthModule) as unknown[];
+    expect(exported.map((entry) => (entry as { name?: string }).name ?? entry)).not.toContain(
+      'SessionRepository',
+    );
     await moduleRef.close();
   });
 
