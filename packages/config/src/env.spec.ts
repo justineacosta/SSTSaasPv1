@@ -359,3 +359,114 @@ describe('secret token TTL configuration', () => {
     ).toEqual([]);
   });
 });
+
+/**
+ * SMTP authentication and TLS — ADR-0016 and Task 5's ruling 48.
+ *
+ * ADR-0016 claims the *same* adapter that talks to Mailpit locally talks to a
+ * production relay. That claim is only true if the adapter can present
+ * credentials and negotiate TLS, and neither was expressible before these three
+ * variables existed. They are asserted here rather than only in the adapter
+ * because a relay credential that is silently absent is the failure mode worth
+ * refusing: the adapter would connect unauthenticated, the relay would reject
+ * or (worse) silently accept and drop, and nothing would say why.
+ *
+ * The pairing rule is the load-bearing one. Half a credential is never a
+ * deliberate configuration — it is an operator who set one variable and missed
+ * the other — and `nodemailer` given a username with no password sends
+ * unauthenticated rather than failing, so the misconfiguration would otherwise
+ * surface as delivery failures far from their cause.
+ */
+describe('apiEnvSchema — SMTP authentication and TLS', () => {
+  it('defaults MAIL_SECURE to false, which is what port 1025 Mailpit needs', () => {
+    const env = loadEnv(apiEnvSchema, validApi);
+    expect(env.MAIL_SECURE).toBe(false);
+  });
+
+  it('parses MAIL_SECURE=true into a boolean, not the string', () => {
+    const env = loadEnv(apiEnvSchema, { ...validApi, MAIL_SECURE: 'true' });
+    expect(env.MAIL_SECURE).toBe(true);
+  });
+
+  it('leaves MAIL_USERNAME and MAIL_PASSWORD undefined when neither is set', () => {
+    const env = loadEnv(apiEnvSchema, validApi);
+    expect(env.MAIL_USERNAME).toBeUndefined();
+    expect(env.MAIL_PASSWORD).toBeUndefined();
+  });
+
+  it('accepts both together', () => {
+    const env = loadEnv(apiEnvSchema, {
+      ...validApi,
+      MAIL_USERNAME: 'relay-user',
+      MAIL_PASSWORD: 'relay-secret',
+    });
+    expect(env.MAIL_USERNAME).toBe('relay-user');
+    expect(env.MAIL_PASSWORD).toBe('relay-secret');
+  });
+
+  it('refuses a username with no password, naming the missing variable', () => {
+    let error: EnvValidationError | undefined;
+    try {
+      loadEnv(apiEnvSchema, { ...validApi, MAIL_USERNAME: 'relay-user' });
+    } catch (caught) {
+      error = caught as EnvValidationError;
+    }
+    expect(error).toBeInstanceOf(EnvValidationError);
+    expect(error?.variables).toContain('MAIL_PASSWORD');
+  });
+
+  it('refuses a password with no username, naming the missing variable', () => {
+    let error: EnvValidationError | undefined;
+    try {
+      loadEnv(apiEnvSchema, { ...validApi, MAIL_PASSWORD: 'relay-secret' });
+    } catch (caught) {
+      error = caught as EnvValidationError;
+    }
+    expect(error).toBeInstanceOf(EnvValidationError);
+    expect(error?.variables).toContain('MAIL_USERNAME');
+  });
+
+  it('never puts the relay password in the error raised by the pairing rule', () => {
+    // The one new rule that reads a credential-bearing field. `describeIssue`
+    // renders only authored rule parameters, and this pins that it stays true
+    // for the issue this refinement adds.
+    const password = 'S3CR3T-RELAY-PASSWORD';
+    try {
+      loadEnv(apiEnvSchema, { ...validApi, MAIL_PASSWORD: password });
+      expect.unreachable('the pairing rule must reject a lone MAIL_PASSWORD');
+    } catch (error) {
+      expect((error as Error).message).not.toContain(password);
+    }
+  });
+
+  it('still applies the Argon2 memory refinement when the mail pair is valid', () => {
+    // The two refinements share one `superRefine`. An early return in either
+    // would silently disable the other, which is exactly the shape of defect
+    // that survives a green suite.
+    expect(() =>
+      loadEnv(apiEnvSchema, {
+        ...validApi,
+        PASSWORD_ARGON2_MEMORY_KIB: '8',
+        PASSWORD_ARGON2_PARALLELISM: '4',
+        MAIL_USERNAME: 'relay-user',
+        MAIL_PASSWORD: 'relay-secret',
+      }),
+    ).toThrow(/PASSWORD_ARGON2_MEMORY_KIB/);
+  });
+
+  it('still applies the mail pairing rule when the Argon2 refinement also fails', () => {
+    let error: EnvValidationError | undefined;
+    try {
+      loadEnv(apiEnvSchema, {
+        ...validApi,
+        PASSWORD_ARGON2_MEMORY_KIB: '8',
+        PASSWORD_ARGON2_PARALLELISM: '4',
+        MAIL_USERNAME: 'relay-user',
+      });
+    } catch (caught) {
+      error = caught as EnvValidationError;
+    }
+    expect(error?.variables).toContain('MAIL_PASSWORD');
+    expect(error?.variables).toContain('PASSWORD_ARGON2_MEMORY_KIB');
+  });
+});
