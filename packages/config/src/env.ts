@@ -176,6 +176,41 @@ const apiEnvObject = sharedEnvSchema.extend({
   // gives all three one discipline, and `SECRET_TOKEN_TTL_SECONDS` in the auth
   // module exposes all three so the value is reachable rather than dead weight.
   TOKEN_TTL_INVITATION_SECONDS: z.coerce.number().int().min(1).default(604_800),
+
+  // Sessions ----------------------------------------------------------------
+  //
+  // API-only, for the third time and the same reason: `apps/web/src/env.ts`
+  // parses its schema at module load in every environment, so a variable on
+  // `sharedEnvSchema` is one every web deploy must define in order to boot. The
+  // web app never issues, resolves or revokes a session — it receives a cookie
+  // it cannot read.
+  //
+  // SECONDS THROUGHOUT, matching the token block above. `security/
+  // authentication.md` §3 states these as days and hours; one unit here means
+  // `SessionService` performs one multiplication rather than three different
+  // ones, and a mixed set is how a `60` gets read as the wrong thing.
+  //
+  // THE FIRST THREE ARE QUOTED FROM §3. Absolute lifetime 7 days, 30 with
+  // "remember me", idle timeout 24h.
+  SESSION_ABSOLUTE_LIFETIME_SECONDS: z.coerce.number().int().min(1).default(604_800),
+  SESSION_REMEMBER_ME_LIFETIME_SECONDS: z.coerce.number().int().min(1).default(2_592_000),
+  SESSION_IDLE_TIMEOUT_SECONDS: z.coerce.number().int().min(1).default(86_400),
+  // THE LAST TWO ARE NOT QUOTED FROM ANYWHERE, and saying so is the point.
+  //
+  // §5 gives the pending-MFA session no number at all — it says the session is
+  // "short-lived" and "can do nothing but complete MFA". Ten minutes is a
+  // choice made here, long enough to fetch a phone and short enough that a
+  // password-only credential is not left lying around; Task 11 owns the
+  // enrolment flow that will show whether it is right.
+  SESSION_PENDING_MFA_LIFETIME_SECONDS: z.coerce.number().int().min(1).default(600),
+  // ADR-0005 promises "a short TTL" for the Redis cache and likewise gives no
+  // number. Sixty seconds is the choice, and it is the bound on exactly one
+  // residual: a revocation that cannot reach Redis (because Redis is the thing
+  // that is down) revokes the row but cannot poison the cache entry, so a
+  // surviving entry can serve a revoked session until it expires. See the
+  // revocation docblock in `session.service.ts` — shorter narrows that window
+  // at the cost of more Postgres reads; longer widens it.
+  SESSION_CACHE_TTL_SECONDS: z.coerce.number().int().min(1).default(60),
 });
 
 /**
@@ -264,9 +299,54 @@ function checkMailCredentialPair(env: ApiEnvInput, ctx: z.RefinementCtx): void {
  * breaking two rules is reported once with both variables named, instead of
  * an operator fixing one and rediscovering the next on the following boot.
  */
+/**
+ * Two orderings between session lifetimes that no per-field rule can express.
+ *
+ * **"Remember me" must not shorten the session.** Every per-field rule passes
+ * an inverted pair, both numbers look plausible in a `.env`, and the only
+ * symptom is that the users who ticked the box are logged out first — a
+ * misconfiguration with no error, no log line and a plausible-looking cause
+ * somewhere else entirely. Inclusive at the boundary: setting the two equal
+ * during an incident is a deliberate choice, not a mistake.
+ *
+ * **The pending-MFA session must not outlive a full one.**
+ * `security/authentication.md` §5 makes the pending session "short-lived" and
+ * says it "can do nothing but complete MFA". It is the credential an attacker
+ * holds when they have the password and not the second factor, so a
+ * configuration where it lives longer than an authenticated session inverts the
+ * whole point of the factor. §5 gives no number, which is exactly why the
+ * ordering is enforced here instead of a magnitude.
+ *
+ * `too_big` rather than `custom`, for the reason `checkArgon2Cost` above
+ * records: `describeIssue` in `load-env.ts` never reads `issue.message`, so a
+ * `custom` issue renders as "failed validation (custom)" and names no rule.
+ */
+function checkSessionLifetimes(env: ApiEnvInput, ctx: z.RefinementCtx): void {
+  if (env.SESSION_REMEMBER_ME_LIFETIME_SECONDS < env.SESSION_ABSOLUTE_LIFETIME_SECONDS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.too_small,
+      minimum: env.SESSION_ABSOLUTE_LIFETIME_SECONDS,
+      type: 'number',
+      inclusive: true,
+      path: ['SESSION_REMEMBER_ME_LIFETIME_SECONDS'],
+    });
+  }
+
+  if (env.SESSION_PENDING_MFA_LIFETIME_SECONDS > env.SESSION_ABSOLUTE_LIFETIME_SECONDS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.too_big,
+      maximum: env.SESSION_ABSOLUTE_LIFETIME_SECONDS,
+      type: 'number',
+      inclusive: true,
+      path: ['SESSION_PENDING_MFA_LIFETIME_SECONDS'],
+    });
+  }
+}
+
 export const apiEnvSchema = apiEnvObject.superRefine((env, ctx) => {
   checkArgon2Cost(env, ctx);
   checkMailCredentialPair(env, ctx);
+  checkSessionLifetimes(env, ctx);
 });
 
 export const webEnvSchema = sharedEnvSchema.extend({
