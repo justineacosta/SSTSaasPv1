@@ -351,8 +351,12 @@ only then. Ruling 57. **The value was inert** — minted for a Mailpit send, no 
 row, no account — and it was purged anyway, because a repository already carrying a red GitGuardian
 check on every pull request it has had does not need a genuine-looking secret added to the pile.
 
-**Branching. Task 5 is on `feat/phase-2-task-05`, cut from `main` at `c641b9d`, unpushed, with no
-pull request.** One branch per task and one PR per task, as Tasks 1–4 were.
+**Branching. Task 5 is on `feat/phase-2-task-05`, cut from `main` at `c641b9d`, pushed as PR #10.**
+One branch per task and one PR per task, as Tasks 1–4 were. **CI green on `ubuntu-latest` before the
+merge** — runs `32955708670` and `32955711939`, both `success`, with the Mailpit SMTP integration
+spec passing in a runner for the first time. **GitGuardian green as well**, which took two history
+rewrites: the first changed the offending fixture constants at the tip and the check stayed red,
+because it scans every commit in a pull request rather than the final tree. Ruling 63.
 
 **Next action:** Task 6 — the session service: issue, rotate, revoke, cache — in a new session,
 starting with `sentinel-phase`. **Task 6 is chained with Task 7** (authentication guard, `Principal`,

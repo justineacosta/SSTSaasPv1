@@ -118,7 +118,7 @@ review then quoted the same value twice while reporting it. All three occurrence
 It is inert in substance: minted for a Mailpit send, no `VerificationToken` row was ever written,
 no account exists. It is fixed anyway because `CLAUDE.md` rule 6 says never log a token, a ledger
 file is a file, and the reflex is the control — a product whose repository has carried a red
-GitGuardian check on every pull request it has ever had does not need a genuine-looking secret
+GitGuardian check on three of its four code pull requests does not need a genuine-looking secret
 added to the pile.
 
 **The history was rewritten, on the operator's decision, before the branch was pushed.** The value
@@ -279,4 +279,13 @@ PR #5, and this task did not write it either — it is not Task 5's, because the
 must name live in `docs/superpowers/ledger/phase-1/review-diffs/` on `main`. The standing cost is
 unchanged and now larger: a security product's repository has carried a red security check on every
 pull request it has ever had, which trains people to ignore it.
+
+**Outcome, measured after the second rewrite: GitGuardian passed** — "25 commits were scanned
+without uncovering any secrets" — alongside `verify` green on both the push and pull-request runs.
+And checking that result rather than assuming it corrected a false claim in `roadmap.md`, which said
+the repository "has carried a red security check on every pull request it has ever had".
+`gh api …/check-runs` over each pull request says otherwise: **#5 failure, #6 failure, #7 success,
+#8 failure, #9 success.** PRs #7 and #9 are the documentation follow-ups recording the #6 and #8
+merges. Three of four *code* pull requests were red, which is bad enough and is what the roadmap
+now says.
 
