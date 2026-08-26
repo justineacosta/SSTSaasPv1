@@ -84,10 +84,11 @@ export interface InvitationInput extends TokenLinkInput {
 }
 
 /**
- * Task 15 owns the endpoint that sends this; the template is here because the
- * registry is where a seventh template inherits ruling 45's assertions, and
- * because §6's invitation TTL is already configured and would otherwise be a
- * value nothing reads.
+ * Task 15 owns the endpoint that sends this; the template itself is built here,
+ * in Task 5, so that it inherits ruling 45's assertions from the registry like
+ * every other member, and because §6's invitation TTL is already configured and
+ * would otherwise be a value nothing reads. It is a member of `EMAIL_TEMPLATES`
+ * today, not a template Task 15 still has to add (M4, Task 5 review).
  *
  * It addresses no one by name deliberately: an invitation is the one message
  * of the three whose recipient may have no `User` row at all, so there is no
