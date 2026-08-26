@@ -84,3 +84,45 @@ An integration failure never fails the domain operation that triggered it. Dispa
 asynchronous, retried, logged, and surfaced in the integration health view. A broken Jira
 connection must not prevent a finding being created — the finding is the product; the Jira
 issue is a convenience.
+
+## 7. Mail is not one of these integrations
+
+> **Status: the `Mailer` port and its SMTP adapter are Phase 2 work. Everything else in this
+> document is still Designed, Not Implemented, Phase 9.**
+
+Email is a third-party service reached over the network, so it looks like it belongs in the
+table in §2. It does not, and filing it there would be wrong in a way that costs something:
+every mechanism this document describes — the outbox, the dispatcher, `IntegrationProvider`,
+a per-tenant `Connection` record, the health view — exists to serve integrations a **customer
+configures for their own organisation**. Mail is none of that. There is one sender for the
+whole product, configured by the operator in `packages/config`, and no tenant chooses it,
+connects it, tests it or disconnects it.
+
+Concretely, mail differs from every row in §2 on each of this document's own mechanisms:
+
+| This document's mechanism | Why mail is outside it |
+|---|---|
+| `IntegrationProvider` interface | The port is `send({ templateId, to, subject, html, text })` — one method, no `connect`, no `configSchema`, no `DomainEventType` |
+| `OutboxEvent` and the dispatcher | The API calls the mailer directly, after commit. There is no outbox and no relay worker |
+| Per-connection credentials (§3) | One set of relay credentials in `MAIL_USERNAME` / `MAIL_PASSWORD`, operator-held, not tenant-held |
+| Retry and health surfacing (§6) | **Neither exists.** A failed send raises and is logged, once — see the gap named below |
+
+**Where it lives.** The port is `apps/api/src/infrastructure/mail/mailer.port.ts`, provided
+under the `MAILER` token by `MailModule`; the one adapter behind it speaks SMTP
+(`smtp-mailer.ts`). The six templates are `apps/api/src/modules/auth/emails/`, behind a
+registry. The decision is [ADR-0016](../decisions/ADR-0016-smtp-mailer-port.md), which also
+records why the Resend HTTP adapter is deferred until the first staging deploy: that is the
+first moment an API key and a verified sending domain exist, and therefore the first moment
+such an adapter could be run rather than merely written.
+
+**The gap this creates, stated rather than implied.** §6 above promises that dispatch is
+"asynchronous, retried, logged, and surfaced in the integration health view". Mail has only
+the logging. A failed send raises at the call site and is not retried, not queued and not
+visible anywhere an operator would look — which for a security notice ("your password was
+changed") means the signal the notice exists to deliver never arrives and nothing detects
+that. ADR-0016 names this as a real gap rather than an oversight. Phase 4 brings BullMQ, and
+mail delivery belongs on a queue with retries at that point.
+
+Should mail ever need to become tenant-configurable — a customer relay, per-organisation
+sending domains — that is the point at which it would move into this document's model, and it
+would be a new decision superseding ADR-0016 rather than an extension of it.
