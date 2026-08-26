@@ -224,7 +224,7 @@ is a no-op, measured.
 
 ### L3 — a live-format 256-bit token is committed verbatim in `report.md` §6
 
-The token `<token redacted — see ruling 57>` is pasted into the committed report. I
+A raw 256-bit token was pasted into the committed report. I
 found the message still in Mailpit and confirmed the report quotes it byte-for-byte. Harmless in
 substance — it was minted for a Mailpit send, no `VerificationToken` row was written, and no
 account exists — but rule 6 ("never log … tokens") exists to make pasting a raw token anywhere a
@@ -282,7 +282,8 @@ Other claims, each checked directly:
 - **§5 Mailpit was not emptied.** `MessagesDeleted 0` confirmed, and confirmed again across my own
   two extra runs. Recipients are `task05-<uuid>@sentinel.test` exactly as claimed.
 - **§6 the delivered message.** Found in Mailpit and read back: subject, all four paragraphs, the
-  `--` separator, both footer lines and the token `<token redacted — see ruling 57>`
+  `--` separator, both footer lines and the token (redacted here and in the report by the fix
+  round — ruling 57)
   match the report **byte-for-byte**. `WEB_BASE_URL=http://localhost:3000` and
   `TOKEN_TTL_PASSWORD_RESET_SECONDS=3600` corroborate the origin and the "1 hour".
 - **§7 commits.** 13 commits in range; all 13 carry

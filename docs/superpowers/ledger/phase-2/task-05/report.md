@@ -85,7 +85,11 @@ asserting that an unreachable relay raises, and it passes either way by design.
 
 ## 5. Ruling 50 — Mailpit was not emptied
 
-`DELETE /api/v1/messages` appears in no file in this change.
+`DELETE /api/v1/messages` is never **invoked** in this change. [Fix-round correction,
+2026-08-26: this sentence originally read "appears in no file in this change", which is false as
+written — the string appears as prose in three files (this report, the brief, and the integration
+spec's docblock). The intended claim, that nothing ever calls it, is true and the reviewer verified
+it independently. Review finding L4.]
 
 ```
 $ curl -s http://127.0.0.1:8025/api/v1/info    # before any spec ran
@@ -119,6 +123,11 @@ Choose a new password: http://localhost:3000/reset-password?token=<token redacte
 If you did not ask for this, no action is needed and your password stays as it is.
 Sentinel will never ask you for your password or a code by email or phone.
 ```
+
+[Fix-round correction, 2026-08-26. The raw 256-bit token was pasted here verbatim and has been
+replaced. It was minted for a Mailpit send, no `VerificationToken` row was ever written and no
+account exists, so nothing was exposed in substance — but `CLAUDE.md` rule 6 says never log a
+token, a ledger file is a file, and the habit is the control. Review finding L3, ruling 57.]
 
 ## 7. Commits
 
