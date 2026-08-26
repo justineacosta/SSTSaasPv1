@@ -14,7 +14,7 @@ Branch: `feat/phase-2-identity`
 | 2 | `packages/contracts` — identity contracts, Principal, TenantContext | subagent | **Done** — [brief](task-02/brief.md) · [report](task-02/report.md) · [review](task-02/review.md) · [rulings](task-02/rulings.md) |
 | 3 | Password hashing and the breach check | subagent | **Done** — [brief](task-03/brief.md) · [report](task-03/report.md) · [review](task-03/review.md) · [rulings](task-03/rulings.md) |
 | 4 | Single-use secret tokens | subagent | **Done** — [brief](task-04/brief.md) · [report](task-04/report.md) · [review](task-04/review.md) · [rulings](task-04/rulings.md) |
-| 5 | Mail infrastructure and templates | subagent | Not started |
+| 5 | Mail infrastructure and templates | subagent | **Done** — [brief](task-05/brief.md) · [report](task-05/report.md) · [review](task-05/review.md) · [rulings](task-05/rulings.md) |
 | 6 | Session service | chained with 7 | Not started |
 | 7 | Authentication guard, CSRF, CORS | chained with 6 | Not started |
 | 8 | Registration and email verification | either | Not started |
@@ -247,60 +247,126 @@ Full reasoning and cost-if-wrong for each is in [`task-04/rulings.md`](task-04/r
     a method the production type requires (TS2345) survived both. Run all three before claiming a
     tree is clean.
 
+### From Task 5
+
+Full reasoning and cost-if-wrong for each is in [`task-05/rulings.md`](task-05/rulings.md).
+
+41. **A secret in a link travels as `?token=` on a query string, and the link is built from
+    `WEB_BASE_URL` alone.** This is carry-forward rulings 34 and 36 discharged by the task that
+    owned the format. `buildTokenLink` takes a base URL and a token and cannot see a request, so a
+    host-header-derived link is not merely forbidden but unexpressible. **Binds Task 15**, which
+    sends the invitation link, and Tasks 16–17, which build the screens those links land on:
+    `/verify-email`, `/reset-password` and `/accept-invitation`, each reading `?token=`.
+
+42. **The recipient guard enforces one address, not the absence of a line break.** nodemailer parses
+    `to` as a comma-separated **list** and issues one `RCPT TO` per entry — measured delivering a
+    password-reset message to an attacker address on the right of a comma. It also does **not**
+    refuse a CRLF recipient on its own, so this guard is the only line of defence below Zod.
+    Conservative by design: comma, semicolon, angle brackets, whitespace, and anything without
+    exactly one `@` are all refused. **Any later transport that takes an address does the same.**
+
+43. **There are seven email templates, not six, and the invitation is one of them.** Built in Task 5
+    along with the rest, so it inherits the registry's assertions like every other member. **Task 15
+    does not add a template** — it adds the endpoint that sends one that already exists. The next
+    template added is the eighth and no task owns it.
+
+44. **Mail is sent after the transaction commits, never inside it.** A send inside the transaction
+    either holds a transaction open across network I/O to a third party or sends "your password was
+    changed" for a change that then rolls back. In Task 5 this is a docblock and no test, because no
+    endpoint exists to demonstrate it — deliberately not faked. **Binds Tasks 8, 10, 11 and 15**,
+    and Task 8 sets the pattern the other three copy.
+
+45. **A failed send is not retried, not queued, and nothing alerts on it.** ADR-0016 and
+    `integrations.md` §7 both name it. **Task 8 must ship a resend path** rather than treating the
+    first verification send as authoritative; a failed *security notice* is the worse case, because
+    the signal that would reveal an account takeover simply never arrives. **Owed by Phase 4**, which
+    brings the queue.
+
+46. **`escapeHtml` in `emails/` defends a quoted attribute or an element body, and nothing else.** It
+    leaves `/`, `=`, space, `(`, `{`, `;` and `:` untouched, so an **unquoted** attribute added to
+    `layout.ts` later inherits an escaper that does not defend it. A value interpolated into a
+    `style`, a `<script>` or a URL context needs its own encoder. Scheme checking is separate and
+    explicit — `renderEmail` refuses an action URL that is not http or https.
+
+47. **A token quoted back by a relay *without* its `?token=` prefix still reaches a log line.**
+    Measured through the real adapter and the real logger: connection-refused and TLS-mismatch are
+    clean, a token inside a rejected `?token=` URL **is** redacted, and a bare token in a relay's
+    rejection text is not. Not closed, because widening the value pattern is what carry-forward
+    ruling 34 records as dangerous. **Owed by whichever task next touches `redaction.ts`**, together
+    with ruling 36's other residuals.
+
+48. **`apiEnvSchema` and `webEnvSchema` each declare their own `WEB_BASE_URL` and `API_BASE_URL`.**
+    A rule applied to one is half-applied. Both now constrain the scheme to http/https. Related:
+    **a failed `.url()` check marks a Zod result dirty, not aborted, so a `superRefine` still runs
+    over the invalid value** — an unguarded `new URL()` in a refinement throws past `loadEnv`'s
+    error envelope. And `describeIssue` now renders an authored `params.rule` for a `custom` issue,
+    so a cross-field rule can say why it failed instead of "failed validation (custom)".
+
 ## Pause state
 
-**2026-08-26 — Task 4 complete and verified; Task 5 is next.**
+**2026-08-26 — Task 5 complete and verified; Task 6 is next.**
 
-Task 4 landed the two-layer secret-token discipline in `apps/api/src/modules/auth/`:
-`secret-token.ts` (mint 256 bits, SHA-256, base64url — the primitive Task 6 will use for
-`Session.tokenHash` and Task 15 for `Invitation.tokenHash`) and `TokenService` (issue and consume
-`VerificationToken` rows for the two purposes the Prisma enum has). Plus `TOKEN_INVALID` in both
-error lists with the parity spec ruling 27 had been asking for since Task 3, three TTL variables
-on `apiEnvSchema`'s base object, and a measured fix to the redacting logger. Evidence is in
-`roadmap.md`; the implementer's commands and exit codes are in [`task-04/report.md`](task-04/report.md).
+Task 5 landed a `Mailer` port with one SMTP adapter (`apps/api/src/infrastructure/mail/`) and seven
+email templates behind a registry (`apps/api/src/modules/auth/emails/`). Every email this product
+sends is a real SMTP message: the integration spec sends through the real adapter to the compose
+Mailpit and reads the message back over Mailpit's HTTP API, asserting the recipient, the subject,
+both MIME parts, and the `?token=` value parsed out of a real `URL`. **ADR-0016 was written and
+committed before any implementation commit** — `09:28:54` against a first implementation commit at
+`09:38:20`, verified by the reviewer rather than asserted. Evidence is in `roadmap.md`.
 
-**One High, three Medium, five Low — and the High was the same defect shape the task existed to
-eliminate, one layer up.** `consume` was built correctly as a conditional update whose affected-row
-count is the decision, and the concurrency test for it is excellent. Nobody pointed the same weapon
-at `issue`, whose supersede-then-insert does not survive concurrency inside a transaction: measured
-at two live tokens in ten rounds of ten before the fix, one in ten after. Ruling 31. The citation
-pass found **no false sentence about a document** for the second task running.
+**One High, four Medium, five Low, and the High was in a control the implementer volunteered.**
+`SmtpMailer` refused a recipient containing CR/LF/NUL — nobody asked for that guard — but not a
+comma, and nodemailer parses `to` as an address **list**. Measured twice: two `RCPT TO` commands
+from one `send`, and against real Mailpit an attacker address on the right of the comma received a
+password-reset message. The same probe showed nodemailer does not refuse a CRLF recipient on its
+own, so the guard was the only line of defence below Zod. Ruling 53. **A guard that half-holds is
+still better than the absent guard it replaced** — its existence is what gave the review something
+specific to attack.
 
-**The intermittent integration suite is resolved, and it was never Task 4's code.** Two latent
-defects: `fileParallelism: false` had never been in force since the day it was written (Vitest
-resolves the pool's worker count from the root config, not a project's — measured, 140.60s of test
-time inside a 19.72s wall clock), and `rate-limit.integration.spec.ts`'s `beforeEach` deletes
-`ratelimit:login:*`, which is the namespace `sliding-window.integration.spec.ts` writes its keys
-in. Root `test:integration` now passes `--no-file-parallelism`; five consecutive green runs
-against roughly one failure in two before. Ruling 33.
+**The citation pass found two false sentences and confirmed everything else reproduced exactly** —
+every command, exit code, file line count and commit SHA in the implementer's report, re-run rather
+than read. The two: a claim that Task 15 would add "the seventh template" when the registry already
+holds seven and the invitation is one of them (ruling 56), and a literal "appears in no file" that
+was false as written while its intended meaning was true (L4). The first was the dangerous one, and
+it was heading for this file's carry-forward section — the exact path that produced five of Phase
+1's twelve instances.
 
-**The branch history was rewritten** so `apps/api/openapi.json` moves with the contracts commit
-that changes it. Before that, four commits failed `pnpm check:openapi` and a change to the shipped
-API contract sat inside a commit typed `docs(ledger):`. Ruling 39 in `task-04/rulings.md`. The tree
-was proven byte-identical to the pre-rewrite tree before the backup branch was deleted.
+**Ruling 45 is the strongest thing in the change and it was verified destructively.** A deliberately
+broken extra template fired **eight** assertions naming every planted defect; leaving it
+unclassified fired a ninth; omitting it from `CASES` produced the promised `TS2741`. Rulings 42, 48,
+49, 50 and 52 all held under measurement, including a real `dist/main.js` boot with nothing on the
+SMTP port still answering `/health/live 200`.
 
-**Nothing authenticates anybody yet.** `AuthModule` now registers three services and **no
-controller**; the committed `openapi.json` still publishes four routes, and `apps/web/app/(auth)/`
-still holds a layout with no routes under it. A service nothing calls is not a feature.
+**Nothing authenticates anybody yet, and nothing sends an email either.** `pnpm check:openapi` still
+publishes **four routes**. The mailer has no caller: `Mailer.send` is invoked by specs and by
+nothing else, so the six notice and verification messages exist as templates and a transport, not as
+mail any user receives. `apps/web/app/(auth)/` still holds a layout with no routes under it.
 
-**Branching. Task 4 is on `main`.** Built on `feat/phase-2-task-04`, cut from `main`, one branch
-per task and one PR per task. **PR #8 was rebase-merged on 2026-08-26 at 01:10Z** (merge commit
-`3473a6d`) and the branch was deleted, so `feat/phase-2-task-04` is spent history. CI was green on
-`ubuntu-latest` before the merge (run `32917703646`, 3m24s), with the integration stage reporting
-12 files / 163 tests. **Cut Task 5 from `main`.**
+**One residual is the operator's to decide.** A live-format 256-bit token was committed verbatim in
+`report.md` and is redacted there now, but it remains reachable in this branch's history at
+`aaa6d39` and `d5161c5`. It is inert — minted for a Mailpit send, no `VerificationToken` row, no
+account — but purging it means a history rewrite, and the branch is unpushed so that is still cheap.
+Ruling 57. **Task 4's precedent is a backup branch plus a tree diff before the backup is deleted.**
 
-**Next action:** Task 5 — mail infrastructure and templates — in a new session, starting with
-`sentinel-phase`. It owes **ADR-0016** (the mailer port and the SMTP-against-Mailpit decision),
-which is written and committed *before* the implementation, as ADRs 0014 and 0015 were.
+**Branching. Task 5 is on `feat/phase-2-task-05`, cut from `main` at `c641b9d`, unpushed, with no
+pull request.** One branch per task and one PR per task, as Tasks 1–4 were.
 
-Before starting Task 5, read carry-forward rulings **34** and **36**: Task 5 owns the link format,
-and a secret must travel in a `?token=` query parameter. A path-segment link
-(`/verify/<token>`) is covered by no redaction this repository has, and was measured leaking a
-real token verbatim.
+**Next action:** Task 6 — the session service: issue, rotate, revoke, cache — in a new session,
+starting with `sentinel-phase`. **Task 6 is chained with Task 7** (authentication guard, `Principal`,
+CSRF, CORS) under one implementer, because a cold agent re-invents conventions rather than
+inheriting them. Task 7 owes **ADR-0017** (explicit CORS allowlist with `credentials: true`, not a
+Next-side proxy), written and committed before the implementation as ADRs 0014, 0015 and 0016 were.
 
-**Tasks 8, 10 and 15 inherit three items** — rulings 37 (check `User.status` after `consume`), 38
-(the `AuditEvent` is the endpoint's, and the raw token never enters its metadata) and 32 (the
-partial unique index is owed by whichever task next opens a migration). Put them in those briefs
-when they are written.
+Before starting Task 6, read carry-forward rulings **6** and **31**. Ruling 6: `Session.status` has
+no `@default`, deliberately, so every `session.create` must state it and forgetting is a compile
+error rather than a silently privileged session. Ruling 31: `TokenService.issue` holds
+`pg_advisory_xact_lock(hashtext('vtk:<userId>:<purpose>'))` as the first statement in its
+transaction, because a transaction is not a lock — **any supersede-then-insert pair against a
+non-unique index needs the same thing**, and session rotation is exactly that shape.
+
+**Tasks 8, 10 and 15 inherit four items** — rulings 37 (check `User.status` after `consume`), 38
+(the `AuditEvent` is the endpoint's, and the raw token never enters its metadata), 32 (the partial
+unique index is owed by whichever task next opens a migration) and now 44 (mail is sent after the
+transaction commits, never inside it). **Task 8 additionally owns a resend path**, per ruling 45.
 
 **Task 9 still inherits rulings 24 and 25** from Task 3, unchanged.

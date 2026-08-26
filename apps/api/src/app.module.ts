@@ -36,7 +36,7 @@ import { OpenApiModule } from './openapi/openapi.module.js';
     RedisModule,
     StorageModule,
     // Registered although nothing injects `MAILER` yet. Task 5 ships the port,
-    // the adapter and six templates for Tasks 8, 10, 11 and 15; wiring it into
+    // the adapter and seven templates for Tasks 8, 10, 11 and 15; wiring it into
     // the composition root now means the factory runs at every boot and in
     // every integration spec, so a mailer that could not be constructed — or
     // that reached the network on the way up, which ruling 49 forbids — fails
