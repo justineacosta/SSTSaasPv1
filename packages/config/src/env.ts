@@ -39,6 +39,37 @@ const apiEnvObject = sharedEnvSchema.extend({
   MAIL_PORT: port,
   MAIL_FROM: z.string().min(1),
 
+  // SMTP authentication and transport security ------------------------------
+  //
+  // ADR-0016 defers the Resend HTTP adapter and states that the *same* SMTP
+  // adapter serves staging and production, pointed at whatever relay that
+  // environment provides. That sentence is only true if the adapter can present
+  // a credential and negotiate TLS, and neither was expressible before these
+  // three variables existed — so without them ADR-0016's central claim would be
+  // aspirational, which is the exact defect class it was written to avoid.
+  //
+  // All three are API-only for the same reason as the password and token blocks
+  // below: `apps/web/src/env.ts` parses its schema at module load in every
+  // environment, so a variable on `sharedEnvSchema` is a variable every web
+  // deploy must define in order to boot. The web app never sends mail.
+  //
+  // MAIL_SECURE means *implicit* TLS — TLS from the first byte, which is port
+  // 465's convention. It defaults to `false` because that is correct for both
+  // environments that exist: Mailpit on 1025 speaks plaintext, and a relay on
+  // 587 expects a plaintext connection that is then upgraded with STARTTLS,
+  // which nodemailer performs on its own whenever the server advertises it.
+  // Defaulting this to `true` would break every environment in the repository
+  // today in exchange for protecting none of them.
+  MAIL_SECURE: booleanFromString.default('false'),
+  // Optional and with no default, deliberately: Mailpit accepts unauthenticated
+  // mail and inventing a placeholder credential would mean every environment
+  // ships a fake one. `.min(1)` rather than allowing the empty string, so
+  // `MAIL_USERNAME=` is refused at boot naming the variable rather than
+  // silently meaning "absent" — declaring a credential and leaving it blank is
+  // a mistake, not a configuration.
+  MAIL_USERNAME: z.string().min(1).optional(),
+  MAIL_PASSWORD: z.string().min(1).optional(),
+
   // Passwords ---------------------------------------------------------------
   //
   // API-only, and deliberately not on `sharedEnvSchema`. `apps/web/src/env.ts`
@@ -103,6 +134,10 @@ const apiEnvObject = sharedEnvSchema.extend({
  * Argon2 additionally requires **memory >= 8 x parallelism**, a relationship no
  * per-field rule can express.
  *
+ * (This block documents `checkArgon2Cost` below, which is the refinement it has
+ * always described; a second cross-field rule joined it in Task 5 and the two
+ * are now called side by side from one `superRefine` — see `apiEnvSchema`.)
+ *
  * Without this, `PASSWORD_ARGON2_MEMORY_KIB=8 PASSWORD_ARGON2_PARALLELISM=4`
  * passes every rule above and then throws `Memory cost is too small` from a
  * native module inside `PasswordService`'s constructor at Nest boot — a message
@@ -120,7 +155,9 @@ const apiEnvObject = sharedEnvSchema.extend({
  * bounds below are the rule's own parameters; the rule is genuinely dynamic,
  * and a cost parameter bounded to 1..255 is not a credential.
  */
-export const apiEnvSchema = apiEnvObject.superRefine((env, ctx) => {
+type ApiEnvInput = z.infer<typeof apiEnvObject>;
+
+function checkArgon2Cost(env: ApiEnvInput, ctx: z.RefinementCtx): void {
   const minimumMemory = env.PASSWORD_ARGON2_PARALLELISM * 8;
   if (env.PASSWORD_ARGON2_MEMORY_KIB >= minimumMemory) return;
 
@@ -138,6 +175,50 @@ export const apiEnvSchema = apiEnvObject.superRefine((env, ctx) => {
     inclusive: true,
     path: ['PASSWORD_ARGON2_PARALLELISM'],
   });
+}
+
+/**
+ * SMTP credentials are all-or-nothing.
+ *
+ * `nodemailer` given a username and no password does not fail — it drops `auth`
+ * and connects unauthenticated. A relay then either rejects the message or, on
+ * a permissive relay, accepts and drops it. Either way the symptom (mail not
+ * arriving) appears nowhere near the cause (one unset variable), and the notice
+ * emails `security/authentication.md` §2 and §5 require are precisely the mail
+ * whose silent non-delivery nothing detects. Refusing at boot converts that
+ * into an error naming the variable, which is what `development/setup.md`
+ * promises configuration failures look like.
+ *
+ * The issue is raised as `invalid_type` / received `undefined` rather than
+ * `custom` because `describeIssue` in `load-env.ts` never reads `issue.message`
+ * — a `custom` issue would render as "failed validation (custom)" and name no
+ * rule. `expected` and `received` are type-category tags, so this path cannot
+ * carry the relay password into the error text; `env.spec.ts` pins that.
+ */
+function checkMailCredentialPair(env: ApiEnvInput, ctx: z.RefinementCtx): void {
+  const hasUsername = env.MAIL_USERNAME !== undefined;
+  const hasPassword = env.MAIL_PASSWORD !== undefined;
+  if (hasUsername === hasPassword) return;
+
+  ctx.addIssue({
+    code: z.ZodIssueCode.invalid_type,
+    expected: 'string',
+    received: 'undefined',
+    path: [hasUsername ? 'MAIL_PASSWORD' : 'MAIL_USERNAME'],
+  });
+}
+
+/**
+ * Every cross-field rule, called unconditionally.
+ *
+ * **No rule here may `return` out of this function.** Each check owns its own
+ * early return; the composition below runs all of them so that a configuration
+ * breaking two rules is reported once with both variables named, instead of
+ * an operator fixing one and rediscovering the next on the following boot.
+ */
+export const apiEnvSchema = apiEnvObject.superRefine((env, ctx) => {
+  checkArgon2Cost(env, ctx);
+  checkMailCredentialPair(env, ctx);
 });
 
 export const webEnvSchema = sharedEnvSchema.extend({
