@@ -102,14 +102,43 @@ export const createNodemailerTransport: CreateSmtpTransport = (config) =>
 /**
  * `to` reaches an SMTP `RCPT TO` command and a `To:` header, and a header is
  * terminated by CRLF — so an address carrying one is header injection, and
- * `Bcc:` is the header an attacker wants. Task 8 will pass an address that came
- * from a registration form; Zod validates it at that boundary and this is the
- * second line, on the same reasoning as the subject sanitiser in the email
- * layout. Refusing is right rather than stripping: unlike a subject, a mangled
- * address has no useful meaning, and there is no legitimate sender to serve.
+ * `Bcc:` is the header an attacker wants.
  */
 // eslint-disable-next-line no-control-regex -- matching the NUL is precisely the point.
 const FORBIDDEN_IN_ADDRESS = /[\r\n\u0000]/;
+
+/**
+ * Everything that makes `to` something other than **one** plain address.
+ *
+ * `nodemailer` parses `to` as an address *list*. H1 (Task 5 review) measured
+ * `to: 'a@b.test, attacker@evil.test'` producing two `RCPT TO` commands on the
+ * wire and, against the real Mailpit, delivering the message to both — so a
+ * guard that refuses only line terminators stops header injection and does not
+ * stop a caller handing the port a list. The separators go here, and so do the
+ * `<…>` display-name form and all whitespace, none of which belong in an
+ * address this port is willing to send to.
+ */
+const ADDRESS_LIST_SYNTAX = /[,;<>\s]/;
+
+/**
+ * One recipient, and **deliberately conservative** about what that means.
+ *
+ * This is not RFC 5322 validation and must not grow into one. The grammar
+ * permits quoted local parts, comments, folding whitespace and group syntax; a
+ * parser faithful to it accepts most of what the two patterns above exist to
+ * refuse. Zod's `.email()` at the HTTP boundary is the first line — Task 8
+ * onwards — and a second line is only worth having here if it is *narrower*
+ * than the first. Refusing a rare-but-valid address costs one undelivered
+ * message; accepting a list costs a live single-use credential delivered to
+ * whoever else is in it, and the token-link templates carry one.
+ *
+ * So: no line terminator, no NUL, no separator, no bracket, no whitespace, and
+ * exactly one `@`.
+ */
+function isSingleAddress(to: string): boolean {
+  if (FORBIDDEN_IN_ADDRESS.test(to) || ADDRESS_LIST_SYNTAX.test(to)) return false;
+  return to.split('@').length === 2;
+}
 
 export class SmtpMailer implements Mailer {
   private readonly transport: SmtpTransport;
@@ -127,8 +156,11 @@ export class SmtpMailer implements Mailer {
   }
 
   async send(mail: OutgoingMail): Promise<SentMail> {
-    if (FORBIDDEN_IN_ADDRESS.test(mail.to)) {
-      throw new Error('Refusing to send: the recipient address contains a line break.');
+    if (!isSingleAddress(mail.to)) {
+      // The address is never repeated back: it is caller-supplied, this error
+      // is logged, and an injected `Bcc: attacker@evil.test` in a log line is
+      // the same defect class as the injection that was just refused.
+      throw new Error('Refusing to send: the recipient must be exactly one email address.');
     }
 
     // Bound before the try, so the catch below cannot reach `mail.html`,
