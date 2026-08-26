@@ -530,3 +530,133 @@ describe('apiEnvSchema — SMTP authentication and TLS', () => {
     expect(error?.variables).toContain('PASSWORD_ARGON2_MEMORY_KIB');
   });
 });
+
+/**
+ * Session lifetimes and the cache TTL — `security/authentication.md` §3.
+ *
+ * §3 fixes four durations and ADR-0005 implies a fifth. The four: an absolute
+ * lifetime of 7 days, 30 with "remember me"; an idle timeout of 24h; and the
+ * short one §5 gives the pending-MFA session, which §5 describes only as
+ * "short-lived" and does not number. The fifth is the Redis cache TTL, which
+ * ADR-0005 calls "short" and likewise does not number — the two undocumented
+ * numbers are named as choices in `session.service.ts` rather than presented as
+ * quotations.
+ *
+ * They are configuration rather than constants for the same reason the §6 TTLs
+ * are: an operator containing an incident shortens a lifetime without a build
+ * and a deploy.
+ */
+describe('session lifetime configuration', () => {
+  it('defaults to security/authentication.md §3 exactly', () => {
+    const env = loadEnv(apiEnvSchema, validApi);
+    expect(env.SESSION_ABSOLUTE_LIFETIME_SECONDS).toBe(604_800); // 7 days
+    expect(env.SESSION_REMEMBER_ME_LIFETIME_SECONDS).toBe(2_592_000); // 30 days
+    expect(env.SESSION_IDLE_TIMEOUT_SECONDS).toBe(86_400); // 24 hours
+  });
+
+  it('carries a pending-MFA lifetime and a cache TTL, both far shorter', () => {
+    const env = loadEnv(apiEnvSchema, validApi);
+    expect(env.SESSION_PENDING_MFA_LIFETIME_SECONDS).toBe(600); // 10 minutes
+    expect(env.SESSION_CACHE_TTL_SECONDS).toBe(60);
+  });
+
+  it('is expressed in seconds throughout, like the §6 TTLs beside it', () => {
+    const env = loadEnv(apiEnvSchema, validApi);
+    expect(env.SESSION_ABSOLUTE_LIFETIME_SECONDS).toBe(7 * 24 * 60 * 60);
+    expect(env.SESSION_IDLE_TIMEOUT_SECONDS).toBe(24 * 60 * 60);
+  });
+
+  it('coerces the shortened values an operator sets during an incident', () => {
+    const env = loadEnv(apiEnvSchema, {
+      ...validApi,
+      SESSION_ABSOLUTE_LIFETIME_SECONDS: '3600',
+      SESSION_REMEMBER_ME_LIFETIME_SECONDS: '7200',
+      SESSION_IDLE_TIMEOUT_SECONDS: '300',
+      SESSION_PENDING_MFA_LIFETIME_SECONDS: '120',
+      SESSION_CACHE_TTL_SECONDS: '5',
+    });
+    expect(env.SESSION_ABSOLUTE_LIFETIME_SECONDS).toBe(3_600);
+    expect(env.SESSION_REMEMBER_ME_LIFETIME_SECONDS).toBe(7_200);
+    expect(env.SESSION_IDLE_TIMEOUT_SECONDS).toBe(300);
+    expect(env.SESSION_PENDING_MFA_LIFETIME_SECONDS).toBe(120);
+    expect(env.SESSION_CACHE_TTL_SECONDS).toBe(5);
+  });
+
+  it.each([
+    ['SESSION_ABSOLUTE_LIFETIME_SECONDS', '0'],
+    ['SESSION_REMEMBER_ME_LIFETIME_SECONDS', '-1'],
+    ['SESSION_IDLE_TIMEOUT_SECONDS', 'a day'],
+    ['SESSION_PENDING_MFA_LIFETIME_SECONDS', '1.5'],
+    ['SESSION_CACHE_TTL_SECONDS', ''],
+  ])('refuses a %s of "%s" and names it', (variable, value) => {
+    expect(() => loadEnv(apiEnvSchema, { ...validApi, [variable]: value })).toThrow(
+      new RegExp(variable),
+    );
+  });
+
+  it('refuses a remember-me lifetime shorter than the ordinary one', () => {
+    // "Remember me" that shortens the session is the inversion nobody would
+    // write deliberately and nothing else would catch: every per-field rule
+    // passes, both values are plausible, and the only symptom is that the users
+    // who ticked the box are logged out first.
+    expect(() =>
+      loadEnv(apiEnvSchema, {
+        ...validApi,
+        SESSION_ABSOLUTE_LIFETIME_SECONDS: '604800',
+        SESSION_REMEMBER_ME_LIFETIME_SECONDS: '3600',
+      }),
+    ).toThrow(/SESSION_REMEMBER_ME_LIFETIME_SECONDS/);
+  });
+
+  it('accepts a remember-me lifetime equal to the ordinary one', () => {
+    // The boundary is inclusive: an operator who wants "remember me" to grant
+    // nothing extra during an incident is making a deliberate choice, not a
+    // mistake.
+    const env = loadEnv(apiEnvSchema, {
+      ...validApi,
+      SESSION_ABSOLUTE_LIFETIME_SECONDS: '604800',
+      SESSION_REMEMBER_ME_LIFETIME_SECONDS: '604800',
+    });
+    expect(env.SESSION_REMEMBER_ME_LIFETIME_SECONDS).toBe(604_800);
+  });
+
+  it('refuses a pending-MFA lifetime longer than a full session', () => {
+    // §5's pending session "can do nothing but complete MFA". One that outlives
+    // an authenticated session is not short-lived in any sense §5 would
+    // recognise, and it is the credential an attacker holds when they have the
+    // password and not the factor.
+    expect(() =>
+      loadEnv(apiEnvSchema, {
+        ...validApi,
+        SESSION_ABSOLUTE_LIFETIME_SECONDS: '600',
+        SESSION_PENDING_MFA_LIFETIME_SECONDS: '3600',
+      }),
+    ).toThrow(/SESSION_PENDING_MFA_LIFETIME_SECONDS/);
+  });
+
+  it('still applies the Argon2 refinement when a session rule also fails', () => {
+    // Same property the mail pairing rule is asserted for: no rule in the
+    // shared `superRefine` may return out of the function.
+    let error: EnvValidationError | undefined;
+    try {
+      loadEnv(apiEnvSchema, {
+        ...validApi,
+        PASSWORD_ARGON2_MEMORY_KIB: '8',
+        PASSWORD_ARGON2_PARALLELISM: '4',
+        SESSION_ABSOLUTE_LIFETIME_SECONDS: '604800',
+        SESSION_REMEMBER_ME_LIFETIME_SECONDS: '3600',
+      });
+    } catch (caught) {
+      error = caught as EnvValidationError;
+    }
+    expect(error?.variables).toContain('PASSWORD_ARGON2_MEMORY_KIB');
+    expect(error?.variables).toContain('SESSION_REMEMBER_ME_LIFETIME_SECONDS');
+  });
+
+  it('keeps the session variables off the schema the web app boots with', () => {
+    expect(Object.keys(webEnvSchema.shape).filter((key) => key.startsWith('SESSION_'))).toEqual([]);
+    expect(Object.keys(sharedEnvSchema.shape).filter((key) => key.startsWith('SESSION_'))).toEqual(
+      [],
+    );
+  });
+});
