@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD, DiscoveryModule } from '@nestjs/core';
 import { RateLimitGuard } from './common/guards/rate-limit.guard.js';
 import { ConfigModule } from './infrastructure/config/config.module.js';
+import { MailModule } from './infrastructure/mail/mail.module.js';
 import { PrismaModule } from './infrastructure/prisma/prisma.module.js';
 import { RedisModule } from './infrastructure/redis/redis.module.js';
 import { StorageModule } from './infrastructure/storage/storage.module.js';
@@ -34,6 +35,13 @@ import { OpenApiModule } from './openapi/openapi.module.js';
     PrismaModule,
     RedisModule,
     StorageModule,
+    // Registered although nothing injects `MAILER` yet. Task 5 ships the port,
+    // the adapter and six templates for Tasks 8, 10, 11 and 15; wiring it into
+    // the composition root now means the factory runs at every boot and in
+    // every integration spec, so a mailer that could not be constructed — or
+    // that reached the network on the way up, which ruling 49 forbids — fails
+    // loudly here rather than at the first send, six tasks later.
+    MailModule,
     AuthModule,
     HealthModule,
     OpenApiModule,

@@ -23,6 +23,7 @@
     "@sentinel/observability": "workspace:*",
     "@sentinel/storage": "workspace:*",
     "ioredis": "^5.11.1",
+    "nodemailer": "^9.0.5",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
     "zod": "^3.25.76",
@@ -31,6 +32,7 @@
   "devDependencies": {
     "@nestjs/testing": "^11.2.1",
     "@types/express": "^5.0.6",
+    "@types/nodemailer": "^8.0.1",
     "@types/supertest": "^7.2.1",
     "dotenv": "^16.6.1",
     "dotenv-cli": "^7.4.0",
