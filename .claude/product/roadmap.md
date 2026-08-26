@@ -14,7 +14,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Not Implemented** — Tasks 1–5 of 18 done 2026-08-26 (schema, migrations, registry, wire contracts, password hashing, the breach check, single-use secret tokens, and the mailer with seven templates); nothing authenticates anybody yet, and no email has a caller |
+| 2 | Identity | **Not Implemented** — Tasks 1–6 of 18 done 2026-08-26 (schema, migrations, registry, wire contracts, password hashing, the breach check, single-use secret tokens, the mailer with seven templates, and the session service); nothing authenticates anybody yet, no email has a caller, and no cookie has reached a browser |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -602,9 +602,12 @@ routes under it. Not one of the three exit criteria above is met. Per the plan, 
 not a feature, and a service no endpoint calls is not one either.
 
 `apps/api/src/modules/` now contains `auth` alongside `health`, and the sentence that used to read
-"only `health`" is corrected wherever it appeared. `AuthModule` registers **three services and no
-controller**: `PasswordService`, `BreachCheckService` and — as of Task 4 — `TokenService`, all of
-them callable from Tasks 6–15 and called by nothing today.
+"only `health`" is corrected wherever it appeared. `AuthModule` exports **four services and registers no
+controller**: `PasswordService`, `BreachCheckService`, `TokenService` and — as of Task 6 —
+`SessionService`, all of them callable from Tasks 7–15 and called by nothing today. It
+provides two more it deliberately does not export, `SessionRepository` and
+`RedisSessionCache`, so no module outside `auth` can reach a session row or a cache key
+except through the service that enforces the policy.
 
 **Task 2 evidence, 2026-08-25 at commit `4788826`.** Every command re-run by the orchestrator on
 the finished tree rather than taken from the implementer's report, with exit codes captured
@@ -1047,6 +1050,98 @@ taught an hour earlier, arriving a second time in the same task. The values them
 credentials: two 43-character random base64url constants used as opaque round-trip fixtures in
 `links.spec.ts` and `registry.spec.ts`, replaced with `FIXTURE_not_a_real_token-…`, which keeps the
 length and charset the specs actually need and none of the entropy. Ruling 63.
+
+**Task 6 evidence, 2026-08-26 at commit `4fbcdb3`.** Every command re-run by the orchestrator on
+the finished tree rather than taken from the implementer's report, with exit codes captured outside
+a pipe. Task 5 was re-verified the same way on `main` at `2fceaaa` before Task 6 began — all eleven
+commands exit 0, with `pnpm test` at 61 files / 847 tests, which is 1 file and 19 tests above the
+table Task 5 recorded for itself because the two `check:secrets` commits landed after it.
+
+| Command | Exit | What it proves |
+|---|---|---|
+| `pnpm format:check` | 0 | Prettier style across the workspace. |
+| `pnpm lint` | 0 | 14 tasks. ESLint clean, including the no-`any` and no-`console` rules. |
+| `pnpm typecheck` | 0 | 14 tasks. The types compile — and nothing about behaviour. |
+| `pnpm test` | 0 | **63 files / 917 tests**, up from 61 / 847 at Task 5. |
+| `pnpm check:specs` | 0 | 77 spec files, each claimed by exactly one Vitest project. |
+| `pnpm test:integration` | 0 | **14 files / 192 tests** against real Postgres 16 and the compose Redis, up from 13 / 169. |
+| `pnpm build` | 0 | 8 tasks. |
+| `pnpm check:openapi` | 0 | Byte-identical, still **4 routes**. **This is the proof that no endpoint shipped.** |
+| `pnpm check:registry` | 0 | 14 models, unchanged — Task 6 added no table and opened no migration. |
+| `pnpm check:secrets` | 0 | 332 tracked files, no credential-shaped literals. |
+| `docker compose ps` | 0 | postgres, redis, minio, mailpit all `Up (healthy)`. |
+
+`pnpm test:e2e` was **not run** and has no row. Task 6 touches no `apps/web` path and ships no
+route, so it cannot reach a rendered page.
+
+What that table licenses and nothing more: a session can be issued, resolved, rotated and revoked
+by a caller inside the API process, and the properties that only a real Postgres and a real Redis
+can falsify have been falsified deliberately and then fixed. **It says nothing about anybody being
+able to log in**, because nothing calls any of it.
+
+**What Task 6 delivered.** `SessionService`, `SessionRepository`, `RedisSessionCache` and
+`cookies.ts` under `apps/api/src/modules/auth/`: a 256-bit token whose SHA-256 hash is all that is
+stored, both of §3's clocks enforced independently, rolling renewal only past the halfway mark of
+the idle window, rotation on privilege change with the absolute cap inherited rather than restarted,
+single and bulk revocation, and the `__Host-session` cookie's attributes as one authority. Five
+`SESSION_*` environment variables with a cross-field rule, added inside `apiEnvSchema`'s base object
+because it is a `ZodEffects` (carry-forward ruling 30).
+
+**Revocation is immediate by a mechanism `security/authentication.md` §3 did not describe, and the
+document was corrected in the same change.** §3 and ADR-0005 both said revocation "deletes the cache
+entry and the row together". Measured, a delete does not achieve that in either order: a resolve
+that has already read a live row can land its cache write *after* the delete, and the next resolve
+serves a revoked session until the TTL expires. So revocation writes a **tombstone** and every live
+write goes through a Lua compare-and-set that refuses to overwrite one — Redis runs a script
+atomically, so there is no interleaving in which a live entry replaces a tombstone. **ADR-0005 was
+deliberately not edited**: `CLAUDE.md` makes an accepted ADR immutable, the decision it records is
+unchanged, and only an implementation sentence inside it is now known to be insufficient, so §3
+carries the correction and names the ADR as predating the measurement (ruling 53).
+
+**Two measurements the brief demanded in advance, both re-run by the reviewer.** A `__Host-` cookie
+**is** accepted over `http://localhost` — Chromium 151.0.7922.34, the cookie stored and sent back,
+with the two negative controls (`Domain=localhost` and `Path=/sub`) both rejected, which is what
+rules out the browser ignoring the prefix. Task 18's E2E suite therefore has no surprise waiting in
+it. And **rotation does not need carry-forward ruling 31's advisory lock**: unlike token issuance it
+supersedes one committed row by primary key, so Postgres arbitrates. 60 rounds of two parallel
+rotations gave 60/60 single successors; a read-then-write substitute gave 60/60 double successors —
+one credential, two live sessions, which is a session-fixation defence that does not defend.
+
+**Two High findings, one Medium, four citation findings, and both Highs were in the gap between what
+a test asserts and what it appears to assert.** A rotation test compared two `Date.now()`-derived
+values at millisecond precision, so the mutation that restarts the 7-day absolute cap passed or
+failed on a coin flip (ruling 49). And `rotateSessionInputSchema` defaulted `status` to `'ACTIVE'`,
+contradicting the argument written twelve lines above it in the same file: `rotate({ sessionId })`
+on a ten-minute `PENDING_MFA` session returned a thirty-day `ACTIVE` credential with
+`mfaCompletedAt: null` and nothing proved. The default is gone and a promotion without evidence now
+throws (ruling 50). The Medium was a revocation-immediacy residual the task had not disclosed:
+a session created between the enumeration and the write in `revokeMany` **is** revoked in Postgres
+but was never tombstoned, and the reviewer measured it resolving as valid from a warm cache entry
+with Redis healthy. Bulk revocation now poisons twice (ruling 51). All ten findings are
+dispositioned in
+[`docs/superpowers/ledger/phase-2/task-06/rulings.md`](../../docs/superpowers/ledger/phase-2/task-06/rulings.md).
+
+**The implementer overturned one of the reviewer's claims by measurement, and was right.** The
+review called the weak assertion vacuous; it was flaky — it caught the mutant when two clock
+readings straddled a millisecond and missed it when they did not, and both agents' runs were real.
+The finding and the fix are unchanged, because a test that fails on a coin flip teaches a reader to
+re-run CI rather than to believe it. It is recorded because "vacuous" was the sentence heading into
+the carry-forward ledger, and it is the second task running in which a downstream agent corrected an
+upstream claim with a command instead of deferring to it.
+
+**What is built and not reachable, stated because §3 now reads as settled.** No endpoint issues a
+session, no guard reads one, and **no cookie has ever reached a browser from the application** —
+`serialiseSessionCookie`'s output has been produced in specs and in one throwaway probe and attached
+to no response. `PENDING_MFA` is recorded and its short lifetime is enforced, but the rule that such
+a session authenticates nothing except the MFA endpoint is Task 7's and does not exist. Revocation
+keeps one residual nothing here can close: if Redis is unreachable *at the moment of revocation* the
+row is revoked and no tombstone can be written, so an entry cached before the outage serves until it
+expires — bounded by `SESSION_CACHE_TTL_SECONDS`, default 60 (ruling 52).
+
+**Task 6 is on `feat/phase-2-task-06`, cut from `main` at `2fceaaa`, unpushed, with no pull
+request** — twelve commits. Tasks 1–5 were each one branch and one PR with CI green on a Linux
+runner before the merge; **that is owed here and has not happened**, so nothing on this branch has
+been proven anywhere but this machine.
 
 **Checkpoint A falls after Task 12** — the identity API enforced end to end with no UI. At that
 point the branch is pushed, CI must be green on a Linux runner, and this file gets an evidence

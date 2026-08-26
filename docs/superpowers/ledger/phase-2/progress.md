@@ -15,7 +15,7 @@ Branch: `feat/phase-2-identity`
 | 3 | Password hashing and the breach check | subagent | **Done** — [brief](task-03/brief.md) · [report](task-03/report.md) · [review](task-03/review.md) · [rulings](task-03/rulings.md) |
 | 4 | Single-use secret tokens | subagent | **Done** — [brief](task-04/brief.md) · [report](task-04/report.md) · [review](task-04/review.md) · [rulings](task-04/rulings.md) |
 | 5 | Mail infrastructure and templates | subagent | **Done** — [brief](task-05/brief.md) · [report](task-05/report.md) · [review](task-05/review.md) · [rulings](task-05/rulings.md) |
-| 6 | Session service | chained with 7 | Not started |
+| 6 | Session service | chained with 7 | **Done** — [brief](task-06/brief.md) · [report](task-06/report.md) · [review](task-06/review.md) · [fixes](task-06/fixes.md) · [rulings](task-06/rulings.md) |
 | 7 | Authentication guard, CSRF, CORS | chained with 6 | Not started |
 | 8 | Registration and email verification | either | Not started |
 | 9 | Login, logout, session endpoint, lockout | chained with 10 | Not started |
@@ -301,79 +301,117 @@ Full reasoning and cost-if-wrong for each is in [`task-05/rulings.md`](task-05/r
     over the invalid value** — an unguarded `new URL()` in a refinement throws past `loadEnv`'s
     error envelope. And `describeIssue` now renders an authored `params.rule` for a `custom` issue,
     so a cross-field rule can say why it failed instead of "failed validation (custom)".
+### From Task 6
+
+Full reasoning and cost-if-wrong for each is in [`task-06/rulings.md`](task-06/rulings.md).
+
+49. **An equality assertion between two values both derived from `Date.now()` in the same test is
+    an assertion about scheduling, not about behaviour.** Task 6's rotation test compared a
+    predecessor's `now + 7 days` against a successor's, so a mutant that *restarts* the absolute
+    clock produced an identical ISO string whenever both readings landed in the same millisecond —
+    it caught the mutant on one run and missed it on the next. Pin one side to a fixed instant.
+    **Binds Tasks 9, 10, 11 and 13**, all of which rotate sessions and test an expiry.
+
+50. **`SessionService.rotate` requires the caller to state the successor's status, and a
+    `PENDING_MFA` -> `ACTIVE` promotion must carry an `mfaCompletedAt`.** The schema defaulted
+    `status` to `'ACTIVE'`, so `rotate({ sessionId })` on a ten-minute pending session returned a
+    thirty-day `ACTIVE` credential with nothing proved — carry-forward ruling 6's defect one layer
+    up, in the one call that can *raise* privilege. A promotion without evidence now throws
+    `MFA_EVIDENCE_REQUIRED`. **Binds Task 11**, the one legitimate promoter: pass the instant the
+    factor was actually proved. A refusal throws rather than returning `null`, because `null`
+    already means "there was nothing to rotate" and a caller would retry a programming error
+    forever.
+
+51. **Bulk revocation poisons the cache twice, and the second pass is what makes it immediate.**
+    A session created between `listLiveForUser` and `revokeLiveForUser` is revoked by the
+    `updateMany` — which evaluates its predicate at execution time — while its hash was never in
+    the first poison list, and the review measured it resolving as valid from a warm cache entry
+    **with Redis healthy**. **Binds Tasks 10 and 14:** what remains genuinely open is a session
+    created *after* the write, so a password change must write the new hash **before** revoking and
+    member removal must write the membership change first. Otherwise a racing login mints a session
+    with the old credential once the revocation has finished.
+
+52. **Revocation has one residual that no code here can close: Redis unreachable at the moment of
+    revocation.** The row is revoked, no tombstone can be written, and an entry cached before the
+    outage serves until it expires — bounded by `SESSION_CACHE_TTL_SECONDS`, default 60. The
+    component that would have to be told is the one that is down. Stated in `authentication.md` §3
+    rather than hidden, and it is the reason that variable is short and configurable.
+
+53. **ADR-0005's "revocation deletes the cache entry and the row together" is insufficient as
+    written, and the ADR is deliberately not edited.** A delete loses the race in either order: a
+    resolve that has already read a live row can land its cache write afterwards. The mechanism
+    that keeps the promise is a tombstone plus a Lua compare-and-set that refuses to overwrite one.
+    `CLAUDE.md` makes an accepted ADR immutable, and the decision ADR-0005 records is unchanged —
+    so `security/authentication.md` §3 carries the correction and names the ADR as predating the
+    measurement. **If a second sentence in ADR-0005 is ever found wrong, supersede it rather than
+    accumulate a third pointer.**
+
+54. **`cookies.ts` has no cookie *parser*, deliberately, and Task 7 owns building one.** Task 6
+    issues credentials and never inspects one. A parser sitting here unused would be a surface for
+    a caller to authenticate against before a guard exists to say what authentication means.
 
 ## Pause state
 
-**2026-08-26 — Task 5 complete and verified; Task 6 is next.**
+**2026-08-26 — Task 6 complete and verified; Task 7 is next.**
 
-Task 5 landed a `Mailer` port with one SMTP adapter (`apps/api/src/infrastructure/mail/`) and seven
-email templates behind a registry (`apps/api/src/modules/auth/emails/`). Every email this product
-sends is a real SMTP message: the integration spec sends through the real adapter to the compose
-Mailpit and reads the message back over Mailpit's HTTP API, asserting the recipient, the subject,
-both MIME parts, and the `?token=` value parsed out of a real `URL`. **ADR-0016 was written and
-committed before any implementation commit** — `09:28:54` against a first implementation commit at
-`09:38:20`, verified by the reviewer rather than asserted. Evidence is in `roadmap.md`.
+Task 6 landed the session service: `SessionService`, `SessionRepository`, `RedisSessionCache` and
+`cookies.ts` in `apps/api/src/modules/auth/`, five `SESSION_*` environment variables with a new
+cross-field rule, and a §3 rewrite in `security/authentication.md`. `AuthModule` now exports **four
+services and still registers no controller** — `pnpm check:openapi` reports **4 routes**, which is
+the check that proves it. Evidence is in `roadmap.md`.
 
-**One High, four Medium, five Low, and the High was in a control the implementer volunteered.**
-`SmtpMailer` refused a recipient containing CR/LF/NUL — nobody asked for that guard — but not a
-comma, and nodemailer parses `to` as an address **list**. Measured twice: two `RCPT TO` commands
-from one `send`, and against real Mailpit an attacker address on the right of the comma received a
-password-reset message. The same probe showed nodemailer does not refuse a CRLF recipient on its
-own, so the guard was the only line of defence below Zod. Ruling 53. **A guard that half-holds is
-still better than the absent guard it replaced** — its existence is what gave the review something
-specific to attack.
+**Two High findings, one Medium, four citation findings — and both Highs were in the gap between
+what a test asserts and what it appears to assert.** The first: a rotation test compared two
+`Date.now()`-derived values at millisecond precision, so the mutation that restarts the 7-day
+absolute cap passed or failed on a coin flip. The second: `rotateSessionInputSchema` defaulted
+`status` to `'ACTIVE'`, which contradicted the argument written twelve lines above it in the same
+file and turned `rotate({ sessionId })` on a pending session into a thirty-day credential with no
+factor proved. Rulings 49 and 50.
 
-**The citation pass found two false sentences and confirmed everything else reproduced exactly** —
-every command, exit code, file line count and commit SHA in the implementer's report, re-run rather
-than read. The two: a claim that Task 15 would add "the seventh template" when the registry already
-holds seven and the invitation is one of them (ruling 56), and a literal "appears in no file" that
-was false as written while its intended meaning was true (L4). The first was the dangerous one, and
-it was heading for this file's carry-forward section — the exact path that produced five of Phase
-1's twelve instances.
+**The strongest thing in the change was not in the brief.** The brief asked for §3's "revocation
+deletes the cache entry and the row together". The implementer measured that a delete does not
+achieve it — a resolve that has already read a live row lands its cache write after the delete, and
+the next resolve serves a revoked session — and built a tombstone with a Lua compare-and-set
+instead. The review then found the one place a second pass was still needed (`revokeMany`'s
+enumeration window) and proved it with Redis healthy. Rulings 51 and 53.
 
-**Ruling 45 is the strongest thing in the change and it was verified destructively.** A deliberately
-broken extra template fired **eight** assertions naming every planted defect; leaving it
-unclassified fired a ninth; omitting it from `CASES` produced the promised `TS2741`. Rulings 42, 48,
-49, 50 and 52 all held under measurement, including a real `dist/main.js` boot with nothing on the
-SMTP port still answering `/health/live 200`.
+**Both measurements the brief demanded in advance were re-run by the reviewer and both held.** The
+`__Host-` cookie is accepted over `http://localhost` in Chromium 151.0.7922.34 with both negative
+controls rejected, so Task 18's E2E suite has no surprise waiting in it. And rotation does **not**
+need carry-forward ruling 31's advisory lock: it supersedes one committed row by primary key, so
+Postgres arbitrates — 60/60 single successors shipped, against 60/60 double successors for a
+read-then-write substitute.
 
-**Nothing authenticates anybody yet, and nothing sends an email either.** `pnpm check:openapi` still
-publishes **four routes**. The mailer has no caller: `Mailer.send` is invoked by specs and by
-nothing else, so the six notice and verification messages exist as templates and a transport, not as
-mail any user receives. `apps/web/app/(auth)/` still holds a layout with no routes under it.
+**The implementer corrected the reviewer, by measurement, and was right.** The review called the
+weak assertion "vacuous"; it was flaky, and the distinction was heading into this file. Both runs
+were real — one caught the mutant, one missed it. Second task running in which a downstream agent
+overturned an upstream claim with a command rather than deferring to it.
 
-**A live-format token reached the ledger, and the history was rewritten to purge it.** It was
-redacted in the working tree by `0088852`, but survived at `aaa6d39` and `d5161c5`; since `main`
-blocks force pushes and requires linear history, the merge would have made it permanent. The
-operator chose the rewrite before the branch was pushed. Tree byte-identical to the pre-rewrite tree
-(`4f1ff58…` both sides, empty diff against the backup), full suite re-run afterwards, backup deleted
-only then. Ruling 57. **The value was inert** — minted for a Mailpit send, no `VerificationToken`
-row, no account — and it was purged anyway, because a repository already carrying a red GitGuardian
-check on every pull request it has had does not need a genuine-looking secret added to the pile.
+**Nothing authenticates anybody yet.** No endpoint issues a session, no guard reads one, and **no
+cookie has ever reached a browser** from the application. `apps/web/app/(auth)/` still holds a
+layout with no routes under it.
 
-**Branching. Task 5 is on `feat/phase-2-task-05`, cut from `main` at `c641b9d`, pushed as PR #10.**
-One branch per task and one PR per task, as Tasks 1–4 were. **CI green on `ubuntu-latest` before the
-merge** — runs `32955708670` and `32955711939`, both `success`, with the Mailpit SMTP integration
-spec passing in a runner for the first time. **GitGuardian green as well**, which took two history
-rewrites: the first changed the offending fixture constants at the tip and the check stayed red,
-because it scans every commit in a pull request rather than the final tree. Ruling 63.
+**Branching. Task 6 is on `feat/phase-2-task-06`, cut from `main` at `2fceaaa`, unpushed, no PR** —
+twelve commits. Tasks 1–5 were one branch and one PR each with CI green before the merge; **that is
+still owed here**, and the operator decides when it happens.
 
-**Next action:** Task 6 — the session service: issue, rotate, revoke, cache — in a new session,
-starting with `sentinel-phase`. **Task 6 is chained with Task 7** (authentication guard, `Principal`,
-CSRF, CORS) under one implementer, because a cold agent re-invents conventions rather than
-inheriting them. Task 7 owes **ADR-0017** (explicit CORS allowlist with `credentials: true`, not a
-Next-side proxy), written and committed before the implementation as ADRs 0014, 0015 and 0016 were.
+**Next action:** Task 7 — the authentication guard, `Principal`, CSRF and CORS — chained under the
+**same implementer**, which is still resumable in this session and holds Task 6's context. Task 7
+owes **ADR-0017** (an explicit CORS allowlist with `credentials: true`, rather than a Next-side
+proxy), **written and committed before any implementation commit**, as ADRs 0014, 0015 and 0016
+were.
 
-Before starting Task 6, read carry-forward rulings **6** and **31**. Ruling 6: `Session.status` has
-no `@default`, deliberately, so every `session.create` must state it and forgetting is a compile
-error rather than a silently privileged session. Ruling 31: `TokenService.issue` holds
-`pg_advisory_xact_lock(hashtext('vtk:<userId>:<purpose>'))` as the first statement in its
-transaction, because a transaction is not a lock — **any supersede-then-insert pair against a
-non-unique index needs the same thing**, and session rotation is exactly that shape.
+Before starting Task 7, read carry-forward rulings **50**, **52** and **54**. Ruling 54: there is no
+cookie parser anywhere in the codebase, and Task 7 builds the first one. Ruling 50: a `PENDING_MFA`
+session can no longer be promoted without evidence, but **nothing yet enforces what such a session
+may do** — "authenticates nothing except the MFA verification endpoint" is Task 7's, and it is the
+whole MFA bypass if it is missed. Ruling 52: revocation's one residual is Redis being unreachable at
+revocation time, which the guard cannot detect and must not pretend to.
 
 **Tasks 8, 10 and 15 inherit four items** — rulings 37 (check `User.status` after `consume`), 38
 (the `AuditEvent` is the endpoint's, and the raw token never enters its metadata), 32 (the partial
-unique index is owed by whichever task next opens a migration) and now 44 (mail is sent after the
-transaction commits, never inside it). **Task 8 additionally owns a resend path**, per ruling 45.
+unique index is owed by whichever task next opens a migration — **Task 6 opened none**) and 44 (mail
+is sent after the transaction commits). **Task 8 additionally owns a resend path**, per ruling 45.
+**Tasks 10 and 14 now also inherit ruling 51's ordering requirement.**
 
 **Task 9 still inherits rulings 24 and 25** from Task 3, unchanged.
