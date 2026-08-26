@@ -261,9 +261,15 @@ describe('SmtpMailer', () => {
   });
 
   it('builds its transport once, not once per message', async () => {
-    // A transport per send would open a new TCP connection per email and defeat
-    // whatever pooling a relay offers. Not a correctness property today — there
-    // is one sender and no volume — but a cheap one to pin before there is.
+    // What this pins is the factory call count, and that is all it claims. The
+    // transport is built once because constructing it opens no connection,
+    // which is what ruling 49's boot-with-the-relay-down depends on.
+    //
+    // It is **not** about pooling: `pool` is not set anywhere, nodemailer
+    // selects its pooling transport only under `if (options.pool)`, and each
+    // send was measured opening and closing its own TCP connection. The
+    // sentence that used to be here said otherwise and was false (M3, Task 5
+    // review); pooling is not configured and this phase does not configure it.
     let created = 0;
     const transport = recordingTransport();
     const create: CreateSmtpTransport = () => {
