@@ -149,10 +149,20 @@ export class SmtpMailer implements Mailer {
     private readonly logger: MailLogger,
     createSmtpTransport: CreateSmtpTransport = createNodemailerTransport,
   ) {
-    // Built once, here. A transport per message would open a TCP connection per
-    // email and discard whatever pooling the relay offers. Constructing it
-    // opens nothing — nodemailer connects lazily on the first `sendMail`, which
-    // is what lets the API boot with the relay down (ruling 49).
+    // Built once, here, because constructing it opens **no connection**:
+    // nodemailer connects lazily, which is what lets the API boot with the
+    // relay down (ruling 49, and measured — nothing is on the wire until the
+    // first `sendMail`).
+    //
+    // It does not pool. `pool` is not set in `toTransportOptions` and
+    // nodemailer selects its pooling transport only under `if (options.pool)`,
+    // so each `sendMail` opens its own TCP connection and closes it — measured
+    // at three connections for three sends, none left open. This comment
+    // previously claimed the reuse preserved "whatever pooling the relay
+    // offers", which was false (M3, Task 5 review). Turning pooling on is
+    // deliberately not the fix: it changes runtime behaviour against a relay
+    // nobody has tested, and ADR-0016 already names connection tuning as work
+    // this phase does not do.
     this.transport = createSmtpTransport(config);
   }
 
