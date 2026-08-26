@@ -5,6 +5,54 @@ const booleanFromString = z.enum(['true', 'false']).transform((value) => value =
 
 const port = z.coerce.number().int().min(1).max(65_535);
 
+/**
+ * A URL this product builds links or outbound requests against.
+ *
+ * `z.string().url()` alone delegates to `new URL()`, which accepts **any**
+ * scheme. Measured during the Task 5 review: `javascript:alert(1)` and a
+ * `data:text/html,...` value both passed `WEB_BASE_URL` validation, and
+ * `buildTokenLink` then returned `javascript:alert(1)?token=…`, which
+ * `escapeHtml` leaves byte-identical on its way into an email `href`.
+ *
+ * Task 5 is the change that made this reachable — before it, no configured URL
+ * ended up in a document a user clicks. The value is operator-controlled rather
+ * than attacker-controlled, so this is defence in depth and not a live hole;
+ * it is still the wrong shape for a schema to permit, because there is no
+ * environment in which any scheme but http or https is a valid answer here.
+ *
+ * `params.rule` rather than a message: `describeIssue` in `load-env.ts`
+ * deliberately never reads `issue.message`, only rule parameters this
+ * repository authored. `params` is authored here, exactly like the
+ * `startsWith` above it, so the operator gets the reason instead of
+ * "failed validation (custom)".
+ */
+const httpUrl = z
+  .string()
+  .url()
+  .superRefine((value, ctx) => {
+    // A failed `.url()` check above marks the result **dirty**, not aborted, and
+    // Zod runs a `superRefine` over a dirty value — so this does receive
+    // unparseable input, and an unguarded `new URL()` throws a raw TypeError
+    // straight past `loadEnv`'s error envelope. Measured: it broke the spec
+    // asserting no sentinel value ever reaches an error message, which is the
+    // one guarantee this file exists to keep.
+    let protocol: string;
+    try {
+      ({ protocol } = new URL(value));
+    } catch {
+      // Not a URL at all. `.url()` has already raised its own issue naming this
+      // variable; a second issue would name it twice and say less.
+      return;
+    }
+
+    if (protocol === 'http:' || protocol === 'https:') return;
+
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      params: { rule: 'must use the http:// or https:// scheme' },
+    });
+  });
+
 export const sharedEnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']),
   // APP_ENV is deliberately separate from NODE_ENV: staging and production both
@@ -17,8 +65,8 @@ export const sharedEnvSchema = z.object({
 
 const apiEnvObject = sharedEnvSchema.extend({
   API_PORT: port,
-  API_BASE_URL: z.string().url(),
-  WEB_BASE_URL: z.string().url(),
+  API_BASE_URL: httpUrl,
+  WEB_BASE_URL: httpUrl,
 
   DATABASE_URL: z.string().min(1).startsWith('postgresql://'),
   DIRECT_DATABASE_URL: z.string().min(1).startsWith('postgresql://'),
@@ -223,8 +271,8 @@ export const apiEnvSchema = apiEnvObject.superRefine((env, ctx) => {
 
 export const webEnvSchema = sharedEnvSchema.extend({
   WEB_PORT: port,
-  WEB_BASE_URL: z.string().url(),
-  API_BASE_URL: z.string().url(),
+  WEB_BASE_URL: httpUrl,
+  API_BASE_URL: httpUrl,
 });
 
 /**

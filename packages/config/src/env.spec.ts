@@ -56,6 +56,66 @@ describe('loadEnv', () => {
     );
   });
 
+  /**
+   * L1 from the Task 5 review, measured: `z.string().url()` delegates to
+   * `new URL()`, which accepts **any** scheme. `javascript:alert(1)` and a
+   * `data:` URL both passed validation, and Task 5 is the change that first
+   * turns `WEB_BASE_URL` into an `href` in an email a user clicks — so an
+   * operator-set value now reaches a sink where the scheme is the whole
+   * question. Both base URLs are origins this product builds links and requests
+   * against; neither `javascript:`, `data:` nor `file:` is ever a valid value
+   * for one, in any environment.
+   *
+   * Pinned on **both** schemas. `apps/web` boots on `webEnvSchema`, which
+   * declares its own `WEB_BASE_URL` and `API_BASE_URL` rather than sharing the
+   * API's, so a rule applied to one of them is a rule half-applied — the same
+   * inconsistency the review raised as M2 about the subject sanitiser.
+   */
+  describe.each([
+    ['apiEnvSchema', apiEnvSchema, () => validApi],
+    [
+      'webEnvSchema',
+      webEnvSchema,
+      () => ({
+        ...validShared,
+        WEB_PORT: '3000',
+        WEB_BASE_URL: 'http://localhost:3000',
+        API_BASE_URL: 'http://localhost:3001',
+      }),
+    ],
+  ] as const)('%s base URL schemes', (_name, schema, valid) => {
+    it.each(['WEB_BASE_URL', 'API_BASE_URL'] as const)(
+      'refuses a javascript: scheme for %s and names the variable',
+      (variable) => {
+        expect(() => loadEnv(schema, { ...valid(), [variable]: 'javascript:alert(1)' })).toThrow(
+          new RegExp(variable),
+        );
+      },
+    );
+
+    it.each(['WEB_BASE_URL', 'API_BASE_URL'] as const)(
+      'refuses a data: scheme for %s and names the variable',
+      (variable) => {
+        expect(() =>
+          loadEnv(schema, { ...valid(), [variable]: 'data:text/html,<script>alert(1)</script>' }),
+        ).toThrow(new RegExp(variable));
+      },
+    );
+
+    it.each(['WEB_BASE_URL', 'API_BASE_URL'] as const)(
+      'refuses a file: scheme for %s',
+      (variable) => {
+        expect(() => loadEnv(schema, { ...valid(), [variable]: 'file:///etc/passwd' })).toThrow(
+          new RegExp(variable),
+        );
+      },
+    );
+
+    it.each(['http://localhost:3000', 'https://app.sentinel.test'])('accepts %s', (url) => {
+      expect(() => loadEnv(schema, { ...valid(), WEB_BASE_URL: url })).not.toThrow();
+    });
+  });
+
   it('rejects an APP_ENV outside the allowed set', () => {
     expect(() => loadEnv(sharedEnvSchema, { ...validShared, APP_ENV: 'prod' })).toThrow(/APP_ENV/);
   });
