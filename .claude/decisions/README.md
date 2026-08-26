@@ -23,6 +23,7 @@ re-litigated every six months by someone who cannot see why the obvious option w
 | [0013](ADR-0013-dependency-release-age-cooldown.md) | A 24-hour release-age cooldown on every dependency, declared explicitly | Accepted |
 | [0014](ADR-0014-argon2-implementation.md) | Argon2id via `@node-rs/argon2`, parameters held in configuration | Accepted |
 | [0015](ADR-0015-password-breach-check-fails-open.md) | The password breach check calls HIBP by k-anonymity, and fails open | Accepted |
+| [0016](ADR-0016-smtp-mailer-port.md) | One `Mailer` port with an SMTP adapter; Resend is deferred until a deploy exists | Accepted |
 
 ## When to write one
 

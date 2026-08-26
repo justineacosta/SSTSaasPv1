@@ -41,7 +41,7 @@ Full detail: [`.claude/architecture/overview.md`](.claude/architecture/overview.
 | Storage | S3-compatible (MinIO locally, R2/S3 in production) |
 | Auth | Opaque server-side sessions, Argon2id, TOTP MFA |
 | Billing | Stripe |
-| Email | Resend |
+| Email | SMTP via a `Mailer` port (Mailpit locally); Resend deferred to the first deploy — ADR-0016 |
 | Testing | Vitest, Playwright, Testcontainers |
 | Observability | OpenTelemetry, Sentry, structured JSON logs |
 
