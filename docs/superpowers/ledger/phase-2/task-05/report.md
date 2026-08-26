@@ -7,10 +7,10 @@ Dated 2026-08-26. Branch `feat/phase-2-task-05`, cut from `main` at `c641b9d`. N
 
 ## 1. Verification commands and exit codes
 
-Run in this order after the last commit, with the compose stack up (postgres, redis, minio,
-mailpit — all `Up 11 hours (healthy)`). Every code below was captured as the shell status
+Run in this order after the last commit, with the compose stack up. Every code below was
+captured as the shell status
 immediately after the command, outside any pipe, by a loop writing each line to a file before
-anything was read back.
+anything was read back. `docker compose ps` was run last, from the repository root.
 
 | Command                 | Exit | Reported output                                                        |
 | ----------------------- | ---- | ---------------------------------------------------------------------- |
@@ -23,6 +23,7 @@ anything was read back.
 | `pnpm build`            | 0    | all tasks successful                                                   |
 | `pnpm check:openapi`    | 0    | `routes: 4` — see section 2                                            |
 | `pnpm check:registry`   | 0    | `14 models, 3 tenant-owned, 1 tenant root, 10 deliberately global`     |
+| `docker compose ps`     | 0    | all four services `Up 11 hours (healthy)` — mailpit on 1025 and 8025  |
 
 `pnpm test:e2e` was not run — out of scope per the brief.
 
