@@ -229,6 +229,37 @@ describe('SmtpMailer', () => {
     expect(transport.sent).toHaveLength(1);
   });
 
+  it('sanitises the subject at the port, not only inside renderEmail', async () => {
+    // M2 (Task 5 review). `sanitizeSubject` ran only inside `renderEmail`, and
+    // `OutgoingMail` is a plain interface: a caller that assembles one directly
+    // — which the port's type permits and its docblock invites — reached the
+    // transport with an unsanitised header value. Measured against the real
+    // Mailpit, nothing was injected, but only because nodemailer's MIME encoder
+    // folded the CRLF, and a control that exists only inside a dependency is a
+    // control that changes when the dependency does. This is the same argument
+    // the adapter already makes for duplicating the credential-pair check into
+    // `toTransportOptions`, applied to the other header it controls.
+    const transport = recordingTransport();
+    await build(transport).send({ ...MAIL, subject: 'Hello\r\nBcc: attacker@evil.test' });
+    expect(transport.sent[0]?.subject).toBe('Hello Bcc: attacker@evil.test');
+  });
+
+  it('collapses any control character in the subject, not only CR and LF', async () => {
+    const transport = recordingTransport();
+    await build(transport).send({ ...MAIL, subject: 'Reset\u0007your\u001bpassword' });
+    expect(transport.sent[0]?.subject).toBe('Reset your password');
+  });
+
+  it('leaves an ordinary subject exactly as the template rendered it', async () => {
+    // `renderEmail` has already sanitised every subject that comes from a
+    // template. Running the same function twice must be a no-op, or the port
+    // would quietly differ from what the html and text parts say the message
+    // is called.
+    const transport = recordingTransport();
+    await build(transport).send(MAIL);
+    expect(transport.sent[0]?.subject).toBe(MAIL.subject);
+  });
+
   it('builds its transport once, not once per message', async () => {
     // A transport per send would open a new TCP connection per email and defeat
     // whatever pooling a relay offers. Not a correctness property today — there
