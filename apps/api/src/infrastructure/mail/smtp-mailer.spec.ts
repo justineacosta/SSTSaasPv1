@@ -160,16 +160,73 @@ describe('SmtpMailer', () => {
     await expect(build(failing).send(MAIL)).rejects.toThrow(/ECONNREFUSED/);
   });
 
-  it('refuses a recipient containing CRLF', async () => {
-    // Envelope-level header injection: `to` reaches an RCPT command and a To:
-    // header. Task 8 will pass an address that came from a registration form,
-    // and the address is validated by Zod at that boundary — this is the second
-    // line, on the same reasoning as the subject sanitiser in the layout.
+  /**
+   * ONE RECIPIENT — NOT MERELY ONE LINE.
+   *
+   * H1 (Task 5 review). The guard this table replaces refused CR, LF and NUL
+   * and nothing else. Measured against `to: 'a@b.test, attacker@evil.test'` it
+   * produced **two** `RCPT TO` commands on the wire, and the same shape against
+   * the real compose Mailpit delivered the message to the attacker address:
+   * nodemailer parses `to` as an address *list*, so refusing line breaks does
+   * not make a string one address. The token-link templates carry a live
+   * single-use credential, which makes the extra recipient a password reset.
+   *
+   * Envelope-level header injection — `to` reaches an RCPT command and a `To:`
+   * header — is the original case and stays in the table rather than in its own
+   * test. A table because the defect was a rule that held only for the shapes
+   * someone had thought of; the cheapest defence against that is to make adding
+   * a shape one line.
+   */
+  const HOSTILE_RECIPIENTS: readonly (readonly [string, string])[] = [
+    ['a comma-separated list', 'ada@example.test, attacker@evil.test'],
+    ['a comma with no space', 'ada@example.test,attacker@evil.test'],
+    ['a semicolon-separated list', 'ada@example.test;attacker@evil.test'],
+    ['a display name in angle brackets', 'Ada <ada@example.test>'],
+    ['RFC 5322 group syntax', 'undisclosed:;'],
+    ['CRLF header injection', 'ada@example.test\r\nBcc: attacker@evil.test'],
+    ['a bare LF', 'ada@example.test\nBcc: attacker@evil.test'],
+    ['a NUL', 'ada@example.test\u0000'],
+    ['a leading space', ' ada@example.test'],
+    ['a trailing tab', 'ada@example.test\t'],
+    ['an internal space', 'ada @example.test'],
+    ['two at signs', 'ada@example.test@evil.test'],
+    ['no at sign at all', 'ada'],
+    ['an empty address', ''],
+  ];
+
+  it.each(HOSTILE_RECIPIENTS)('refuses a recipient carrying %s', async (_shape, to) => {
     const transport = recordingTransport();
-    await expect(
-      build(transport).send({ ...MAIL, to: 'ada@example.test\r\nBcc: attacker@evil.test' }),
-    ).rejects.toThrow();
+    await expect(build(transport).send({ ...MAIL, to })).rejects.toThrow(/exactly one/);
+    // Refused, not repaired: nothing reached the transport.
     expect(transport.sent).toHaveLength(0);
+  });
+
+  it('does not repeat the rejected address in the error it raises', async () => {
+    // The address is caller-supplied and this error is logged. Naming it would
+    // put the injected fragment — `Bcc: attacker@evil.test` — into a log line,
+    // which is the same defect class as the injection it refused.
+    let message = '';
+    try {
+      await build(recordingTransport()).send({
+        ...MAIL,
+        to: 'ada@example.test, attacker@evil.test',
+      });
+      expect.unreachable('a two-address recipient must be refused');
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    // Must actually have thrown, or the assertion below is vacuous.
+    expect(message).toContain('exactly one');
+    expect(message).not.toContain('attacker@evil.test');
+  });
+
+  it('still accepts an ordinary single address', async () => {
+    // The table above is worthless if the rule also refuses real mail. A `+`
+    // tag is the everyday address shape most likely to be caught by a guard
+    // written too tightly.
+    const transport = recordingTransport();
+    await build(transport).send({ ...MAIL, to: 'ada.lovelace+sentinel@example.test' });
+    expect(transport.sent).toHaveLength(1);
   });
 
   it('builds its transport once, not once per message', async () => {
