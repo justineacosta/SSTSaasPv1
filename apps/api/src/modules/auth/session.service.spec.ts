@@ -13,6 +13,7 @@ import {
 } from './session.repository.js';
 import {
   IP_MAX_LENGTH,
+  MFA_EVIDENCE_REQUIRED,
   SESSION_CACHE_KEY_PREFIX,
   type SessionPolicy,
   SessionService,
@@ -397,21 +398,49 @@ describe('rotate', () => {
   it('inherits the absolute clock rather than restarting it', async () => {
     // §3: the absolute lifetime never moves. A rotation that reset it would let
     // a user hold a session indefinitely by changing their password weekly.
-    const predecessor = row();
+    //
+    // THE PREDECESSOR'S CAP IS TWO HOURS AWAY, NOT SEVEN DAYS. The first version
+    // of this test built its predecessor from `row()`, whose `absoluteExpiresAt`
+    // is `new Date()` plus the same seven-day lifetime `rotate` would compute
+    // microseconds later — so a mutant that restarted the clock produced a
+    // byte-identical ISO string and the assertion could not see it. The review
+    // proved that by setting `startsRealSession = true` and watching the whole
+    // suite stay green. A cap no restart can coincidentally reproduce is what
+    // makes the equality assertion mean something.
+    const twoHoursAway = new Date(Date.now() + 2 * 60 * 60 * 1_000);
+    const predecessor = row({ absoluteExpiresAt: twoHoursAway });
     const { service, created } = harness([predecessor]);
 
-    await service.rotate({ sessionId: predecessor.id });
+    await service.rotate({ sessionId: predecessor.id, status: 'ACTIVE' });
 
-    expect(created[0]?.absoluteExpiresAt.toISOString()).toBe(
-      predecessor.absoluteExpiresAt.toISOString(),
-    );
+    expect(created[0]?.absoluteExpiresAt.toISOString()).toBe(twoHoursAway.toISOString());
+    // The same fact from the other side, so a future edit that makes the
+    // equality above vacuous again still fails here: a restart would put the cap
+    // seven days out, and the successor's cap must be nowhere near that.
+    const grantedMs = (created[0]?.absoluteExpiresAt.getTime() ?? 0) - Date.now();
+    expect(grantedMs).toBeLessThan(3 * 60 * 60 * 1_000);
     expect(created[0]?.rotatedFromId).toBe(predecessor.id);
   });
 
-  it('starts a fresh absolute clock when MFA completes', async () => {
+  it('does not extend a remember-me session on an ordinary rotation', async () => {
+    // The mutation the review's `startsRealSession = true` produced on this path
+    // was a 23-day extension of a thirty-day cap, and the test that exercised it
+    // asserted `rememberMe`, `ip`, `userAgent` and `userId` while never looking
+    // at a clock.
+    const capReachedIn = new Date(Date.now() + 40 * 60 * 60 * 1_000);
+    const predecessor = row({ rememberMe: true, absoluteExpiresAt: capReachedIn });
+    const { service, created } = harness([predecessor]);
+
+    await service.rotate({ sessionId: predecessor.id, status: 'ACTIVE' });
+
+    expect(created[0]?.absoluteExpiresAt.toISOString()).toBe(capReachedIn.toISOString());
+  });
+
+  it('starts a fresh absolute clock when MFA completes, and records the evidence', async () => {
     // The pending session's clock is §5's few minutes to type a code. Inheriting
     // it would expire the real session moments after MFA succeeded.
     const now = Date.now();
+    const mfaCompletedAt = new Date(now);
     const pending = row({
       status: 'PENDING_MFA',
       absoluteExpiresAt: new Date(now + 600_000),
@@ -419,30 +448,74 @@ describe('rotate', () => {
     });
     const { service, created } = harness([pending]);
 
-    await service.rotate({ sessionId: pending.id, status: 'ACTIVE' });
+    await service.rotate({ sessionId: pending.id, status: 'ACTIVE', mfaCompletedAt });
 
     expect(created[0]?.absoluteExpiresAt.getTime()).toBeGreaterThan(now + 600_000_000);
     expect(created[0]?.status).toBe('ACTIVE');
+    expect(created[0]?.mfaCompletedAt?.toISOString()).toBe(mfaCompletedAt.toISOString());
+  });
+
+  it('REFUSES to promote a pending session to ACTIVE with no proof a factor was used', async () => {
+    // THE MFA BYPASS. `rotate` is the one call in this service that can RAISE
+    // privilege, and the promotion has to carry its evidence rather than merely
+    // assert itself. Without this, Task 11's MFA endpoint could complete a
+    // rotation for a user who never entered a code, and Tasks 10, 13 and 17 —
+    // which rotate for reasons that have nothing to do with MFA — would each
+    // silently convert a password-only credential into an authenticated one.
+    const pending = row({ status: 'PENDING_MFA' });
+    const { service, created } = harness([pending]);
+
+    await expect(service.rotate({ sessionId: pending.id, status: 'ACTIVE' })).rejects.toThrow(
+      MFA_EVIDENCE_REQUIRED,
+    );
+    expect(created).toEqual([]);
+  });
+
+  it('lets a pending session rotate while staying pending', async () => {
+    // The negative control: refusing every rotation of a pending session would
+    // also make the test above green, and would leave the fixation defence off
+    // for the pending credential itself.
+    const pending = row({ status: 'PENDING_MFA' });
+    const { service, created } = harness([pending]);
+
+    const rotated = await service.rotate({ sessionId: pending.id, status: 'PENDING_MFA' });
+
+    expect(rotated).not.toBeNull();
+    expect(created[0]?.status).toBe('PENDING_MFA');
+    expect(created[0]?.mfaCompletedAt).toBeNull();
+  });
+
+  it('requires the caller to state the successor status — ruling 6, one layer up', async () => {
+    // `issueSessionInputSchema` explains that `status` has no default *because*
+    // forgetting it must not mint a privileged session.
+    // `rotateSessionInputSchema` had a `.default('ACTIVE')`, which put the
+    // omission straight back on the one path that can raise privilege.
+    const predecessor = row({ status: 'PENDING_MFA' });
+    const { service } = harness([predecessor]);
+
+    // @ts-expect-error the omission is a compile error now; this asserts it is
+    // also a runtime refusal, which is what a caller in plain JavaScript gets.
+    await expect(service.rotate({ sessionId: predecessor.id })).rejects.toThrow();
   });
 
   it('refuses to rotate a session that is already past its absolute clock', async () => {
     // Rotation must not be a way to extend a dead session.
     const stale = row({ absoluteExpiresAt: new Date(Date.now() - 1_000) });
     const { service } = harness([stale]);
-    expect(await service.rotate({ sessionId: stale.id })).toBeNull();
+    expect(await service.rotate({ sessionId: stale.id, status: 'ACTIVE' })).toBeNull();
   });
 
   it('refuses to rotate an already-revoked session', async () => {
     const revoked = row({ revokedAt: new Date() });
     const { service } = harness([revoked]);
-    expect(await service.rotate({ sessionId: revoked.id })).toBeNull();
+    expect(await service.rotate({ sessionId: revoked.id, status: 'ACTIVE' })).toBeNull();
   });
 
   it('poisons the predecessor before opening the transaction', async () => {
     const predecessor = row();
     const { service, calls } = harness([predecessor]);
 
-    await service.rotate({ sessionId: predecessor.id });
+    await service.rotate({ sessionId: predecessor.id, status: 'ACTIVE' });
 
     const poison = calls.findIndex((call) => call.method === 'writeTombstone');
     const transaction = calls.findIndex((call) => call.method === 'transaction');
@@ -455,7 +528,11 @@ describe('rotate', () => {
     const predecessor = row({ rememberMe: true, ip: '203.0.113.7', userAgent: 'curl/8' });
     const { service, created } = harness([predecessor]);
 
-    await service.rotate({ sessionId: predecessor.id, activeOrganizationId: organizationId });
+    await service.rotate({
+      sessionId: predecessor.id,
+      status: 'ACTIVE',
+      activeOrganizationId: organizationId,
+    });
 
     expect(created[0]?.rememberMe).toBe(true);
     expect(created[0]?.ip).toBe('203.0.113.7');
@@ -466,7 +543,16 @@ describe('rotate', () => {
 });
 
 describe('bulk revocation', () => {
-  it('poisons every affected session before revoking any row', async () => {
+  it('poisons twice: every enumerated session before the write, and every revoked one after', async () => {
+    // TWO PASSES, AND THE ORDER OF BOTH IS THE POINT.
+    //
+    // The first pass makes the sessions the enumeration could see fail-closed
+    // from the moment the call starts. The second exists because the
+    // enumeration is not the set that gets revoked: `updateMany` evaluates its
+    // predicate at execution time, so a login landing between the two
+    // statements is revoked while its hash was never in the first list. The
+    // review measured that session resolving as valid off a warm cache entry
+    // with Redis healthy; `session.service.integration.spec.ts` reproduces it.
     const userId = newId('usr');
     const rows = [
       row({ userId, tokenHash: hashSecretToken('one') }),
@@ -476,10 +562,14 @@ describe('bulk revocation', () => {
 
     await service.revokeAllForUser(userId);
 
-    const poisons = calls.filter((call) => call.method === 'writeTombstone');
-    expect(poisons).toHaveLength(2);
-    const lastPoison = calls.lastIndexOf(poisons[1] as Call);
-    expect(calls.findIndex((call) => call.method === 'updateMany')).toBeGreaterThan(lastPoison);
+    const write = calls.findIndex((call) => call.method === 'updateMany');
+    const poisonIndexes = calls
+      .map((call, index) => (call.method === 'writeTombstone' ? index : -1))
+      .filter((index) => index >= 0);
+
+    expect(write).toBeGreaterThanOrEqual(0);
+    expect(poisonIndexes.filter((index) => index < write)).toHaveLength(2);
+    expect(poisonIndexes.filter((index) => index > write)).toHaveLength(2);
   });
 
   it('scopes the organisation variant to activeOrganizationId', async () => {

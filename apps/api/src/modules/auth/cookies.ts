@@ -96,8 +96,23 @@ function assertCookieValue(value: string): void {
  * cookie into a browser-session one; a negative value tells it to delete the
  * cookie at once. Both are quiet failures, so the arithmetic is clamped and
  * floored here rather than trusted from a caller's subtraction of two clocks.
+ *
+ * **The non-finite check is here because the clamp alone did not deliver what
+ * this comment claimed, and the review measured it.**
+ * `Math.max(0, Math.floor(NaN))` is `NaN`, so the previous version emitted
+ * `Max-Age=NaN` and `Max-Age=Infinity` — precisely the unparseable attribute
+ * described two paragraphs up, produced by the guard meant to prevent it. A
+ * `NaN` arrives exactly the way this comment says a bad value arrives: an
+ * `Invalid Date` on either side of a caller's subtraction. No path from `issue`
+ * or `rotate` can produce one today, so this was an overstated comment rather
+ * than a live defect — but the cheaper fix is to make the comment true.
+ *
+ * Non-finite floors to `0` rather than throwing: `0` is a cookie the browser
+ * discards at once, which is the fail-closed direction, and a serialiser is the
+ * wrong layer to abort a response over arithmetic it was handed.
  */
 function deltaSeconds(maxAgeSeconds: number): string {
+  if (!Number.isFinite(maxAgeSeconds)) return '0';
   return String(Math.max(0, Math.floor(maxAgeSeconds)));
 }
 

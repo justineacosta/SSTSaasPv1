@@ -69,7 +69,7 @@ interface SessionWhere {
   readonly id?: string | { not: string };
   readonly userId?: string;
   readonly activeOrganizationId?: string;
-  readonly revokedAt?: null;
+  readonly revokedAt?: null | Date;
 }
 
 /**
@@ -204,25 +204,47 @@ export class SessionRepository {
     });
   }
 
-  /** The bulk half of the above. Returns how many rows this call revoked. */
+  /**
+   * The bulk half of the above — and it reports **which** rows it revoked, not
+   * only how many.
+   *
+   * The caller needs the hashes because a cache entry has to be poisoned for
+   * every session this call killed, and the enumeration it did beforehand is
+   * not that set: `updateMany`'s predicate is evaluated at execution time, so a
+   * session created after the enumeration and before this statement **is**
+   * revoked here, while its hash was never in the list. The review measured
+   * exactly that — a revoked session served from a warm cache entry, with Redis
+   * healthy.
+   *
+   * **The `revokedAt` stamp is what identifies the set.** It is this call's own
+   * `new Date()`, written by the `UPDATE` above and then read back as the
+   * predicate, so the second query returns precisely the rows the first one
+   * changed. Two concurrent bulk revocations carry different stamps and cannot
+   * claim each other's rows; if they somehow collided, the consequence is
+   * poisoning a key for a session that is revoked anyway, which is harmless in
+   * the only direction that matters.
+   */
   async revokeLiveForUser(input: {
     userId: string;
     organizationId?: string | undefined;
     exceptSessionId?: string | undefined;
     revokedAt: Date;
-  }): Promise<number> {
+  }): Promise<{ count: number; tokenHashes: readonly string[] }> {
+    const scope = {
+      userId: input.userId,
+      ...(input.organizationId === undefined ? {} : { activeOrganizationId: input.organizationId }),
+      ...(input.exceptSessionId === undefined ? {} : { id: { not: input.exceptSessionId } }),
+    };
+
     const { count } = await this.store.session.updateMany({
-      where: {
-        userId: input.userId,
-        revokedAt: null,
-        ...(input.organizationId === undefined
-          ? {}
-          : { activeOrganizationId: input.organizationId }),
-        ...(input.exceptSessionId === undefined ? {} : { id: { not: input.exceptSessionId } }),
-      },
+      where: { ...scope, revokedAt: null },
       data: { revokedAt: input.revokedAt },
     });
-    return count;
+
+    const revoked = await this.store.session.findMany({
+      where: { ...scope, revokedAt: input.revokedAt },
+    });
+    return { count, tokenHashes: revoked.map((row) => row.tokenHash) };
   }
 
   /**

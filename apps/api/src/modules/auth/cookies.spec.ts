@@ -65,6 +65,35 @@ describe('serialiseSessionCookie', () => {
     expect(persistent).toContain('; Max-Age=0');
   });
 
+  it('emits digits for a non-finite Max-Age rather than the word NaN', () => {
+    // MEASURED BY THE REVIEW, not suspected: `Math.max(0, Math.floor(NaN))` is
+    // `NaN`, so the guard produced `Max-Age=NaN` and `Max-Age=Infinity` while
+    // the comment beside it claimed digits only. `delta-seconds` (RFC 6265
+    // §5.2.2) is digits, and a browser that cannot parse the attribute ignores
+    // it — silently downgrading a persistent cookie to a session one, which is
+    // the exact failure the comment names. A `NaN` arrives the way the comment
+    // says: an `Invalid Date` on either side of a caller's subtraction.
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      const cookie = serialiseSessionCookie({ value: 'abc123', maxAgeSeconds: bad });
+      expect(cookie).toContain('; Max-Age=0');
+      expect(cookie).not.toContain('NaN');
+      expect(cookie).not.toContain('Infinity');
+    }
+    // -Infinity already floored to 0 through `Math.max`; pinned so a rewrite of
+    // the guard cannot lose it.
+    expect(
+      serialiseSessionCookie({ value: 'abc123', maxAgeSeconds: Number.NEGATIVE_INFINITY }),
+    ).toContain('; Max-Age=0');
+  });
+
+  it('emits only digits for every Max-Age it will accept', () => {
+    // The general form of the rule, so a future arithmetic change has to keep it.
+    for (const seconds of [0, 1, 59.7, 2_592_000, -5, Number.NaN]) {
+      const cookie = serialiseSessionCookie({ value: 'abc123', maxAgeSeconds: seconds });
+      expect(cookie).toMatch(/; Max-Age=\d+$/);
+    }
+  });
+
   it('refuses a value carrying anything a cookie value may not hold', () => {
     // Response-header injection. The token this normally carries is base64url
     // and can never contain any of these, so the guard exists for the day

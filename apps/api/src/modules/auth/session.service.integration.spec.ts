@@ -339,7 +339,7 @@ describe('rotation', () => {
     const issued = await service.issue({ userId: userA, status: 'ACTIVE' });
     await service.resolve(issued.token);
 
-    const rotated = await service.rotate({ sessionId: issued.session.id });
+    const rotated = await service.rotate({ sessionId: issued.session.id, status: 'ACTIVE' });
 
     expect(rotated).not.toBeNull();
     expect(rotated?.token).not.toBe(issued.token);
@@ -350,6 +350,30 @@ describe('rotation', () => {
       where: { id: rotated?.session.id ?? '' },
     });
     expect(successor.rotatedFromId).toBe(issued.session.id);
+  });
+
+  it('carries the absolute cap forward into the successor row', async () => {
+    // The review found the integration suite had NO rotation-inheritance
+    // assertion at all: a mutant that restarted the clock on every rotation left
+    // all twenty tests green. The cap here is two hours away, which no restart
+    // can coincidentally reproduce, and the assertion is against the row Postgres
+    // actually holds rather than the value the service returned.
+    const capReachedIn = new Date(Date.now() + 2 * 60 * 60 * 1_000);
+    const planted = await plant({
+      absoluteExpiresAt: capReachedIn,
+      idleExpiresAt: new Date(Date.now() + 60 * 60 * 1_000),
+    });
+
+    const rotated = await service.rotate({ sessionId: planted.id, status: 'ACTIVE' });
+    expect(rotated).not.toBeNull();
+
+    const successor = await prisma.session.findUniqueOrThrow({
+      where: { id: rotated?.session.id ?? '' },
+    });
+    expect(successor.absoluteExpiresAt.toISOString()).toBe(capReachedIn.toISOString());
+    // The idle clock is clamped to it, so the successor cannot outlive the cap
+    // by the idle route either.
+    expect(successor.idleExpiresAt.getTime()).toBeLessThanOrEqual(capReachedIn.getTime());
   });
 
   it('leaves exactly one live successor when two rotations race — ten rounds', async () => {
@@ -366,8 +390,8 @@ describe('rotation', () => {
     for (let round = 0; round < 10; round += 1) {
       const issued = await service.issue({ userId: userA, status: 'ACTIVE' });
       const results = await Promise.all([
-        service.rotate({ sessionId: issued.session.id }),
-        service.rotate({ sessionId: issued.session.id }),
+        service.rotate({ sessionId: issued.session.id, status: 'ACTIVE' }),
+        service.rotate({ sessionId: issued.session.id, status: 'ACTIVE' }),
       ]);
 
       expect(results.filter((result) => result !== null)).toHaveLength(1);
@@ -389,8 +413,8 @@ describe('rotation', () => {
     const second = await service.issue({ userId: userB, status: 'ACTIVE' });
 
     const results = await Promise.all([
-      service.rotate({ sessionId: first.session.id }),
-      service.rotate({ sessionId: second.session.id }),
+      service.rotate({ sessionId: first.session.id, status: 'ACTIVE' }),
+      service.rotate({ sessionId: second.session.id, status: 'ACTIVE' }),
     ]);
 
     expect(results.filter((result) => result !== null)).toHaveLength(2);
@@ -420,6 +444,62 @@ describe('bulk revocation', () => {
       expect(await service.resolve(session.token)).toEqual({ outcome: 'revoked' });
     }
     expect((await service.resolve(keep.token)).outcome).toBe('resolved');
+  });
+
+  it('tombstones a session created INSIDE the enumerate-then-revoke window', async () => {
+    // THE REVIEWER'S PROBE_A, AS A COMMITTED TEST. With Redis fully reachable, a
+    // login landing between `listLiveForUser` and `revokeLiveForUser` is revoked
+    // in Postgres — the `updateMany` predicate is evaluated at execution time,
+    // so it does catch the latecomer — but its hash was never in the list handed
+    // to `poison`, so its warm cache entry went on serving a session the system
+    // considered revoked. Revocation immediacy is a Phase 2 exit criterion, and
+    // this was it failing with no outage at all.
+    //
+    // The interleaving is forced rather than raced: the enumeration is proxied so
+    // the interloper is created, resolved (warming its cache entry) and only then
+    // does the revocation continue.
+    const userId = newId('usr');
+    await prisma.user.create({ data: { id: userId, email: `window-${userId}@example.test` } });
+
+    const known = await service.issue({ userId, status: 'ACTIVE' });
+    await service.resolve(known.token);
+
+    let interloperToken = '';
+    const proxied = new Proxy(repository, {
+      // `unknown`, not the inferred `any`: `Reflect.get` is typed `any`.
+      get(target, property, receiver: unknown): unknown {
+        if (property !== 'listLiveForUser')
+          return Reflect.get(target, property, receiver) as unknown;
+        return async (input: { userId: string }) => {
+          const rows = await target.listLiveForUser(input);
+          const interloper = await service.issue({ userId, status: 'ACTIVE' });
+          interloperToken = interloper.token;
+          // Warm its entry, which is what makes the residual observable.
+          await service.resolve(interloperToken);
+          return rows;
+        };
+      },
+    });
+
+    const racing = new SessionService(
+      proxied,
+      new RedisSessionCache(redis, logger),
+      POLICY,
+      logger,
+    );
+
+    const revoked = await racing.revokeAllForUser(userId);
+
+    // Postgres did revoke it — the count is 2, not 1.
+    expect(revoked).toBe(2);
+    const interloperRow = await prisma.session.findUniqueOrThrow({
+      where: { tokenHash: hashSecretToken(interloperToken) },
+    });
+    expect(interloperRow.revokedAt).not.toBeNull();
+
+    // And the cache must not still be serving it.
+    expect(await service.resolve(interloperToken)).toEqual({ outcome: 'revoked' });
+    expect(await redis.get(sessionCacheKey(hashSecretToken(interloperToken)))).toBe('revoked');
   });
 
   it('revokes only the sessions acting in the named organisation', async () => {
@@ -498,8 +578,38 @@ describe('the stored row', () => {
 
     expect(JSON.stringify(row)).not.toContain(issued.token);
     expect(row.tokenHash).toBe(hashSecretToken(issued.token));
+    // §3's fourth bullet: "Row records IP, user agent, createdAt, lastSeenAt, so
+    // the user can see and revoke their sessions from /settings/security".
+    // `createdAt` had no assertion in either suite until the review pointed at
+    // it, which made the banner's "every bullet has a test" false by one bullet.
     expect(row.ip).toBe('203.0.113.7');
     expect(row.userAgent).toBe('Mozilla/5.0 (probe)');
+    expect(row.createdAt).toBeInstanceOf(Date);
+    expect(row.lastSeenAt).toBeInstanceOf(Date);
+  });
+
+  it("gives a rotated successor its own createdAt, not the predecessor's", async () => {
+    // `createdAt` answers "when did this session begin" and `lastSeenAt` answers
+    // "when was it last used" — two different questions on the
+    // /settings/security list. A successor inheriting the predecessor's
+    // `createdAt` would tell the user a brand-new credential is old, which is
+    // the direction that hides a rotation they did not expect.
+    const planted = await plant({
+      absoluteExpiresAt: new Date(Date.now() + 6 * 24 * HOUR),
+      idleExpiresAt: new Date(Date.now() + 12 * HOUR),
+      lastSeenAt: new Date(Date.now() - 3 * HOUR),
+    });
+    const predecessorRow = await prisma.session.findUniqueOrThrow({ where: { id: planted.id } });
+
+    const rotated = await service.rotate({ sessionId: planted.id, status: 'ACTIVE' });
+    const successor = await prisma.session.findUniqueOrThrow({
+      where: { id: rotated?.session.id ?? '' },
+    });
+
+    expect(successor.createdAt.getTime()).toBeGreaterThanOrEqual(
+      predecessorRow.createdAt.getTime(),
+    );
+    expect(successor.lastSeenAt.getTime()).toBeGreaterThan(predecessorRow.lastSeenAt.getTime());
   });
 
   it('never stores the raw token in Redis either', async () => {

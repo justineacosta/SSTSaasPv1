@@ -317,9 +317,26 @@ function checkMailCredentialPair(env: ApiEnvInput, ctx: z.RefinementCtx): void {
  * whole point of the factor. §5 gives no number, which is exactly why the
  * ordering is enforced here instead of a magnitude.
  *
- * `too_big` rather than `custom`, for the reason `checkArgon2Cost` above
- * records: `describeIssue` in `load-env.ts` never reads `issue.message`, so a
- * `custom` issue renders as "failed validation (custom)" and names no rule.
+ * **`too_small` and `too_big` rather than `custom`, and the reason is the
+ * number, not the naming.** An earlier version of this comment said a `custom`
+ * issue "renders as failed validation (custom) and names no rule", and
+ * attributed that to a docblock on `checkArgon2Cost`. Both halves were wrong,
+ * and the review measured it: `checkArgon2Cost` (above) carries no docblock —
+ * the sentence being paraphrased is on `checkMailCredentialPair` — and
+ * `load-env.ts`'s `describeIssue` has read `issue.params.rule` for a `custom`
+ * issue since before this branch (`git show 2fceaaa:packages/config/src/load-env.ts`),
+ * so an authored rule name does render.
+ *
+ * The real reason to use the typed codes is that they carry the **boundary** as
+ * structured data: `describeIssue` renders `too_small` as
+ * "must be at least <minimum>" and `too_big` as "must be at most <maximum>"
+ * (`load-env.ts:52-55`), so an operator is told the number their other variable
+ * has forced, not merely that two values disagree. A `custom` issue would have
+ * to restate that number in prose, where it could drift from the one the rule
+ * actually compared. It also matches `checkArgon2Cost` beside it, so all three
+ * rules in this `superRefine` render the same way.
+ *
+ * The first of the two issues below is `too_small`, not `too_big`.
  */
 function checkSessionLifetimes(env: ApiEnvInput, ctx: z.RefinementCtx): void {
   if (env.SESSION_REMEMBER_ME_LIFETIME_SECONDS < env.SESSION_ABSOLUTE_LIFETIME_SECONDS) {
