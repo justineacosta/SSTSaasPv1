@@ -14,7 +14,7 @@ development against 20 rows is exactly how that ships.
 ## 1. Cursor pagination (default)
 
 ```
-GET /api/v1/findings?limit=50&cursor=eyJzIjoiMjAyNi0wOC0yMFQxNDozMDowMFoiLCJpIjoiZm5kXzAxSiJ9
+GET /api/v1/findings?limit=50&cursor=FIXTURE-not-a-real-cursor-0000000000000000000000000000000
 ```
 
 ```jsonc

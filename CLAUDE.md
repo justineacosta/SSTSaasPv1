@@ -64,6 +64,7 @@ pnpm format:check       # prettier --check — gated in CI
 pnpm test               # vitest unit tests
 pnpm test:integration   # integration tests (requires Docker)
 pnpm test:e2e           # Playwright
+pnpm check:secrets      # no credential-shaped literal in a committed file
 pnpm check:specs        # every *.spec.* is claimed by exactly one Vitest project
 pnpm check:openapi      # committed openapi.json matches what the contracts generate
 pnpm check:registry     # tenant resource registry has not rotted

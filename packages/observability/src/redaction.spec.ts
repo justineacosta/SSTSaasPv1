@@ -33,7 +33,7 @@ describe('redact', () => {
   });
 
   it('applies the value-shape backstop to a bearer token under an innocent key', () => {
-    const out = redact({ note: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def' }) as Record<
+    const out = redact({ note: 'Bearer FIXTURE-not-a-real-jwt.header.signature' }) as Record<
       string,
       unknown
     >;
@@ -127,7 +127,7 @@ describe('redact', () => {
   });
 
   it('text-scans the message of an Error nested anywhere in a payload', () => {
-    const inner = new Error('leaked here: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
+    const inner = new Error('leaked here: Bearer FIXTURE-not-a-real-jwt.header.signature');
     const out = redact({ context: { originalError: inner } }) as {
       context: { originalError: { message: string } };
     };
@@ -151,7 +151,7 @@ describe('redact', () => {
 describe('redactSecretsInText', () => {
   it('redacts only the matched span, leaving the surrounding text intact', () => {
     const out = redactSecretsInText(
-      'exchanging token=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def now',
+      'exchanging token=Bearer FIXTURE-not-a-real-jwt.header.signature now',
     );
     expect(out).toBe(`exchanging token=${REDACTED} now`);
   });
@@ -162,7 +162,7 @@ describe('redactSecretsInText', () => {
     // is the part that makes a log line useful during an incident. This is why
     // the pattern is written as a lookbehind rather than a capture group.
     const out = redactSecretsInText(
-      'sending https://app.sentinel.test/auth/reset?token=U32c2rxRXTfuTolNBJYdL332nOS0 to the mailer',
+      'sending https://app.sentinel.test/auth/reset?token=FIXTURE0not0a0real0token0000 to the mailer',
     );
     expect(out).toBe(
       `sending https://app.sentinel.test/auth/reset?token=${REDACTED} to the mailer`,

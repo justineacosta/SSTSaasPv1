@@ -143,10 +143,18 @@ raw value does not appear in the emitted line. Before any change to `redaction.t
 The emitted lines, from the captured failure output:
 
 ```
-{"level":"info",...,"verifyUrl":"https://app.sentinel.test/auth/verify?token=JFqAQ3-_L-BSZrsbVpMUdX2rKzyHxz3tLix6eb-2_U0","msg":"verification email queued"}
-{"level":"info",...,"msg":"sending https://app.sentinel.test/auth/reset?token=U32c2rxRXTfuTolNBJYdL332nOS0FeOSg4myYEwQ17k to the mailer"}
-{"level":"info",...,"msg":"reset link: https://app.sentinel.test/auth/reset?token=r0sSNA1eA-BMjtswzEyjuArFiIEtzlnh_fxXo1tPwWs"}
+{"level":"info",...,"verifyUrl":"https://app.sentinel.test/auth/verify?token=<token redacted — see Task 5 ruling 64>","msg":"verification email queued"}
+{"level":"info",...,"msg":"sending https://app.sentinel.test/auth/reset?token=<token redacted — see Task 5 ruling 64> to the mailer"}
+{"level":"info",...,"msg":"reset link: https://app.sentinel.test/auth/reset?token=<token redacted — see Task 5 ruling 64>"}
 ```
+
+[Fix-round correction made during Task 5, 2026-08-26. The three values above were real
+256-bit tokens minted by Task 4's own redaction measurements and pasted here verbatim. They
+are inert — no `VerificationToken` row was ever written and no account exists — and they were
+found by `pnpm check:secrets`, which Task 5 built, and **not** by GitGuardian, which passed this
+file on PR #8. Redacted here; the raw values remain in `main`'s history, where they cannot be
+purged without disabling branch protection, and that is recorded rather than done. Task 5
+ruling 64.]
 
 This is exactly the brief's prediction: `SECRET_KEY_FRAGMENTS` contains `token`, so the
 key-name case was already covered and proves nothing; none of the five

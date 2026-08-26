@@ -53,7 +53,7 @@ describe('createLogger', () => {
 
   it('redacts a secret embedded in the msg string, leaving the rest readable', () => {
     const { logger, lines } = captureLogger();
-    logger.info('exchanging token=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def now');
+    logger.info('exchanging token=Bearer FIXTURE-not-a-real-jwt.header.signature now');
     const out = lines[0] as { msg: string };
     expect(out.msg).toBe(`exchanging token=${REDACTED} now`);
   });
@@ -67,7 +67,7 @@ describe('createLogger', () => {
 
   it('redacts a secret inside Error.message when the error is the first argument', () => {
     const { logger, lines } = captureLogger();
-    const err = new Error('auth failed: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
+    const err = new Error('auth failed: Bearer FIXTURE-not-a-real-jwt.header.signature');
     logger.error(err, 'request failed');
     const out = lines[0] as { err: { message: string } };
     expect(out.err.message).toBe(`auth failed: ${REDACTED}`);
@@ -75,7 +75,7 @@ describe('createLogger', () => {
 
   it('redacts a secret inside Error.message when logged as { err }', () => {
     const { logger, lines } = captureLogger();
-    const err = new Error('auth failed: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
+    const err = new Error('auth failed: Bearer FIXTURE-not-a-real-jwt.header.signature');
     logger.error({ err }, 'request failed');
     const out = lines[0] as { err: { message: string } };
     expect(out.err.message).toBe(`auth failed: ${REDACTED}`);
@@ -83,44 +83,41 @@ describe('createLogger', () => {
 
   it('keeps the stack after serialization and redacts any secret inside it', () => {
     const { logger, lines } = captureLogger();
-    const err = new Error('token leak: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
+    const err = new Error('token leak: Bearer FIXTURE-not-a-real-jwt.header.signature');
     logger.error(err, 'boom');
     const out = lines[0] as { err: { stack: string } };
     expect(typeof out.err.stack).toBe('string');
     expect(out.err.stack.length).toBeGreaterThan(0);
-    expect(out.err.stack).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
+    expect(out.err.stack).not.toContain('FIXTURE-not-a-real-jwt');
     expect(out.err.stack).toContain(REDACTED);
   });
 
   it('redacts a secret in both msg and the serialised error for a bare Error with no message argument', () => {
     const { logger, lines } = captureLogger();
-    const err = new Error('auth failed: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
+    const err = new Error('auth failed: Bearer FIXTURE-not-a-real-jwt.header.signature');
     logger.error(err);
     const out = lines[0] as { msg: string; err: { message: string } };
-    expect(out.msg).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
-    expect(out.err.message).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
+    expect(out.msg).not.toContain('FIXTURE-not-a-real-jwt');
+    expect(out.err.message).not.toContain('FIXTURE-not-a-real-jwt');
     expect(out.msg).toBe(`auth failed: ${REDACTED}`);
     expect(out.err.message).toBe(`auth failed: ${REDACTED}`);
   });
 
   it('redacts a secret in both msg and the serialised error for { err } with no message argument', () => {
     const { logger, lines } = captureLogger();
-    const err = new Error('auth failed: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
+    const err = new Error('auth failed: Bearer FIXTURE-not-a-real-jwt.header.signature');
     logger.error({ err });
     const out = lines[0] as { msg: string; err: { message: string } };
-    expect(out.msg).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
-    expect(out.err.message).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
+    expect(out.msg).not.toContain('FIXTURE-not-a-real-jwt');
+    expect(out.err.message).not.toContain('FIXTURE-not-a-real-jwt');
     expect(out.msg).toBe(`auth failed: ${REDACTED}`);
     expect(out.err.message).toBe(`auth failed: ${REDACTED}`);
   });
 
   it('uses the explicit message when one is given, redacted, without regressing error serialization', () => {
     const { logger, lines } = captureLogger();
-    const err = new Error('inner detail: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
-    logger.error(
-      err,
-      'request failed for token=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def',
-    );
+    const err = new Error('inner detail: Bearer FIXTURE-not-a-real-jwt.header.signature');
+    logger.error(err, 'request failed for token=Bearer FIXTURE-not-a-real-jwt.header.signature');
     const out = lines[0] as { msg: string; err: { message: string; type: string } };
     expect(out.msg).toBe(`request failed for token=${REDACTED}`);
     expect(out.err.message).toBe(`inner detail: ${REDACTED}`);
@@ -138,7 +135,7 @@ describe('createLogger', () => {
 
   it('redacts a shape-recognisable secret passed as a trailing interpolation argument', () => {
     const { logger, lines } = captureLogger();
-    logger.info('token=%s', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
+    logger.info('token=%s', 'Bearer FIXTURE-not-a-real-jwt.header.signature');
     const out = lines[0] as { msg: string };
     expect(out.msg).toBe(`token=${REDACTED}`);
   });
@@ -152,7 +149,7 @@ describe('createLogger', () => {
 
   it('redacts a secret in child logger bindings, and again on a second line from the same child', () => {
     const { logger, lines } = captureLogger();
-    const child = logger.child({ apiKey: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def' });
+    const child = logger.child({ apiKey: 'Bearer FIXTURE-not-a-real-jwt.header.signature' });
     child.info('first line');
     child.info('second line');
     expect(lines).toHaveLength(2);
@@ -164,7 +161,7 @@ describe('createLogger', () => {
     const { logger, lines } = captureLogger();
     const grandchild = logger
       .child({ requestId: 'req_1' })
-      .child({ apiKey: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def' });
+      .child({ apiKey: 'Bearer FIXTURE-not-a-real-jwt.header.signature' });
     grandchild.info('grandchild line');
     const out = lines[0] as { requestId: string; apiKey: string };
     expect(out.requestId).toBe('req_1');
@@ -183,7 +180,7 @@ describe('createLogger', () => {
   it('still honours the two-argument child(bindings, options) form, including level', () => {
     const { logger, lines } = captureLogger();
     const child = logger.child(
-      { apiKey: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def' },
+      { apiKey: 'Bearer FIXTURE-not-a-real-jwt.header.signature' },
       { level: 'warn' },
     );
     child.info('should be suppressed by level');
@@ -247,10 +244,10 @@ describe('createLogger', () => {
 
   it('redacts Error.message when logged with an explicit undefined second argument (C1)', () => {
     const { logger, lines } = captureLogger();
-    const err = new Error('auth failed: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def');
+    const err = new Error('auth failed: Bearer FIXTURE-not-a-real-jwt.header.signature');
     logger.error(err, undefined);
     const out = lines[0] as { msg: string; err: { message: string } };
-    expect(out.msg).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
+    expect(out.msg).not.toContain('FIXTURE-not-a-real-jwt');
     expect(out.msg).toBe(`auth failed: ${REDACTED}`);
     expect(out.err.message).toBe(`auth failed: ${REDACTED}`);
   });
@@ -261,7 +258,7 @@ describe('createLogger', () => {
       a: {
         b: {
           toJSON() {
-            return { token: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def' };
+            return { token: 'Bearer FIXTURE-not-a-real-jwt.header.signature' };
           },
         },
       },

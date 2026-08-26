@@ -289,3 +289,38 @@ the repository "has carried a red security check on every pull request it has ev
 merges. Three of four *code* pull requests were red, which is bad enough and is what the roadmap
 now says.
 
+## Ruling 64 — the owed `.gitguardian.yaml` is replaced by a shape check, and Task 4's tokens are redacted
+
+Written after Task 5 merged-ready, on the operator's instruction to close the GitGuardian debt.
+**The debt could not be paid as recorded.** `roadmap.md` had asked since PR #5 for a
+`.gitguardian.yaml` ignore list naming each match; `ignored_matches` in that file is read by the
+**ggshield CLI**, which this repository does not run, while the failing check is the GitGuardian
+**GitHub App**, cleared from the dashboard. The file would have been decoration.
+
+Reading each check run's output also disproved this file's account of *what* was flagged. Four pull
+requests, four different sets, and not one real credential: **#5** three in `review-diffs/`, **#6** a
+`Generic Password` in `auth.module.spec.ts`, **#8** four `Generic High Entropy Secret` in
+`redaction.spec.ts`, **#10** the two email fixtures. The cause is credential-shaped test fixtures.
+
+`pnpm check:secrets` checks that instead — a shape rule, not a secret scanner, following the
+`check-*.ts` convention with its own spec. Tuning was measured at every step: 1464 findings on the
+first run (almost all hyphenated slugs like `ADR-0016-smtp-mailer-port`), 1226 after treating `-`
+and `_` as separators rather than content, 49 after excluding lockfiles (1177 `pnpm-lock` integrity
+hashes, generated and unfixable), 0 after fixing the source fixtures. `docs/superpowers/**` is
+excluded by path because ledgers are dated records of measured output; `.claude/**` is not, because
+it is living documentation and a bad example there is fixable.
+
+**It immediately found what GitGuardian missed.** Three values in Task 4's own report
+(`task-04/report.md`) are real 256-bit tokens minted by its redaction measurements and pasted
+verbatim — the same defect as ruling 57, committed one task earlier, and GitGuardian passed that
+file on PR #8. They are redacted in the working tree with a correction note. **The raw values remain
+in `main`'s history and are not purged:** `main` blocks force pushes and requires linear history, so
+removing them means deliberately disabling branch protection to rewrite already-merged history, for
+values that are inert. Recorded rather than done, on the operator's decision.
+
+**Cost if wrong.** The check is a shape rule and says so: it has no provider signatures, validates
+nothing, and a low-entropy real credential passes it untouched. It also cannot see an all-lowercase
+credential, because requiring mixed character classes is what keeps it from flagging every git SHA
+in `docs/` — a stated gap, taken deliberately, because a noisy check gets switched off and a
+switched-off check catches nothing. It is a second line under GitGuardian, not a replacement for it.
+
