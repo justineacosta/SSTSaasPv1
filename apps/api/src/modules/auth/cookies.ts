@@ -105,7 +105,7 @@ function deltaSeconds(maxAgeSeconds: number): string {
 export function serialiseSessionCookie(input: SessionCookieInput): string {
   assertCookieValue(input.value);
 
-  const attributes = [...SHARED_ATTRIBUTES];
+  const attributes: string[] = [...SHARED_ATTRIBUTES];
   if (input.maxAgeSeconds !== null) {
     attributes.push(`Max-Age=${deltaSeconds(input.maxAgeSeconds)}`);
   }
