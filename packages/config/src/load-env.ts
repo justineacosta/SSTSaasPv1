@@ -69,9 +69,17 @@ function describeIssue(issue: ZodIssue): string {
       return `must be one of: ${issue.options.map(String).join(', ')}`;
     case 'invalid_intersection_types':
       return 'could not be merged';
+    case 'custom': {
+      // `params` is authored in this repository's own schemas, exactly like the
+      // `startsWith` above — so reading it keeps the rule this function is
+      // built on (never `issue.message`, only our own rule parameters) while
+      // letting a cross-field or scheme rule say why it failed instead of
+      // printing "failed validation (custom)", which says nothing.
+      const rule: unknown = issue.params?.['rule'];
+      return typeof rule === 'string' ? rule : `failed validation (${issue.code})`;
+    }
     case 'invalid_arguments':
     case 'invalid_return_type':
-    case 'custom':
       return `failed validation (${issue.code})`;
     default:
       return 'failed validation';
