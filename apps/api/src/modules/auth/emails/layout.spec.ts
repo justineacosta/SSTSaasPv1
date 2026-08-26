@@ -49,6 +49,36 @@ describe('renderEmail', () => {
     expect(email.html).not.toContain('href="https://app.test/x?a=1&b="2"');
   });
 
+  /**
+   * L2 from the Task 5 review. `actionHtml` HTML-escapes the action URL and
+   * performs no scheme check, and `escapeHtml('javascript:alert(1)')` is a
+   * measured no-op — nothing in it touches `:`, `(` or `)`. Every action URL
+   * today comes from `buildTokenLink`, so nothing was reachable; this is the
+   * guard for the next template that sources a URL from somewhere else.
+   *
+   * Refused at render time rather than escaped, because there is no rendering
+   * of `javascript:` in an `href` that is correct. A template that wants one
+   * has a defect, and a defect should stop rather than be sanitised into
+   * something that merely looks safe.
+   */
+  it.each([
+    'javascript:alert(1)',
+    'JavaScript:alert(1)',
+    'data:text/html,<script>alert(1)</script>',
+    'vbscript:msgbox(1)',
+    'file:///etc/passwd',
+    '  javascript:alert(1)',
+  ])('refuses to render an action URL with the scheme in %s', (url) => {
+    expect(() => renderEmail({ ...content, action: { label: 'Go', url } })).toThrow(/scheme/i);
+  });
+
+  it.each(['https://app.sentinel.test/verify-email?token=abc', 'http://localhost:3000/reset'])(
+    'renders an action URL of %s',
+    (url) => {
+      expect(() => renderEmail({ ...content, action: { label: 'Go', url } })).not.toThrow();
+    },
+  );
+
   it('puts the action URL in the text part in full, since text has no links', () => {
     const email = renderEmail(content);
     expect(email.text).toContain('https://app.sentinel.test/verify-email?token=abc');

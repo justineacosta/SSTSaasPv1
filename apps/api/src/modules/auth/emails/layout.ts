@@ -74,6 +74,39 @@ function paragraphsHtml(paragraphs: readonly string[]): string {
  * password reset, "see where it goes first" is behaviour worth encouraging
  * rather than defeating.
  */
+/**
+ * The schemes an action URL may carry.
+ *
+ * `escapeHtml` is not a scheme check — it touches neither `:` nor `(` nor `)`,
+ * so `javascript:alert(1)` passes through it byte-identical and lands intact in
+ * `href="..."` (L2 in the Task 5 review, measured). Every action URL today
+ * comes from `buildTokenLink`, whose base is now scheme-constrained in
+ * `packages/config`; this is the guard for the template that one day builds a
+ * URL some other way.
+ *
+ * Refusing rather than sanitising, for the same reason the recipient guard in
+ * `smtp-mailer.ts` refuses: a mangled URL has no useful meaning and there is no
+ * caller to serve by guessing at one. A template that reaches here with a
+ * `javascript:` URL has a defect, and it should stop.
+ */
+const ALLOWED_ACTION_SCHEMES = new Set(['http:', 'https:']);
+
+function assertRenderableUrl(url: string): void {
+  let protocol: string | undefined;
+  try {
+    ({ protocol } = new URL(url));
+  } catch {
+    protocol = undefined;
+  }
+
+  if (protocol !== undefined && ALLOWED_ACTION_SCHEMES.has(protocol)) return;
+
+  // The URL itself is deliberately absent from the message: it is the one part
+  // of an action that can carry a live single-use credential, and an error
+  // message is a log line waiting to happen. Ruling 47.
+  throw new Error('Refusing to render an email action: the URL scheme must be http or https.');
+}
+
 function actionHtml(action: EmailAction): string {
   const url = escapeHtml(action.url);
   return [
@@ -131,6 +164,11 @@ function renderText(content: EmailContent): string {
 }
 
 export function renderEmail(content: EmailContent): RenderedEmail {
+  // Checked here rather than inside `actionHtml`, because the action URL lands
+  // in the text part too and a guard that lives on the HTML path is a guard
+  // that disappears the day someone renders only text.
+  if (content.action !== undefined) assertRenderableUrl(content.action.url);
+
   const safe: EmailContent = { ...content, subject: sanitizeSubject(content.subject) };
   return {
     subject: safe.subject,
