@@ -174,11 +174,36 @@ const issueSessionInputSchema = z
 
 export type IssueSessionInput = z.input<typeof issueSessionInputSchema>;
 
+/**
+ * The exact wording thrown when a rotation would raise privilege without
+ * evidence, exported so a caller can assert on it without duplicating the
+ * string — the same device `assertUserPrincipal` uses in
+ * `packages/contracts/src/principal.ts`.
+ */
+export const MFA_EVIDENCE_REQUIRED =
+  'Refusing to promote a PENDING_MFA session to ACTIVE without an mfaCompletedAt. The promotion must carry the evidence that a factor was proved.';
+
+/**
+ * **`status` has no default here either, and for a sharper reason than on
+ * `issue`.**
+ *
+ * It had one — `.default('ACTIVE')` — and the review demonstrated what that
+ * bought: `rotate({ sessionId })` on a ten-minute `PENDING_MFA` session
+ * returned a thirty-day `ACTIVE` credential with `mfaCompletedAt: null`, from a
+ * call that named no status and proved nothing. That contradicted the comment
+ * twelve lines above, which says a default would "put the omission back, one
+ * layer up" — and `rotate` is the one call in this service that can *raise*
+ * privilege, which `issue` cannot.
+ *
+ * Task 10 (password change), Task 13 (organisation switch) and Task 17 all
+ * rotate for reasons that have nothing to do with MFA. Each of them naming the
+ * status is the point: there is no correct value for this that a schema could
+ * pick on their behalf.
+ */
 const rotateSessionInputSchema = z
   .object({
     sessionId: sessionIdSchema,
-    /** The successor's status. `ACTIVE` unless a caller says otherwise. */
-    status: z.enum(SESSION_STATUSES).default('ACTIVE'),
+    status: z.enum(SESSION_STATUSES),
     activeOrganizationId: organizationIdSchema.nullable().optional(),
     mfaCompletedAt: z.date().nullable().optional(),
     ip: ipInput,
@@ -544,6 +569,17 @@ export class SessionService {
    * it was never the user's session lifetime, and inheriting it would expire
    * the real session moments after MFA succeeded.
    *
+   * **That exception now requires the evidence its justification assumes, and
+   * it did not before.** The sentence above is written of MFA *succeeding*, but
+   * the condition it guarded only compared two status values — so any caller
+   * naming `ACTIVE` on a pending session got the fresh clock, whether or not a
+   * factor had been proved. It now additionally requires `mfaCompletedAt`, and
+   * **throws** rather than returning `null` when it is absent: `null` is this
+   * method's word for "there was nothing to rotate", and a caller that got the
+   * promotion wrong would read it as a lost race and never find the bug. Loud,
+   * for the reason `assertUserPrincipal` gives — a privileged path reachable by
+   * omission is only safe if reaching it is loud.
+   *
    * **The cache is poisoned before the transaction, and it stays poisoned even
    * if the transaction then fails.** That is fail-closed and it is the direction
    * that matters: the alternative — poison after commit — leaves the old token
@@ -554,6 +590,9 @@ export class SessionService {
    *
    * Returns `null` when there was nothing to rotate: no such session, already
    * revoked, already past either clock, or a concurrent rotation won the race.
+   * It **throws** for the two caller mistakes instead: an input the schema
+   * refuses, and a `PENDING_MFA` -> `ACTIVE` promotion carrying no
+   * `mfaCompletedAt`.
    * Exactly one of two concurrent rotations returns a session; see
    * `session.repository.ts`'s `rotate` for why the affected-row count is
    * sufficient here where `TokenService.issue` needed an advisory lock.
@@ -567,6 +606,12 @@ export class SessionService {
     if (expiryOf(toResolved(predecessor), now) !== undefined) return null;
 
     const startsRealSession = predecessor.status === 'PENDING_MFA' && parsed.status === 'ACTIVE';
+    // Before any row is written and before the cache is poisoned: a refused
+    // promotion must leave the predecessor exactly as it found it.
+    if (startsRealSession && !(parsed.mfaCompletedAt instanceof Date)) {
+      throw new Error(MFA_EVIDENCE_REQUIRED);
+    }
+
     const absoluteExpiresAt = startsRealSession
       ? new Date(
           now.getTime() +
@@ -633,11 +678,24 @@ export class SessionService {
    * what a reset does — the user completing a reset is not holding a session at
    * all, and if an attacker is, that is the session being taken away.
    *
-   * **The caller owns the ordering, and it matters.** Enumerating the live rows
-   * and then revoking them leaves a window in which a login can create a
-   * session this call never saw, so a password change must write the new hash
-   * *before* calling this, not after. Task 10 owns that; it is stated here
-   * because the failure is invisible from inside this method.
+   * **What the enumerate-then-revoke window does and does not do, corrected
+   * after the review measured it.** An earlier version of this comment said a
+   * login landing between the enumeration and the write "creates a session this
+   * call never saw", implying it survives. It does not: `revokeLiveForUser` is
+   * one `updateMany` whose predicate is evaluated at execution time, so that
+   * session **is** revoked, and the measured count came back as 2 where 1 was
+   * enumerated. What it was not was **tombstoned** — its hash was never in the
+   * list handed to `poison` — so its warm cache entry went on serving it for up
+   * to `SESSION_CACHE_TTL_SECONDS`. `revokeMany` now poisons twice, and the
+   * second pass covers exactly that session.
+   *
+   * **What genuinely remains the caller's ordering problem** is a session
+   * created *after* the write: nothing here has revoked it and nothing here
+   * could. A password change must write the new hash **before** calling this,
+   * so that a racing login cannot mint a session with the old credential once
+   * this call has finished. Task 10 owns that ordering, and Task 14 owns the
+   * equivalent for member removal; it is stated here because the failure is
+   * invisible from inside this method.
    */
   async revokeAllForUser(
     userId: string,
@@ -682,12 +740,33 @@ export class SessionService {
       exceptSessionId: input.exceptSessionId,
     };
 
+    // TWO POISON PASSES, AND BOTH ARE LOAD-BEARING.
+    //
+    // The first covers every session the enumeration could see, and it runs
+    // BEFORE the write so those sessions are fail-closed from the moment this
+    // call starts — the same ordering `revoke` and `rotate` use.
+    //
+    // The second covers the session the enumeration could NOT see. `updateMany`
+    // evaluates its predicate at execution time, so a login landing between the
+    // two statements is revoked in Postgres while its hash was never in the
+    // first list; the review measured that session resolving as valid off a warm
+    // cache entry, with Redis healthy. `revokeLiveForUser` reports the hashes it
+    // actually revoked, and this pass poisons those.
+    //
+    // A stale live write landing between the passes loses: `writeLive` is a Lua
+    // compare-and-set that refuses to run over a tombstone, and the second pass
+    // puts one down after the row is committed. What remains open is a session
+    // created *after* the write — genuinely not revoked, and the caller's
+    // ordering problem, not this one's.
     const live = await this.repository.listLiveForUser(scope);
     await this.poison(
       live.map((row) => row.tokenHash),
       input.reason,
     );
-    return this.repository.revokeLiveForUser({ ...scope, revokedAt: new Date() });
+
+    const revoked = await this.repository.revokeLiveForUser({ ...scope, revokedAt: new Date() });
+    await this.poison(revoked.tokenHashes, `${input.reason}:after-write`);
+    return revoked.count;
   }
 
   /**

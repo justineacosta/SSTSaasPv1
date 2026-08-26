@@ -23,8 +23,17 @@
 > **What of §3 exists, as of Phase 2 Task 6.** `SessionService`, `SessionRepository`,
 > `RedisSessionCache` and `cookies.ts` in `apps/api/src/modules/auth/` — issue, resolve, rotate,
 > revoke, `revokeAllForUser`, `revokeAllForUserInOrganization`, both lifetimes, rolling renewal, and
-> the cookie serialiser. Every bullet in §3 below has a test at the layer where it can fail, twenty
-> of them against a real Postgres and the compose Redis.
+> the cookie serialiser. Every bullet in §3 below has a test at the layer where it can fail —
+> twenty-three of them against a real Postgres and the compose Redis, and the rest as unit tests.
+> The fourth bullet's `createdAt` had no assertion until the Task 6 review found it and one was
+> added; nothing else in §3 was ever short of coverage.
+>
+> **ADR-0005's mechanism sentence predates this measurement.** Its Decision and Consequences say
+> revocation "delete[s] the cache entry and the row together"; §3's paragraph below records that a
+> delete does not achieve that promise, and that a tombstone does. The ADR is **not edited** — an
+> accepted ADR is superseded, never rewritten — and no superseding ADR is owed here, because the
+> decision it records (opaque server-side sessions, a cached lookup, immediate revocation) is
+> unchanged and correct. The tombstone is how its promise is kept.
 >
 > **Nothing calls any of it.** No endpoint issues a session, no guard reads one, and **no cookie has
 > ever reached a browser** — `serialiseSessionCookie`'s output has been produced in specs and by one
@@ -38,9 +47,10 @@
 > poisoned, so an entry cached before the outage can serve until it expires — bounded by
 > `SESSION_CACHE_TTL_SECONDS`, default 60. **The pending-MFA lifetime and the cache TTL are choices,
 > not quotations**: §5 says only "short-lived" and ADR-0005 says only "a short TTL", so ten minutes
-> and sixty seconds were picked here and are configuration. And **`PENDING_MFA` is enforced by
-> nothing yet** — the status is recorded and its short lifetime applies, but the rule that such a
-> session authenticates nothing except the MFA endpoint is Task 7's.
+> and sixty seconds were picked here and are configuration. And **`PENDING_MFA` is only half enforced**: the
+> status is recorded, its short lifetime applies, and promoting one to `ACTIVE` now requires an
+> `mfaCompletedAt` — but the rule that such a session authenticates nothing except the MFA
+> verification endpoint is Task 7's, and nothing enforces it today.
 
 ## 1. Model
 
@@ -107,7 +117,10 @@ inherited across a rotation, not restarted** — otherwise the seven-day cap wou
 nothing for a user who changes their password weekly; the exception is `PENDING_MFA` ->
 `ACTIVE`, where the pending session's few minutes were never the user's session lifetime.
 And **`Session.status` has no database default**, deliberately, so every insert states
-whether the session it is creating is privileged.
+whether the session it is creating is privileged. The same rule reaches one layer up after the Task
+6 review: neither `issue` nor `rotate` defaults it, and a `PENDING_MFA` -> `ACTIVE` rotation
+additionally has to carry an `mfaCompletedAt` — the promotion carries its evidence rather than
+asserting itself, because `rotate` is the one call that can raise a session's privilege.
 
 ## 4. CSRF
 
