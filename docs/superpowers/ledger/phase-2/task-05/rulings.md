@@ -121,15 +121,24 @@ file is a file, and the reflex is the control — a product whose repository has
 GitGuardian check on every pull request it has ever had does not need a genuine-looking secret
 added to the pile.
 
-**Recorded and not closed:** the raw value remains reachable in this branch's history at `aaa6d39`
-and `d5161c5`. Purging it means a history rewrite. The branch is unpushed, so it is still cheap —
-Task 4 did exactly this behind a backup branch and a tree diff (carry-forward ruling 39) — but a
-history rewrite is the operator's decision, not an orchestrator's, and it is recorded rather than
-done.
+**The history was rewritten, on the operator's decision, before the branch was pushed.** The value
+survived the working-tree redaction in `0088852` at `aaa6d39` and `d5161c5`, and `main` blocks force
+pushes and requires linear history — so the merge would have made it permanent. `git filter-branch
+--tree-filter` replaced it across all 22 commits in the range, behind a backup branch, following
+Task 4's precedent (carry-forward ruling 39): **the resulting tree is byte-identical to the
+pre-rewrite tree** — both `4f1ff58eccfdf3fa825f5ccc769573ba230de79d`, with an empty
+`git diff --stat` against the backup — and the full suite was re-run on the rewritten history
+before the backup was deleted. `git log -S` over the range now returns no commit.
 
-**Cost if wrong:** if the branch is pushed with the history intact, an inert but genuine-shaped
-secret enters `main`'s history permanently and GitGuardian very likely flags a fourth consecutive
-pull request.
+One consequence worth naming rather than hiding: **commit messages in this range still describe the
+redaction as a working-tree fix**, because they were written before the rewrite was decided. They
+are accurate about what that commit did and incomplete about what happened afterwards; this ruling
+is the record that closes the gap.
+
+**Cost if wrong:** a history rewrite can lose work. It was done on an unpushed branch behind a
+backup, the trees were compared by hash before the backup was deleted, and all ten verification
+commands were re-run afterwards. The alternative was an inert but genuine-shaped secret in `main`'s
+permanent history and a likely fourth consecutive GitGuardian finding.
 
 ## Ruling 58 — the relay-error token residual is recorded, not closed
 

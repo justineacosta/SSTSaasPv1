@@ -998,12 +998,16 @@ implementation commit at `09:38:20` — and the reviewer verified that ordering 
 on trust, along with the fact that the brief has one commit and was never amended, so its twelve
 rulings were not back-filled.
 
-**One residual needs an operator decision.** A live-format 256-bit token was committed verbatim in
-the implementer's report; it is redacted there now, but remains reachable in this branch's history
-at `aaa6d39` and `d5161c5`. It is inert — minted for a Mailpit send, no `VerificationToken` row was
-written, no account exists — but the branch is unpushed, so purging it by history rewrite is still
-cheap, and a repository already carrying a red GitGuardian check on every pull request it has ever
-had does not need a genuine-looking secret added to the pile.
+**A live-format token reached the ledger, and the branch history was rewritten to purge it before
+the push.** The value was redacted in the working tree by `0088852` but survived in the history at
+`aaa6d39` and `d5161c5`, and `main` blocks force pushes and requires linear history — so a merge
+would have made it permanent. It is inert (minted for a Mailpit send; no `VerificationToken` row was
+written and no account exists) and it was purged anyway, because a repository that has carried a red
+GitGuardian check on every pull request it has ever had does not need a genuine-looking secret added
+to the pile. Done behind a backup branch on Task 4's precedent: **the rewritten tree is
+byte-identical to the pre-rewrite tree** — hash `4f1ff58…` on both sides, empty `git diff --stat`
+against the backup — and all ten commands were re-run on the rewritten history before the backup was
+deleted.
 
 **Checkpoint A falls after Task 12** — the identity API enforced end to end with no UI. At that
 point the branch is pushed, CI must be green on a Linux runner, and this file gets an evidence
