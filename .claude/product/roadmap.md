@@ -905,11 +905,20 @@ wall clock for 42.20s of tests**, which is sequential execution behaving on CI e
 locally, and which is also the first proof that `startPostgresHarness()` works in a runner where
 the compose database has no migrations applied.
 
-**GitGuardian failed on PR #8, making it three consecutive pull requests.** It is still not a
-required check and still did not gate the merge. The `.gitguardian.yaml` ignore list naming each
-match and why remains **unwritten**, and the standing cost recorded under PRs #5 and #6 is now
-larger again: a security product's repository has now carried a red security check on every pull
-request it has ever had.
+**GitGuardian failed on PR #8, as it had on PRs #5 and #6.** It is still not a required check and
+still did not gate the merge. The `.gitguardian.yaml` ignore list naming each match and why remains
+**unwritten**, and the standing cost recorded under PRs #5 and #6 stands: three of the four code
+pull requests to date have carried a red security check on a security product's own repository,
+which trains people to ignore it.
+
+**Correction, 2026-08-26, made while verifying the claim rather than repeating it.** An earlier
+version of this paragraph said PR #8 made it "three consecutive pull requests" and that the
+repository "has now carried a red security check on every pull request it has ever had". Both are
+false, and `gh api …/check-runs` over every pull request is what showed it: **#5 failure, #6
+failure, #7 success, #8 failure, #9 success.** PRs #7 and #9 are the documentation follow-ups that
+recorded the #6 and #8 merges, and they were green. The true statement is the narrower one now
+written above. This is the same defect class the phase's citation pass exists to catch, found in
+`roadmap.md` itself.
 
 **Task 5 evidence, 2026-08-26 at commit `0088852`.** Every command re-run by the orchestrator on
 the finished tree after the fix round, not taken from the implementer's report, with exit codes
@@ -1002,12 +1011,29 @@ rulings were not back-filled.
 the push.** The value was redacted in the working tree by `0088852` but survived in the history at
 `aaa6d39` and `d5161c5`, and `main` blocks force pushes and requires linear history — so a merge
 would have made it permanent. It is inert (minted for a Mailpit send; no `VerificationToken` row was
-written and no account exists) and it was purged anyway, because a repository that has carried a red
-GitGuardian check on every pull request it has ever had does not need a genuine-looking secret added
-to the pile. Done behind a backup branch on Task 4's precedent: **the rewritten tree is
+written and no account exists) and it was purged anyway, because a repository whose security check
+has been red on three of its four code pull requests does not need a genuine-looking secret added to
+the pile. Done behind a backup branch on Task 4's precedent: **the rewritten tree is
 byte-identical to the pre-rewrite tree** — hash `4f1ff58…` on both sides, empty `git diff --stat`
 against the backup — and all ten commands were re-run on the rewritten history before the backup was
 deleted.
+
+**CI is green on a Linux runner, before the merge.** Runs `32955708670` (push, 3m50s) and
+`32955711939` (pull request, 3m28s) on `ubuntu-latest`, both `success`. The stage worth naming is
+integration: it is the first time the Mailpit SMTP path has run anywhere but a developer's machine,
+and **13 files / 169 tests** pass in a runner where the mail container is started by
+`.github/workflows/ci.yml` alongside Postgres, Redis and MinIO. `check:openapi` reports four routes
+on CI as it does locally.
+
+**GitGuardian passed — "25 commits were scanned without uncovering any secrets"** — and getting
+there took two history rewrites rather than one, which is the part worth recording. The first
+attempt changed both offending constants at the **tip** of the branch; the check stayed red and
+kept citing `1cd9b0a`, the commit that introduced them, because **GitGuardian scans every commit in
+a pull request rather than the final tree**. That is the same lesson the ledger-token rewrite had
+taught an hour earlier, arriving a second time in the same task. The values themselves were never
+credentials: two 43-character random base64url constants used as opaque round-trip fixtures in
+`links.spec.ts` and `registry.spec.ts`, replaced with `FIXTURE_not_a_real_token-…`, which keeps the
+length and charset the specs actually need and none of the entropy. Ruling 63.
 
 **Checkpoint A falls after Task 12** — the identity API enforced end to end with no UI. At that
 point the branch is pushed, CI must be green on a Linux runner, and this file gets an evidence
