@@ -13,8 +13,11 @@ import {
  * Ruling 45. Six near-identical assertion blocks is how one template ships
  * without a text part: the sixth block gets written by copying the fifth, and
  * the one assertion that mattered gets dropped in the copy. Everything below
- * iterates the exported registry instead, so Task 15's seventh template
+ * iterates the exported registry instead, so the next template added to it
  * inherits every rule here by existing.
+ *
+ * The registry holds **seven** members, the invitation among them. The next one
+ * is the eighth, and no task owns it yet (M4, Task 5 review).
  *
  * `CASES` below is a `Record<EmailTemplateId, …>`, which is the part that makes
  * that true — see its own docblock for why the benign and hostile passes share
@@ -118,15 +121,15 @@ describe('the email template registry', () => {
   });
 
   it('classifies every template as either link-carrying or a notice', () => {
-    // Three carry a live credential and three carry none. A seventh template
-    // that is neither is a template nobody decided about, and the rules below
-    // divide along exactly this line.
+    // Three carry a live credential and four carry none. A template that is
+    // neither is a template nobody decided about, and the rules below divide
+    // along exactly this line.
     const classified = [...TOKEN_LINK_TEMPLATE_IDS, ...NOTICE_TEMPLATE_IDS];
     expect([...classified].sort()).toEqual([...IDS].sort());
     expect(new Set(classified).size).toBe(classified.length);
   });
 
-  it('registers the six templates authentication.md §2, §5, §6 and §7 require', () => {
+  it('registers the seven templates authentication.md §2, §5, §6 and §7 require', () => {
     expect([...IDS].sort()).toEqual([
       'emailVerification',
       'invitation',
