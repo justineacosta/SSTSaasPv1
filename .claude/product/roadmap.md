@@ -14,7 +14,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Not Implemented** — Tasks 1–6 of 18 done 2026-08-26 (schema, migrations, registry, wire contracts, password hashing, the breach check, single-use secret tokens, the mailer with seven templates, and the session service); nothing authenticates anybody yet, no email has a caller, and no cookie has reached a browser |
+| 2 | Identity | **Not Implemented** — Tasks 1–7 of 18 done 2026-08-27 (schema, migrations, registry, wire contracts, password hashing, the breach check, single-use secret tokens, the mailer with seven templates, the session service, and the authentication stage with CSRF and CORS); the API still publishes **4 routes**, so nothing authenticates anybody and no email has a caller |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -74,8 +74,12 @@ The boot-time assertion that every route declares its access is now built: a rou
 neither `@Public()` nor `@RequirePermission()` refuses startup with an error naming every
 offender, and the inventory it checks is cross-checked against Express's own router on each
 boot so it cannot pass by inspecting nothing. `@Public()` is therefore load-bearing today.
-**`@RequirePermission()` is still metadata no guard reads** — the authorization guard is
-Phase 2 — so declaring a permission records an intention, it does not enforce one.
+**`@RequirePermission()` is still metadata no guard *enforces*** — the authorization guard
+is Task 12 — so declaring a permission records an intention, it does not enforce one. As
+of Task 7 three things do *read* that metadata key: the authentication guard, the route
+inventory and the OpenAPI generator. The earlier wording, "metadata no guard reads", was
+literally false, and the distinction is the one Task 6 had to make about `PENDING_MFA`
+being recorded but unenforced.
 
 The OpenAPI document is generated from the route inventory and the Zod contracts, served at
 `/api/v1/openapi.json`, and committed as `apps/api/openapi.json`; a test asserts the committed
@@ -1142,6 +1146,99 @@ expires — bounded by `SESSION_CACHE_TTL_SECONDS`, default 60 (ruling 52).
 request** — twelve commits. Tasks 1–5 were each one branch and one PR with CI green on a Linux
 runner before the merge; **that is owed here and has not happened**, so nothing on this branch has
 been proven anywhere but this machine.
+
+**Task 7 evidence, 2026-08-27 at commit `f877a12`.** Every command re-run by the orchestrator on
+the finished tree rather than taken from the implementer's report, with exit codes captured outside
+a pipe.
+
+| Command | Exit | What it proves |
+|---|---|---|
+| `pnpm format:check` | 0 | Prettier style across the workspace. |
+| `pnpm lint` | 0 | 14 tasks. |
+| `pnpm typecheck` | 0 | 14 tasks. The types compile — and nothing about behaviour. |
+| `pnpm test` | 0 | **69 files / 1025 tests**, up from 63 / 917 at Task 6. |
+| `pnpm check:specs` | 0 | 84 spec files, each claimed by exactly one Vitest project. |
+| `pnpm test:integration` | 0 | **15 files / 205 tests** against real Postgres 16 and the compose Redis, up from 14 / 192. |
+| `pnpm build` | 0 | 8 tasks. |
+| `pnpm check:openapi` | 0 | Byte-identical, still **4 routes**. **This is the proof that no endpoint shipped.** |
+| `pnpm check:registry` | 0 | 14 models, unchanged — Task 7 added no table and opened no migration. |
+| `pnpm check:secrets` | 0 | 345 tracked files, no credential-shaped literals. |
+| `docker compose ps` | 0 | postgres, redis, minio, mailpit all `Up (healthy)`. |
+
+`pnpm test:e2e` was **not run** and has no row: Task 7 touches no `apps/web` path.
+
+What that table licenses and nothing more: the guards behave as their specs pin them against
+purpose-built test controllers, and the boot assertion still refuses an undeclared route now that
+there are three ways to declare one. **It says nothing about any real endpoint being protected**,
+because there is none.
+
+**What Task 7 delivered.** `AuthenticationGuard` resolving the session cookie to a `Principal` and
+keeping `UNAUTHENTICATED` and `SESSION_EXPIRED` distinct, as `api/authentication.md` §6 requires;
+`CsrfGuard` doing double-submit over a token **derived from the session token by HMAC** rather than
+stored, so binding is by construction and rotation re-derives for free; a cookie-header parser, the
+third access declaration `@AuthenticatedOnly()` that `security/authorization.md` §5 has named since
+Phase 1 without it existing, `@AllowPendingMfa()`, and a CORS middleware implementing ADR-0017.
+**ADR-0017 was committed at `7029038` before any implementation commit**, as 0014, 0015 and 0016
+were.
+
+**The boot assertion was extended to three arms, not relaxed, and proved in both directions.** An
+undeclared route makes the real `dist/main.js` exit 1 naming the offender; the same route carrying
+`@AuthenticatedOnly()` boots. Running only the first would not have shown the new arm actually
+satisfies the assertion; running only the second would not have shown the check still refuses.
+
+**No High findings, and that is a narrower result than it sounds.** Both of Task 6's Highs were
+mutations that survived the suite. Here the reviewer wrote twelve mutations beyond the implementer's
+five and the only survivor was a **missing test over correct code**: the `PENDING_MFA` class-metadata
+exemption held only because one line reads `getHandler()` and nothing else, and widening it to
+`getAllAndOverride([handler, class])` left 1000 unit and 205 integration tests green. **This
+codebase has already shipped that exact bug once** — `@RateLimitExempt()`, where a single class-level
+line disabled every rate limit beneath it. Three attacking controllers now hold it, including one
+inheriting the metadata from a base class. Ruling 61.
+
+**The orchestrator wrote a false sentence and it propagated into a code comment and two documents.**
+The Task 7 brief claimed the rate limiter's `unresolvedWarned` path would make the unresolvable
+per-principal scope visible at runtime. It cannot fire for `generalSession`, which is fail-open with
+`perPrincipal` as its only scope, while the warn requires fail-closed *and* a resolved scope. So
+`abuse-prevention.md` §1's **1000 requests per minute per principal is promised and enforced by
+nothing, and nothing reports that** — corrected in all three places rather than papered over with a
+new warning invented to make the old sentence true. Ruling 55. The rule that implementers do not
+write status prose exists because prose is where this project's defects live; it does not exempt
+whoever writes the brief.
+
+**A `@Public()` unsafe route was 403-able by anyone's stale session cookie**, because `CsrfGuard`
+read no access declaration — and the page could not satisfy the refusal, since the expected token
+derives from the `HttpOnly` cookie a script cannot read. Task 9's login endpoint would have inherited
+it, failing for exactly the users who already had a stale session. Fixed by reading the same metadata
+key the authentication guard reads. **Login CSRF is consequently not covered by this control** — a
+cross-site login `POST` carries no session cookie, so double-submit has nothing to bind to — and
+`security/authentication.md` §4 now says so, with Task 9 owing its own mechanism. Ruling 56.
+
+**Two things are now measured that were previously read.** A credentialed cross-origin `fetch` from
+the configured web origin **is not blocked** by the `Cross-Origin-Resource-Policy: same-origin`
+header Phase 1 puts on every response — Chromium 151.0.7922.34, with the same URL blocked in
+`no-cors` mode in the same run to prove CORP is live rather than absent, and the 401 envelope
+readable cross-origin, which is what makes the two-code distinction usable by a browser at all
+(ruling 60). And Node's repeated-header semantics differ per header: `Cookie` joins with `'; '`, an
+ordinary header with `', '`, `Set-Cookie` is an array, and **`Authorization` keeps the first value
+and silently drops the second** — which binds whichever task builds API-key authentication, because
+a header the parser never sees fails worse than one it mis-parses (ruling 57). Both began as an
+implementer disclosing that a claim was a reading rather than a measurement.
+
+All ten findings are dispositioned in
+[`docs/superpowers/ledger/phase-2/task-07/rulings.md`](../../docs/superpowers/ledger/phase-2/task-07/rulings.md).
+
+**Task 7 is on `feat/phase-2-task-07`, stacked on `feat/phase-2-task-06`, both unpushed with no
+pull request.** Tasks 1–5 were each one branch and one PR with CI green on a Linux runner before the
+merge. **Two tasks of work have now accumulated without that**, and nothing on either branch has been
+proven anywhere but one Windows machine.
+
+**One local-environment fact, measured twice.** The compose Postgres has drifted:
+`has_schema_privilege('sentinel_app','public','USAGE')` returns `f`, where
+`infra/docker/postgres/init/01-app-role.sql:13` grants it — Postgres init scripts run only against an
+empty data directory, and this volume predates that line. **The suites are unaffected**, because
+every table-touching integration spec starts its own Testcontainers Postgres, but the real
+application run against the compose database answers 500 from any path that reaches the database.
+Nothing was changed on the operator's machine to fix it.
 
 **Checkpoint A falls after Task 12** — the identity API enforced end to end with no UI. At that
 point the branch is pushed, CI must be green on a Linux runner, and this file gets an evidence
