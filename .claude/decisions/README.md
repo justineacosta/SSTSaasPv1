@@ -24,6 +24,7 @@ re-litigated every six months by someone who cannot see why the obvious option w
 | [0014](ADR-0014-argon2-implementation.md) | Argon2id via `@node-rs/argon2`, parameters held in configuration | Accepted |
 | [0015](ADR-0015-password-breach-check-fails-open.md) | The password breach check calls HIBP by k-anonymity, and fails open | Accepted |
 | [0016](ADR-0016-smtp-mailer-port.md) | One `Mailer` port with an SMTP adapter; Resend is deferred until a deploy exists | Accepted |
+| [0017](ADR-0017-cors-allowlist-with-credentials.md) | The browser reaches the API directly, under an explicit CORS allowlist with credentials | Accepted |
 
 ## When to write one
 
