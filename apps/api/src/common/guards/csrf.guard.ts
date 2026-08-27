@@ -105,10 +105,14 @@ export class CsrfGuard implements CanActivate {
     if (fetchSite === CROSS_SITE) throw invalid('sec-fetch-site: cross-site');
 
     const presented = request.headers[CSRF_HEADER];
-    // An array is Node's rendering of a repeated header. Two `X-CSRF-Token`
-    // headers is not a value to pick from, for the same reason two cookies of
-    // one name are not — see `cookie-header.ts`.
-    if (typeof presented !== 'string') throw invalid('header missing or repeated');
+    // **Node joins repeated non-`Set-Cookie` headers into one comma-separated
+    // string**, measured against this guard through supertest, so two
+    // `X-CSRF-Token` headers arrive here as `"<a>, <b>"` and are refused by the
+    // comparison below rather than by this branch. The branch is for the array
+    // form a proxy or a future framework may present: an array is not a value
+    // to pick one of, for the same reason two cookies of one name are not (see
+    // `cookie-header.ts`).
+    if (typeof presented !== 'string') throw invalid('header missing or non-string');
 
     if (!csrfTokenMatches(presented, sessionToken)) throw invalid('token mismatch');
     return true;

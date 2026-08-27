@@ -67,7 +67,7 @@ beforeAll(async () => {
     controllers: [ProbeController],
     providers: [Reflector, { provide: APP_GUARD, useClass: CsrfGuard }],
   });
-  server = app.getHttpServer() as Server;
+  server = app.getHttpServer();
 });
 
 afterAll(async () => {
@@ -160,11 +160,16 @@ describe('what is refused', () => {
     expect(codeOf(response.body)).toBe('CSRF_TOKEN_INVALID');
   });
 
-  it('two X-CSRF-Token headers, rather than picking one of them', async () => {
+  it('a repeated X-CSRF-Token header, which Node joins into one comma-separated value', async () => {
+    // MEASURED, not assumed: Node concatenates repeated non-`Set-Cookie` headers
+    // into a single comma-separated string, so `request.headers['x-csrf-token']`
+    // is `"<valid>, other"` here rather than an array. It is refused because
+    // that string is not the derived token — the array branch in the guard is
+    // for a proxy or framework that presents one, and is not what fires here.
     const response = await request(server)
       .post('/api/v1/probe')
       .set('Cookie', withSession())
-      .set(CSRF_HEADER, [VALID, 'other'])
+      .set(CSRF_HEADER, `${VALID}, other`)
       .expect(403);
     expect(codeOf(response.body)).toBe('CSRF_TOKEN_INVALID');
   });
