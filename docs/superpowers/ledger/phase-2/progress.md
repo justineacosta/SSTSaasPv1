@@ -16,7 +16,7 @@ Branch: `feat/phase-2-identity`
 | 4 | Single-use secret tokens | subagent | **Done** — [brief](task-04/brief.md) · [report](task-04/report.md) · [review](task-04/review.md) · [rulings](task-04/rulings.md) |
 | 5 | Mail infrastructure and templates | subagent | **Done** — [brief](task-05/brief.md) · [report](task-05/report.md) · [review](task-05/review.md) · [rulings](task-05/rulings.md) |
 | 6 | Session service | chained with 7 | **Done** — [brief](task-06/brief.md) · [report](task-06/report.md) · [review](task-06/review.md) · [fixes](task-06/fixes.md) · [rulings](task-06/rulings.md) |
-| 7 | Authentication guard, CSRF, CORS | chained with 6 | Not started |
+| 7 | Authentication guard, CSRF, CORS | chained with 6 | **Done** — [brief](task-07/brief.md) · [report](task-07/report.md) · [review](task-07/review.md) · [fixes](task-07/fixes.md) · [rulings](task-07/rulings.md) |
 | 8 | Registration and email verification | either | Not started |
 | 9 | Login, logout, session endpoint, lockout | chained with 10 | Not started |
 | 10 | Password reset | chained with 9 | Not started |
@@ -349,69 +349,129 @@ Full reasoning and cost-if-wrong for each is in [`task-06/rulings.md`](task-06/r
 54. **`cookies.ts` has no cookie *parser*, deliberately, and Task 7 owns building one.** Task 6
     issues credentials and never inspects one. A parser sitting here unused would be a surface for
     a caller to authenticate against before a guard exists to say what authentication means.
+### From Task 7
+
+Full reasoning and cost-if-wrong for each is in [`task-07/rulings.md`](task-07/rulings.md).
+
+55. **There is no runtime signal for an unresolvable rate-limit scope, and the sentence that said
+    otherwise was the orchestrator's.** `generalSession`'s `perPrincipal` limit resolves nothing —
+    the guard runs before authentication by design — and the `unresolvedWarned` warn **cannot
+    fire** for it: `rate-limit.guard.ts:324` requires `failMode === 'closed'` and at least one
+    resolved scope, and `generalSession` is fail-open with `perPrincipal` as its only scope. The
+    surviving line is at `debug`, which `LOG_LEVEL=info` does not emit. `abuse-prevention.md` §1's
+    1000/min per principal is therefore promised and enforced by nothing. **The false claim came
+    from the Task 7 brief and reached a code comment and two documents** — the propagation path
+    that produced five of Phase 1's twelve. **Binds every future brief: a ruling asserting that a
+    mechanism exists is a claim, checked before dispatch.**
+
+56. **CSRF skips `@Public()` routes, and login CSRF is Task 9's with its own mechanism.**
+    `CsrfGuard` read no access metadata, so any unsafe public route refused with 403 whenever the
+    browser carried a session cookie — unsatisfiable, because the expected token derives from the
+    `HttpOnly` cookie a page cannot read. **Task 9's login endpoint would have inherited a refusal
+    with no client-side remedy**, failing for exactly the users who already had a stale session. A
+    cross-site login `POST` carries no session cookie, so double-submit has nothing to bind to;
+    **Task 9 brings its own mechanism** and must not assume this guard covers it.
+
+57. **Node's repeated-header semantics differ per header, and they are now measured** (v26.7.0,
+    raw socket): `Cookie` joins with `'; '`, an ordinary custom header joins with `', '`,
+    `Set-Cookie` arrives as an array, and **`Authorization` keeps the first value and silently
+    drops the second.** **Binds whichever task builds API-key authentication** — a header the
+    parser never sees is a worse failure than one it mis-parses.
+
+58. **A spec whose fixtures all sit on one side of the branch under test cannot fail for the right
+    reason.** Every route in the CSRF spec was `@Public()`, which is why the suite could not see
+    ruling 56's hole — and why exempting public routes would have made nineteen tests *vacuous*
+    rather than red. Third instance of this family in three disguises, after Task 6's ruling 49 and
+    Phase 1's `.test.ts` files that executed nothing. **When a fix exempts a case, check whether
+    the existing tests all live inside the exemption before believing the fix.**
+
+59. **Preflight `OPTIONS` reach neither the rate limiter nor the logging interceptor.** The CORS
+    middleware answers them in `configureApp`, before the guard and interceptor pipeline, so every
+    unsafe browser request produces one unmetered, unlogged request. Recorded in the middleware and
+    in `backend.md` §3; deliberately **not** added to ADR-0017, which is immutable once accepted.
+    **Owed by whichever task splits the limiter into an early per-IP stage.**
+
+60. **`Cross-Origin-Resource-Policy: same-origin` does not block a CORS-mode credentialed fetch,
+    and this is measured rather than read.** Chromium 151.0.7922.34 against the real `dist/main.js`:
+    the credentialed fetch succeeded, the cookie round-tripped, an unknown origin got no
+    `Access-Control-Allow-Origin` at all, and the same URL in `no-cors` mode was blocked by CORP —
+    which proves CORP is live rather than absent. **The 401 envelope is readable cross-origin**,
+    which is what makes the `UNAUTHENTICATED`/`SESSION_EXPIRED` distinction usable by a browser.
+    **Task 16 can stop carrying the assumption.**
+
+61. **A metadata exemption must be tested at the class level, not merely implemented there.**
+    `@AllowPendingMfa()` is `MethodDecorator` and the guard reads `getHandler()` only — correct, and
+    until the fix round nothing held it there: widening to `getAllAndOverride([handler, class])`
+    left 1000 unit and 205 integration tests green. **This codebase shipped that exact bug once**
+    (`@RateLimitExempt()`, where one class-level line disabled every limit beneath it). Narrowing
+    the type is half the control; the class-level test is the other half, and it needs an
+    inheritance case because `getAllAndOverride` walks the prototype chain.
 
 ## Pause state
 
-**2026-08-26 — Task 6 complete and verified; Task 7 is next.**
+**2026-08-27 — Task 7 complete and verified; Task 8 is next. Checkpoint A is five tasks away.**
 
-Task 6 landed the session service: `SessionService`, `SessionRepository`, `RedisSessionCache` and
-`cookies.ts` in `apps/api/src/modules/auth/`, five `SESSION_*` environment variables with a new
-cross-field rule, and a §3 rewrite in `security/authentication.md`. `AuthModule` now exports **four
-services and still registers no controller** — `pnpm check:openapi` reports **4 routes**, which is
-the check that proves it. Evidence is in `roadmap.md`.
+Task 7 landed the authentication stage and the controls around it: `AuthenticationGuard`,
+`CsrfGuard`, a cookie-header parser, `csrf-token.ts`, a CORS middleware, the third access
+declaration `@AuthenticatedOnly()`, and `@AllowPendingMfa()`. **ADR-0017 was written and committed
+before any implementation commit** (`7029038`), as ADRs 0014, 0015 and 0016 were. Six `.claude/`
+documents changed. Evidence is in `roadmap.md`.
 
-**Two High findings, one Medium, four citation findings — and both Highs were in the gap between
-what a test asserts and what it appears to assert.** The first: a rotation test compared two
-`Date.now()`-derived values at millisecond precision, so the mutation that restarts the 7-day
-absolute cap passed or failed on a coin flip. The second: `rotateSessionInputSchema` defaulted
-`status` to `'ACTIVE'`, which contradicted the argument written twelve lines above it in the same
-file and turned `rotate({ sessionId })` on a pending session into a thirty-day credential with no
-factor proved. Rulings 49 and 50.
+**Still four routes.** `pnpm check:openapi` reports 4, `AuthModule` registers no controller, and
+every guard in this task is proved against purpose-built controllers through
+`apps/api/src/testing/routing-app.ts`. Nothing authenticates anybody yet because there is nothing to
+authenticate against.
 
-**The strongest thing in the change was not in the brief.** The brief asked for §3's "revocation
-deletes the cache entry and the row together". The implementer measured that a delete does not
-achieve it — a resolve that has already read a live row lands its cache write after the delete, and
-the next resolve serves a revoked session — and built a tombstone with a Lua compare-and-set
-instead. The review then found the one place a second pass was still needed (`revokeMany`'s
-enumeration window) and proved it with Redis healthy. Rulings 51 and 53.
+**No High findings, and the reason is worth stating rather than celebrating.** Both of Task 6's
+Highs were mutations that survived the suite. Here the reviewer wrote twelve mutations of its own
+beyond the implementer's five, and the only survivor was a **missing test over correct code** — the
+`PENDING_MFA` class-metadata exemption, which this codebase has already shipped as a real bug once
+in `@RateLimitExempt()`. Ruling 61.
 
-**Both measurements the brief demanded in advance were re-run by the reviewer and both held.** The
-`__Host-` cookie is accepted over `http://localhost` in Chromium 151.0.7922.34 with both negative
-controls rejected, so Task 18's E2E suite has no surprise waiting in it. And rotation does **not**
-need carry-forward ruling 31's advisory lock: it supersedes one committed row by primary key, so
-Postgres arbitrates — 60/60 single successors shipped, against 60/60 double successors for a
-read-then-write substitute.
+**The orchestrator wrote a false sentence and it propagated.** The Task 7 brief's ruling B claimed
+the rate limiter's `unresolvedWarned` path would make the unresolvable per-principal scope visible at
+runtime. It cannot fire for `generalSession`, which is fail-open with `perPrincipal` as its only
+scope. The sentence reached a code comment and two documents before the review caught it — the exact
+propagation path behind five of Phase 1's twelve false claims. Ruling 55. **The rule that
+implementers do not write status prose does not exempt whoever writes the brief.**
 
-**The implementer corrected the reviewer, by measurement, and was right.** The review called the
-weak assertion "vacuous"; it was flaky, and the distinction was heading into this file. Both runs
-were real — one caught the mutant, one missed it. Second task running in which a downstream agent
-overturned an upstream claim with a command rather than deferring to it.
+**Two measurements now exist that did not before.** `Cross-Origin-Resource-Policy: same-origin` does
+not block a CORS-mode credentialed fetch (Chromium 151, with `no-cors` blocked in the same run to
+prove CORP is live) — ruling 60; and Node's repeated-header semantics differ per header, with
+`Authorization` **silently dropping its second value** — ruling 57. Both began as an implementer
+disclosing that a claim was a reading rather than a measurement, which is the second and third time
+that has paid in this phase.
 
-**Nothing authenticates anybody yet.** No endpoint issues a session, no guard reads one, and **no
-cookie has ever reached a browser** from the application. `apps/web/app/(auth)/` still holds a
-layout with no routes under it.
+**A local-environment fact the next session needs.** The compose Postgres has drifted: the reviewer
+measured `has_schema_privilege('sentinel_app','public','USAGE')` returning `f`, and the orchestrator
+re-measured it after a container restart with the same result. `infra/docker/postgres/init/01-app-role.sql:13`
+grants it, but Postgres init scripts run only against an empty data directory, so this volume
+predates that line. **The suites are unaffected** — every table-touching integration spec uses its
+own Testcontainers Postgres — but the real application run against the compose database answers 500
+from anything reaching the database, which is why the reviewer could not probe a *resolved* session
+in the browser. Nothing was changed on the operator's machine. The fix is one statement as the
+superuser, or a volume recreate.
 
-**Branching. Task 6 is on `feat/phase-2-task-06`, cut from `main` at `2fceaaa`, unpushed, no PR** —
-twelve commits. Tasks 1–5 were one branch and one PR each with CI green before the merge; **that is
-still owed here**, and the operator decides when it happens.
+**Branching. Task 7 is on `feat/phase-2-task-07`, stacked on `feat/phase-2-task-06`, both unpushed
+with no pull request.** Tasks 1–5 were each one branch and one PR with CI green on a Linux runner
+before the merge; **two tasks of work have now accumulated without that**, and nothing on either
+branch has been proven anywhere but this machine. The operator decides when it happens; the longer
+it waits, the more a red CI run costs to unpick.
 
-**Next action:** Task 7 — the authentication guard, `Principal`, CSRF and CORS — chained under the
-**same implementer**, which is still resumable in this session and holds Task 6's context. Task 7
-owes **ADR-0017** (an explicit CORS allowlist with `credentials: true`, rather than a Next-side
-proxy), **written and committed before any implementation commit**, as ADRs 0014, 0015 and 0016
-were.
+**Next action:** Task 8 — registration and email verification. The plan calls it self-contained
+enough for a fresh implementer while feeding a chain, and either mode is acceptable with the choice
+recorded here. It is the first task that **ships a route**, so `check:openapi` stops reporting 4 and
+every "this is what proves no endpoint shipped" sentence in the ledger stops applying.
 
-Before starting Task 7, read carry-forward rulings **50**, **52** and **54**. Ruling 54: there is no
-cookie parser anywhere in the codebase, and Task 7 builds the first one. Ruling 50: a `PENDING_MFA`
-session can no longer be promoted without evidence, but **nothing yet enforces what such a session
-may do** — "authenticates nothing except the MFA verification endpoint" is Task 7's, and it is the
-whole MFA bypass if it is missed. Ruling 52: revocation's one residual is Redis being unreachable at
-revocation time, which the guard cannot detect and must not pretend to.
+Task 8 inherits more than any task so far. **Rulings 37, 38 and 44** (check `User.status` after
+`consume`; the `AuditEvent` is the endpoint's and the raw token never enters its metadata; mail is
+sent after the transaction commits, never inside it) — **and Task 8 sets the pattern Tasks 10, 11
+and 15 copy.** **Ruling 45**: it owns a resend path, because a failed first verification send is
+otherwise authoritative. **Ruling 32**: the partial unique index is owed by whichever task next
+opens a migration, and Tasks 6 and 7 opened none. **Ruling 26**: `PasswordBreachedError` already
+exists — do not build a second. **Ruling 56**: its endpoints are `@Public()` and therefore not
+CSRF-covered, which is correct and must be stated rather than discovered.
 
-**Tasks 8, 10 and 15 inherit four items** — rulings 37 (check `User.status` after `consume`), 38
-(the `AuditEvent` is the endpoint's, and the raw token never enters its metadata), 32 (the partial
-unique index is owed by whichever task next opens a migration — **Task 6 opened none**) and 44 (mail
-is sent after the transaction commits). **Task 8 additionally owns a resend path**, per ruling 45.
-**Tasks 10 and 14 now also inherit ruling 51's ordering requirement.**
-
-**Task 9 still inherits rulings 24 and 25** from Task 3, unchanged.
+**Task 9 inherits rulings 24, 25, 50 and 56** — the timing oracle that opens when Argon2 parameters
+are raised, the silently-corrupted-credential signal, the requirement that a `PENDING_MFA` -> `ACTIVE`
+rotation carry its `mfaCompletedAt`, and login CSRF, which this task deliberately did not cover.
