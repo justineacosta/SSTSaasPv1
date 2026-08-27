@@ -96,7 +96,7 @@ beforeAll(async () => {
   app = moduleRef.createNestApplication<NestExpressApplication>();
   configureApp(app);
   await app.init();
-  server = app.getHttpServer() as Server;
+  server = app.getHttpServer();
   sessions = app.get(SessionService);
   allowedOrigin = app.get<ApiEnv>(ENV).WEB_BASE_URL;
 

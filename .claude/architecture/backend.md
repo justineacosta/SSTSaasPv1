@@ -68,12 +68,13 @@ and are unaffected; anything that must cover *every* response, routed or not, be
 |---|---|---|
 | Request ID + trace | Middleware; `x-request-id` propagated everywhere including into jobs | Implemented (`traceId` in Phase 4) |
 | Security headers | Middleware; [`../security/transport-and-headers.md`](../security/transport-and-headers.md) §2–§3 | Implemented |
+| CORS | Middleware, third; one configured origin, exact match, credentials ([ADR-0017](../decisions/ADR-0017-cors-allowlist-with-credentials.md)) | **Implemented (Task 7)**. Middleware rather than a guard so a preflight is answered before the rate limiter and the authentication guard, and so the headers reach error responses |
 | Rate limit | Guard, Redis-backed, every declared scope | Implemented (global `APP_GUARD`) |
-| Authenticate | Guard, session cookie or API key -> `Principal` | Not Implemented (Phase 2). The `Principal` union is declared in `packages/contracts` as of Task 2; nothing constructs one |
+| Authenticate | Guard, session cookie or API key -> `Principal` | **Implemented (Task 7)** for the session-cookie half: `AuthenticationGuard`, global `APP_GUARD`, constructs a `UserPrincipal` onto `request.principal`. The API-key half is Not Implemented — no key can be issued in Phase 2 |
 | Tenant resolve | Guard, membership + org state -> `TenantContext` | Not Implemented (Phase 2). `TenantContext` is declared in `packages/contracts` as of Task 2; nothing constructs one |
-| CSRF | Guard, cookie-authenticated unsafe methods only | Not Implemented (Phase 2) |
+| CSRF | Guard, cookie-authenticated unsafe methods only | **Implemented (Task 7)**: `CsrfGuard`, global `APP_GUARD`, after Authenticate. Governs no cookie-authenticated route yet, because none exists |
 | Validate | Zod pipe against `packages/contracts` schemas | Implemented; no consumer until Phase 2 |
-| Authorize | Guard reading `@RequirePermission` | Decorator implemented and asserted at boot; guard Not Implemented (Phase 2) |
+| Authorize | Guard reading `@RequirePermission` | Decorator implemented and asserted at boot; **guard still Not Implemented** (Task 12). Task 7 added a third *declaration* arm, `@AuthenticatedOnly()`, which does not move this row: a route naming a permission is authenticated by Task 7's guard and its permission is evaluated by nobody |
 | Entitlement | Guard reading `@RequireEntitlement` | Not Implemented (Phase 10) |
 | Handle | Controller -> service | Implemented |
 | Serialise | Interceptor, explicit DTO | Not Implemented |
@@ -84,8 +85,26 @@ and are unaffected; anything that must cover *every* response, routed or not, be
 A route without an explicit access declaration **fails a startup assertion**. Missing
 authorization is a boot crash, not a production discovery.
 
-**Status: Implemented.** The declaration — `@Public()` and `@RequirePermission()`, both keyed
-on `ACCESS_METADATA_KEY` — lives in `apps/api/src/common/decorators/access.decorator.ts`. The
+**Guard order is the order of the `APP_GUARD` providers in `app.module.ts`, and nothing
+else makes it visible** — a reordering is a one-line diff to an array that changes no type
+and still runs every guard. `app.module.spec.ts` asserts it: rate limit, authenticate,
+CSRF. Rate limiting stays first so an unauthenticated flood carrying a garbage cookie
+does not buy a Redis read and a Postgres read each before anything refuses it. The cost of
+that order is recorded rather than fixed: `generalSession` keys on
+`principalSource: 'authenticated'`, which reads `request.principalId` — a field the limiter
+reads before the authentication guard could set it — so that scope is unresolvable and the
+limiter's `unresolvedWarned` path is what makes it visible at runtime. Splitting the
+limiter into an early per-IP stage and a late per-principal one is the fix, and it is not
+built.
+
+**Status: Implemented.** The declaration — `@Public()`, `@AuthenticatedOnly()` and
+`@RequirePermission()`, all three keyed on `ACCESS_METADATA_KEY` — lives in
+`apps/api/src/common/decorators/access.decorator.ts`. Task 7 added the second of those as a
+**third arm, not a relaxation**: the assertion still refuses a route that declares nothing,
+and `access-assertion.spec.ts` keeps the undeclared-route crash beside the new arm so the
+check cannot start passing vacuously because it learned a new word. Proved by booting the
+real application with an undeclared route (refused, naming it) and again with the same
+route carrying `@AuthenticatedOnly()` (listened) — Task 7's report records both runs. The
 assertion that reads it is `assertEveryRouteDeclaresAccess` in
 `apps/api/src/common/access-assertion.ts`, called from `main.ts`. It reports **every** offender
 in one message rather than the first, so one boot reveals the whole backlog.

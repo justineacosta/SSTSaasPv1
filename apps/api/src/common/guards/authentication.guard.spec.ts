@@ -82,7 +82,7 @@ class ProbeController {
   me(): { userId: string | undefined; sessionId: string | undefined } {
     // Read straight off the request in a later stage, which is the only thing
     // attaching a principal is for.
-    return { userId: seen?.userId, sessionId: seen?.sessionId };
+    return { userId: captured()?.userId, sessionId: captured()?.sessionId };
   }
 
   @RequirePermission('finding.read')
@@ -99,16 +99,30 @@ class ProbeController {
   }
 }
 
+interface Captured {
+  readonly kind: string;
+  readonly userId: string;
+  readonly sessionId: string;
+}
+
 /** What the handler saw, captured by a second guard registered after the first. */
-let seen: { userId: string; sessionId: string } | undefined;
+let seen: Captured | undefined;
+
+/**
+ * Read through a function, not directly.
+ *
+ * `seen = undefined` at the top of a test narrows the variable to `undefined`
+ * for the rest of it, and TypeScript does not widen it again just because an
+ * `await` ran a guard that assigned to it. Reading through a call is what makes
+ * the assertion see the declared type instead of `never`.
+ */
+const captured = (): Captured | undefined => seen;
 
 const CAPTURE = {
   provide: APP_GUARD,
   useValue: {
     canActivate: (context: { switchToHttp: () => { getRequest: () => unknown } }): boolean => {
-      const request_ = context.switchToHttp().getRequest() as {
-        principal?: { userId: string; sessionId: string };
-      };
+      const request_ = context.switchToHttp().getRequest() as { principal?: Captured };
       seen = request_.principal;
       return true;
     },
@@ -128,7 +142,7 @@ beforeAll(async () => {
       CAPTURE,
     ],
   });
-  server = app.getHttpServer() as Server;
+  server = app.getHttpServer();
 });
 
 afterAll(async () => {
@@ -162,7 +176,7 @@ describe('a public route', () => {
   it('attaches no principal, so nothing downstream can mistake it for signed in', async () => {
     seen = undefined;
     await request(server).get('/api/v1/probe/open').set('Cookie', cookie(ACTIVE_TOKEN)).expect(200);
-    expect(seen).toBeUndefined();
+    expect(captured()).toBeUndefined();
   });
 });
 
@@ -228,8 +242,8 @@ describe('a resolved session', () => {
       .set('Cookie', cookie(ACTIVE_TOKEN))
       .expect(200);
 
-    expect(seen?.userId).toBe('usr_01ABCDEFGHJKMNPQRSTVWXYZ00');
-    expect(seen?.sessionId).toBe('ses_01ABCDEFGHJKMNPQRSTVWXYZ00');
+    expect(captured()?.userId).toBe('usr_01ABCDEFGHJKMNPQRSTVWXYZ00');
+    expect(captured()?.sessionId).toBe('ses_01ABCDEFGHJKMNPQRSTVWXYZ00');
     expect(response.body).toEqual({
       userId: 'usr_01ABCDEFGHJKMNPQRSTVWXYZ00',
       sessionId: 'ses_01ABCDEFGHJKMNPQRSTVWXYZ00',
@@ -250,7 +264,7 @@ describe('a resolved session', () => {
   it('carries no organisation and no permissions — ruling E and ruling F', async () => {
     seen = undefined;
     await request(server).get('/api/v1/probe/me').set('Cookie', cookie(ACTIVE_TOKEN)).expect(200);
-    expect(Object.keys(seen ?? {}).sort()).toEqual(['kind', 'sessionId', 'userId']);
+    expect(Object.keys(captured() ?? {}).sort()).toEqual(['kind', 'sessionId', 'userId']);
   });
 });
 
@@ -292,7 +306,7 @@ describe('a PENDING_MFA session — the other half of the MFA bypass', () => {
       .post('/api/v1/probe/mfa')
       .set('Cookie', cookie(PENDING_TOKEN))
       .expect(201);
-    expect(seen?.sessionId).toBe('ses_01ABCDEFGHJKMNPQRSTVWXYZ00');
+    expect(captured()?.sessionId).toBe('ses_01ABCDEFGHJKMNPQRSTVWXYZ00');
   });
 
   it('does not let an ACTIVE session be refused by the same rule', async () => {

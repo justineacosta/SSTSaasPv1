@@ -47,10 +47,31 @@ the account exists or the code is correct.
 
 ## 3. CSRF
 
-Cookie-authenticated `POST`/`PUT`/`PATCH`/`DELETE` require `X-CSRF-Token` matching the `csrf`
-cookie, compared in constant time and bound to the session. Missing or mismatched returns 403
-`CSRF_TOKEN_INVALID`. Bearer-authenticated requests are exempt — there is no ambient credential
-for a cross-site request to abuse.
+> **Status: Implemented (Phase 2 Task 7).** No route it governs is cookie-authenticated yet;
+> Task 9 ships the first.
+
+Cookie-authenticated `POST`/`PUT`/`PATCH`/`DELETE` require `X-CSRF-Token` matching the
+`__Host-csrf` cookie, compared in constant time and bound to the session. Missing or
+mismatched returns 403 `CSRF_TOKEN_INVALID`. Bearer-authenticated requests are exempt —
+there is no ambient credential for a cross-site request to abuse.
+
+| | |
+|---|---|
+| Cookie | `__Host-csrf` — not `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`, no `Domain` |
+| Header | `X-CSRF-Token`, sent exactly once; two of them is a refusal, not a choice |
+| Methods guarded | `POST`, `PUT`, `PATCH`, `DELETE` |
+| Methods exempt | `GET`, `HEAD`, `OPTIONS`, `TRACE` |
+| Credentials exempt | Any request carrying no `__Host-session` cookie, which is every bearer-authenticated request |
+| Refusal | 403 `CSRF_TOKEN_INVALID` — one code and one message for missing, malformed, mismatched and cross-site alike |
+| Value | Derived from the session, so it changes when the session rotates. A client re-reads the cookie rather than caching the value |
+
+The refusal never distinguishes which half was wrong: telling a caller whether the header
+was absent or merely incorrect tells an attacker which half of the control they have
+already defeated.
+
+Cross-origin callers must send the header, which makes every unsafe request a preflighted
+one. `X-CSRF-Token` is on the CORS allowlist (ADR-0017); a client adding another custom
+header needs that list extended.
 
 ## 4. API keys
 

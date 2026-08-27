@@ -23,6 +23,15 @@ Sliding window in Redis, applied per IP **and** per principal — an attacker wi
 is caught by the principal limit, and an unauthenticated flood by the IP limit. Limits are
 configuration, not constants, and are overridable per plan.
 
+**The per-principal half does not resolve, and authentication arriving did not change
+that.** The limiter reads `request.principalId`, and `architecture/backend.md` §3 puts the
+limiter *before* the authentication guard — deliberately, so an unauthenticated flood
+carrying a garbage cookie cannot buy a Redis read and a Postgres read each before anything
+refuses it. Phase 2 Task 7 built the guard and left the order alone, so every
+`principalSource: 'authenticated'` scope is still unresolvable and the guard's
+`unresolvedWarned` warning is what makes that visible at runtime. The fix is to split the
+limiter into an early per-IP stage and a late per-principal one; it is owed and not built.
+
 | Endpoint class | Default |
 |---|---|
 | Login | 5 / 15 min per account, 20 / 15 min per IP |

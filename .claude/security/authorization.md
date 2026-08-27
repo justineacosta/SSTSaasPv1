@@ -99,6 +99,14 @@ marked `@Public()` or `@AuthenticatedOnly()`. Missing authorization is therefore
 crash at boot, not a silent hole discovered in production. A unit test enumerates every
 route and asserts each carries an explicit access declaration.
 
+> **Status of this section, as of Phase 2 Task 7.** All three declarations now exist —
+> `@Public()`, `@AuthenticatedOnly()` and `@RequirePermission()` — and the boot assertion
+> refuses a route carrying none of them (proved by booting the real application with one).
+> **`@RequirePermission` is still read by nobody.** The guard that evaluates it, and the
+> `TenantContext` it needs, are Task 12's; today a route naming a permission is
+> authenticated and then admitted. `@RequireEntitlement` is Phase 10. The example above
+> therefore compiles and boots, and two of its three decorators enforce nothing yet.
+
 Resource-level checks are not optional extras: loading a resource always goes through the
 tenant-scoped client, so a resource in another organisation is simply not found.
 

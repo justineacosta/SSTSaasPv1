@@ -124,14 +124,51 @@ asserting itself, because `rotate` is the one call that can raise a session's pr
 
 ## 4. CSRF
 
+> **Status: Implemented as of Phase 2 Task 7**, in
+> `apps/api/src/common/guards/csrf.guard.ts` and `modules/auth/csrf-token.ts`. It is a
+> global guard, so it governs every route the application has — which today is four, none
+> of which is cookie-authenticated. **No request has ever been refused by it outside a
+> test.** Task 9 ships the first route it will govern in earnest.
+
 Cookie authentication requires CSRF defence. `SameSite=Lax` is the baseline, not the
 control. Every unsafe method (`POST`/`PUT`/`PATCH`/`DELETE`) authenticated **by cookie**
-additionally requires a double-submit token: a non-`HttpOnly` `csrf` cookie echoed in the
-`X-CSRF-Token` header, compared in constant time, and bound to the session.
+additionally requires a double-submit token: a non-`HttpOnly` **`__Host-csrf`** cookie
+echoed in the `X-CSRF-Token` header, compared in constant time, and bound to the session.
 
 Requests authenticated by API key are exempt — they carry no ambient credential, so there
 is nothing for a cross-site request to abuse. Origin and `Sec-Fetch-Site` are checked as
 a secondary signal.
+
+**The cookie is `__Host-csrf`, not `csrf`.** This section named it `csrf` until Task 7;
+the prefix is strictly stronger and costs nothing, because a browser refuses to store a
+`__Host-` cookie carrying a `Domain`, or a `Path` other than `/`, or one that arrives
+without `Secure`. Without it a sibling subdomain could set `csrf` for the whole
+registrable domain and the value the page echoes back would be the attacker's — which is
+exactly the cookie-injection weakness double-submit is known for.
+
+**What "bound to the session" means here, and it is stronger than the plain pattern.** The
+token is not stored: it is `HMAC-SHA256(key = the session token, message = a constant)`,
+so it is computable from the session cookie on every request by every instance, it is a
+different value for every session, and it changes on rotation with no extra step because
+rotation mints a new session token. The guard compares the presented header against **that
+derived value**, not against the CSRF cookie. Comparing header to cookie compares two
+values an attacker who can write cookies controls both of; comparing against a value
+derived from the `HttpOnly` session token trusts neither. In the honest case the two are
+the same string, because the cookie is issued as the derived value.
+
+The comparison hashes both sides to a fixed 32 bytes before `crypto.timingSafeEqual`,
+because that function throws on unequal lengths — so the naive version answers 500 for a
+short token and 403 for a wrong-but-right-length one, which is a length oracle.
+
+**`Origin` and `Sec-Fetch-Site` remain a secondary signal and nothing may be deleted on
+the grounds that they cover it.** They are absent from every non-browser client, so a
+control resting on them would be no control at all. `Sec-Fetch-Site: cross-site` is
+refused early because it is free; everything else is decided by the token.
+
+**Login CSRF is not covered, and that is a gap this section names rather than hides.** The
+guard applies to requests carrying the session cookie, per this section's own "authenticated
+by cookie". A cross-site `POST` to the login endpoint carries no session cookie yet, so
+nothing here refuses it. Task 9 owns the login endpoint and owns closing it.
 
 ## 5. MFA
 
