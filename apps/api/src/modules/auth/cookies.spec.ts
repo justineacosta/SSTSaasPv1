@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { SESSION_COOKIE_NAME, clearedSessionCookie, serialiseSessionCookie } from './cookies.js';
+import {
+  CSRF_COOKIE_NAME,
+  SESSION_COOKIE_NAME,
+  clearedCsrfCookie,
+  clearedSessionCookie,
+  serialiseCsrfCookie,
+  serialiseSessionCookie,
+} from './cookies.js';
 
 /**
  * THE COOKIE IS THE ONLY PART OF THIS TASK A BROWSER EVER SEES.
@@ -134,5 +141,45 @@ describe('clearedSessionCookie', () => {
     expect(cookie).toContain('; SameSite=Lax');
     expect(cookie).toContain('; Path=/');
     expect(cookie).not.toContain('Domain');
+  });
+});
+
+describe('the CSRF cookie', () => {
+  const cookie = serialiseCsrfCookie({ value: 'abc123', maxAgeSeconds: 2_592_000 });
+
+  it('carries the __Host- prefix, which §4 did not ask for and gets anyway', () => {
+    expect(CSRF_COOKIE_NAME).toBe('__Host-csrf');
+  });
+
+  it('is NOT HttpOnly — the page has to read it to echo it', () => {
+    // The one difference from the session cookie, and the mechanism rather than
+    // an oversight. A cookie script cannot read cannot be echoed into a header.
+    expect(cookie).not.toContain('HttpOnly');
+  });
+
+  it('keeps every other attribute of the session cookie', () => {
+    expect(cookie).toContain('; Secure');
+    expect(cookie).toContain('; SameSite=Lax');
+    expect(cookie).toContain('; Path=/');
+    expect(cookie).not.toContain('Domain');
+  });
+
+  it('carries Max-Age when asked and none when not', () => {
+    expect(cookie).toContain('; Max-Age=2592000');
+    expect(serialiseCsrfCookie({ value: 'abc123', maxAgeSeconds: null })).not.toContain('Max-Age');
+  });
+
+  it('refuses a value a cookie may not carry, like its sibling', () => {
+    expect(() => serialiseCsrfCookie({ value: 'a b', maxAgeSeconds: null })).toThrow(
+      /cookie value/i,
+    );
+  });
+
+  it('clears with every attribute repeated', () => {
+    const cleared = clearedCsrfCookie();
+    expect(cleared.startsWith('__Host-csrf=;')).toBe(true);
+    expect(cleared).toContain('; Max-Age=0');
+    expect(cleared).toContain('; Path=/');
+    expect(cleared).not.toContain('HttpOnly');
   });
 });

@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD, DiscoveryModule } from '@nestjs/core';
+import { AuthenticationGuard } from './common/guards/authentication.guard.js';
+import { CsrfGuard } from './common/guards/csrf.guard.js';
 import { RateLimitGuard } from './common/guards/rate-limit.guard.js';
 import { ConfigModule } from './infrastructure/config/config.module.js';
 import { MailModule } from './infrastructure/mail/mail.module.js';
@@ -53,6 +55,27 @@ import { OpenApiModule } from './openapi/openapi.module.js';
     // precisely so there is an answer for every endpoint. `@RateLimit()`
     // narrows the class; its absence means `generalSession`, not "unlimited".
     { provide: APP_GUARD, useClass: RateLimitGuard },
+    // ORDER IS ARRAY ORDER, AND NOTHING ELSE MAKES IT VISIBLE. Nest runs global
+    // guards in the order their providers are declared here, so this array is
+    // the pipeline of architecture/backend.md §3 rows 3, 4 and 6.
+    // `app.module.spec.ts` asserts it, because a reordering is a one-line diff
+    // with no other symptom.
+    //
+    // **Rate limit before authenticate** (Task 7's ruling A, backend.md §3's
+    // own table). An unauthenticated flood carrying a garbage cookie would
+    // otherwise buy a Redis read and a Postgres read each before anything
+    // refused it. The cost of this order is recorded rather than fixed:
+    // `generalSession` keys on `principalSource: 'authenticated'`, which reads
+    // `request.principalId` — a field the limiter reads before this guard could
+    // have set it, so that scope stays unresolvable and the limiter's own
+    // `unresolvedWarned` path is what makes it visible at runtime. Splitting the
+    // limiter into an early per-IP stage and a late per-principal stage is the
+    // real fix and is not this task's.
+    { provide: APP_GUARD, useClass: AuthenticationGuard },
+    // **CSRF after authenticate**, so it runs on a request whose credential has
+    // already been established, and so an unauthenticated caller gets 401
+    // rather than 403 — one refusal, describing the first thing that was wrong.
+    { provide: APP_GUARD, useClass: CsrfGuard },
   ],
 })
 export class AppModule {}

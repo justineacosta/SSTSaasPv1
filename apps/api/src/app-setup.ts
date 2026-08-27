@@ -2,23 +2,32 @@ import { RequestMethod, VersioningType } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import type { NextFunction, Request, Response } from 'express';
 import type { Logger } from '@sentinel/observability';
+import type { ApiEnv } from '@sentinel/config';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter.js';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor.js';
+import { CorsMiddleware } from './common/middleware/cors.middleware.js';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware.js';
 import { SecurityHeadersMiddleware } from './common/middleware/security-headers.middleware.js';
 import { NestLoggerBridge } from './infrastructure/config/nest-logger.js';
-import { CSP_ENFORCE, LOGGER } from './infrastructure/tokens.js';
+import { CSP_ENFORCE, ENV, LOGGER } from './infrastructure/tokens.js';
 
 /** What `app.use()` accepts: a bare Express handler. */
 export type MiddlewareHandler = (request: Request, response: Response, next: NextFunction) => void;
 
 /**
- * The first two rows of architecture/backend.md §3, in order.
+ * The first rows of architecture/backend.md §3, in order.
  *
  * The request ID is established before anything else so that every later stage
  * — including a failure inside the security-headers middleware itself — has
  * something to correlate by. Security headers come next so they are present on
  * a response even when a later stage throws.
+ *
+ * **CORS is third, and third is deliberate.** It terminates a preflight itself,
+ * and a preflight response that skipped the two stages above would be the one
+ * response in the application with no request ID and no security headers. It is
+ * middleware rather than a guard for the same reason the two above it are: a
+ * preflight carries no credentials and identifies no user, so it must not reach
+ * the rate limiter or the authentication guard. ADR-0017.
  *
  * These are built as instances rather than registered through
  * `MiddlewareConsumer`, because a consumer registration is resolved relative to
@@ -30,12 +39,19 @@ export type MiddlewareHandler = (request: Request, response: Response, next: Nex
 function crossCuttingMiddleware(app: NestExpressApplication): MiddlewareHandler[] {
   const requestId = new RequestIdMiddleware();
   const securityHeaders = new SecurityHeadersMiddleware(app.get<boolean>(CSP_ENFORCE));
+  // The one allowed origin, read once at boot. `WEB_BASE_URL` is already
+  // validated for scheme by `packages/config` (Task 5's ruling 48), so the
+  // comparison below is against a value that has been through Zod.
+  const cors = new CorsMiddleware(app.get<ApiEnv>(ENV).WEB_BASE_URL);
   return [
     (request, response, next) => {
       requestId.use(request, response, next);
     },
     (request, response, next) => {
       securityHeaders.use(request, response, next);
+    },
+    (request, response, next) => {
+      cors.use(request, response, next);
     },
   ];
 }

@@ -37,6 +37,20 @@
 export const SESSION_COOKIE_NAME = '__Host-session';
 
 /**
+ * §4's double-submit cookie. **`__Host-csrf`, not `csrf`.**
+ *
+ * `security/authentication.md` §4 named it `csrf`; the plan named it
+ * `__Host-csrf`. Task 7 took the prefixed name and corrected §4, because the
+ * prefix is strictly stronger and free: a browser refuses to store a `__Host-`
+ * cookie that carries a `Domain`, or a `Path` other than `/`, or that arrives
+ * without `Secure`. Without it, a sibling subdomain could set `csrf` for the
+ * whole registrable domain, and the value the page reads back would be the
+ * attacker's — which is exactly the cookie-injection weakness double-submit is
+ * known for.
+ */
+export const CSRF_COOKIE_NAME = '__Host-csrf';
+
+/**
  * The attributes every cookie this module emits carries, in one array.
  *
  * `Path=/` and the absence of `Domain` are not stylistic: `__Host-` *requires*
@@ -49,6 +63,22 @@ export const SESSION_COOKIE_NAME = '__Host-session';
  * browser matches a replacement cookie on name, domain and path together.
  */
 const SHARED_ATTRIBUTES = ['HttpOnly', 'Secure', 'SameSite=Lax', 'Path=/'] as const;
+
+/**
+ * The CSRF cookie's attributes: the session cookie's, minus `HttpOnly`.
+ *
+ * **The omission is the whole mechanism, not an oversight.** Page script has to
+ * read this value to put it in `X-CSRF-Token`; a cookie script cannot read
+ * cannot be echoed. That is safe because the value is an HMAC output that
+ * reveals nothing about the session token and is worthless without the session
+ * cookie, which keeps its `HttpOnly` — see `csrf-token.ts`.
+ *
+ * Written as its own list rather than filtered out of `SHARED_ATTRIBUTES`, so
+ * that a reader sees the difference instead of having to evaluate a `filter`,
+ * and so that adding an attribute to one cookie is a deliberate act on that
+ * cookie.
+ */
+const CSRF_ATTRIBUTES = ['Secure', 'SameSite=Lax', 'Path=/'] as const;
 
 /**
  * RFC 6265 §4.1.1's `cookie-octet`: US-ASCII excluding control characters,
@@ -139,4 +169,30 @@ export function serialiseSessionCookie(input: SessionCookieInput): string {
  */
 export function clearedSessionCookie(): string {
   return [`${SESSION_COOKIE_NAME}=`, ...SHARED_ATTRIBUTES, 'Max-Age=0'].join('; ');
+}
+
+/**
+ * `Set-Cookie` for the double-submit token, issued alongside the session.
+ *
+ * Its lifetime matches the session cookie's for one reason: a CSRF cookie that
+ * outlives its session derives to nothing and turns every unsafe request into a
+ * 403 that looks like a bug, and one that dies first does the same. Neither is
+ * a security failure — the guard compares against the value derived from the
+ * session token, not against this cookie — but both are a logged-in user who
+ * cannot submit a form, which is how a control gets disabled.
+ */
+export function serialiseCsrfCookie(input: SessionCookieInput): string {
+  assertCookieValue(input.value);
+
+  const attributes: string[] = [...CSRF_ATTRIBUTES];
+  if (input.maxAgeSeconds !== null) {
+    attributes.push(`Max-Age=${deltaSeconds(input.maxAgeSeconds)}`);
+  }
+
+  return [`${CSRF_COOKIE_NAME}=${input.value}`, ...attributes].join('; ');
+}
+
+/** The CSRF half of a logout. Same rules as `clearedSessionCookie`. */
+export function clearedCsrfCookie(): string {
+  return [`${CSRF_COOKIE_NAME}=`, ...CSRF_ATTRIBUTES, 'Max-Age=0'].join('; ');
 }
