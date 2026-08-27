@@ -12,10 +12,10 @@ interface Run {
 }
 
 function run(options: {
-  origin?: string;
-  method?: string;
-  preflight?: boolean;
-  existingVary?: string;
+  origin?: string | undefined;
+  method?: string | undefined;
+  preflight?: boolean | undefined;
+  existingVary?: string | undefined;
 }): Run {
   const headers: Record<string, string> = {};
   let nextCalled = false;
