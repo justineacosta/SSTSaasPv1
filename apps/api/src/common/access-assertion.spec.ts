@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Controller, Delete, Get, Post } from '@nestjs/common';
 import { buildRoutingApp } from '../testing/routing-app.js';
-import { Public, RequirePermission } from './decorators/access.decorator.js';
+import { AuthenticatedOnly, Public, RequirePermission } from './decorators/access.decorator.js';
 import {
   assertEveryRouteDeclaresAccess,
   findRoutesWithoutAccessDeclaration,
@@ -42,6 +42,29 @@ describe('findRoutesWithoutAccessDeclaration', () => {
   it('treats @Public as a declaration, not as an absence of one', () => {
     expect(findRoutesWithoutAccessDeclaration([route({ access: { kind: 'public' } })])).toEqual([]);
   });
+
+  it('treats @AuthenticatedOnly as a declaration too — the third arm', () => {
+    // Task 7 added a third arm. The risk of adding one is that the filter is
+    // widened by mistake into "anything truthy passes", which would make an
+    // undeclared route pass as well; the pair of tests here and below is what
+    // pins both directions.
+    expect(
+      findRoutesWithoutAccessDeclaration([route({ access: { kind: 'authenticated' } })]),
+    ).toEqual([]);
+  });
+
+  it('STILL reports a route with no declaration, now that there are three arms', () => {
+    // Ruling C. The check must not start passing vacuously because it learned a
+    // new word.
+    expect(
+      findRoutesWithoutAccessDeclaration([
+        route({ access: { kind: 'public' } }),
+        route({ handler: 'b', access: { kind: 'authenticated' } }),
+        route({ handler: 'c', access: { kind: 'permission', permission: 'finding.read' } }),
+        route({ handler: 'undeclared' }),
+      ]),
+    ).toHaveLength(1);
+  });
 });
 
 /**
@@ -64,6 +87,12 @@ class DeclaredController {
   @RequirePermission('finding.read')
   @Get(':id')
   one(): string {
+    return 'ok';
+  }
+
+  @AuthenticatedOnly()
+  @Post('session')
+  session(): string {
     return 'ok';
   }
 }
@@ -142,6 +171,10 @@ describe('assertEveryRouteDeclaresAccess', () => {
       expect(message).not.toContain('FindingsController.list');
       expect(message).not.toContain('DeclaredController');
       expect(message).toContain('.claude/architecture/backend.md §3');
+      // The remedy names all three arms now, not two. A message that told an
+      // operator to add one of two decorators when three exist is the kind of
+      // stale sentence this phase's prose rules exist for.
+      expect(message).toContain('@AuthenticatedOnly()');
     } finally {
       await app.close();
     }

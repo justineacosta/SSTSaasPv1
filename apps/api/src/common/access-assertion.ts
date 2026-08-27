@@ -11,7 +11,8 @@ export type { RouteDescriptor };
 const DOCUMENT_REFERENCE = 'See .claude/architecture/backend.md §3.';
 
 /**
- * Every route that declares neither `@Public()` nor `@RequirePermission()`.
+ * Every route that declares none of `@Public()`, `@AuthenticatedOnly()` or
+ * `@RequirePermission()`.
  *
  * Returns all of them rather than the first, because a boot that reports one
  * offender at a time turns a ten-route mistake into ten restarts.
@@ -33,8 +34,9 @@ function formatOffenders(offenders: readonly RouteDescriptor[]): string {
         `  ${route.method.padEnd(6)} ${route.path.padEnd(pathWidth)}   ${route.controller}.${route.handler}`,
     ),
     '',
-    'Every route must declare @Public() or @RequirePermission(...). Missing',
-    'authorization is a boot failure here rather than a production discovery.',
+    'Every route must declare @Public(), @AuthenticatedOnly() or',
+    '@RequirePermission(...). Missing authorization is a boot failure here',
+    'rather than a production discovery.',
     DOCUMENT_REFERENCE,
   ].join('\n');
 }
