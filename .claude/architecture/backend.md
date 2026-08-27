@@ -68,7 +68,7 @@ and are unaffected; anything that must cover *every* response, routed or not, be
 |---|---|---|
 | Request ID + trace | Middleware; `x-request-id` propagated everywhere including into jobs | Implemented (`traceId` in Phase 4) |
 | Security headers | Middleware; [`../security/transport-and-headers.md`](../security/transport-and-headers.md) §2–§3 | Implemented |
-| CORS | Middleware, third; one configured origin, exact match, credentials ([ADR-0017](../decisions/ADR-0017-cors-allowlist-with-credentials.md)) | **Implemented (Task 7)**. Middleware rather than a guard so a preflight is answered before the rate limiter and the authentication guard, and so the headers reach error responses |
+| CORS | Middleware, third; one configured origin, exact match, credentials ([ADR-0017](../decisions/ADR-0017-cors-allowlist-with-credentials.md)) | **Implemented (Task 7)**. Middleware rather than a guard so a preflight is answered before the rate limiter and the authentication guard, and so the headers reach error responses. **A preflight therefore reaches neither the limiter nor `LoggingInterceptor`**: every unsafe browser request generates one request that no limit counts and no log line records — see below |
 | Rate limit | Guard, Redis-backed, every declared scope | Implemented (global `APP_GUARD`) |
 | Authenticate | Guard, session cookie or API key -> `Principal` | **Implemented (Task 7)** for the session-cookie half: `AuthenticationGuard`, global `APP_GUARD`, constructs a `UserPrincipal` onto `request.principal`. The API-key half is Not Implemented — no key can be issued in Phase 2 |
 | Tenant resolve | Guard, membership + org state -> `TenantContext` | Not Implemented (Phase 2). `TenantContext` is declared in `packages/contracts` as of Task 2; nothing constructs one |
@@ -85,6 +85,18 @@ and are unaffected; anything that must cover *every* response, routed or not, be
 A route without an explicit access declaration **fails a startup assertion**. Missing
 authorization is a boot crash, not a production discovery.
 
+**A preflight `OPTIONS` is unmetered and unlogged.** The CORS stage ends the response
+before `next()`, which is the documented intent for the rate limiter and the guards and an
+undocumented consequence for the logging interceptor. Measured during the Task 7 review:
+three `OPTIONS` in one burst — two preflights and one plain — produced exactly one log line,
+the plain one that reached the router. The abuse cost is small (the handler does no I/O),
+and the alternative — a credential-less request charging a real rate-limit budget, then
+401ing on the authentication guard — is worse. Recorded here because
+[`../security/abuse-prevention.md`](../security/abuse-prevention.md) says the limiter is
+global "so there is an answer for every endpoint", and this is a request shape with no
+answer. It is **not** added to ADR-0017: an accepted ADR is superseded, never edited, and
+this is a consequence found after acceptance rather than a change of decision.
+
 **Guard order is the order of the `APP_GUARD` providers in `app.module.ts`, and nothing
 else makes it visible** — a reordering is a one-line diff to an array that changes no type
 and still runs every guard. `app.module.spec.ts` asserts it: rate limit, authenticate,
@@ -92,10 +104,13 @@ CSRF. Rate limiting stays first so an unauthenticated flood carrying a garbage c
 does not buy a Redis read and a Postgres read each before anything refuses it. The cost of
 that order is recorded rather than fixed: `generalSession` keys on
 `principalSource: 'authenticated'`, which reads `request.principalId` — a field the limiter
-reads before the authentication guard could set it — so that scope is unresolvable and the
-limiter's `unresolvedWarned` path is what makes it visible at runtime. Splitting the
-limiter into an early per-IP stage and a late per-principal one is the fix, and it is not
-built.
+reads before the authentication guard could set it — so that scope is unresolvable and
+`generalSession`'s per-principal limit is applied to no request. **Nothing reports it**: the
+limiter's `unresolvedWarned` warn is gated on a fail-**closed** class with at least one
+resolved scope, and `generalSession` is fail-open with `perPrincipal` as its only scope, so
+neither conjunct holds. The line that does fire is at `debug`, and `LOG_LEVEL` defaults to
+`info`. Splitting the limiter into an early per-IP stage and a late per-principal one is the
+fix, and it is not built.
 
 **Status: Implemented.** The declaration — `@Public()`, `@AuthenticatedOnly()` and
 `@RequirePermission()`, all three keyed on `ACCESS_METADATA_KEY` — lives in

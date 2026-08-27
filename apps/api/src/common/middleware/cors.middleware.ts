@@ -38,7 +38,22 @@ const ALLOWED_HEADERS = 'Content-Type, X-CSRF-Token, X-Request-Id';
 const EXPOSED_HEADERS =
   'X-Request-Id, RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset, Retry-After';
 
-/** Ten minutes. Chromium caps preflight caching well below this; Firefox lower still. */
+/**
+ * Ten minutes.
+ *
+ * An earlier comment here claimed Chromium caps preflight caching "well below
+ * this" and Firefox lower still. **The claim was unmeasured and appears
+ * inverted** — the browser caps documented in the Fetch standard's ecosystem
+ * are far *above* 600 seconds for Chromium and Firefox, and WebKit's is around
+ * this figure — so the sentence is removed rather than restated from memory.
+ * No cap is asserted here, because none was measured by this task.
+ *
+ * 600 is a choice, not a quotation: long enough that a page doing many unsafe
+ * requests preflights once rather than per request, short enough that a change
+ * to the allowed methods or headers takes effect within minutes. The one
+ * consequence worth knowing is the cost of the *first* one, recorded in the
+ * class docblock below.
+ */
 const PREFLIGHT_MAX_AGE_SECONDS = '600';
 
 /**
@@ -73,6 +88,21 @@ const PREFLIGHT_MAX_AGE_SECONDS = '600';
  * actual request with a CORS error that names nothing). Being middleware rather
  * than a guard is what puts it ahead of both.
  *
+ * **A preflight is also unmetered and unlogged, which is a consequence and not
+ * a decision.** Ending the response here means it reaches neither
+ * `RateLimitGuard` nor `LoggingInterceptor`, so every unsafe browser request in
+ * the product generates one request that no limit counts and no log line
+ * records. Measured by the Task 7 reviewer: three `OPTIONS` in one burst — two
+ * preflights and one plain — produced exactly one log line, the plain one that
+ * reached the router and 404'd. The abuse cost is small because this handler
+ * does no I/O and writes a fixed set of headers, and the alternative (letting a
+ * credential-less request charge a real budget, and 401 on the auth guard) is
+ * worse. It is recorded because `abuse-prevention.md`'s banner says the limiter
+ * is global "so there is an answer for every endpoint", and this is a request
+ * shape with no answer. **Deliberately not added to ADR-0017**: an accepted ADR
+ * is superseded, never edited, and this is a consequence discovered after
+ * acceptance rather than a change of decision.
+ *
  * **CORS is not the authorization control** (ADR-0017, Decision). It constrains
  * what a *browser* lets a page do with a response; `curl`, a server and a
  * scanner ignore it entirely. Every route still declares its access and every
@@ -86,9 +116,21 @@ export class CorsMiddleware implements NestMiddleware {
     // Appended rather than assigned: `Cache-Control: no-store` aside, another
     // stage may already have varied on something, and clobbering it would be a
     // caching bug introduced by a security header.
+    // `getHeader` returns `string | number | string[] | undefined`. The array
+    // form comes from `setHeader('Vary', ['A', 'B'])`, and the first version of
+    // this code appended only to the string form — so an array-valued
+    // predecessor fell through and was discarded, which is precisely the
+    // caching bug the paragraph above exists to avoid. **Hardening, not a fixed
+    // defect**: the Task 7 reviewer could not demonstrate it reachable, because
+    // nothing in this application sets `Vary` before this stage. Handled anyway,
+    // since the cost is one branch and the failure would be silent.
     const existing = response.getHeader('Vary');
-    const vary = typeof existing === 'string' && existing !== '' ? `${existing}, Origin` : 'Origin';
-    response.setHeader('Vary', vary);
+    const previous = Array.isArray(existing)
+      ? existing.join(', ')
+      : typeof existing === 'string'
+        ? existing
+        : '';
+    response.setHeader('Vary', previous === '' ? 'Origin' : `${previous}, Origin`);
 
     const origin = request.headers.origin;
     const allowed = typeof origin === 'string' && origin === this.allowedOrigin;

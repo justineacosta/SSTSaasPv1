@@ -102,9 +102,14 @@ route and asserts each carries an explicit access declaration.
 > **Status of this section, as of Phase 2 Task 7.** All three declarations now exist —
 > `@Public()`, `@AuthenticatedOnly()` and `@RequirePermission()` — and the boot assertion
 > refuses a route carrying none of them (proved by booting the real application with one).
-> **`@RequirePermission` is still read by nobody.** The guard that evaluates it, and the
-> `TenantContext` it needs, are Task 12's; today a route naming a permission is
-> authenticated and then admitted. `@RequireEntitlement` is Phase 10. The example above
+> **`@RequirePermission` is read, and enforced by nobody** — the distinction matters and an
+> earlier version of this banner got it wrong by saying "read by nobody". `ACCESS_METADATA_KEY`,
+> the single key it writes, is read by `AuthenticationGuard` (to decide the route is not
+> public, which is why a permission-guarded route authenticates at all), by
+> `route-inventory.ts` for the boot assertion, and by the OpenAPI generator. What no code
+> does is **evaluate the permission**. The guard that would, and the `TenantContext` it
+> needs, are Task 12's; today a route naming a permission is authenticated and then
+> admitted. `@RequireEntitlement` is Phase 10. The example above
 > therefore compiles and boots, and two of its three decorators enforce nothing yet.
 
 Resource-level checks are not optional extras: loading a resource always goes through the

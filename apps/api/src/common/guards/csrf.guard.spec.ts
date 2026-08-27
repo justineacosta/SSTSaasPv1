@@ -9,7 +9,7 @@ import { CSRF_COOKIE_NAME, SESSION_COOKIE_NAME } from '../../modules/auth/cookie
 import { deriveCsrfToken } from '../../modules/auth/csrf-token.js';
 import { mintSecretToken } from '../../modules/auth/secret-token.js';
 import { buildGuardedApp } from '../../testing/routing-app.js';
-import { Public } from '../decorators/access.decorator.js';
+import { AuthenticatedOnly, Public } from '../decorators/access.decorator.js';
 import { CSRF_HEADER, CsrfGuard } from './csrf.guard.js';
 
 /**
@@ -28,33 +28,45 @@ const VALID = deriveCsrfToken(SESSION);
 
 @Controller('probe')
 class ProbeController {
-  @Public()
+  @AuthenticatedOnly()
   @Get()
   read(): string {
     return 'ok';
   }
 
-  @Public()
+  @AuthenticatedOnly()
   @Post()
   create(): string {
     return 'ok';
   }
 
-  @Public()
+  @AuthenticatedOnly()
   @Put()
   replace(): string {
     return 'ok';
   }
 
-  @Public()
+  @AuthenticatedOnly()
   @Patch()
   amend(): string {
     return 'ok';
   }
 
-  @Public()
+  @AuthenticatedOnly()
   @Delete()
   destroy(): string {
+    return 'ok';
+  }
+}
+
+/**
+ * A public route that mutates. The login endpoint's shape, before it exists.
+ */
+@Controller('open')
+class PublicProbeController {
+  @Public()
+  @Post()
+  create(): string {
     return 'ok';
   }
 }
@@ -64,7 +76,7 @@ let server: Server;
 
 beforeAll(async () => {
   app = await buildGuardedApp({
-    controllers: [ProbeController],
+    controllers: [ProbeController, PublicProbeController],
     providers: [Reflector, { provide: APP_GUARD, useClass: CsrfGuard }],
   });
   server = app.getHttpServer();
@@ -262,5 +274,53 @@ describe('the cookie-injection attack that plain double-submit does not stop', (
       return { code: parsed.code, message: parsed.message };
     };
     expect(body(missing.body)).toEqual(body(wrong.body));
+  });
+});
+
+describe('a @Public() route is not refusable by a cookie the caller cannot answer for', () => {
+  it('accepts an unsafe PUBLIC request carrying a stale session cookie', async () => {
+    // THE REVIEW'S D2, AS A TEST. `AuthenticationGuard` skips a public route
+    // entirely — a browser attaches whatever cookie it has, unasked, and the way
+    // out of a bad cookie is the login page, which is public. `CsrfGuard` read no
+    // access metadata, so it closed the 401 door and left a 403 door open on the
+    // same route for the same input.
+    //
+    // There is no client-side remedy for that 403: the expected header is derived
+    // from the raw session cookie, which is `HttpOnly`, and the `__Host-csrf`
+    // cookie the page can read holds the value derived from some other session.
+    // Task 9's login endpoint would have inherited a refusal it could not satisfy.
+    await request(server)
+      .post('/api/v1/open')
+      .set('Cookie', `${SESSION_COOKIE_NAME}=a-stale-token-from-a-previous-visit`)
+      .expect(201);
+  });
+
+  it('accepts it with a garbage CSRF header too — the route is exempt, not lenient', async () => {
+    await request(server)
+      .post('/api/v1/open')
+      .set('Cookie', withSession())
+      .set(CSRF_HEADER, 'nonsense')
+      .expect(201);
+  });
+
+  it('accepts it from a declared cross-site request as well', async () => {
+    // The `Sec-Fetch-Site` check is part of the same guard and must not fire on a
+    // route the guard does not govern. A public route is by definition one that
+    // performs no action on an ambient credential.
+    await request(server)
+      .post('/api/v1/open')
+      .set('Cookie', withSession())
+      .set('Sec-Fetch-Site', 'cross-site')
+      .expect(201);
+  });
+
+  it('still refuses the same request shape on a non-public route', async () => {
+    // The negative control: an exemption that leaked to every route would pass
+    // all three cases above and remove the control.
+    const response = await request(server)
+      .post('/api/v1/probe')
+      .set('Cookie', withSession())
+      .expect(403);
+    expect(codeOf(response.body)).toBe('CSRF_TOKEN_INVALID');
   });
 });

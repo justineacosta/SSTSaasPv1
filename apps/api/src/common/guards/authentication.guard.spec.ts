@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { Controller, Get, Post } from '@nestjs/common';
+import { Controller, Get, Post, SetMetadata } from '@nestjs/common';
 import { APP_GUARD, Reflector } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { errorEnvelopeSchema } from '@sentinel/contracts';
@@ -9,6 +9,7 @@ import { SESSION_COOKIE_NAME } from '../../modules/auth/cookies.js';
 import { SessionService, type SessionResolution } from '../../modules/auth/session.service.js';
 import { buildGuardedApp } from '../../testing/routing-app.js';
 import {
+  ALLOW_PENDING_MFA_KEY,
   AllowPendingMfa,
   AuthenticatedOnly,
   Public,
@@ -99,6 +100,53 @@ class ProbeController {
   }
 }
 
+/**
+ * THE EXEMPTION, ATTACKED AT CLASS LEVEL — three ways one could be written.
+ *
+ * `@AllowPendingMfa()` is typed `MethodDecorator`, so `attack-b` needs a cast
+ * and `attack-a` bypasses the decorator entirely with the exported key. Both
+ * are things a person can write, and `ALLOW_PENDING_MFA_KEY` is exported, so
+ * neither is hypothetical.
+ *
+ * This codebase has already shipped this exact accident once: `@RateLimitExempt()`
+ * was narrowed to `MethodDecorator`, but `RateLimitGuard` still *honoured*
+ * class-level metadata, so one `@SetMetadata(RATE_LIMIT_EXEMPT_KEY, true)` on a
+ * controller disabled every limit beneath it. The guard here reads
+ * `reflector.get(key, context.getHandler())` and nothing else; these controllers
+ * are what holds that line in place.
+ */
+@SetMetadata(ALLOW_PENDING_MFA_KEY, true)
+@Controller('attack-raw-metadata')
+class RawClassMetadataController {
+  @AuthenticatedOnly()
+  @Get()
+  reachable(): string {
+    return 'should never be reached by a pending session';
+  }
+}
+
+@(AllowPendingMfa() as ClassDecorator)
+@Controller('attack-cast-decorator')
+class CastDecoratorController {
+  @AuthenticatedOnly()
+  @Get()
+  reachable(): string {
+    return 'should never be reached by a pending session';
+  }
+}
+
+@SetMetadata(ALLOW_PENDING_MFA_KEY, true)
+class ExemptBaseController {}
+
+@Controller('attack-inherited-class')
+class InheritedClassMetadataController extends ExemptBaseController {
+  @AuthenticatedOnly()
+  @Get()
+  reachable(): string {
+    return 'should never be reached by a pending session';
+  }
+}
+
 interface Captured {
   readonly kind: string;
   readonly userId: string;
@@ -134,7 +182,12 @@ let server: Server;
 
 beforeAll(async () => {
   app = await buildGuardedApp({
-    controllers: [ProbeController],
+    controllers: [
+      ProbeController,
+      RawClassMetadataController,
+      CastDecoratorController,
+      InheritedClassMetadataController,
+    ],
     providers: [
       Reflector,
       { provide: SessionService, useValue: sessions },
@@ -313,5 +366,74 @@ describe('a PENDING_MFA session — the other half of the MFA bypass', () => {
     // The negative control: a guard that refused everything would pass every
     // test above.
     await request(server).post('/api/v1/probe/mfa').set('Cookie', cookie(ACTIVE_TOKEN)).expect(201);
+  });
+});
+
+describe('the pending-MFA exemption cannot be granted at class level', () => {
+  // THE HISTORICAL ACCIDENT, AS A TEST. Widening the reflector read to
+  // `getAllAndOverride([getHandler(), getClass()])` — the exact shape of the
+  // `@RateLimitExempt()` bug this codebase already shipped — left both lanes
+  // green before these three cases existed. One `@SetMetadata` on a controller
+  // would then grant a pre-MFA session every route beneath it, which is the
+  // whole MFA bypass, with a passing suite.
+  it.each([
+    ['raw @SetMetadata on the controller', '/api/v1/attack-raw-metadata'],
+    ['@AllowPendingMfa() cast to a ClassDecorator', '/api/v1/attack-cast-decorator'],
+    ['class metadata inherited from a base controller', '/api/v1/attack-inherited-class'],
+  ])('refuses a pending session on a route exempted by %s', async (_shape, path) => {
+    const response = await request(server)
+      .get(path)
+      .set('Cookie', cookie(PENDING_TOKEN))
+      .expect(401);
+    expect(codeOf(response.body)).toBe('MFA_REQUIRED');
+  });
+
+  it('still lets an ACTIVE session through those routes — they are ordinary routes', async () => {
+    // The negative control. A guard that refused all three regardless of status
+    // would pass every case above while breaking the routes for everyone.
+    for (const path of [
+      '/api/v1/attack-raw-metadata',
+      '/api/v1/attack-cast-decorator',
+      '/api/v1/attack-inherited-class',
+    ]) {
+      await request(server).get(path).set('Cookie', cookie(ACTIVE_TOKEN)).expect(200);
+    }
+  });
+});
+
+describe('what the guard does NOT attach', () => {
+  it('sets no principalId on the request — ruling B, and nothing else held it', async () => {
+    // The limiter reads `request.principalId` and runs BEFORE this guard, so a
+    // value written here has already missed its only reader. Writing it anyway
+    // would make `generalSession`'s per-principal limit look wired while
+    // resolving nothing on every request. The review added that one line and
+    // both lanes stayed green; this is the assertion that would have caught it.
+    let keys: string[] = [];
+    class Capture {
+      canActivate(context: { switchToHttp: () => { getRequest: () => object } }): boolean {
+        keys = Object.keys(context.switchToHttp().getRequest());
+        return true;
+      }
+    }
+    const probe = await buildGuardedApp({
+      controllers: [ProbeController],
+      providers: [
+        Reflector,
+        { provide: SessionService, useValue: sessions },
+        { provide: APP_GUARD, useClass: AuthenticationGuard },
+        { provide: APP_GUARD, useClass: Capture },
+      ],
+    });
+    try {
+      await request(probe.getHttpServer())
+        .get('/api/v1/probe/me')
+        .set('Cookie', cookie(ACTIVE_TOKEN))
+        .expect(200);
+      expect(keys).toContain('principal');
+      expect(keys).not.toContain('principalId');
+      expect(keys).not.toContain('organizationId');
+    } finally {
+      await probe.close();
+    }
   });
 });

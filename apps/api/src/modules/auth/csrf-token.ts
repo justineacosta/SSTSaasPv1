@@ -70,6 +70,13 @@ export function deriveCsrfToken(sessionToken: string): string {
  * header carrying bytes outside base64url.
  */
 export function csrfTokenMatches(presented: string, sessionToken: string): boolean {
+  // **Unreachable on current input, and kept as depth.** The digest comparison
+  // below already returns `false` for an empty string — `timingSafeEqual` over
+  // two SHA-256 digests of different inputs does — so this line changes no
+  // outcome, and the Task 7 reviewer measured that removing it leaves the spec
+  // green. It stays because it makes the intent legible at the top of the
+  // function rather than resting on a property of the digest, and because a
+  // future caller passing `''` deserves an obvious answer.
   if (presented === '') return false;
 
   const digest = (value: string): Buffer => createHash('sha256').update(value, 'utf8').digest();

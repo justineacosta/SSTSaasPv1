@@ -28,9 +28,22 @@ that.** The limiter reads `request.principalId`, and `architecture/backend.md` �
 limiter *before* the authentication guard — deliberately, so an unauthenticated flood
 carrying a garbage cookie cannot buy a Redis read and a Postgres read each before anything
 refuses it. Phase 2 Task 7 built the guard and left the order alone, so every
-`principalSource: 'authenticated'` scope is still unresolvable and the guard's
-`unresolvedWarned` warning is what makes that visible at runtime. The fix is to split the
-limiter into an early per-IP stage and a late per-principal one; it is owed and not built.
+`principalSource: 'authenticated'` scope is still unresolvable — `generalSession`'s
+1000/min per principal is applied to no request at all.
+
+**Nothing reports that.** An earlier version of this paragraph said the guard's
+`unresolvedWarned` warning made it visible at runtime; it does not. That warn is gated on
+`unresolved.length > 0 && decisions.length > 0 && config.failMode === 'closed'`, and
+`generalSession` is `failMode: 'open'` with `perPrincipal` as its only scope, so
+`decisions.length` is 0 and the fail-mode test fails too. The branch that does fire logs at
+**`debug`** for a fail-open class, and `LOG_LEVEL` defaults to `info`
+(`packages/config/src/env.ts`) — so at the default level an unapplied rate limit produces no
+log output whatever. Measured against a real boot by the Task 7 reviewer: zero lines of
+"not being applied", sixteen of "could not be resolved", all at DEBUG.
+
+The fix is to split the limiter into an early per-IP stage and a late per-principal one; it
+is owed and not built, and until it lands the only way to observe the gap is to run at
+`LOG_LEVEL=debug` and read for "could not be resolved".
 
 | Endpoint class | Default |
 |---|---|

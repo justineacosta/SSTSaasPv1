@@ -165,10 +165,20 @@ the grounds that they cover it.** They are absent from every non-browser client,
 control resting on them would be no control at all. `Sec-Fetch-Site: cross-site` is
 refused early because it is free; everything else is decided by the token.
 
-**Login CSRF is not covered, and that is a gap this section names rather than hides.** The
-guard applies to requests carrying the session cookie, per this section's own "authenticated
-by cookie". A cross-site `POST` to the login endpoint carries no session cookie yet, so
-nothing here refuses it. Task 9 owns the login endpoint and owns closing it.
+**Login CSRF is not covered by this control, and that is now a deliberate layering rather
+than an accident.** The guard skips a `@Public()` route entirely, exactly as the
+authentication guard does, so neither of the two cases reaches it: a cross-site `POST` to
+login carrying no session cookie, and one carrying a *stale* session cookie. The second is
+why the exemption exists at all — the expected header is derived from the raw session
+cookie, which is `HttpOnly`, so a page holding a stale `__Host-csrf` cannot produce it and
+there would be no client-side way past a 403 on the login route. Task 7 originally refused
+that request; the Task 7 review found it, and it is fixed.
+
+**Task 9 owns login CSRF with its own mechanism.** A public route performs no action on an
+ambient credential, so this control has nothing to protect there — but login CSRF is a real
+attack (an attacker signs a victim into the attacker's account), and the remedy is a
+pre-session token issued by the login page rather than one derived from a session that does
+not exist yet.
 
 ## 5. MFA
 
