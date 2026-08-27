@@ -192,3 +192,25 @@ describe('preflight', () => {
     expect(run({ origin: ALLOWED, method: 'OPTIONS' }).nextCalled).toBe(true);
   });
 });
+
+describe('Vary, array-valued predecessor', () => {
+  it('appends to an array-valued Vary instead of discarding it', () => {
+    // Hardening, not a fixed defect: nothing in this application sets `Vary`
+    // before this stage today, so the Task 7 reviewer could not demonstrate it
+    // reachable. `getHeader` can return `string[]`, and the first version
+    // appended only to the string form — an array fell through and was
+    // replaced, which is the caching bug the append exists to avoid.
+    const headers: Record<string, string> = {};
+    const request = { method: 'GET', headers: { origin: ALLOWED } } as unknown as Request;
+    const response = {
+      getHeader: (name: string) => (name === 'Vary' ? ['Accept-Encoding', 'Accept'] : undefined),
+      setHeader: (name: string, value: string) => {
+        headers[name] = value;
+      },
+      end: () => {},
+    } as unknown as Response;
+
+    new CorsMiddleware(ALLOWED).use(request, response, (() => {}) as NextFunction);
+    expect(headers['Vary']).toBe('Accept-Encoding, Accept, Origin');
+  });
+});

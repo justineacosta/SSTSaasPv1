@@ -67,10 +67,26 @@ import { OpenApiModule } from './openapi/openapi.module.js';
     // refused it. The cost of this order is recorded rather than fixed:
     // `generalSession` keys on `principalSource: 'authenticated'`, which reads
     // `request.principalId` — a field the limiter reads before this guard could
-    // have set it, so that scope stays unresolvable and the limiter's own
-    // `unresolvedWarned` path is what makes it visible at runtime. Splitting the
-    // limiter into an early per-IP stage and a late per-principal stage is the
-    // real fix and is not this task's.
+    // have set it — so that limit is not applied to any request.
+    //
+    // **NOTHING REPORTS THAT, AND AN EARLIER VERSION OF THIS COMMENT SAID
+    // OTHERWISE.** It claimed the guard's `unresolvedWarned` path made the gap
+    // visible at runtime. It cannot: that warn is gated on
+    // `unresolved.length > 0 && decisions.length > 0 && config.failMode ===
+    // 'closed'` (`rate-limit.guard.ts`), and `generalSession` is
+    // `failMode: 'open'` with `perPrincipal` as its ONLY scope
+    // (`rate-limit.config.ts`), so `decisions.length` is 0 and the fail-mode
+    // test fails as well — neither conjunct holds. The branch that does fire is
+    // the every-scope-unresolvable one, which for a fail-open class logs at
+    // **`debug`**, and `LOG_LEVEL` defaults to `'info'`
+    // (`packages/config/src/env.ts`). At the default level this produces no log
+    // output at all. Measured by the Task 7 reviewer against the real
+    // `dist/main.js`: 0 lines of "not being applied", 16 of "could not be
+    // resolved", all DEBUG, and only because that `.env` set `LOG_LEVEL=debug`.
+    //
+    // Splitting the limiter into an early per-IP stage and a late per-principal
+    // stage is the real fix and is not this task's. No warn was invented here to
+    // make the old sentence true: an accurate record of the gap is the fix.
     { provide: APP_GUARD, useClass: AuthenticationGuard },
     // **CSRF after authenticate**, so it runs on a request whose credential has
     // already been established, and so an unauthenticated caller gets 401

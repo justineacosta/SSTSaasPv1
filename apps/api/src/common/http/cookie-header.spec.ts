@@ -117,15 +117,22 @@ describe('readCookie', () => {
     expect(readCookie(undefined, '__Host-session')).toBeUndefined();
   });
 
-  it('accepts the array form Node produces for a repeated Cookie header', () => {
-    // Node exposes a repeated header as `string[]`. A parser typed only for
-    // `string` would silently read `undefined` from it and every request with
-    // two Cookie headers would be unauthenticated — a bypass of the wrong kind
-    // if the check that follows is a deny rule.
+  it('handles the array form, which Node does not produce for this header', () => {
+    // MEASURED, and the first version of this title was wrong. Node v26.7.0 joins
+    // repeated `Cookie` headers with `'; '` and hands over a string; only
+    // `set-cookie` is ever an array. The union is kept as depth for a proxy or a
+    // future runtime that presents one, and this test says so rather than
+    // claiming to cover something that happens.
     expect(readCookie(['a=1', '__Host-session=abc'], '__Host-session')).toBe('abc');
   });
 
-  it('drops a name duplicated ACROSS two Cookie headers, not only within one', () => {
+  it('drops a name duplicated across the array form as well as within one string', () => {
     expect(readCookie(['__Host-session=a', '__Host-session=b'], '__Host-session')).toBeUndefined();
+  });
+
+  it('drops a name duplicated in the string form Node actually produces', () => {
+    // This is the shape a request with two `Cookie` headers really arrives in:
+    // one string, joined with '; '.
+    expect(readCookie('__Host-session=a; __Host-session=b', '__Host-session')).toBeUndefined();
   });
 });

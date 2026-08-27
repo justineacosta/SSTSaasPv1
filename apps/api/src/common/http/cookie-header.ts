@@ -25,10 +25,29 @@
 /**
  * The `Cookie` header, as Node presents it.
  *
- * `string[]` is not defensive typing: Node exposes a repeated header that way,
- * and a client may send `Cookie` twice. A parser typed only for `string` reads
- * `undefined` from the array form and reports every such request as carrying no
- * cookies at all.
+ * **`readonly string[]` is unreachable today, and the reason first written here
+ * was false.** It said Node exposes a repeated header as an array and that a
+ * parser typed only for `string` would read `undefined` from it. Measured on
+ * Node v26.7.0 over a raw socket, sending each header twice in one request:
+ *
+ * ```
+ * Cookie: a=1 / Cookie: b=2            -> string("a=1; b=2")
+ * X-Custom: one / X-Custom: two        -> string("one, two")
+ * Set-Cookie: s=1 / Set-Cookie: s=2    -> array(["s=1","s=2"])
+ * Authorization: A / Authorization: B  -> string("Bearer first")   <- second DROPPED
+ * ```
+ *
+ * Node special-cases `cookie` and joins repeats with `'; '`; only `set-cookie`
+ * is ever an array. So the array branch below cannot fire for this header on
+ * this runtime. It is kept as depth rather than deleted — the union costs one
+ * `flatMap` and this is a credential decision — but it is described as
+ * unreachable-today rather than as a case that occurs.
+ *
+ * The `Authorization` row is the one that matters for a later task: a repeated
+ * `Authorization` does not join and does not arrive as an array — **the second
+ * is silently discarded and the first wins**. A header the parser never sees is
+ * a worse failure than one it mis-parses, and that is the header the API-key
+ * half of this stage will read.
  */
 export type CookieHeader = string | readonly string[] | undefined;
 
