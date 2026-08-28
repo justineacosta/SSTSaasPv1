@@ -7,7 +7,7 @@ import {
   clearRateLimits,
   startAuthHarness,
   tokenFromMail,
-} from './auth.integration-harness.js';
+} from '../../testing/auth-harness.js';
 import { hashSecretToken } from './secret-token.js';
 
 /**
