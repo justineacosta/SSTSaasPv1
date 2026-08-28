@@ -322,6 +322,17 @@ model VerificationToken {
 
   // Invalidating a user's older tokens of the same purpose when a new one is
   // issued is a lookup on exactly this pair.
+  //
+  // A PARTIAL UNIQUE INDEX ON THE SAME PAIR ALSO EXISTS AND IS NOT VISIBLE HERE.
+  // `VerificationToken_userId_purpose_live_key` — UNIQUE (userId, purpose) WHERE
+  // "consumedAt" IS NULL — was added by hand in
+  // `20260828051500_verification_token_partial_unique`, because Prisma can
+  // neither express nor detect a partial index (carry-forward ruling 4). It is
+  // what makes §6's "one live token per user per purpose" the database's
+  // invariant rather than `TokenService.issue`'s. DO NOT "restore" a plain
+  // `@@unique([userId, purpose])` here: that would forbid a user from ever
+  // holding two tokens of the same purpose across their whole history, consumed
+  // ones included.
   @@index([userId, purpose])
 }
 
@@ -548,4 +559,45 @@ model AuditEvent {
   @@index([organizationId, createdAt(sort: Desc)])
   @@index([organizationId, actorId, createdAt(sort: Desc)])
   @@index([organizationId, resourceType, resourceId])
+}
+
+/// Security-relevant actions that have **no organisation** (ADR-0019).
+///
+/// A user registering and a user verifying their email address both happen
+/// before the account belongs to anything, and `AuditEvent` cannot hold them:
+/// its `organizationId` is NOT NULL with a `Restrict` foreign key, and it
+/// carries the row-level-security policy
+/// `"organizationId" = current_setting('app.organization_id', true)` — measured
+/// on 2026-08-28 to REFUSE a NULL-organisation insert, so relaxing the column
+/// alone would not have made the write work. ADR-0019 records the four
+/// constraints and the three rejected alternatives.
+///
+/// Same fields as `AuditEvent` minus `organizationId`, and the same tamper
+/// resistance: `UPDATE` and `DELETE` revoked from `sentinel_app` plus the
+/// append-only trigger, reusing the `audit_event_is_append_only()` function the
+/// Phase 1 row-level-security migration already created rather than writing a
+/// second one.
+///
+/// The routing rule is the presence of an organisation, not the kind of action:
+/// `EMAIL_VERIFIED` for a user who belongs to no organisation is a platform
+/// event, and the same action for a member acting inside one is a tenant event.
+///
+/// `actorId` carries no foreign key, exactly as `AuditEvent.actorId` does not:
+/// an audit row must outlive the row it names.
+model PlatformAuditEvent {
+  id           String    @id
+  actorType    ActorType
+  actorId      String?
+  action       String
+  resourceType String
+  resourceId   String?
+  metadata     Json      @default("{}")
+  ip           String?
+  userAgent    String?
+  requestId    String?
+  createdAt    DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([createdAt(sort: Desc)])
+  @@index([actorId, createdAt(sort: Desc)])
+  @@index([resourceType, resourceId])
 }
