@@ -2,10 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { datamodelEnums, datamodelModels, parseIdPrefix } from '@sentinel/db';
-import {
-  PLATFORM_AUDIT_ACTIONS,
-  PLATFORM_AUDIT_RESOURCE_TYPES,
-} from './platform-audit.actions.js';
+import { PLATFORM_AUDIT_ACTIONS, PLATFORM_AUDIT_RESOURCE_TYPES } from './platform-audit.actions.js';
 import {
   PLATFORM_AUDIT_ACTOR_TYPES,
   type PlatformAuditEventInput,

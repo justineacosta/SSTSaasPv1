@@ -348,7 +348,10 @@ describe('the partial unique index this task added', () => {
         service.issue({ userId, purpose: 'EMAIL_VERIFICATION' }),
       ]);
       const rejections = results.filter((result) => result.status === 'rejected');
-      expect(rejections.map((r) => String(r.reason)), `round ${String(round)}`).toEqual([]);
+      expect(
+        rejections.map((r) => String(r.reason)),
+        `round ${String(round)}`,
+      ).toEqual([]);
       await prisma.verificationToken.deleteMany({ where: { userId } });
     }
   });

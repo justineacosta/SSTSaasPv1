@@ -14,12 +14,7 @@ import type { PlatformAuditAction, PlatformAuditResourceType } from './platform-
  * lists `ActorType` under `DB_ONLY_ENUMS` — no contract carries an actor until
  * Phase 3 builds the audit query API.
  */
-export const PLATFORM_AUDIT_ACTOR_TYPES = [
-  'USER',
-  'API_KEY',
-  'SYSTEM',
-  'PLATFORM_ADMIN',
-] as const;
+export const PLATFORM_AUDIT_ACTOR_TYPES = ['USER', 'API_KEY', 'SYSTEM', 'PLATFORM_ADMIN'] as const;
 
 export type PlatformAuditActorType = (typeof PLATFORM_AUDIT_ACTOR_TYPES)[number];
 

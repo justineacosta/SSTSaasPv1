@@ -4,7 +4,12 @@ import type { ApiEnv } from '@sentinel/config';
 import { PlatformAuditService } from '../audit/platform-audit.service.js';
 import { AuthMailer } from './auth-mailer.js';
 import { BreachCheckService } from './breach-check.service.js';
-import { identityStoreFake, type IdentityStoreFake, mailerFake, type MailerFake } from './identity.fakes.js';
+import {
+  identityStoreFake,
+  type IdentityStoreFake,
+  mailerFake,
+  type MailerFake,
+} from './identity.fakes.js';
 import { PasswordBreachedError } from './password-breached.error.js';
 import { PasswordService } from './password.service.js';
 import { RegistrationService } from './registration.service.js';
