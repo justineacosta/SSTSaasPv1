@@ -29,12 +29,19 @@ src/
 
 Each module owns `*.controller.ts`, `*.service.ts`, `*.repository.ts`, `dto/`, and tests.
 
-**A module may legitimately have fewer of those, and one already does.** `auth/` shipped in Phase 2
-Task 3 with two services, no controller and no repository: the password and breach-check services
-are pure functions of their inputs, and the endpoints that call them arrive in Tasks 8–10. Shipping
-a controller before the authentication guard (Task 7) would mean an unguarded route existing for
-several tasks, which is why its absence is deliberate rather than incomplete. The list above is what
-a module owns *when it has that concern*, not a checklist every directory must satisfy.
+**A module may legitimately have fewer of those, and two do.** `auth/` shipped in Phase 2 Task 3
+with two services, no controller and no repository — shipping a controller before the
+authentication guard (Task 7) would have meant an unguarded route standing for several tasks —
+and it gained `auth.controller.ts` in Task 8, once that guard, the CSRF guard, the rate limiter
+and the boot-time access assertion were all in the pipeline ahead of it. `audit/` arrived in the
+same task with one service and no controller: `PlatformAuditService` writes into a caller's
+transaction and the tenant-facing audit query API is Phase 3. The list above is what a module
+owns *when it has that concern*, not a checklist every directory must satisfy.
+
+**`audit/` also has no repository and no Prisma client**, which is worth naming because it looks
+like an omission. `security/audit.md` §2 requires an audit event and the change it describes to
+be one transaction; a service holding its own client is a service that can write an event for a
+change that then rolls back. It takes the transaction handle instead, so it cannot.
 
 **Dependency rules**, enforced by an import-boundary lint rule so they cannot erode:
 modules depend on `common` and `infrastructure` freely; cross-module dependencies go through

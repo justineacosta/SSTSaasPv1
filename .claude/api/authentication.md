@@ -1,17 +1,17 @@
 # API authentication
 
-> **Status: Designed. Not Implemented.** Phase 2.
+> **Status: Partially Implemented.** Phase 2.
 > The underlying model is in [`../security/authentication.md`](../security/authentication.md);
 > this document covers the wire contract.
 >
-> As of Phase 2 Task 2 the §2 request and response shapes exist as Zod schemas in
-> `@sentinel/contracts` (`auth.ts`), together with the `Principal` union of §1. **No endpoint
-> implements any of them** — `apps/api/src/modules/` gained `auth` in Task 3, but it registers two
-> providers and **no controller**, and the committed `openapi.json` still publishes four routes. A
-> schema is not an endpoint, and neither is a service that nothing calls. §4 and §5
-> (API keys) have no contracts at all: API keys are deliberately out of Phase 2's scope, and only
-> the `apiKey` arm of `Principal` exists, defined so downstream guards are written once and
-> throwing where it is reached.
+> **§8's three routes are Implemented (Phase 2 Task 8)** — registration, email verification and
+> the verification resend — and the committed `openapi.json` publishes **seven** routes rather
+> than four. §2's session flow is **not**: login, MFA verification, logout, the session endpoint
+> and switch-org exist as Zod schemas in `@sentinel/contracts` (`auth.ts`) and as nothing else.
+> No endpoint issues a session cookie, so §3's CSRF requirement governs no cookie-authenticated
+> route yet. §4 and §5 (API keys) have no contracts at all: API keys are deliberately out of
+> Phase 2's scope, and only the `apiKey` arm of `Principal` exists, defined so downstream guards
+> are written once and throwing where it is reached.
 
 ## 1. Two credential types
 
@@ -130,3 +130,53 @@ network".
 Authentication endpoints are limited per account **and** per IP
 ([`../security/abuse-prevention.md`](../security/abuse-prevention.md) §1), and fail closed if
 Redis is unavailable — an outage must not become a credential-stuffing window.
+
+The three routes that exist carry `registration` (3/hour per IP),
+`emailVerificationConsume` (30/hour per IP) and `emailVerificationResend` (3/hour per address,
+10/hour per IP). Only the resend has an account to key on: the other two carry no account in
+their request body, so "per account **and** per IP" is per IP alone for them, and a class that
+declared otherwise would resolve nothing while looking enforced.
+
+## 8. Registration and email verification
+
+> **Status: Implemented (Phase 2 Task 8).**
+
+```
+POST /api/v1/auth/register             { email, password, name? }
+  -> 200 { status: "VERIFICATION_REQUIRED" }
+
+POST /api/v1/auth/verify-email         { token }
+  -> 200 { status: "EMAIL_VERIFIED" }
+
+POST /api/v1/auth/resend-verification  { email }
+  -> 200 { status: "VERIFICATION_REQUIRED" }
+```
+
+All three are **public** and therefore **not CSRF-covered**: `CsrfGuard` skips public routes,
+because the expected double-submit token derives from an `HttpOnly` cookie a page cannot read,
+so requiring one on a route reachable by someone with no account would be a refusal with no
+client-side remedy. §3 covers cookie-authenticated routes, of which there are none yet.
+
+**None of them sets a cookie.** Registration does not sign the new account in; confirming an
+address does not either. Task 9's login is the first response that will carry `Set-Cookie`.
+
+**Status codes.** Registration returns **200, not 201**. §2's table gives 201 to a creation
+"with `Location`", and a `Location` header naming the new account is precisely the disclosure
+this endpoint exists to avoid — a 201 for a new address beside a 200 for an existing one would
+put the whole oracle in the status line.
+
+**The bodies are constants.** `VERIFICATION_REQUIRED` and `EMAIL_VERIFIED` are literal values, so
+no field can vary with the account. Registration answers identically whether or not the address
+is already in use, and the resend answers identically for an address with no account, one
+awaiting confirmation, and one already confirmed.
+
+**Refusals.**
+
+| Situation | Status | Code |
+|---|---|---|
+| Password found in a public breach corpus | 422 | `PASSWORD_BREACHED` |
+| Verification token unknown, expired, already used, superseded, or belonging to a non-active account | 422 | `TOKEN_INVALID` |
+| Over the rate limit | 429 | `RATE_LIMITED`, with `Retry-After` |
+
+The second row is one code for five outcomes on purpose. Splitting it would tell a caller that a
+token *once existed*, which tells them the address is registered.
