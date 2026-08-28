@@ -1,0 +1,258 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { Server } from 'node:http';
+import { Controller, Get, type CanActivate, type ExecutionContext, Injectable } from '@nestjs/common';
+import { APP_GUARD, Reflector } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import { errorEnvelopeSchema } from '@sentinel/contracts';
+import type { Request } from 'express';
+import request from 'supertest';
+import { PRISMA } from '../../infrastructure/tokens.js';
+import { buildGuardedApp } from '../../testing/routing-app.js';
+import { AuthenticatedOnly, Public } from '../decorators/access.decorator.js';
+import { RequireVerifiedEmail } from '../decorators/email-verified.decorator.js';
+import { EmailVerifiedGuard, type VerifiedEmailLookup } from './email-verified.guard.js';
+
+/**
+ * THE GATE, PROVED AGAINST PURPOSE-BUILT CONTROLLERS BECAUSE THERE IS NO REAL
+ * ROUTE TO PROVE IT AGAINST.
+ *
+ * Ruling F. Task 8's three routes are all `@Public()` and all reachable by
+ * someone with no account, so nothing in the product can carry
+ * `@RequireVerifiedEmail()` yet: `GET /auth/session` is Task 9's and
+ * organisation creation is Task 13's. The controllers below exist nowhere in
+ * the application, which is the same thing `routing-app.ts` was built for in
+ * Task 7 and the same precedent `@AllowPendingMfa()` set.
+ *
+ * **The last test in this file is what stops the rest of it being vacuous.**
+ * Carry-forward ruling 58: a suite whose fixtures all sit on one side of the
+ * branch under test cannot fail for the right reason, which is exactly how
+ * Task 7's CSRF suite missed a hole. So there is an ungated route here as well,
+ * and it must be reachable by an unverified user — if the guard started
+ * refusing everything, that test goes red rather than the suite going greener.
+ */
+
+const VERIFIED_USER = 'usr_01M0T74WZZFY9T2QS56RGF3GQ7';
+const UNVERIFIED_USER = 'usr_01M0T74WZZFY9T2QS56RGF3GQ8';
+const VANISHED_USER = 'usr_01M0T74WZZFY9T2QS56RGF3GQ9';
+
+const lookup: VerifiedEmailLookup = {
+  user: {
+    findUnique: ({ where }) => {
+      if (where.id === VERIFIED_USER) {
+        return Promise.resolve({
+          emailVerifiedAt: new Date('2026-01-01T00:00:00.000Z'),
+          status: 'ACTIVE',
+        });
+      }
+      if (where.id === UNVERIFIED_USER) {
+        return Promise.resolve({ emailVerifiedAt: null, status: 'ACTIVE' });
+      }
+      return Promise.resolve(null);
+    },
+  },
+};
+
+/**
+ * Stands in for `AuthenticationGuard`, which is not registered here for the
+ * same reason the CSRF spec omits it: mixing the two makes every failure
+ * ambiguous between 401 and 403. The user id comes from a header so one
+ * application can serve every case.
+ */
+@Injectable()
+class FakePrincipalGuard implements CanActivate {
+  canActivate(context: ExecutionContext): boolean {
+    const httpRequest = context.switchToHttp().getRequest<Request>();
+    const userId = httpRequest.headers['x-test-user'];
+    if (typeof userId === 'string' && userId !== '') {
+      httpRequest.principal = { kind: 'user', userId, sessionId: 'ses_test' };
+    }
+    return true;
+  }
+}
+
+/** The gate declared on one handler. */
+@Controller('handler')
+class HandlerGatedController {
+  @AuthenticatedOnly()
+  @RequireVerifiedEmail()
+  @Get('gated')
+  gated(): string {
+    return 'ok';
+  }
+
+  @AuthenticatedOnly()
+  @Get('open')
+  open(): string {
+    return 'ok';
+  }
+}
+
+/**
+ * The gate declared on the CLASS. Carry-forward ruling 61: an exemption must be
+ * handler-only and tested at the class level to prove it; a REQUIREMENT is the
+ * opposite — a class-level declaration must actually apply, and this is where
+ * that is checked rather than assumed.
+ */
+@RequireVerifiedEmail()
+@Controller('klass')
+class ClassGatedController {
+  @AuthenticatedOnly()
+  @Get('gated')
+  gated(): string {
+    return 'ok';
+  }
+}
+
+@RequireVerifiedEmail()
+class GatedBaseController {}
+
+/**
+ * The inheritance case. `getAllAndOverride` walks the prototype chain, so a
+ * controller extending an annotated base inherits the requirement — a fact
+ * worth an assertion, because a future guard rewritten to `reflector.get`
+ * against `getClass()` alone would silently stop covering it.
+ */
+@Controller('inherited')
+class InheritedGatedController extends GatedBaseController {
+  @AuthenticatedOnly()
+  @Get('gated')
+  gated(): string {
+    return 'ok';
+  }
+}
+
+/** A route with no gate at all, so the suite has fixtures on both sides. */
+@Controller('ungated')
+class UngatedController {
+  @Public()
+  @Get()
+  read(): string {
+    return 'ok';
+  }
+}
+
+let app: NestExpressApplication;
+let server: Server;
+
+beforeAll(async () => {
+  app = await buildGuardedApp({
+    controllers: [
+      HandlerGatedController,
+      ClassGatedController,
+      InheritedGatedController,
+      UngatedController,
+    ],
+    providers: [
+      Reflector,
+      { provide: PRISMA, useValue: lookup },
+      { provide: APP_GUARD, useClass: FakePrincipalGuard },
+      { provide: APP_GUARD, useClass: EmailVerifiedGuard },
+    ],
+  });
+  server = app.getHttpServer();
+});
+
+afterAll(async () => {
+  await app.close();
+});
+
+const asUser = (path: string, userId?: string) => {
+  const call = request(server).get(path);
+  return userId === undefined ? call : call.set('x-test-user', userId);
+};
+
+describe.each([
+  ['handler-level', '/api/v1/handler/gated'],
+  ['class-level', '/api/v1/klass/gated'],
+  ['inherited from a base class', '/api/v1/inherited/gated'],
+])('a route gated %s', (_label, path) => {
+  it('admits a verified account', async () => {
+    await asUser(path, VERIFIED_USER).expect(200);
+  });
+
+  it('refuses an unverified account with 403 EMAIL_NOT_VERIFIED', async () => {
+    const response = await asUser(path, UNVERIFIED_USER).expect(403);
+    const envelope = errorEnvelopeSchema.parse(response.body);
+    expect(envelope.error.code).toBe('EMAIL_NOT_VERIFIED');
+    // `api/errors.md` §4: a refusal says how to succeed.
+    expect(envelope.error.message).toMatch(/confirm/i);
+  });
+
+  it('refuses a request with no principal at all', async () => {
+    // Unreachable on a correctly declared route — the boot assertion refuses a
+    // route that declares nothing, and `@Public()` with this decorator is a
+    // contradiction. Reaching it means the pipeline is not what the guard
+    // believes, and the safe answer to "I cannot tell who this is" on a route
+    // that requires a verified account is refusal.
+    const response = await asUser(path).expect(403);
+    expect(errorEnvelopeSchema.parse(response.body).error.code).toBe('EMAIL_NOT_VERIFIED');
+  });
+
+  it('refuses a principal whose user row is gone', async () => {
+    const response = await asUser(path, VANISHED_USER).expect(403);
+    expect(errorEnvelopeSchema.parse(response.body).error.code).toBe('EMAIL_NOT_VERIFIED');
+  });
+});
+
+describe('a route with no gate', () => {
+  it('is reachable by an unverified account', async () => {
+    // THE NEGATIVE CONTROL. Without this, a guard that refused every request
+    // would pass every other test in this file. Ruling 58.
+    await asUser('/api/v1/handler/open', UNVERIFIED_USER).expect(200);
+  });
+
+  it('is reachable with no principal at all', async () => {
+    await request(server).get('/api/v1/ungated').expect(200);
+  });
+
+  it('reads no user row for an ungated route', async () => {
+    // The gate costs one primary-key read, and it must cost nothing on the
+    // routes it does not govern. A guard that looked the user up first and
+    // checked the metadata second would pass every assertion above and add a
+    // database read to every request in the application.
+    let reads = 0;
+    const counting: VerifiedEmailLookup = {
+      user: {
+        findUnique: () => {
+          reads += 1;
+          return Promise.resolve({ emailVerifiedAt: null, status: 'ACTIVE' });
+        },
+      },
+    };
+    const isolated = await buildGuardedApp({
+      controllers: [UngatedController],
+      providers: [
+        Reflector,
+        { provide: PRISMA, useValue: counting },
+        { provide: APP_GUARD, useClass: FakePrincipalGuard },
+        { provide: APP_GUARD, useClass: EmailVerifiedGuard },
+      ],
+    });
+    await request(isolated.getHttpServer())
+      .get('/api/v1/ungated')
+      .set('x-test-user', UNVERIFIED_USER)
+      .expect(200);
+    await isolated.close();
+
+    expect(reads).toBe(0);
+  });
+});
+
+describe('what this guard governs today', () => {
+  it('is registered in no module — Task 13 owns applying it', async () => {
+    // RULING F, AS AN ASSERTION RATHER THAN A SENTENCE. Every test above runs
+    // against controllers that exist nowhere in the product. If a later task
+    // registers this guard globally without also applying the decorator to a
+    // real route, this goes red and the claim in `authentication.md` §6 gets
+    // revisited instead of quietly becoming false.
+    const { AppModule } = await import('../../app.module.js');
+    const providers = (Reflect.getMetadata('providers', AppModule) ?? []) as {
+      provide?: unknown;
+      useClass?: unknown;
+    }[];
+    const guards = providers
+      .filter((provider) => provider.provide === APP_GUARD)
+      .map((provider) => provider.useClass);
+    expect(guards).not.toContain(EmailVerifiedGuard);
+  });
+});
