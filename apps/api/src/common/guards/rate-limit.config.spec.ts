@@ -34,6 +34,7 @@ describe('RATE_LIMIT_CLASSES', () => {
       'registration',
       'passwordReset',
       'emailVerificationResend',
+      'emailVerificationConsume',
     ] as const) {
       expect(RATE_LIMIT_CLASSES[name].failMode, name).toBe('closed');
     }
@@ -70,6 +71,19 @@ describe('RATE_LIMIT_CLASSES', () => {
       limit: 10,
       windowSeconds: 3600,
     });
+    // Task 8's row. §1's table had no line for submitting a verification token;
+    // the line was added to the document in the same change as this class, and
+    // this assertion is what keeps the two in step from here on.
+    expect(RATE_LIMIT_CLASSES.emailVerificationConsume.perIp).toEqual({
+      limit: 30,
+      windowSeconds: 3600,
+    });
+    // Per IP ONLY. `verifyEmailRequestSchema` is `{ token }` — there is no
+    // account in the body to key a per-account window on, and a class that
+    // declared one would resolve nothing on every request.
+    const consume: RateLimitClassConfig = RATE_LIMIT_CLASSES.emailVerificationConsume;
+    expect(consume.perPrincipal).toBeUndefined();
+    expect(consume.perOrganization).toBeUndefined();
     expect(RATE_LIMIT_CLASSES.invitations.perOrganization).toEqual({
       limit: 50,
       windowSeconds: 86_400,

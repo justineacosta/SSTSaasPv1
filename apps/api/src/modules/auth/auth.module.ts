@@ -1,8 +1,14 @@
 import { Module } from '@nestjs/common';
 import type { ApiEnv } from '@sentinel/config';
+import { MailModule } from '../../infrastructure/mail/mail.module.js';
 import { PrismaModule } from '../../infrastructure/prisma/prisma.module.js';
 import { RedisModule } from '../../infrastructure/redis/redis.module.js';
 import { ENV } from '../../infrastructure/tokens.js';
+import { AuditModule } from '../audit/audit.module.js';
+import { AuthController } from './auth.controller.js';
+import { AuthMailer } from './auth-mailer.js';
+import { EmailVerificationService } from './email-verification.service.js';
+import { RegistrationService } from './registration.service.js';
 import {
   ARGON2_PARAMETERS,
   BREACH_CHECK_OPTIONS,
@@ -23,25 +29,34 @@ import { type SessionPolicy, SessionService } from './session.service.js';
 import { type SecretTokenTtlSeconds, TokenService } from './token.service.js';
 
 /**
- * Password hashing, the breach check, single-use secret tokens, and sessions.
+ * Password hashing, the breach check, single-use secret tokens, sessions, and
+ * since Task 8 the registration and email-verification endpoints.
  *
- * **This module has no controller and registers no route, deliberately.** It
- * exists to provide four services to the endpoint tasks that follow —
+ * **It registered no controller until Task 8, and that was deliberate.** The
+ * four services here were built for the endpoint tasks that follow —
  * registration and email verification (Task 8), login (Task 9), password reset
- * (Task 10), and invitation acceptance (Task 15). Shipping a
- * route here would ship an unauthenticated, unguarded endpoint six tasks before
- * the guard that protects it exists (Task 7). `pnpm check:openapi` still
- * reports four routes with this module registered, and that is the check that
- * holds this property.
+ * (Task 10), invitation acceptance (Task 15) — and shipping a route before the
+ * authentication guard existed (Task 7) would have meant an unguarded endpoint
+ * standing for several tasks. `pnpm check:openapi` reported four routes for
+ * exactly that long. `AuthController` arrives now that the guard, the CSRF
+ * guard, the rate limiter and the boot-time access assertion are all in the
+ * pipeline ahead of it, and the same check reports **seven**.
  *
  * `ENV` and the logger come from the global `ConfigModule`. Neither
  * `PrismaModule` nor `RedisModule` is global — each exports its one token
  * explicitly — so both are imported here: `TokenService` and
  * `SessionRepository` touch tables, and `RedisSessionCache` is the only
  * consumer of `REDIS` in this module.
+ *
+ * `MailModule` and `AuditModule` are imported for the same reason: neither is
+ * global, and `AuthMailer` needs `MAILER` while the two endpoint services need
+ * `PlatformAuditService`. `AuditModule` provides that service with no Prisma
+ * client of its own — it writes into the caller's transaction, which is what
+ * `security/audit.md` §2 requires.
  */
 @Module({
-  imports: [PrismaModule, RedisModule],
+  imports: [PrismaModule, RedisModule, MailModule, AuditModule],
+  controllers: [AuthController],
   providers: [
     {
       provide: ARGON2_PARAMETERS,
@@ -99,10 +114,18 @@ import { type SecretTokenTtlSeconds, TokenService } from './token.service.js';
     TokenService,
     SessionRepository,
     SessionService,
+    AuthMailer,
+    RegistrationService,
+    EmailVerificationService,
   ],
   // `SessionRepository` is deliberately NOT exported. It is `SessionService`'s
   // Postgres access, and a consumer holding it could revoke a row without
   // poisoning the cache entry that would go on serving it.
+  //
+  // Neither are `AuthMailer`, `RegistrationService` or `EmailVerificationService`:
+  // they exist for this module's own controller, and a consumer elsewhere
+  // holding one could create an account or confirm an address without going
+  // through a rate-limited, audited route.
   exports: [PasswordService, BreachCheckService, TokenService, SessionService],
 })
 export class AuthModule {}
