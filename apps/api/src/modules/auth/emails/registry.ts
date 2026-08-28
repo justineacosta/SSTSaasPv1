@@ -4,6 +4,7 @@ import {
   renderMfaEnabled,
   renderNewDeviceSignIn,
   renderPasswordChanged,
+  renderRegistrationAttempt,
 } from './notice.templates.js';
 import {
   renderEmailVerification,
@@ -31,9 +32,14 @@ import {
  * of it by existing** — adding a member below without adding its sample there
  * is a compile error.
  *
- * There are seven members, and the invitation Task 15 will send is one of them:
- * it was built in Task 5 along with the rest. The next template is the eighth
- * and it belongs to whichever task writes it (M4, Task 5 review).
+ * There are EIGHT members. Seven were built in Task 5, the invitation Task 15
+ * will send among them. The eighth — `registrationAttempt` — is Task 8's, and
+ * it is the message an address that is already registered receives instead of a
+ * verification link, which is what keeps registration's response identical for
+ * an address that exists and one that does not. It was added by writing one
+ * line below and one line in `registry.spec.ts`'s `CASES` table, and it
+ * inherited every assertion in that file by existing, which is the property
+ * this registry was built for.
  *
  * @see .claude/security/authentication.md §2, §5, §6, §7
  */
@@ -45,12 +51,13 @@ export const EMAIL_TEMPLATES = {
   mfaEnabled: renderMfaEnabled,
   mfaDisabled: renderMfaDisabled,
   newDeviceSignIn: renderNewDeviceSignIn,
+  registrationAttempt: renderRegistrationAttempt,
 } as const satisfies Readonly<Record<string, (input: never) => RenderedEmail>>;
 
 export type EmailTemplateId = keyof typeof EMAIL_TEMPLATES;
 
 /**
- * The three that carry a live credential in a `?token=` link, and the four
+ * The three that carry a live credential in a `?token=` link, and the five
  * that carry nothing and contain no link at all.
  *
  * Split rather than derived, because the two halves obey opposite rules and a
@@ -69,4 +76,5 @@ export const NOTICE_TEMPLATE_IDS = [
   'mfaEnabled',
   'mfaDisabled',
   'newDeviceSignIn',
+  'registrationAttempt',
 ] as const satisfies readonly EmailTemplateId[];

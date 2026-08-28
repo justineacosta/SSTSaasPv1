@@ -16,8 +16,8 @@ import {
  * iterates the exported registry instead, so the next template added to it
  * inherits every rule here by existing.
  *
- * The registry holds **seven** members, the invitation among them. The next one
- * is the eighth, and no task owns it yet (M4, Task 5 review).
+ * The registry holds **eight** members: Task 5's seven, the invitation among
+ * them, and Task 8's `registrationAttempt`.
  *
  * `CASES` below is a `Record<EmailTemplateId, …>`, which is the part that makes
  * that true — see its own docblock for why the benign and hostile passes share
@@ -92,6 +92,7 @@ const CASES: Record<EmailTemplateId, (s: AttackerStrings) => RenderedEmail> = {
   mfaEnabled: (s) => EMAIL_TEMPLATES.mfaEnabled(notice(s)),
   mfaDisabled: (s) => EMAIL_TEMPLATES.mfaDisabled(notice(s)),
   newDeviceSignIn: (s) => EMAIL_TEMPLATES.newDeviceSignIn(notice(s)),
+  registrationAttempt: (s) => EMAIL_TEMPLATES.registrationAttempt(notice(s)),
 };
 
 function notice(s: AttackerStrings) {
@@ -145,7 +146,7 @@ describe('the email template registry', () => {
     expect(new Set(classified).size).toBe(classified.length);
   });
 
-  it('registers the seven templates authentication.md §2, §5, §6 and §7 require', () => {
+  it('registers the eight templates authentication.md §2, §5, §6 and §7 require', () => {
     expect([...IDS].sort()).toEqual([
       'emailVerification',
       'invitation',
@@ -154,6 +155,11 @@ describe('the email template registry', () => {
       'newDeviceSignIn',
       'passwordChanged',
       'passwordReset',
+      // Task 8. §7's "responses that do not distinguish existing from
+      // non-existing accounts" is only half a control without it: without this
+      // message the person who already holds the account learns nothing about
+      // an attempt made against their address.
+      'registrationAttempt',
     ]);
   });
 });
