@@ -240,12 +240,33 @@ and revokes all sessions on completion.
 
 **Two residuals, stated because this section otherwise reads as settled.**
 
-1. **Latency is not equalised, only dominated.** Registration hashes the password on both paths
-   — the existing-address path cannot skip the Argon2id cost — but the two paths then perform
-   different amounts of database work, and `resend-verification` sends mail only for an address
-   that exists and is unverified. An attacker who can time requests precisely can still
-   distinguish that case. Closing it means moving the send off the response path, which needs
-   the queue Phase 4 brings (ADR-0016).
+1. **Latency is not equalised, only dominated — and for the resend it is not even dominated.**
+   Measured on 2026-08-28 through the real application against a Testcontainers Postgres, the
+   compose Redis and a recording mailer (25 samples per case after 5 warm-up rounds, rate-limit
+   windows cleared outside the timed region; Windows 11 x64, Node v26.7.0):
+
+   | Request | median | range |
+   |---|---|---|
+   | `register`, new address | 47.8 ms | 41.4–57.6 ms |
+   | `register`, address already in use | 44.5 ms | 37.9–56.7 ms |
+   | `resend-verification`, no such account | 4.0 ms | 3.6–4.9 ms |
+   | `resend-verification`, account awaiting confirmation | 8.6 ms | 7.7–12.4 ms |
+   | `resend-verification`, account already confirmed | 4.2 ms | 3.6–5.9 ms |
+
+   **Registration is the good case.** The Argon2id hash is paid on both paths and dominates, so
+   the two differ by 3.3 ms of median on ~46 ms and their ranges overlap almost entirely — a
+   single observation separates nothing, and a statistical attack would need a large, quiet
+   sample.
+
+   **The resend is the bad case and it is open.** Only the account-awaiting-confirmation path
+   writes a row and sends a message, and its range does not overlap the other two at all: any
+   single request over 7 ms is that case. The figures above use a recording mailer with no
+   network; a real relay makes the gap larger, not smaller. So the response is byte-identical
+   and the latency is a reliable oracle for "this address has an unconfirmed account".
+
+   Closing it means moving the send off the response path, which needs the queue Phase 4 brings
+   (ADR-0016). Nothing in Phase 2 closes it, and no document may describe the resend as
+   enumeration-resistant without this qualification.
 2. **A failed send is absorbed.** The mail is sent after the transaction commits, and a
    transport failure is logged and not propagated, because propagating it would make a
    mail-transport outcome into an existence signal. The consequence is ADR-0016's known gap: the

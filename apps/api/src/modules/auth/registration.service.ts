@@ -56,8 +56,14 @@ const ANONYMOUS_GREETING = 'there';
  *
  * A measured residual, stated rather than implied: the two paths do different
  * amounts of database work after the hash — four writes against one — so they
- * are not equal-cost, only dominated by a cost they share. The figures are in
- * this task's report.
+ * are not equal-cost, only dominated by a cost they share. Measured through the
+ * real application on 2026-08-28, 25 samples each: a new address 47.8 ms median
+ * (41.4-57.6), an address already in use 44.5 ms (37.9-56.7). The ranges overlap
+ * almost entirely, so a single observation separates nothing. **No statistical
+ * timing assertion is committed for this**: 3.3 ms of median difference on
+ * ~46 ms would need a large, quiet sample to hold and would be flake in CI,
+ * which is a worse trade than the assertion the spec does make — that the hash
+ * HAPPENS on both paths.
  *
  * # Everything in one transaction, and the mail after it commits
  *
