@@ -5,10 +5,10 @@ import { Test } from '@nestjs/testing';
 import { type PostgresHarness, startPostgresHarness } from '@sentinel/db/testing';
 import { createUnscopedPrismaClient, type PrismaClient } from '@sentinel/db/unscoped';
 import { config as loadDotenv } from 'dotenv';
-import { AppModule } from '../../app.module.js';
-import { configureApp } from '../../app-setup.js';
-import { MAILER, PRISMA, REDIS } from '../../infrastructure/tokens.js';
-import type { Mailer, OutgoingMail, SentMail } from '../../infrastructure/mail/mailer.port.js';
+import { AppModule } from '../app.module.js';
+import { configureApp } from '../app-setup.js';
+import { MAILER, PRISMA, REDIS } from '../infrastructure/tokens.js';
+import type { Mailer, OutgoingMail, SentMail } from '../infrastructure/mail/mailer.port.js';
 
 /**
  * The real application, wired to a Testcontainers Postgres and a recording
@@ -26,10 +26,14 @@ import type { Mailer, OutgoingMail, SentMail } from '../../infrastructure/mail/m
  * real Mailpit; what is under test here is which template the endpoint chose.
  *
  * Not a `.spec.ts` file: it holds no tests, so `pnpm check:specs` has nothing
- * to claim.
+ * to claim. It lives in `src/testing/` rather than beside the specs that use
+ * it because that directory is where `eslint.config.js` grants the harness
+ * exemption for `@sentinel/db/testing`, the unscoped client and `process.env`
+ * — the alternative was widening a security fence for one file, which is a
+ * worse trade than a directory move.
  */
 
-loadDotenv({ path: fileURLToPath(new URL('../../../../../.env', import.meta.url)) });
+loadDotenv({ path: fileURLToPath(new URL('../../../../.env', import.meta.url)) });
 
 export interface RedisLike {
   del(...keys: string[]): Promise<number>;

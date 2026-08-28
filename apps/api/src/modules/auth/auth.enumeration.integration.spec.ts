@@ -6,7 +6,7 @@ import {
   clearRateLimits,
   startAuthHarness,
   tokenFromMail,
-} from './auth.integration-harness.js';
+} from '../../testing/auth-harness.js';
 
 /**
  * THE ENUMERATION PROPERTY, AS A BYTE COMPARISON.

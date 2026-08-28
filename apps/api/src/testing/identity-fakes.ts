@@ -1,5 +1,10 @@
-import type { Mailer, OutgoingMail, SentMail } from '../../infrastructure/mail/mailer.port.js';
-import type { IdentityStore, IdentityTransaction, IdentityUserRow } from './identity.store.js';
+import type { Mailer, OutgoingMail, SentMail } from '../infrastructure/mail/mailer.port.js';
+import type {
+  IdentityStore,
+  IdentityTransaction,
+  IdentityUserRow,
+} from '../modules/auth/identity.store.js';
+import type { VerificationTokenStore } from '../modules/auth/token.service.js';
 
 /**
  * The recording doubles the registration and verification unit specs share.
@@ -30,14 +35,23 @@ export interface RecordedCall {
 
 export interface IdentityStoreFake {
   readonly store: IdentityStore;
+  /** The same fake, typed as `TokenService` needs it. See `tokenStore` below. */
+  readonly tokenStore: VerificationTokenStore;
   readonly calls: RecordedCall[];
   /** Rows `user.findUnique` answers with, keyed by email and by id. */
   readonly users: Map<string, IdentityUserRow>;
   readonly control: {
     /** Set to make `$transaction` reject at commit, after its body has run. */
     failTransaction: Error | null;
-    /** Set to make `tx.user.create` reject, e.g. with a P2002-shaped error. */
-    failUserCreate: unknown;
+    /**
+     * Set to make `tx.user.create` reject.
+     *
+     * An `Error`, not `unknown`, because Prisma's own
+     * `PrismaClientKnownRequestError` is one — it carries `code: 'P2002'` as a
+     * property. A plain object would have been a fake that rejects with
+     * something the real client never produces.
+     */
+    failUserCreate: Error | null;
   };
   /** The `tokenHash` of every token issued through the fake transaction. */
   readonly issuedTokenHashes: string[];
@@ -47,7 +61,10 @@ export function identityStoreFake(): IdentityStoreFake {
   const calls: RecordedCall[] = [];
   const users = new Map<string, IdentityUserRow>();
   const issuedTokenHashes: string[] = [];
-  const control = { failTransaction: null as Error | null, failUserCreate: null as unknown };
+  const control = {
+    failTransaction: null as Error | null,
+    failUserCreate: null as Error | null,
+  };
 
   const find = (where: { email: string } | { id: string }): IdentityUserRow | null =>
     users.get('email' in where ? where.email : where.id) ?? null;
@@ -127,7 +144,23 @@ export function identityStoreFake(): IdentityStoreFake {
     },
   };
 
-  return { store, calls, users, control, issuedTokenHashes };
+  /**
+   * The same fake, narrowed to what `TokenService` takes.
+   *
+   * `IdentityStore.$transaction` hands its callback an `IdentityTransaction`,
+   * which is a SUBTYPE of `VerificationTokenTransaction` — so the store is not
+   * assignable to `VerificationTokenStore` and `pnpm typecheck` says so (it
+   * was red while `pnpm test` was green: carry-forward ruling 40, again). In
+   * production both services are handed the same real `PrismaClient` through
+   * one DI token; this is the spec-side equivalent of that, and it delegates
+   * to the same transaction so the recorded call list stays one list.
+   */
+  const tokenStore: VerificationTokenStore = {
+    verificationToken: tx.verificationToken,
+    $transaction: (run) => store.$transaction(run),
+  };
+
+  return { store, tokenStore, calls, users, control, issuedTokenHashes };
 }
 
 export interface MailerFake {

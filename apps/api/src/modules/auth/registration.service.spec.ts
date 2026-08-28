@@ -9,7 +9,7 @@ import {
   type IdentityStoreFake,
   mailerFake,
   type MailerFake,
-} from './identity.fakes.js';
+} from '../../testing/identity-fakes.js';
 import { PasswordBreachedError } from './password-breached.error.js';
 import { PasswordService } from './password.service.js';
 import { RegistrationService } from './registration.service.js';
@@ -60,7 +60,7 @@ function harness(): Harness {
   const db = identityStoreFake();
   const mail = mailerFake();
   const passwords = new PasswordService(ARGON2);
-  const tokens = new TokenService(db.store, TTL);
+  const tokens = new TokenService(db.tokenStore, TTL);
   const breached = { value: false };
   // The transport is never reached: `isBreached` returns early when the check
   // is disabled, and the two tests that need a positive answer stub the method
@@ -275,7 +275,14 @@ describe('two requests registering the same new address at once', () => {
       emailVerifiedAt: null,
       status: 'ACTIVE',
     };
-    db.control.failUserCreate = { code: 'P2002', meta: { target: ['email'] } };
+    // Shaped like Prisma's own `PrismaClientKnownRequestError`: an `Error` that
+    // carries `code` as a property. A plain object would be a fixture the real
+    // client never produces, and `isUniqueConstraintViolation` would then be
+    // tested against something it will never see.
+    db.control.failUserCreate = Object.assign(new Error('Unique constraint failed'), {
+      code: 'P2002',
+      meta: { target: ['email'] },
+    });
     // The winner's row is visible by the time the loser looks again.
     db.users.set(winner.email, winner);
     db.users.set(winner.id, winner);

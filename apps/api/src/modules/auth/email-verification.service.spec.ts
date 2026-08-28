@@ -9,7 +9,7 @@ import {
   type IdentityStoreFake,
   mailerFake,
   type MailerFake,
-} from './identity.fakes.js';
+} from '../../testing/identity-fakes.js';
 import { TokenInvalidError } from './token-invalid.error.js';
 import { type SecretTokenTtlSeconds, TokenService } from './token.service.js';
 
@@ -51,7 +51,7 @@ interface Harness {
 function harness(): Harness {
   const db = identityStoreFake();
   const mail = mailerFake();
-  const tokens = new TokenService(db.store, TTL);
+  const tokens = new TokenService(db.tokenStore, TTL);
   const mailer = new AuthMailer(
     mail.mailer,
     ENV,
