@@ -279,3 +279,77 @@ describe('two concurrent issue calls for the same user and purpose', () => {
     expect(live).toBe(2);
   });
 });
+
+describe('the partial unique index this task added', () => {
+  it('exists on (userId, purpose) WHERE consumedAt IS NULL', async () => {
+    // Carry-forward ruling 32, paid in
+    // `20260828051500_verification_token_partial_unique`. Read out of
+    // `pg_indexes` rather than trusted from the migration file, because Prisma
+    // can neither create nor drop a partial index (ruling 4) — so nothing else
+    // in this repository would notice if the migration were reverted.
+    const rows = await prisma.$queryRaw<{ indexdef: string }[]>`
+      SELECT indexdef FROM pg_indexes
+      WHERE tablename = 'VerificationToken'
+        AND indexname = 'VerificationToken_userId_purpose_live_key'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.indexdef).toContain('UNIQUE');
+    expect(rows[0]?.indexdef).toContain('WHERE ("consumedAt" IS NULL)');
+  });
+
+  it('refuses a second live row inserted around TokenService', async () => {
+    // The index is only worth having if it actually arbitrates. A writer that
+    // bypasses `issue` — which is the failure mode ruling 32 names — must be
+    // refused by the database, not by a comment.
+    const userId = newId('usr');
+    await prisma.user.create({ data: { id: userId, email: `idx-${userId}@example.test` } });
+    const expiresAt = new Date(Date.now() + 3_600_000);
+
+    await prisma.verificationToken.create({
+      data: {
+        id: newId('vtk'),
+        userId,
+        purpose: 'EMAIL_VERIFICATION',
+        tokenHash: `FIXTURE_index_probe_a_${userId}`,
+        expiresAt,
+      },
+    });
+
+    await expect(
+      prisma.verificationToken.create({
+        data: {
+          id: newId('vtk'),
+          userId,
+          purpose: 'EMAIL_VERIFICATION',
+          tokenHash: `FIXTURE_index_probe_b_${userId}`,
+          expiresAt,
+        },
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('never fires for TokenService.issue, however concurrent the callers', async () => {
+    // RULING C SAYS VERIFY THIS RATHER THAN ASSUME IT. If the index could fire
+    // on the normal path, the loser of a race would become a P2002 that every
+    // caller must catch — and that would be a change to `TokenService`'s
+    // contract, not a change to this migration.
+    //
+    // The advisory lock in `issueInTransaction` is what makes it impossible: it
+    // serialises the supersede-then-insert pair for one (userId, purpose), so
+    // the second transaction's supersede sees the first's committed row. Ten
+    // rounds of four concurrent callers, and any P2002 rejects the settle below.
+    const userId = newId('usr');
+    await prisma.user.create({ data: { id: userId, email: `noraise-${userId}@example.test` } });
+
+    for (let round = 0; round < 10; round += 1) {
+      const results = await Promise.allSettled([
+        service.issue({ userId, purpose: 'EMAIL_VERIFICATION' }),
+        service.issue({ userId, purpose: 'EMAIL_VERIFICATION' }),
+        service.issue({ userId, purpose: 'EMAIL_VERIFICATION' }),
+        service.issue({ userId, purpose: 'EMAIL_VERIFICATION' }),
+      ]);
+      const rejections = results.filter((result) => result.status === 'rejected');
+      expect(rejections.map((r) => String(r.reason)), `round ${String(round)}`).toEqual([]);
+      await prisma.verificationToken.deleteMany({ where: { userId } });
+    }
+  });
+});
