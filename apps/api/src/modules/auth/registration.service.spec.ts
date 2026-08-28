@@ -142,11 +142,20 @@ describe('a new address', () => {
     const { service, db } = harness();
     await service.register(COMMAND);
 
-    const event = db.calls.find((call) => call.name === 'tx.platformAuditEvent.create')?.args;
+    const event = db.calls.find((call) => call.name === 'tx.platformAuditEvent.create')?.args as
+      { metadata?: Record<string, unknown> } | undefined;
     const serialised = JSON.stringify(event);
     expect(serialised).not.toContain(COMMAND.password);
     expect(serialised).not.toContain(COMMAND.email);
     for (const hash of db.issuedTokenHashes) expect(serialised).not.toContain(hash);
+    // THE EXACT KEY SET, not a substring search, and this is a finding from
+    // mutation testing rather than a stylistic preference. A mutant that put
+    // the RAW token in `metadata` survived the three assertions above — the
+    // fake never sees the raw value, only its hash, so there was nothing to
+    // search for. An allowlist of keys does not depend on knowing what the
+    // forbidden value looks like, which is the only version of this assertion
+    // that holds for a secret the spec cannot see.
+    expect(Object.keys(event?.metadata ?? {}).sort()).toEqual(['hasName', 'verificationTokenId']);
     expect(event).toMatchObject({
       actorType: 'USER',
       action: 'USER_REGISTERED',

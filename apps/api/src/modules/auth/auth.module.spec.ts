@@ -4,9 +4,12 @@ import { describe, expect, it } from 'vitest';
 import type { ApiEnv } from '@sentinel/config';
 import { createLogger, type Logger } from '@sentinel/observability';
 import { ENV, LOGGER, PRISMA, REDIS } from '../../infrastructure/tokens.js';
+import { AuthMailer } from './auth-mailer.js';
 import { AuthModule } from './auth.module.js';
 import { BreachCheckService } from './breach-check.service.js';
+import { EmailVerificationService } from './email-verification.service.js';
 import { PasswordService } from './password.service.js';
+import { RegistrationService } from './registration.service.js';
 import { SessionService } from './session.service.js';
 import { TokenService, type VerificationTokenStore } from './token.service.js';
 
@@ -151,11 +154,44 @@ describe('AuthModule', () => {
     await moduleRef.close();
   });
 
-  it('registers no controller', () => {
-    // Ruling 1, and the reason `pnpm check:openapi` still reports four routes.
-    // A route shipped here would be unauthenticated and unguarded until Task 7.
-    const controllers = Reflect.getMetadata('controllers', AuthModule) as unknown;
-    expect(controllers ?? []).toEqual([]);
+  it('registers exactly one controller — the three routes of Task 8', () => {
+    // THIS TEST USED TO ASSERT THE OPPOSITE, and the change is the task.
+    // Through Task 7 it read "registers no controller", because a route shipped
+    // before the authentication guard existed would have been unauthenticated
+    // and unguarded for several tasks, and `pnpm check:openapi` reporting four
+    // routes was the check that held it. `AuthController` arrives now that the
+    // guard, the CSRF guard, the rate limiter and the boot-time access
+    // assertion all run ahead of it, and the same check reports seven.
+    //
+    // Kept as an exact list rather than deleted: a second controller appearing
+    // here is a decision, and Task 9's login endpoint belongs on this one.
+    const controllers = (Reflect.getMetadata('controllers', AuthModule) ?? []) as {
+      name?: string;
+    }[];
+    expect(controllers.map((controller) => controller.name)).toEqual(['AuthController']);
+  });
+
+  it('resolves the registration and verification services and the mailer', async () => {
+    const moduleRef = await buildModule();
+
+    expect(moduleRef.get(RegistrationService)).toBeInstanceOf(RegistrationService);
+    expect(moduleRef.get(EmailVerificationService)).toBeInstanceOf(EmailVerificationService);
+    expect(moduleRef.get(AuthMailer)).toBeInstanceOf(AuthMailer);
+    await moduleRef.close();
+  });
+
+  it('exports neither of them, nor the mailer', async () => {
+    // Same argument as `SessionRepository` above: a consumer elsewhere holding
+    // one of these could create an account or confirm an address without going
+    // through a rate-limited, audited route.
+    const moduleRef = await buildModule();
+    const exported = (Reflect.getMetadata('exports', AuthModule) as { name?: string }[]).map(
+      (entry) => entry.name ?? entry,
+    );
+    expect(exported).not.toContain('RegistrationService');
+    expect(exported).not.toContain('EmailVerificationService');
+    expect(exported).not.toContain('AuthMailer');
+    await moduleRef.close();
   });
 
   it('builds a password service that actually hashes at the configured parameters', async () => {

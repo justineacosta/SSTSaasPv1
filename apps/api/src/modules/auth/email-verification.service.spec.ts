@@ -215,9 +215,14 @@ describe('resend-verification', () => {
     withUser(db);
 
     await service.resend({ email: 'ada@example.test', ...CONTEXT });
-    const event = db.calls.find((call) => call.name === 'tx.platformAuditEvent.create')?.args;
+    const event = db.calls.find((call) => call.name === 'tx.platformAuditEvent.create')?.args as
+      { metadata?: Record<string, unknown> } | undefined;
     const serialised = JSON.stringify(event);
     for (const hash of db.issuedTokenHashes) expect(serialised).not.toContain(hash);
+    // The exact key set, for the reason recorded in `registration.service.spec.ts`:
+    // the fake never sees the raw token, so a substring search cannot catch a
+    // mutant that puts it in the metadata.
+    expect(Object.keys(event?.metadata ?? {})).toEqual(['verificationTokenId']);
     expect(event).toMatchObject({ action: 'EMAIL_VERIFICATION_RESENT', actorType: 'USER' });
   });
 });
