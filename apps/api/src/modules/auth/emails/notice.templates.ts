@@ -1,7 +1,7 @@
 import { formatUtcTimestamp, renderEmail, type RenderedEmail } from './layout.js';
 
 /**
- * The three messages that carry no token, and no link at all.
+ * The messages that carry no token, and no link at all.
  *
  * These exist for one reason: **so that an account takeover is visible to its
  * victim.** `security/authentication.md` §2 requires an email on password
@@ -44,7 +44,19 @@ function whereAndWhen(context: SecurityNoticeContext): readonly string[] {
 }
 
 /**
- * The closing advice, shared by all three and deliberately link-free.
+ * The one line every notice ends with, whatever it is about.
+ *
+ * Separated from `NOTICE_FOOTER` below because the advice above it is not
+ * universal — see `renderRegistrationAttempt`, where "change your password
+ * immediately" would be false advice about an event in which nothing changed.
+ * This sentence is true of every message this product will ever send.
+ */
+const NOTICE_NEVER_ASKS =
+  'Sentinel will never ask you for your password or a code by email or phone, and never includes a link in a security notice like this one.';
+
+/**
+ * The closing advice for a notice describing something that actually happened
+ * to the account, and deliberately link-free.
  *
  * "Sign in and change your password" names an action the recipient performs by
  * going to the product the way they normally do, which is the only instruction
@@ -52,7 +64,7 @@ function whereAndWhen(context: SecurityNoticeContext): readonly string[] {
  */
 const NOTICE_FOOTER = [
   'If this was not you, sign in to Sentinel the way you normally do and change your password immediately, then contact your organisation owner.',
-  'Sentinel will never ask you for your password or a code by email or phone, and never includes a link in a security notice like this one.',
+  NOTICE_NEVER_ASKS,
 ] as const;
 
 export function renderPasswordChanged(context: SecurityNoticeContext): RenderedEmail {
@@ -122,6 +134,52 @@ export function renderMfaEnabled(context: SecurityNoticeContext): RenderedEmail 
 
 export function renderMfaDisabled(context: SecurityNoticeContext): RenderedEmail {
   return renderMfaChanged({ ...context, change: 'disabled' });
+}
+
+/**
+ * THE EIGHTH TEMPLATE, AND THE OTHER HALF OF ENUMERATION RESISTANCE.
+ *
+ * `security/authentication.md` §7 requires registration to answer identically
+ * for an address that exists and one that does not. That property is only half
+ * a design on its own: the person who already has an account then learns
+ * nothing about an attempt made against their address. This message is the
+ * other half — the difference between the two paths lives in a mailbox the
+ * account owner controls, and never on the wire.
+ *
+ * A NOTICE, not a token-link template. It carries no token, no link and no
+ * action, so it belongs to `NOTICE_TEMPLATE_IDS` and inherits that list's
+ * assertions: no `href`, no `http`, no `token`.
+ *
+ * **It does not name the address it was sent to.** The three token-link
+ * templates already refuse to, and the argument is stronger here: this message
+ * goes to an address someone *else* just typed into a registration form, and
+ * the only thing an attacker learns from a bounce or a shared inbox should be
+ * nothing.
+ *
+ * **It does not say "you already have an account" in the subject.** The subject
+ * line is the part most likely to be visible on a lock screen over someone's
+ * shoulder, and "someone tried to create an account with your address" is the
+ * actionable half without being a membership disclosure to a bystander.
+ */
+export function renderRegistrationAttempt(context: SecurityNoticeContext): RenderedEmail {
+  return renderEmail({
+    subject: 'Someone tried to create a Sentinel account with your email address',
+    paragraphs: [
+      `Hello ${context.recipientName},`,
+      'Someone submitted this email address to the Sentinel sign-up form. This address is already in use, so no second account was created and nothing about your existing account has changed.',
+      'If it was you: you already have an account, so sign in instead. If you cannot remember your password, use the "forgot password" option on the sign-in page.',
+      ...whereAndWhen(context),
+    ],
+    // NOT `NOTICE_FOOTER`. That footer tells the recipient to change their
+    // password immediately, which is correct for a notice describing a change
+    // to the account and false here: nothing happened, and sending people to
+    // change a password because somebody typed their address into a form is
+    // both wrong and a way to make this message worth triggering on purpose.
+    footer: [
+      'If this was not you, no action is needed. No account was created and your existing account is unchanged.',
+      NOTICE_NEVER_ASKS,
+    ],
+  });
 }
 
 /**
