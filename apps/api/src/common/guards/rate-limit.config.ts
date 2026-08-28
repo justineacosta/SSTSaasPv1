@@ -85,6 +85,44 @@ export const RATE_LIMIT_CLASSES = {
     principalSource: { bodyField: 'email' },
     failMode: 'closed',
   },
+  /**
+   * Submitting a verification token — `POST /api/v1/auth/verify-email`.
+   *
+   * ADDED IN TASK 8, AND NOT A ROW TRANSCRIBED FROM §1's TABLE. §1 has a row
+   * for the resend and none for the submission, so the figure below is a
+   * decision made here and written into that table in the same change.
+   *
+   * **Defaulting it was not available.** A route carrying no class falls to
+   * `generalSession`, which is `failMode: 'open'` with `perPrincipal:
+   * 'authenticated'` as its only scope — unresolvable on an unauthenticated
+   * route — and carry-forward ruling 55 records that nothing warns when that
+   * happens at the default log level. The default is therefore not a weak limit
+   * on this route; it is no limit and no signal. Applying
+   * `emailVerificationResend` instead would be worse: its `principalSource` is
+   * the body field `email`, which `verifyEmailRequestSchema` does not contain,
+   * so the per-account half would resolve nothing on every single request while
+   * the per-IP half resolved — the exact silent miss this file's
+   * `PrincipalSource` docblock was written about.
+   *
+   * **Per IP only, because there is no account to key on.** The request body is
+   * `{ token }` and nothing else. Deriving a principal from the token would
+   * mean looking it up before the limiter could decide, which is a database
+   * read bought by an unauthenticated caller — the thing the limiter runs first
+   * to prevent.
+   *
+   * **30/hour is not about guessing the token.** `secret-token.ts` fixes the
+   * secret at 32 random bytes, so brute force is infeasible at any rate this
+   * table could express. What this bounds is an unmetered write attempt against
+   * Postgres from an unauthenticated endpoint: every submission runs a
+   * conditional `UPDATE` inside a transaction. A real user submits once, twice
+   * if they mistype a copy-paste; 30 leaves a family behind one NAT or one
+   * office egress address room to verify a batch of accounts in an hour, which
+   * is the failure the tighter figures in this table risk.
+   *
+   * Fail closed, with the rest of the authentication classes: a Redis outage
+   * must not become an unbounded write channel.
+   */
+  emailVerificationConsume: { perIp: { limit: 30, windowSeconds: 3600 }, failMode: 'closed' },
   emailVerificationResend: {
     perPrincipal: { limit: 3, windowSeconds: 3600 },
     // §1's table names only the per-account figure, but §1's opening sentence

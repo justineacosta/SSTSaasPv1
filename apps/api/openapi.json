@@ -6,6 +6,162 @@
     "description": "Multi-tenant security testing, penetration-test management, and vulnerability management."
   },
   "paths": {
+    "/api/v1/auth/register": {
+      "post": {
+        "operationId": "AuthController_register",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Register an account.",
+        "description": "Creates an account and sends a verification link. The response is identical whether or not the address is already registered: an address that already has an account receives a notice about the attempt instead of a link, and nothing about the account changes.",
+        "responses": {
+          "200": {
+            "description": "Accepted. A message has been sent to the address, whatever it was.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "VERIFICATION_REQUIRED"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The password appears in a public breach corpus (`PASSWORD_BREACHED`). This check is disabled by default and fails open, so its absence is not a claim about the password."
+          },
+          "429": {
+            "description": "Rate limited: 3 per hour per IP address."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "public"
+        }
+      }
+    },
+    "/api/v1/auth/resend-verification": {
+      "post": {
+        "operationId": "AuthController_resendVerification",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Send the verification link again.",
+        "description": "Issues a fresh verification link, which invalidates any previous one for that account. The response is identical for an address with no account, an address awaiting confirmation, and an address already confirmed.",
+        "responses": {
+          "200": {
+            "description": "Accepted. Whether anything was sent is deliberately not reported.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "VERIFICATION_REQUIRED"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited: 3 per hour per address and 10 per hour per IP address."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "public"
+        }
+      }
+    },
+    "/api/v1/auth/verify-email": {
+      "post": {
+        "operationId": "AuthController_verifyEmail",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Confirm an email address.",
+        "description": "Redeems a single-use verification token and marks the address confirmed. Unknown, expired, already-used and superseded tokens all produce the same refusal, so the endpoint cannot be used to discover which addresses are registered.",
+        "responses": {
+          "200": {
+            "description": "The address is confirmed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "EMAIL_VERIFIED"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The link is not redeemable (`TOKEN_INVALID`). One code and one message for unknown, expired, already-used and superseded alike."
+          },
+          "429": {
+            "description": "Rate limited: 30 per hour per IP address."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "public"
+        }
+      }
+    },
     "/api/v1/openapi.json": {
       "get": {
         "operationId": "OpenApiController_read",
