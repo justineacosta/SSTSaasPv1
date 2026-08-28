@@ -211,12 +211,13 @@ export class RegistrationService {
       });
     });
 
+    // The IP and user agent went into the audit row above and stop there. H1:
+    // they are the caller's, this message goes to the account owner, and
+    // `AuthMailer.sendRegistrationAttempt` has no parameter for them.
     await this.mailer.sendRegistrationAttempt({
       to: existing.email,
       recipientName: existing.name ?? ANONYMOUS_GREETING,
       occurredAt,
-      ip: command.ip,
-      userAgent: command.userAgent,
     });
   }
 }
