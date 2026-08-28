@@ -38,6 +38,11 @@ export const ID_PREFIXES = {
   vtk: 'vtk',
   rcv: 'rcv',
   idp: 'idp',
+  // Phase 2 Task 8, ADR-0019. `PlatformAuditEvent` — an audit row for an action
+  // that has no organisation. Distinct from `aud` because the two are different
+  // tables: a row's prefix says which one it came from, which is the whole
+  // reason a prefixed id is worth having in a log line.
+  pau: 'pau',
 } as const;
 
 export type IdPrefix = keyof typeof ID_PREFIXES;

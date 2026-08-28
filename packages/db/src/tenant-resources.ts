@@ -94,6 +94,13 @@ export const DELIBERATELY_GLOBAL_MODELS = {
     'Proves control of an email address or authorises a password reset; both are true of the User globally, before any organisation is chosen.',
   IdentityProviderLink:
     'Binds a User to an external identity provider subject. Phase 11 lets an organisation enforce a domain, but the link itself is the person, not the tenancy.',
+  // ADR-0019. Unlike the four above, this entry transfers no obligation to the
+  // application layer, because there is no tenant-facing read of this table to
+  // authorise: it holds rows about a person written before any organisation
+  // exists, and no tenant may read one. Phase 3's `/audit-logs` is where that
+  // has to stay true, and the ADR names the union as the cost.
+  PlatformAuditEvent:
+    'Security-relevant actions that have no organisation — a registration, an email verification. Written before any tenant exists, readable by none.',
 } as const;
 
 export type DeliberatelyGlobalModel = keyof typeof DELIBERATELY_GLOBAL_MODELS;

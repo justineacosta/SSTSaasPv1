@@ -32,6 +32,7 @@ const DB_ONLY_PREFIXES: Record<string, string> = {
   rol: 'Role — addressed by its SystemRoleKey (`OWNER`, …) in the API, not by row ID.',
   prm: 'Permission — addressed by its permission key (`finding.triage`), not by row ID.',
   aud: 'AuditEvent — the audit query API is Phase 3; no contract addresses one yet.',
+  pau: 'PlatformAuditEvent (ADR-0019) — same as `aud`, and for the same reason: Phase 3 owns the query API and no contract addresses a row of either table yet. Listed here rather than given a contract schema so the two audit tables are treated alike; giving one a client-facing schema and not the other would be a difference nothing in the API can act on.',
   req: 'Request correlation ID. It appears in the error envelope as free text, not as a resource.',
   fnd: 'Finding — registered ahead of the model. Its contracts arrive with the model in a later phase.',
   scn: 'Scan — registered ahead of the model, same as `fnd`.',
