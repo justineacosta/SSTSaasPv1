@@ -50,14 +50,20 @@ const ANONYMOUS_GREETING = 'there';
  * address that exists and is already verified all produce the same status and
  * the same body. Only the middle one sends anything.
  *
- * **The residual, measured rather than assumed.** Only the middle case performs
- * a database write and a mail send, so it costs measurably more wall-clock time
- * than the other two. The response is byte-identical; the *latency* is not, and
- * an attacker who can time requests can still distinguish "exists and is
- * unverified" from the rest. Closing it needs the send moved off the response
- * path, which needs a queue — Phase 4, per ADR-0016 and carry-forward ruling 45.
- * The figures are in this task's report and the gap is recorded in
- * `security/authentication.md` §6 rather than left for someone to find.
+ * **THE RESIDUAL, MEASURED RATHER THAN ASSUMED, AND IT IS NOT SMALL.** Only the
+ * middle case writes a row and sends a message. Measured through the real
+ * application on 2026-08-28, 25 samples per case: no account 4.0 ms median
+ * (3.6-4.9), already confirmed 4.2 ms (3.6-5.9), awaiting confirmation 8.6 ms
+ * (7.7-12.4). **The ranges do not overlap** — any single response over about
+ * 7 ms is the awaiting-confirmation case — so the latency is a reliable oracle
+ * for "this address has an unconfirmed account" even though the response is
+ * byte-identical. A real SMTP relay widens the gap rather than narrowing it.
+ *
+ * Closing it means moving the send off the response path, which needs a queue:
+ * Phase 4, per ADR-0016 and carry-forward ruling 45. It is recorded here and in
+ * `security/authentication.md` §6 rather than left for someone to find, and no
+ * document may call this endpoint enumeration-resistant without the
+ * qualification.
  */
 @Injectable()
 export class EmailVerificationService {
