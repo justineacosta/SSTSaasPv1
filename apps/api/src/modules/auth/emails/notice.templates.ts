@@ -137,6 +137,32 @@ export function renderMfaDisabled(context: SecurityNoticeContext): RenderedEmail
 }
 
 /**
+ * What `registrationAttempt` may be told, and it is deliberately narrower than
+ * `SecurityNoticeContext`.
+ *
+ * H1. `whereAndWhen` renders `Device: <userAgent>`, and on this one template the
+ * user agent belongs to **a stranger**: `POST /auth/register` against an address
+ * that already exists mails this notice to the account owner, and the caller
+ * chose that header. Rendering it put up to 512 characters of attacker-supplied
+ * text — a sentence, a URL — into a message wearing this product's branding,
+ * under a footer promising it contains no link.
+ *
+ * The type is the fix, not a filter. A denylist over attacker text is a defect
+ * waiting for a new encoding; a parameter that cannot carry the value is not.
+ * `AuthMailer.sendRegistrationAttempt` no longer accepts an IP or a user agent
+ * either, so there is no path from the request to this template at all.
+ *
+ * **The values are not discarded — they go in the `PlatformAuditEvent` row.**
+ * That is where attacker-supplied text is supposed to end up: read by an
+ * operator, in an append-only table built for exactly this, never rendered into
+ * a message sent to somebody else.
+ */
+export type RegistrationAttemptContext = Pick<
+  SecurityNoticeContext,
+  'recipientName' | 'occurredAt'
+>;
+
+/**
  * THE EIGHTH TEMPLATE, AND THE OTHER HALF OF ENUMERATION RESISTANCE.
  *
  * `security/authentication.md` §7 requires registration to answer identically
@@ -156,19 +182,31 @@ export function renderMfaDisabled(context: SecurityNoticeContext): RenderedEmail
  * the only thing an attacker learns from a bounce or a shared inbox should be
  * nothing.
  *
+ * **It names no device and no IP address.** Every other notice does, because
+ * there the string describes an action the recipient's own authenticated
+ * session took and is how they recognise a session that is not theirs. Here it
+ * describes the stranger who typed their address into a form, and the recipient
+ * has no session of their own to compare it against — so it is not context, it
+ * is a message from somebody else printed inside our envelope. H1.
+ *
  * **It does not say "you already have an account" in the subject.** The subject
  * line is the part most likely to be visible on a lock screen over someone's
  * shoulder, and "someone tried to create an account with your address" is the
  * actionable half without being a membership disclosure to a bystander.
  */
-export function renderRegistrationAttempt(context: SecurityNoticeContext): RenderedEmail {
+export function renderRegistrationAttempt(context: RegistrationAttemptContext): RenderedEmail {
   return renderEmail({
     subject: 'Someone tried to create a Sentinel account with your email address',
     paragraphs: [
       `Hello ${context.recipientName},`,
       'Someone submitted this email address to the Sentinel sign-up form. This address is already in use, so no second account was created and nothing about your existing account has changed.',
       'If it was you: you already have an account, so sign in instead. If you cannot remember your password, use the "forgot password" option on the sign-in page.',
-      ...whereAndWhen(context),
+      // The timestamp only — NOT `whereAndWhen(context)`, which is the other
+      // four notices' block and carries the caller's IP and user agent. See
+      // `RegistrationAttemptContext` above. The clock reading is ours, so it
+      // stays: dropping the whole block would have cost the recipient the one
+      // piece of context they can actually use.
+      `When: ${formatUtcTimestamp(context.occurredAt)}`,
     ],
     // NOT `NOTICE_FOOTER`. That footer tells the recipient to change their
     // password immediately, which is correct for a notice describing a change

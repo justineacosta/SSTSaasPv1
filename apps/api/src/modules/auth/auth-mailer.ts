@@ -89,18 +89,16 @@ export class AuthMailer {
     to: string;
     recipientName: string;
     occurredAt: Date;
-    ip: string | null;
-    userAgent: string | null;
   }): Promise<void> {
+    // NO `ip` AND NO `userAgent`, AND THE SIGNATURE IS THE CONTROL. H1: the
+    // caller of `POST /auth/register` chose those values and this message goes
+    // to somebody else, so there must be no parameter for them to travel
+    // through. `RegistrationAttemptContext` refuses them one layer down as
+    // well. They are recorded in the `PlatformAuditEvent` row instead, which is
+    // where attacker-supplied text belongs.
     const rendered = EMAIL_TEMPLATES.registrationAttempt({
       recipientName: input.recipientName,
       occurredAt: input.occurredAt,
-      // The template renders "not recorded" for an absent value. `null` becomes
-      // `undefined` here rather than an empty string, so a missing address is
-      // reported as missing instead of as a blank line — the notice templates'
-      // own rule that a caller must never invent these.
-      ipAddress: input.ip ?? undefined,
-      userAgent: input.userAgent ?? undefined,
     });
     await this.deliver('registrationAttempt', input.to, rendered);
   }

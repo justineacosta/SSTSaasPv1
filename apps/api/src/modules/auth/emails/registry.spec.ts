@@ -117,11 +117,25 @@ const BENIGN: AttackerStrings = {
  * and a user agent is a request header and therefore attacker-chosen outright.
  */
 const XSS = `<script>alert(1)</script>" onmouseover="steal()`;
+
+/**
+ * A URL, in the payload, because the escaping payload alone could not see H1.
+ *
+ * `<script>alert(1)</script>" onmouseover="steal()` contains no `http`, so the
+ * hostile fixture sat two declarations away from the "carries no link"
+ * assertion and would still not have failed it if it had been swapped in. Every
+ * attacker-controlled string now carries a scheme AND the word `token`, so the
+ * two notice properties below — no link, no token — are testable against
+ * hostile input rather than against the benign fixture that made them vacuous.
+ */
+const INJECTED_URL = 'https://sentinel-support.example/verify?token=FIXTURE_injected_000';
+const XSS_WITH_URL = `${XSS} ${INJECTED_URL}`;
+
 const HOSTILE: AttackerStrings = {
-  name: XSS,
-  organizationName: XSS,
-  ipAddress: XSS,
-  userAgent: XSS,
+  name: XSS_WITH_URL,
+  organizationName: XSS_WITH_URL,
+  ipAddress: XSS_WITH_URL,
+  userAgent: XSS_WITH_URL,
 };
 
 const SAMPLES = (id: EmailTemplateId): RenderedEmail => CASES[id](BENIGN);
@@ -275,7 +289,7 @@ describe.each(NOTICE_TEMPLATE_IDS)('notice template %s', (id) => {
   });
 
   it('carries no link of any kind, in either part', () => {
-    // A stronger property than "no token", and the one worth having: these three
+    // A stronger property than "no token", and the one worth having: these
     // messages exist to tell a victim that something happened to their account,
     // which is exactly the message a phisher wants to imitate. A notice with no
     // link at all trains the recipient that a real one never asks them to click,
@@ -286,8 +300,134 @@ describe.each(NOTICE_TEMPLATE_IDS)('notice template %s', (id) => {
     expect(email.html).not.toContain('href');
   });
 
+  it('carries no link when the value the CALLER supplied is a URL', () => {
+    // H1, generalised to the field that is actually third-party text.
+    //
+    // NOT the display name, and that exclusion is a measurement rather than a
+    // convenience. I first wrote this test with `name` injected too; it failed
+    // for all five notices, because every one of them greets the recipient by
+    // name — and then it stayed failing no matter what, because a greeting is
+    // the point. It is also not a defect: `recipientName` is always the
+    // RECIPIENT'S OWN stored name. An attacker who puts a URL there has put it
+    // in a message delivered to themselves.
+    //
+    // `userAgent` and `ipAddress` are different in kind. On
+    // `registrationAttempt` they come from whoever called `POST /auth/register`
+    // — a stranger — and the message goes to somebody else. That is the whole
+    // of H1.
+    const email = CASES[id]({ ...BENIGN, ipAddress: XSS_WITH_URL, userAgent: XSS_WITH_URL });
+    if (CONTEXT_FREE_NOTICE_IDS.includes(id as (typeof CONTEXT_FREE_NOTICE_IDS)[number])) {
+      expect(email.html).not.toMatch(/https?:\/\//);
+      expect(email.text).not.toMatch(/https?:\/\//);
+    }
+  });
+
   it('names when it happened, in UTC', () => {
     expect(SAMPLES(id).text).toContain('2026-08-26 09:41 UTC');
+  });
+});
+
+/**
+ * WHICH NOTICES RENDER THE REQUEST CONTEXT, AND WHICH DELIBERATELY DO NOT.
+ *
+ * This partition is the shape of H1's fix. `whereAndWhen` interpolates the
+ * caller's `User-Agent` header verbatim as `Device: <value>`, and a header is
+ * text the client chooses outright — so any notice that renders it is a notice
+ * an attacker can put a sentence into.
+ *
+ * `registrationAttempt` is the one that mattered, because it is the only notice
+ * reachable by somebody with **no account at all**: `POST /auth/register`
+ * against an address that already exists mails it to the account owner. It now
+ * renders no context line, so there is no field for that text to travel in.
+ *
+ * The other four are sent after an action taken with the account's own
+ * credentials, and the device string is how a recipient recognises a session
+ * that is not theirs — removing it would cost them the one fact they can act
+ * on. **The injection is not closed for those four, and the test below records
+ * that rather than leaving it invisible.** None of them has a caller yet
+ * (Tasks 9 and 11), and the residual is written up in this task's fixes report.
+ *
+ * `satisfies` makes the partition exhaustive at compile time: a new notice
+ * template must be classified here or the build fails.
+ */
+const CONTEXT_FREE_NOTICE_IDS = [
+  'registrationAttempt',
+] as const satisfies readonly EmailTemplateId[];
+
+const CONTEXT_RENDERING_NOTICE_IDS = [
+  'passwordChanged',
+  'mfaEnabled',
+  'mfaDisabled',
+  'newDeviceSignIn',
+] as const satisfies readonly EmailTemplateId[];
+
+describe('the notice partition', () => {
+  it('classifies every notice as context-free or context-rendering', () => {
+    const classified = [...CONTEXT_FREE_NOTICE_IDS, ...CONTEXT_RENDERING_NOTICE_IDS];
+    expect([...classified].sort()).toEqual([...NOTICE_TEMPLATE_IDS].sort());
+    expect(new Set(classified).size).toBe(classified.length);
+  });
+});
+
+describe.each(CONTEXT_FREE_NOTICE_IDS)('context-free notice %s', (id) => {
+  it('carries no link when EVERY CALLER-SUPPLIED field is a URL', () => {
+    // H1's regression test. Before the fix this template rendered
+    // `Device: <User-Agent>` verbatim, so an unauthenticated caller could put a
+    // sentence and a link into a message this product sends to a third party,
+    // under a footer that promises it contains no link. Mail clients autolink a
+    // bare URL in a text/plain part, so the message contradicted itself in the
+    // recipient's inbox.
+    //
+    // The fix is structural rather than a filter: the template does not render
+    // the fields at all, so there is nothing to escape, encode around, or
+    // denylist.
+    const email = CASES[id]({ ...BENIGN, ipAddress: XSS_WITH_URL, userAgent: XSS_WITH_URL });
+    expect(email.text).not.toMatch(/https?:\/\//);
+    expect(email.html).not.toMatch(/https?:\/\//);
+    expect(email.text).not.toContain('token');
+    expect(email.html).not.toContain('href');
+    // And the payload is absent entirely, not merely stripped of its scheme.
+    expect(email.text).not.toContain('steal()');
+  });
+
+  it('renders neither the user agent nor the IP address at all', () => {
+    // Stronger than "no URL got through", and the property that cannot be
+    // re-broken by a cleverer payload: the values are absent, not sanitised.
+    const email = CASES[id]({
+      ...BENIGN,
+      ipAddress: 'FIXTURE-ip-198.51.100.9',
+      userAgent: 'FIXTURE-agent-Chameleon/1.0',
+    });
+    for (const part of [email.html, email.text]) {
+      expect(part).not.toContain('FIXTURE-ip-198.51.100.9');
+      expect(part).not.toContain('FIXTURE-agent-Chameleon/1.0');
+      expect(part).not.toContain('Device:');
+      expect(part).not.toContain('IP address:');
+    }
+  });
+
+  it('still says when it happened', () => {
+    // The timestamp is ours, not the caller's, so it stays. Dropping the whole
+    // block rather than the two attacker-controlled lines would have cost the
+    // recipient the one piece of context they can actually use.
+    expect(SAMPLES(id).text).toContain('2026-08-26 09:41 UTC');
+  });
+});
+
+describe.each(CONTEXT_RENDERING_NOTICE_IDS)('context-rendering notice %s', (id) => {
+  it('DOES reflect the user agent it is given — an open residual, asserted so it is visible', () => {
+    // NOT an endorsement. This is a characterisation test: it records that the
+    // same injection H1 closed on `registrationAttempt` is still open on these
+    // four, so the residual lives in the suite rather than only in prose, and
+    // the day somebody closes it this test goes red and has to be deleted
+    // deliberately.
+    //
+    // Lower severity than H1 and not zero: reaching these requires the
+    // account's own credentials, and none of the four has a caller yet
+    // (Tasks 9 and 11 add them). The device line is kept because it is how a
+    // recipient recognises a session that is not theirs.
+    const email = CASES[id]({ ...BENIGN, userAgent: 'FIXTURE-agent-Chameleon/1.0' });
+    expect(email.text).toContain('FIXTURE-agent-Chameleon/1.0');
   });
 });
 
