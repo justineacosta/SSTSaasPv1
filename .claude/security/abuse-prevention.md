@@ -1,17 +1,22 @@
 # Abuse prevention and rate limiting
 
-> **Status: Rate limiting Implemented (Phase 1), governing nothing yet.** Quotas Phase 10; anomaly detection Phase 11;
-> the enforcement ladder in §4 Phase 11. The limiter is a global Nest guard —
-> `apps/api/src/common/guards/rate-limit.guard.ts` — over a Redis sorted-set window in
-> `sliding-window.ts`, with the table below transcribed into `rate-limit.config.ts` and that
-> transcription asserted value by value. It limits no endpoint today, because no route carries
-> any of these classes: the only routes that exist are the health probes, and liveness is
-> deliberately exempt. (Some scopes *would* resolve today — `registration` is keyed per IP, and
-> the per-IP halves of `login` and `passwordReset` need no authentication — so the reason
-> nothing is governed is the absence of endpoints, not the absence of identifiers.) The control
-> is correct ahead of the endpoints it will govern — which is the point of building it now — but
-> "Implemented" here means built and
-> tested, not currently in force.
+> **Status: Rate limiting Implemented (Phase 1) and governing three endpoints since Phase 2
+> Task 8.** Quotas Phase 10; anomaly detection Phase 11; the enforcement ladder in §4 Phase 11.
+> The limiter is a global Nest guard — `apps/api/src/common/guards/rate-limit.guard.ts` — over a
+> Redis sorted-set window in `sliding-window.ts`, with the table below transcribed into
+> `rate-limit.config.ts` and that transcription asserted value by value.
+>
+> **Three classes are now carried by a real route**, which was not true through Task 7:
+> `registration` on `POST /api/v1/auth/register`, `emailVerificationConsume` on
+> `POST /api/v1/auth/verify-email`, and `emailVerificationResend` on
+> `POST /api/v1/auth/resend-verification`. All three are per-IP-resolvable on an unauthenticated
+> request, and `emailVerificationResend`'s per-account half resolves from the body's `email`
+> field. Every other class in the table below still governs nothing, because the endpoints that
+> would carry it do not exist.
+>
+> **The per-principal gap of §1 below is unchanged by that.** No route carries a class keyed on
+> `principalSource: 'authenticated'`, and if one did the limiter would still resolve nothing —
+> it runs before the authentication guard by design.
 
 Ordinary SaaS limits abuse to protect its own capacity. We also limit it to protect people
 who are not our customers. See [`scope-controls.md`](scope-controls.md) for the controls
@@ -51,6 +56,7 @@ is owed and not built, and until it lands the only way to observe the gap is to 
 | Registration | 3 / hour per IP |
 | Password reset | 3 / hour per address, 10 / hour per IP |
 | Email verification resend | 3 / hour per account, 10 / hour per IP |
+| Email verification submit | 30 / hour per IP |
 | Invitations | 50 / day per organisation |
 | Scan creation | Per plan (`maxScansPerMonth`), plus 10 / min burst |
 | Evidence upload | 100 / hour per organisation |
@@ -114,6 +120,24 @@ One row above is **not** yet transcribed into configuration: webhook test delive
 is a webhook endpoint ID, which is neither an IP, a principal, nor an organisation, and nothing
 can resolve one until the webhooks module ships in Phase 9. Keying it against the wrong scope
 would be worse than omitting it, because it would look enforced.
+
+One row above was **added by Phase 2 Task 8 rather than quoted from an earlier version of this
+document**: email verification submit, 30 / hour per IP, as `emailVerificationConsume`. It is
+recorded that way because the figure is a decision and not a quotation. Three notes on it:
+
+- **Per IP only.** The request body is `{ token }` and carries no account, so there is nothing
+  for a per-account window to key on. Applying the resend class instead would have declared a
+  `perPrincipal` scope sourced from a body field that does not exist — resolving nothing on
+  every request while the per-IP half resolved, which is exactly the silent miss the
+  per-account note above is about.
+- **Defaulting it was not an option.** A route with no class falls to `generalSession`, which is
+  fail-open with an unresolvable per-principal scope as its only window, and nothing reports
+  that at the default log level. On this route the default would have been no limit and no
+  signal, not a weaker limit.
+- **The threat is not token guessing.** Verification tokens are 32 random bytes, so brute force
+  is infeasible at any rate this table could express. What 30 / hour bounds is unmetered
+  database writes from an unauthenticated endpoint: each submission runs a conditional `UPDATE`
+  inside a transaction.
 
 ## 2. Quotas and concurrency
 

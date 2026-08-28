@@ -35,12 +35,16 @@
 > decision it records (opaque server-side sessions, a cached lookup, immediate revocation) is
 > unchanged and correct. The tombstone is how its promise is kept.
 >
-> **Nothing calls any of it.** No endpoint issues a session, no guard reads one, and **no cookie has
-> ever reached a browser** — `serialiseSessionCookie`'s output has been produced in specs and by one
-> throwaway probe, and attached to no response. `AuthModule` registers no controller and
-> `pnpm check:openapi` still reports four routes. Task 7 builds the guard, Task 9 the login,
-> Task 10 the password paths, Task 11 the MFA completion, Tasks 13 and 14 the organisation switch
-> and the member removal. Until then §3 describes a mechanism with no user.
+> **Nothing calls any of §3 yet, and that is now the narrower statement it used to be.** No
+> endpoint issues a session, no guard reads one, and **no cookie has ever reached a browser** —
+> `serialiseSessionCookie`'s output has been produced in specs and by one throwaway probe, and
+> attached to no response. Task 9 builds the login, Task 10 the password paths, Task 11 the MFA
+> completion, Tasks 13 and 14 the organisation switch and the member removal.
+>
+> **`AuthModule` does register a controller as of Phase 2 Task 8, and `pnpm check:openapi`
+> reports seven routes, not four.** The three are §6's: registration, email verification, and
+> the verification resend. Every sentence in this repository that cited "four routes" as proof
+> that no endpoint shipped stopped applying at that commit. None of the three issues a session.
 >
 > Three limits, stated because §3 reads as settled. **Revocation's immediacy has one residual**: if
 > Redis is unreachable at the moment of revocation the row is revoked but its cache entry cannot be
@@ -199,6 +203,9 @@ TOTP (RFC 6238), 30s step, ±1 window for clock drift.
 
 ## 6. Email verification, reset, invitations
 
+> **Status of the email-verification row: Implemented (Phase 2 Task 8).** The password-reset row
+> is Task 10's and the invitation row is Task 15's; both remain Designed only.
+
 All three use the same token discipline: 256-bit random, **hashed at rest**, single-use,
 expiring, invalidated by use or by a newer token, and delivered only by email.
 
@@ -211,12 +218,59 @@ expiring, invalidated by use or by a newer token, and delivered only by email.
 Password reset does not reveal account existence, is rate limited per address and per IP,
 and revokes all sessions on completion.
 
+### The email-verification token, as Task 8 actually built it
+
+- **One live token per account, enforced by the database.** "Invalidated by use or by a newer
+  token" was held only by `TokenService.issue`'s advisory lock until Task 8; the partial unique
+  index `VerificationToken_userId_purpose_live_key` — `UNIQUE (userId, purpose) WHERE
+  "consumedAt" IS NULL` — now holds it against any writer, including one that bypasses that
+  service. Requesting a resend therefore invalidates the previous link by construction.
+- **`consumedAt` is the only column, so "used" and "superseded" are one fact.** A row cannot
+  distinguish the two; the audit event is the forensic record.
+- **Redeeming checks `User.status` as well as the token.** `TokenService.consume` asserts
+  nothing about the user it returns, so a `LOCKED` or `DISABLED` account's link would otherwise
+  still redeem. A non-`ACTIVE` user is refused with the same `TOKEN_INVALID` as every other
+  refusal, and the redemption is **rolled back** rather than burned — a link that was refused
+  because an account was locked still works if an administrator unlocks it.
+- **Every refusal is one code and one message.** Unknown, expired, already-used, superseded and
+  not-active all produce `TOKEN_INVALID`. A fifth distinguishable outcome would be a fifth thing
+  a caller can learn by submitting values.
+- **The response to a registration or a resend does not depend on the account.** §7's rule,
+  proved by byte comparison in `auth.enumeration.integration.spec.ts` rather than by inspection.
+
+**Two residuals, stated because this section otherwise reads as settled.**
+
+1. **Latency is not equalised, only dominated.** Registration hashes the password on both paths
+   — the existing-address path cannot skip the Argon2id cost — but the two paths then perform
+   different amounts of database work, and `resend-verification` sends mail only for an address
+   that exists and is unverified. An attacker who can time requests precisely can still
+   distinguish that case. Closing it means moving the send off the response path, which needs
+   the queue Phase 4 brings (ADR-0016).
+2. **A failed send is absorbed.** The mail is sent after the transaction commits, and a
+   transport failure is logged and not propagated, because propagating it would make a
+   mail-transport outcome into an existence signal. The consequence is ADR-0016's known gap: the
+   person whose message was lost gets a success response and no email, and
+   `POST /auth/resend-verification` is their only remedy.
+
+### Unverified users
+
+§6's table says an unverified user may sign in but may not create organisations, invite, or
+scan. **The mechanism exists and it governs no route yet.** `EmailVerifiedGuard` and
+`@RequireVerifiedEmail()` were built in Task 8 and are proved against purpose-built controllers;
+they are registered in no module and no handler carries the decorator, because all three of
+Task 8's routes are public and reachable by someone with no account. Task 13 registers the guard
+and applies it to organisation creation; Tasks 14 and 15 apply it to inviting. Until then
+`EMAIL_NOT_VERIFIED` is a refusal nothing can produce, and nothing may record it as enforced.
+
 ## 7. Brute force and enumeration
 
 - Progressive delay then temporary lock per account; independent per-IP limits so one
   attacker cannot lock out a whole tenant.
 - Registration, login, and reset return responses that do not distinguish existing from
-  non-existing accounts.
+  non-existing accounts. **Registration is built (Task 8)**; login is Task 9's and reset is
+  Task 10's. The registration half has a second part that is easy to leave out: the address that
+  already has an account receives a notice about the attempt, so the person who can act on it
+  learns what the wire response deliberately does not say.
 - Failed logins are audited with IP and user agent; a burst notifies the account owner.
 - CAPTCHA hook at the registration and reset endpoints, enabled by feature flag when abuse
   is detected rather than permanently degrading the experience.
