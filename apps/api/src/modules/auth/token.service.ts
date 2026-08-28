@@ -50,7 +50,7 @@ interface VerificationTokenWhere {
   readonly expiresAt?: { gt: Date };
 }
 
-interface VerificationTokenDelegate {
+export interface VerificationTokenDelegate {
   create(args: {
     data: {
       id: string;
@@ -194,36 +194,61 @@ export class TokenService {
    * harmless: the cost of one is that two unrelated users serialise their token
    * issuance for the few milliseconds this transaction lasts.
    *
-   * **A partial unique index on `(userId, purpose) WHERE consumedAt IS NULL` is
-   * the stronger control and is deliberately not here.** It would make the
-   * invariant the database's rather than this method's, but it turns the loser
-   * of a race into a P2002 the caller must catch and retry, and it costs a
-   * hand-written migration — Prisma can neither create nor drop a partial index
-   * (Task 1, carry-forward ruling 4). Recorded as owed rather than skipped.
+   * **The partial unique index now EXISTS, and it did not when this method was
+   * first written.** `VerificationToken_userId_purpose_live_key` — UNIQUE
+   * (userId, purpose) WHERE "consumedAt" IS NULL — was added by hand in
+   * `20260828051500_verification_token_partial_unique` (Task 8, carry-forward
+   * ruling 32), so the invariant is now the database's as well as this
+   * method's. The advisory lock above is what keeps the index from ever firing
+   * on this path: without it two concurrent issues would each supersede
+   * nothing, and the second insert would raise P2002 rather than quietly
+   * committing a second live token. That is asserted rather than argued —
+   * `token.service.integration.spec.ts` fires concurrent issues at it and
+   * requires none of them to raise.
    */
   async issue(input: IssueTokenInput): Promise<IssuedToken> {
+    return this.store.$transaction((tx) => this.issueInTransaction(tx, input));
+  }
+
+  /**
+   * The same issuance, inside a transaction the CALLER owns.
+   *
+   * Added in Task 8 because `security/audit.md` §2 and the Phase 2 plan both
+   * require the whole of a registration — `User`, `Credential`, the
+   * verification token and the audit event — to be one transaction. `issue`
+   * above opens its own, and Prisma interactive transactions do not nest, so an
+   * endpoint calling it would have committed a user before the token existed
+   * and would have had no way to roll one back with the other.
+   *
+   * `issue` is now this method wrapped in a transaction, so every property the
+   * existing specs pin — supersede before insert, the advisory lock as the
+   * first statement, the raw token returned exactly once — is the same code
+   * rather than a second copy of it.
+   */
+  async issueInTransaction(
+    tx: VerificationTokenTransaction,
+    input: IssueTokenInput,
+  ): Promise<IssuedToken> {
     const { userId, purpose } = input;
     const minted = mintSecretToken();
     const issuedAt = new Date();
     const expiresAt = this.expiresAtFor(purpose, issuedAt);
     const id = newId('vtk');
 
-    await this.store.$transaction(async (tx) => {
-      // Parameterised by the tagged template, not interpolated into SQL.
-      //
-      // The lock call sits in a subquery so the result set is a plain `int`:
-      // `pg_advisory_xact_lock` returns `void`, and `$queryRaw` fails on it with
-      // "Failed to deserialize column of type 'void'" — which is a Prisma
-      // deserialisation error raised AFTER the lock has been taken, so it would
-      // have aborted the transaction while looking like a SQL mistake.
-      await tx.$queryRaw`SELECT 1 AS locked FROM (SELECT pg_advisory_xact_lock(hashtext(${`vtk:${userId}:${purpose}`}))) AS lock_taken`;
-      await tx.verificationToken.updateMany({
-        where: { userId, purpose, consumedAt: null },
-        data: { consumedAt: issuedAt },
-      });
-      await tx.verificationToken.create({
-        data: { id, userId, purpose, tokenHash: minted.tokenHash, expiresAt },
-      });
+    // Parameterised by the tagged template, not interpolated into SQL.
+    //
+    // The lock call sits in a subquery so the result set is a plain `int`:
+    // `pg_advisory_xact_lock` returns `void`, and `$queryRaw` fails on it with
+    // "Failed to deserialize column of type 'void'" — which is a Prisma
+    // deserialisation error raised AFTER the lock has been taken, so it would
+    // have aborted the transaction while looking like a SQL mistake.
+    await tx.$queryRaw`SELECT 1 AS locked FROM (SELECT pg_advisory_xact_lock(hashtext(${`vtk:${userId}:${purpose}`}))) AS lock_taken`;
+    await tx.verificationToken.updateMany({
+      where: { userId, purpose, consumedAt: null },
+      data: { consumedAt: issuedAt },
+    });
+    await tx.verificationToken.create({
+      data: { id, userId, purpose, tokenHash: minted.tokenHash, expiresAt },
     });
 
     return { id, purpose, expiresAt, token: minted.token };
@@ -265,17 +290,45 @@ export class TokenService {
    * camelCase identifiers and untyped result rows.
    */
   async consume(input: ConsumeTokenInput): Promise<ConsumedToken | null> {
+    return this.consumeWith(this.store, input);
+  }
+
+  /**
+   * The same redemption, inside a transaction the CALLER owns.
+   *
+   * Task 8's `verify-email` needs the redemption, the `User.status` check and
+   * the `emailVerifiedAt` write to be one transaction: a token consumed for a
+   * user whose row then fails to update is burned for nothing, and the caller
+   * has no way to un-consume it.
+   *
+   * The concurrency property is unchanged and does not depend on this
+   * transaction. It comes from the single conditional `UPDATE` below, which
+   * Postgres arbitrates row by row whether or not an enclosing transaction
+   * exists — see the docblock on `consume`. What the transaction adds is
+   * atomicity with the caller's own writes, and nothing else.
+   */
+  async consumeInTransaction(
+    tx: VerificationTokenTransaction,
+    input: ConsumeTokenInput,
+  ): Promise<ConsumedToken | null> {
+    return this.consumeWith(tx, input);
+  }
+
+  private async consumeWith(
+    store: { verificationToken: VerificationTokenDelegate },
+    input: ConsumeTokenInput,
+  ): Promise<ConsumedToken | null> {
     const { purpose } = input;
     const tokenHash = hashSecretToken(input.token);
     const consumedAt = new Date();
 
-    const { count } = await this.store.verificationToken.updateMany({
+    const { count } = await store.verificationToken.updateMany({
       where: { tokenHash, purpose, consumedAt: null, expiresAt: { gt: consumedAt } },
       data: { consumedAt },
     });
     if (count !== 1) return null;
 
-    const row = await this.store.verificationToken.findUnique({ where: { tokenHash } });
+    const row = await store.verificationToken.findUnique({ where: { tokenHash } });
     if (row === null) return null;
 
     return { userId: row.userId, purpose, consumedAt };
