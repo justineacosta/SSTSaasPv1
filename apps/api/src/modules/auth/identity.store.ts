@@ -32,21 +32,13 @@ export interface IdentityUserDelegate {
 }
 
 export interface IdentityTransaction
-  extends VerificationTokenTransaction,
-    PlatformAuditTransaction {
+  extends VerificationTokenTransaction, PlatformAuditTransaction {
   user: IdentityUserDelegate & {
-    create(args: {
-      data: { id: string; email: string; name: string | null };
-    }): Promise<unknown>;
-    update(args: {
-      where: { id: string };
-      data: { emailVerifiedAt: Date };
-    }): Promise<unknown>;
+    create(args: { data: { id: string; email: string; name: string | null } }): Promise<unknown>;
+    update(args: { where: { id: string }; data: { emailVerifiedAt: Date } }): Promise<unknown>;
   };
   credential: {
-    create(args: {
-      data: { id: string; userId: string; passwordHash: string };
-    }): Promise<unknown>;
+    create(args: { data: { id: string; userId: string; passwordHash: string } }): Promise<unknown>;
   };
 }
 

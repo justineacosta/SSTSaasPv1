@@ -58,7 +58,12 @@ function harness(): Harness {
     tokens,
     createLogger({ service: 'test', level: 'fatal', pretty: false, silent: true }),
   );
-  const service = new EmailVerificationService(db.store, tokens, new PlatformAuditService(), mailer);
+  const service = new EmailVerificationService(
+    db.store,
+    tokens,
+    new PlatformAuditService(),
+    mailer,
+  );
   return { service, db, mail };
 }
 

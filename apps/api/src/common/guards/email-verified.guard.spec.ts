@@ -1,6 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
-import { Controller, Get, type CanActivate, type ExecutionContext, Injectable } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  type CanActivate,
+  type ExecutionContext,
+  Injectable,
+} from '@nestjs/common';
 import { APP_GUARD, Reflector } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { errorEnvelopeSchema } from '@sentinel/contracts';
