@@ -27,3 +27,13 @@ export const SESSION_POLICY = 'SENTINEL_SESSION_POLICY';
  * throws. The token is what keeps `RedisSessionCache` substitutable.
  */
 export const SESSION_CACHE = 'SENTINEL_SESSION_CACHE';
+/**
+ * The organisation lookup `GET /auth/session` uses, as a port.
+ *
+ * A token rather than a class for the reason `SESSION_CACHE` gives one layer
+ * up: its production implementation runs inside `withTenantTransaction`, which
+ * needs the base Prisma client, and a service holding that client directly is a
+ * service that can read any organisation it likes. The port exposes one
+ * question and `auth.module.ts` is the only place the client reaches it.
+ */
+export const ACTIVE_ORGANIZATION_LOOKUP = 'SENTINEL_ACTIVE_ORGANIZATION_LOOKUP';
