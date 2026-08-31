@@ -64,6 +64,13 @@ export interface IdentityStoreFake {
    */
   readonly priorSessions: { userId: string; ip: string | null; userAgent: string | null }[];
   readonly control: {
+    /**
+     * Set to lock a user row as `$transaction` opens — the sibling's commit
+     * landing inside the window between the login path's pre-flight read and
+     * its write. See the runtime declaration below for what it does and does
+     * not model.
+     */
+    lockRowOnTransaction: { userId: string; lockedUntil: Date } | null;
     /** Set to make `$transaction` reject at commit, after its body has run. */
     failTransaction: Error | null;
     /**
@@ -137,6 +144,25 @@ export function identityStoreFake(): IdentityStoreFake {
     failTransaction: null as Error | null,
     failUserCreate: null as Error | null,
     redeemableUserId: null as string | null,
+    /**
+     * Set to lock a user row at the moment `$transaction` opens, which is the
+     * one instant a caller cannot reach by seeding.
+     *
+     * It exists for the H1 caveat: every write on the login path decides what
+     * to do from a row read **before** a ~40 ms Argon2id verification, so a
+     * sibling request can commit a lock inside that window and the deciding
+     * read is already stale. Seeding a locked row cannot exercise that — the
+     * pre-flight check refuses first, which is a different branch.
+     *
+     * **It fakes the timing of the lock, never the arbitration of it.** What
+     * makes the real predicate hold is Postgres blocking a second transaction
+     * on a row lock and re-evaluating after the first commits; there is no lock
+     * here and no second caller. `auth.login.integration.spec.ts`'s parallel
+     * probe owns that against real Postgres, and nothing set through this flag
+     * may be read as evidence for it — the same division `redeemableUserId`
+     * records above.
+     */
+    lockRowOnTransaction: null as { userId: string; lockedUntil: Date } | null,
   };
 
   const find = (where: { email: string } | { id: string }): IdentityUserRow | null =>
@@ -192,10 +218,20 @@ export function identityStoreFake(): IdentityStoreFake {
           row.lockedUntil.getTime() <= expiring.lockedUntil.lte.getTime();
         if (!unlocked) return Promise.resolve({ count: 0 });
 
-        const next = {
-          ...row,
-          failedLoginCount: row.failedLoginCount + args.data.failedLoginCount.increment,
-        };
+        // The three arms the port admits: the failure increment, and the two
+        // success shapes that clear the counter. Narrowed rather than cast —
+        // a cast here would let a fourth arm arrive and be silently treated as
+        // one of these.
+        const data = args.data;
+        const next =
+          typeof data.failedLoginCount === 'object'
+            ? { ...row, failedLoginCount: row.failedLoginCount + data.failedLoginCount.increment }
+            : {
+                ...row,
+                failedLoginCount: data.failedLoginCount,
+                lockedUntil: data.lockedUntil,
+                ...('lastLoginAt' in data ? { lastLoginAt: data.lastLoginAt } : {}),
+              };
         users.set(next.id, next);
         users.set(next.email, next);
         return Promise.resolve({ count: 1 });
@@ -288,6 +324,17 @@ export function identityStoreFake(): IdentityStoreFake {
     },
     $transaction: async (run) => {
       calls.push({ name: '$transaction:begin' });
+      const locking = control.lockRowOnTransaction;
+      if (locking !== null) {
+        // The sibling's commit, landing while this request was hashing. Both
+        // keys are updated because `users` is indexed by email and by id.
+        const row = users.get(locking.userId);
+        if (row !== undefined) {
+          const locked = { ...row, lockedUntil: locking.lockedUntil };
+          users.set(locking.userId, locked);
+          users.set(row.email, locked);
+        }
+      }
       const result = await run(tx);
       if (control.failTransaction !== null) {
         // A COMMIT that fails, which is the case carry-forward ruling 44 is

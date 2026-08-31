@@ -426,8 +426,15 @@ export class LoginService {
     const now = new Date();
 
     await this.store.$transaction(async (tx: IdentityTransaction) => {
-      await tx.user.update({
-        where: { id: user.id },
+      // UNDER THE SAME PREDICATE THE FAILURE PATH USES, AND FOR THE SAME
+      // REASON. The pre-flight lock check ran before the hash; a burst can
+      // commit a lock inside that window, and clearing `lockedUntil` from a
+      // stale decision would erase it — admitting this login past a live lock
+      // and leaving the sibling's `ACCOUNT_LOCKED` row describing an account
+      // that is no longer locked. `security/authentication.md` §7's "an attempt
+      // during a live lock changes no state" says attempt, not failed attempt.
+      const { count } = await tx.user.updateMany({
+        where: { id: user.id, OR: [{ lockedUntil: null }, { lockedUntil: { lte: now } }] },
         // `lastLoginAt` ONLY on the arm that issues a session which can do
         // something. A `PENDING_MFA` session is a few minutes of permission to
         // type six digits, and stamping "last login" for it would make the
@@ -440,6 +447,13 @@ export class LoginService {
           ? { failedLoginCount: 0, lockedUntil: null }
           : { failedLoginCount: 0, lockedUntil: null, lastLoginAt: now },
       });
+
+      // The lock landed while this request was hashing. Throwing rolls the
+      // transaction back, so no `LOGIN` row is written for a login that is not
+      // happening, and the caller gets the 403 D3 specifies for a correct
+      // password against a locked account. No audit row is added here: the
+      // sibling that set the lock wrote `ACCOUNT_LOCKED` as it did so.
+      if (count === 0) throw new AccountLockedError();
 
       await this.audit.record(tx, {
         // THE ONE ROW IN THIS SERVICE WHOSE ACTOR REALLY IS THE ACCOUNT OWNER.

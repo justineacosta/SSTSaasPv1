@@ -74,10 +74,18 @@ export type IdentityUserUpdateData =
    * same statement that stamps `lastLoginAt`, so there is no instant at which
    * an account is signed in and still counted as failing.
    *
-   * An absolute value is correct **here and nowhere else on the login path**: a
-   * successful login sets the counter to a constant rather than deriving it
-   * from a value it read earlier, so there is nothing for a concurrent request
-   * to make stale.
+   * An absolute value is correct here: a successful login sets the counter to a
+   * constant rather than deriving it from a value it read earlier.
+   *
+   * **What a concurrent request makes stale is not the value but the decision
+   * to write it** — N-3, and the sentence that used to sit here said the
+   * opposite. The pre-flight lock check runs before the ~40 ms hash, so a burst
+   * can commit a lock inside that window; writing `lockedUntil: null` from that
+   * stale decision erased a lock a sibling had just committed. Measured four
+   * runs out of four. Both success arms are therefore written through
+   * `updateMany` under the not-locked predicate, exactly like the failure arm,
+   * and the shapes remain here because it is the *statement* that is
+   * conditional, not the values.
    */
   | { readonly failedLoginCount: 0; readonly lockedUntil: null; readonly lastLoginAt: Date }
   /**
@@ -115,17 +123,34 @@ export interface IdentityTransaction
     create(args: { data: { id: string; email: string; name: string | null } }): Promise<unknown>;
     update(args: { where: { id: string }; data: IdentityUserUpdateData }): Promise<unknown>;
     /**
-     * The atomic failure increment. **Only ever `{ increment: 1 }`** — the type
-     * admits no absolute value, because an absolute value derived from an
-     * earlier read is the H1 defect, and this is the one column on `User` that
-     * two requests routinely write at the same instant.
+     * **Every write the login path makes to `User`, gated on the same
+     * predicate**, because every one of them is decided from a row read on the
+     * far side of a ~40 ms hash.
+     *
+     * The failure arm is only ever `{ increment: 1 }`: the type admits no
+     * absolute value, because an absolute value derived from an earlier read is
+     * the H1 defect, and this is the one column on `User` that two requests
+     * routinely write at the same instant.
+     *
+     * The success arms carry absolute values, which is correct — a successful
+     * login sets the counter to a constant rather than deriving it from
+     * anything — but they are conditional for a different reason: what is stale
+     * is not the value but the **decision to write it**. A correct password
+     * racing the burst that locked the account would otherwise clear
+     * `lockedUntil` and erase a lock a sibling had just committed, leaving the
+     * `ACCOUNT_LOCKED` audit row pointing at an unlocked account. Measured four
+     * runs out of four by the fix round's reviewer.
      *
      * Returns the affected-row count. `0` means the predicate did not hold: the
-     * account is locked, and this attempt changes nothing.
+     * account is locked, and this attempt changes nothing — whichever arm it
+     * was.
      */
     updateMany(args: {
       where: IdentityUserFailureWhere;
-      data: { failedLoginCount: { increment: 1 } };
+      data:
+        | { failedLoginCount: { increment: 1 } }
+        | { failedLoginCount: 0; lockedUntil: null; lastLoginAt: Date }
+        | { failedLoginCount: 0; lockedUntil: null };
     }): Promise<{ count: number }>;
   };
   credential: {

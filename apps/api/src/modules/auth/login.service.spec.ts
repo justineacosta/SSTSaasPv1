@@ -156,6 +156,20 @@ const userUpdates = (db: IdentityStoreFake): Record<string, unknown>[] =>
     .map((call) => (call.args as { data: Record<string, unknown> }).data);
 
 /**
+ * The conditional writes — `updateMany` under the not-locked predicate.
+ *
+ * Separate from `userUpdates` because the two say different things: an
+ * `update` is unconditional and an `updateMany` here is a write that the
+ * database was free to refuse. Both success arms moved to the latter when the
+ * H1 caveat was closed, so a test asserting a successful login's write reads
+ * this one.
+ */
+const userConditionalWrites = (db: IdentityStoreFake): Record<string, unknown>[] =>
+  db.calls
+    .filter((call) => call.name === 'tx.user.updateMany')
+    .map((call) => (call.args as { data: Record<string, unknown> }).data);
+
+/**
  * The account row as it stands AFTER the call, read out of the fake.
  *
  * Since H1 the failure path no longer writes the counter as an absolute value
@@ -632,7 +646,7 @@ describe('a successful login', () => {
 
     await h.service.login(COMMAND);
 
-    const update = userUpdates(h.db)[0];
+    const update = userConditionalWrites(h.db)[0];
     expect(update?.['failedLoginCount']).toBe(0);
     expect(update?.['lockedUntil']).toBeNull();
     expect(update?.['lastLoginAt']).toBeInstanceOf(Date);
@@ -706,6 +720,61 @@ describe('a successful login', () => {
 
     await expect(h.service.login(COMMAND)).rejects.toThrow('commit refused');
     expect(h.issued).toEqual([]);
+  });
+});
+
+describe('a lock committed while this request was hashing', () => {
+  /**
+   * THE H1 CAVEAT, AND IT IS THE SAME DEFECT ONE ARM OVER.
+   *
+   * H1 closed the failure path: the counter is incremented by the database and
+   * the lock is written under a not-locked predicate, so a racing attempt
+   * changes nothing. The SUCCESS path was left writing
+   * `{ failedLoginCount: 0, lockedUntil: null }` unconditionally, decided from
+   * the same pre-flight read taken ~40 ms earlier on the far side of the hash.
+   *
+   * So a correct password arriving in parallel with the burst that locked the
+   * account did not merely get admitted past a live lock — it **erased** the
+   * lock a sibling had just committed, and the audit row saying the lock
+   * happened stayed behind pointing at a row that was no longer locked. The
+   * second reviewer measured it four runs out of four.
+   *
+   * `security/authentication.md` §7 says an attempt during a live lock changes
+   * no state. "Attempt" is not "failed attempt".
+   */
+  it('refuses, and does not erase the lock the sibling committed', async () => {
+    const h = harness();
+    const account = await seedAccount(h, { failedLoginCount: 4 });
+    const lockedUntil = new Date(Date.now() + 60_000);
+    // The sibling's commit, landing after this request's pre-flight read and
+    // before its write. See `identity-fakes.ts`'s note on what this does and
+    // does not model.
+    h.db.control.lockRowOnTransaction = { userId: account.id, lockedUntil };
+
+    await expect(h.service.login(COMMAND)).rejects.toBeInstanceOf(AccountLockedError);
+
+    // The write was ATTEMPTED and refused by the predicate — which is the
+    // point, and is why this asserts the row rather than the call. No LOGIN
+    // row survives the rollback either.
+    expect(userUpdates(h.db)).toEqual([]);
+    expect(actions(h.db)).toEqual([]);
+    expect(h.db.users.get(account.id)?.lockedUntil).toEqual(lockedUntil);
+  });
+
+  it('issues no session for the password it just accepted', async () => {
+    // The password WAS correct, so every branch after the write would have run
+    // happily. A session issued here is a session that outlives the lock.
+    const h = harness();
+    const account = await seedAccount(h, { failedLoginCount: 4 });
+    h.db.control.lockRowOnTransaction = {
+      userId: account.id,
+      lockedUntil: new Date(Date.now() + 60_000),
+    };
+
+    await expect(h.service.login(COMMAND)).rejects.toBeInstanceOf(AccountLockedError);
+
+    expect(h.issued).toEqual([]);
+    expect(h.mail.sent).toEqual([]);
   });
 });
 
@@ -886,7 +955,7 @@ describe('an account with a confirmed MFA factor', () => {
     // No `lastLoginAt`: nobody has logged in yet. The column means "the last
     // time a session that can do something was issued", and a pending session
     // is not one.
-    expect(userUpdates(h.db)).toEqual([{ failedLoginCount: 0, lockedUntil: null }]);
+    expect(userConditionalWrites(h.db)).toEqual([{ failedLoginCount: 0, lockedUntil: null }]);
   });
 
   it('does not consider an UNCONFIRMED factor', async () => {
