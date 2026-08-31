@@ -4,7 +4,7 @@
  * `security/audit.md` §4 is the taxonomy and this is its transcription for the
  * platform table, in the same relationship `rate-limit.config.ts` has with
  * `abuse-prevention.md` §1: the document is the authority, the constant is the
- * transcription, and `platform-audit.actions.spec.ts` asserts they agree.
+ * transcription, and `platform-audit.service.spec.ts` asserts they agree.
  *
  * **§4 had no name for registration at all.** It lists `EMAIL_VERIFIED` under
  * Auth and nothing for the account being created, which is the first event in

@@ -12,7 +12,7 @@ import { type CreateSmtpTransport, SmtpMailer, type SmtpTransport } from './smtp
  * `modules/auth/token.redaction.spec.ts`, which Task 4 wrote after measuring
  * that a real 256-bit token survived three of four log shapes.
  *
- * Three of the seven templates put a live single-use credential in their body,
+ * Three of the eight templates put a live single-use credential in their body,
  * and the adapter is the one place that holds all three parts of a message at
  * once. The redaction pattern in `@sentinel/observability` is the **second**
  * line of defence here, not the first: the first is that the adapter logs the

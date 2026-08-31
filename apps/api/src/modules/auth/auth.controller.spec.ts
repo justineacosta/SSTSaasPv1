@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PATH_METADATA, METHOD_METADATA } from '@nestjs/common/constants';
+import { Post, RequestMethod } from '@nestjs/common';
 import {
   ACCESS_METADATA_KEY,
   type AccessDeclaration,
@@ -35,13 +35,21 @@ import { AuthController } from './auth.controller.js';
  * `Reflector.get(key, context.getHandler())` reads it from at runtime.
  */
 
-type Handler = (...args: never[]) => unknown;
+type HandlerName = 'register' | 'verifyEmail' | 'resendVerification';
 
-const handlerOf = (name: 'register' | 'verifyEmail' | 'resendVerification'): Handler =>
-  AuthController.prototype[name] as unknown as Handler;
+/**
+ * A handler read off the prototype as a REFLECTION TARGET, never to be called.
+ *
+ * `@typescript-eslint/unbound-method` is right in general and wrong here: its
+ * hazard is losing `this` by detaching a method and invoking it, and nothing in
+ * this file invokes anything. `Reflect.getMetadata` needs the exact function
+ * object Nest's `SetMetadata` decorated, which is the one on the prototype.
+ */
+// eslint-disable-next-line @typescript-eslint/unbound-method -- read as a metadata target, never invoked.
+const handlerOf = (name: HandlerName): object => AuthController.prototype[name];
 
 interface RouteExpectation {
-  readonly handler: 'register' | 'verifyEmail' | 'resendVerification';
+  readonly handler: HandlerName;
   readonly path: string;
   readonly rateLimit: RateLimitClass;
 }
@@ -61,8 +69,40 @@ const ROUTES: readonly RouteExpectation[] = [
   },
 ];
 
-/** `RequestMethod.POST`. Compared as the numeric enum Nest actually stores. */
-const POST = 1;
+/**
+ * Nest's own route metadata keys, hard-coded — and then proved against a probe.
+ *
+ * `@nestjs/common/constants` exports `PATH_METADATA` and `METHOD_METADATA`, but
+ * the package ships no `exports` map, so under `nodenext` the subpath does not
+ * type-resolve (TS2307). Hard-coding the two strings is the alternative, and a
+ * hard-coded metadata key has one dangerous failure mode: if Nest ever renames
+ * it, `Reflect.getMetadata` returns `undefined` and every assertion below
+ * becomes an assertion about nothing while still printing green. That is this
+ * codebase's most-repeated defect (rulings 13, 49, 58).
+ *
+ * So the keys are checked against a throwaway controller decorated with the
+ * same `@Post()` this file is asserting about. If the probe stops seeing its own
+ * path, this file fails here rather than going quietly vacuous.
+ */
+const PATH_METADATA = 'path';
+const METHOD_METADATA = 'method';
+
+class ProbeController {
+  // `this: void` so the same unbound-method rule has nothing to complain about:
+  // this method exists to be decorated and read, never to be called.
+  @Post('probe')
+  probe(this: void): void {}
+}
+
+describe('the metadata keys this file reads', () => {
+  it('are the keys Nest actually writes', () => {
+    const probe = ProbeController.prototype.probe;
+    expect(Reflect.getMetadata(PATH_METADATA, probe)).toBe('probe');
+    expect(Reflect.getMetadata(METHOD_METADATA, probe)).toBe(RequestMethod.POST);
+  });
+});
+
+const POST = RequestMethod.POST;
 
 describe.each(ROUTES)('$path', ({ handler, path, rateLimit }) => {
   it('is registered as a POST on the expected path', () => {

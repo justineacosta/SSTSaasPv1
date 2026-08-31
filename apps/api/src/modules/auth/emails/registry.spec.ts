@@ -152,7 +152,7 @@ describe('the email template registry', () => {
   });
 
   it('classifies every template as either link-carrying or a notice', () => {
-    // Three carry a live credential and four carry none. A template that is
+    // Three carry a live credential and five carry none. A template that is
     // neither is a template nobody decided about, and the rules below divide
     // along exactly this line.
     const classified = [...TOKEN_LINK_TEMPLATE_IDS, ...NOTICE_TEMPLATE_IDS];

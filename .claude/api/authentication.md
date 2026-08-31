@@ -160,7 +160,8 @@ client-side remedy. §3 covers cookie-authenticated routes, of which there are n
 **None of them sets a cookie.** Registration does not sign the new account in; confirming an
 address does not either. Task 9's login is the first response that will carry `Set-Cookie`.
 
-**Status codes.** Registration returns **200, not 201**. §2's table gives 201 to a creation
+**Status codes.** Registration returns **200, not 201**. [`conventions.md`](conventions.md) §2's
+table gives 201 to a creation
 "with `Location`", and a `Location` header naming the new account is precisely the disclosure
 this endpoint exists to avoid — a 201 for a new address beside a 200 for an existing one would
 put the whole oracle in the status line.

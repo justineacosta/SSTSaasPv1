@@ -15,9 +15,7 @@ import { DomainError } from '../errors/domain-error.js';
  */
 export interface VerifiedEmailLookup {
   user: {
-    findUnique(args: {
-      where: { id: string };
-    }): Promise<{ emailVerifiedAt: Date | null; status: string } | null>;
+    findUnique(args: { where: { id: string } }): Promise<{ emailVerifiedAt: Date | null } | null>;
   };
 }
 
@@ -55,6 +53,22 @@ export interface VerifiedEmailLookup {
  * principal at sign-in would let a user who verified two minutes ago keep
  * getting 403 until their cookie rotated. One indexed primary-key read on the
  * routes that carry the decorator is the honest cost of that.
+ *
+ * # It asks about verification and about nothing else
+ *
+ * The lookup selected `status` and never read it (L7, Task 8 review). Dropped
+ * rather than checked, and the choice is worth writing down because the other
+ * reading is defensible: a `LOCKED` or `DISABLED` account arguably should not
+ * pass a gated route either. But that refusal is not this control's. An account
+ * whose status is not `ACTIVE` must fail at *authentication*, on every route,
+ * including the ones that carry no decorator — making a gate named
+ * `@RequireVerifiedEmail()` the place that also enforces account status would
+ * mean the enforcement disappeared the moment a route did not need verification.
+ * `EmailVerificationService` checks `status` because it acts on a token rather
+ * than on a session (carry-forward ruling 37); a session-bearing route has
+ * `AuthenticationGuard` in front of it, and Task 9's lockout work is where that
+ * check belongs. A selected column nobody reads is worse than an absent one: the
+ * next reader assumes it is load-bearing.
  *
  * # It refuses an unauthenticated caller rather than admitting one
  *
