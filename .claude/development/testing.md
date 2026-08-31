@@ -92,9 +92,22 @@ counts lower than it had just written. The project-level `fileParallelism: false
 `vitest.workspace.ts` had never been in force — Vitest resolves the pool's worker count from the
 root config, not a project's — so the suite had been parallel since it was written.
 
+**Task 8 widened the hazard from two suites to four, and it is worth stating that it grew.** The
+two auth integration specs it added share the compose Redis for rate-limit keys the same way,
+and the Task 8 reviewer reproduced the flake by accident — running them with plain
+`vitest run --project integration <files>`, without `--no-file-parallelism`, failed one run in
+three on a clean tree. Nothing about the sanctioned command changed: `pnpm test:integration`
+passes the flag and is unaffected. What changed is the cost of bypassing it, which is now
+larger and easier to hit by hand.
+
+**So do not run a subset of the integration suite with a bare `vitest run`.** Use
+`pnpm test:integration`, or pass `--no-file-parallelism` yourself. A green subset run proves
+less than it appears to when the files race for one Redis.
+
 A spec that needs true isolation from a backing service should take its own, as
 `token.service.integration.spec.ts` does with `startPostgresHarness()`. Sequential execution is
-the floor, not the design.
+the floor, not the design — and the number of suites relying on that floor grows with every
+task that adds an endpoint, which is the direction that eventually forces namespacing.
 
 ## 5. Coverage
 

@@ -97,6 +97,36 @@ describe('verify-email', () => {
     expect(names(db)).not.toContain('tx.platformAuditEvent.create');
   });
 
+  it('refuses a redeemable token whose user row has vanished, and writes nothing', async () => {
+    // L4, Task 8 review. The `user === null` arm is the fail-closed branch for a
+    // database anomaly, and its mutant survived BOTH lanes.
+    //
+    // It cannot be reached from the integration suite: `VerificationToken.userId`
+    // is `onDelete: Cascade`, so deleting the user deletes the token and there is
+    // no live token left to redeem. `control.redeemableUserId` exists for exactly
+    // this — it fakes the OUTCOME of a redemption, never its concurrency
+    // property, which `token.service.integration.spec.ts` owns.
+    //
+    // My first attempt at this test was vacuous and the mutation run is what
+    // exposed it: with the fake's default `count: 0`, `verify` threw at
+    // `consumed === null` and never reached the branch, so the test passed for
+    // the wrong reason while the mutant lived. Ruling 58, found in my own fix.
+    const { service, db } = harness();
+
+    db.control.redeemableUserId = 'usr_01M0T74WZZFY9T2QS56RGF3GQ7';
+    // Deliberately NO `withUser`: the token redeems and the row is not there.
+
+    await expect(
+      service.verify({ token: 'FIXTURE_not_a_real_token-verify_00000002', ...CONTEXT }),
+    ).rejects.toBeInstanceOf(TokenInvalidError);
+
+    // It got past the redemption — otherwise this test is the vacuous one again.
+    expect(names(db)).toContain('tx.user.findUnique');
+    // And then refused, rather than inventing an account to verify.
+    expect(names(db)).not.toContain('tx.user.update');
+    expect(names(db)).not.toContain('tx.platformAuditEvent.create');
+  });
+
   it('refuses inside the transaction, so a rejected redemption is rolled back', async () => {
     // The redemption, the status check and the write are one transaction, and a
     // refusal must not leave the token consumed. The `$transaction:commit`

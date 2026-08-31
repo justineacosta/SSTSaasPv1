@@ -412,6 +412,24 @@ describe.each(CONTEXT_FREE_NOTICE_IDS)('context-free notice %s', (id) => {
     // recipient the one piece of context they can actually use.
     expect(SAMPLES(id).text).toContain('2026-08-26 09:41 UTC');
   });
+
+  it('gives advice that is true of an event in which nothing changed', () => {
+    // L9, Task 8 review. `notice.templates.ts` splits `NOTICE_FOOTER` in two so
+    // this template does not tell someone to change their password because a
+    // stranger typed their address into a form — and restoring the shared
+    // footer left 1085 unit and 39 integration tests green. The distinction the
+    // code argues for at length was enforced by prose alone.
+    //
+    // It matters beyond tidiness: "change your password immediately" is advice
+    // an attacker would like this message to carry, since triggering it is free
+    // and unauthenticated. A notice that induces action is worth sending on
+    // purpose; one that says "no action is needed" is not.
+    const email = SAMPLES(id);
+    for (const part of [email.text, email.html]) {
+      expect(part).toContain('no action is needed');
+      expect(part).not.toContain('change your password immediately');
+    }
+  });
 });
 
 describe.each(CONTEXT_RENDERING_NOTICE_IDS)('context-rendering notice %s', (id) => {

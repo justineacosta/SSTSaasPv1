@@ -52,6 +52,29 @@ export interface IdentityStoreFake {
      * something the real client never produces.
      */
     failUserCreate: Error | null;
+    /**
+     * Set to make one token redemption SUCCEED, returning this `userId`.
+     *
+     * Off by default, and the default is the honest one: `updateMany` reporting
+     * `count: 0` is why this file's consumers can only exercise the refusing
+     * half of `consume`, because the accepting half depends on an `UPDATE`'s
+     * affected-row count against a real row — a fake makes that true by
+     * construction, which is carry-forward ruling 58's family of defect.
+     *
+     * It exists for one case a real database cannot produce: a live token whose
+     * user row is gone. `VerificationToken.userId` is `onDelete: Cascade`, so
+     * deleting the user deletes the token, and the `user === null` arm in
+     * `EmailVerificationService.verify` is therefore unreachable in an
+     * integration test (L4, Task 8 review — the branch's mutant survived both
+     * lanes). It is defence against a future schema change rather than dead
+     * code, and this flag is the only way to hold it to that.
+     *
+     * It fakes the OUTCOME of a redemption, never its concurrency property.
+     * Nothing here may be read as evidence that the conditional update
+     * arbitrates two racing redeemers; `token.service.integration.spec.ts` owns
+     * that against real Postgres.
+     */
+    redeemableUserId: string | null;
   };
   /** The `tokenHash` of every token issued through the fake transaction. */
   readonly issuedTokenHashes: string[];
@@ -64,6 +87,7 @@ export function identityStoreFake(): IdentityStoreFake {
   const control = {
     failTransaction: null as Error | null,
     failUserCreate: null as Error | null,
+    redeemableUserId: null as string | null,
   };
 
   const find = (where: { email: string } | { id: string }): IdentityUserRow | null =>
@@ -102,11 +126,20 @@ export function identityStoreFake(): IdentityStoreFake {
       },
       updateMany: (args) => {
         calls.push({ name: 'tx.verificationToken.updateMany', args: args.where });
-        return Promise.resolve({ count: 0 });
+        // `consumedAt: null` in the predicate marks the REDEMPTION update;
+        // `issue`'s supersede pass carries `purpose` and `userId` instead. Only
+        // the former is allowed to report a hit, so setting the flag cannot
+        // accidentally make a supersede look like it consumed a row.
+        const isRedemption = 'tokenHash' in args.where;
+        return Promise.resolve({
+          count: isRedemption && control.redeemableUserId !== null ? 1 : 0,
+        });
       },
       findUnique: (args) => {
         calls.push({ name: 'tx.verificationToken.findUnique', args: args.where });
-        return Promise.resolve(null);
+        return Promise.resolve(
+          control.redeemableUserId === null ? null : { userId: control.redeemableUserId },
+        );
       },
     },
     platformAuditEvent: {
