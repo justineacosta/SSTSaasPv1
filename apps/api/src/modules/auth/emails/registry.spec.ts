@@ -149,10 +149,6 @@ const CASES: Record<EmailTemplateId, (s: AttackerStrings) => RenderedEmail> = {
   passwordChanged: (s) => EMAIL_TEMPLATES.passwordChanged(notice(s)),
   mfaEnabled: (s) => EMAIL_TEMPLATES.mfaEnabled(notice(s)),
   mfaDisabled: (s) => EMAIL_TEMPLATES.mfaDisabled(notice(s)),
-  // `s.name` IS NOT PASSED, and it cannot be: `NewDeviceSignInContext` has no
-  // `recipientName` field as of Task 9 (ruling 70). The IP and the user agent
-  // are still passed and still escaped, because there they describe the
-  // recipient's own session.
   // NEITHER a name NOR a user agent, and neither can be passed: the context
   // type carries no field for either (rulings 70 and, since H2, 63-as-amended).
   newDeviceSignIn: (s) =>
@@ -703,4 +699,47 @@ describe('the two MFA states', () => {
     expect(disabled.text).toContain('disabled');
     expect(enabled.text).not.toContain('disabled');
   });
+});
+
+/**
+ * N-4. THE IP LINE MUST NOT BE ABLE TO CARRY A HOSTNAME EITHER.
+ *
+ * `renderableIpAddress` was introduced to close H2's fourth channel, and its
+ * docblock claims the check makes it "impossible for this line to carry a
+ * sentence, a URL, or markup". It achieved the sentence and the markup exactly.
+ * The URL it achieved only against the `https?://` spelling the suite asserts:
+ * the character class admitted any string of hex letters, dots and colons, and
+ * `.de`, `.cc` and `.cafe` are real top-level domains that many mail clients
+ * autolink from a bare domain.
+ *
+ * Not reachable today — `request.ip` is the socket peer address with
+ * `trust proxy` disabled (`request-context.ts`, `abuse-prevention.md` §1) — so
+ * this costs nothing until the day a deployment puts a proxy in front of the
+ * API. That is also the day somebody will be reasoning about forwarded headers
+ * and not about this line, which is the argument for closing it now rather than
+ * recording it.
+ *
+ * The two arms are the two things a real address can be, and nothing else: a
+ * dotted quad of digits, or something containing a colon. A hostname can
+ * contain neither shape.
+ */
+describe('renderableIpAddress rejects everything that is not an address', () => {
+  const RENDERED = (ipAddress: string): string =>
+    CASES.newDeviceSignIn({ name: 'Ada Lovelace', organizationName: 'Acme', ipAddress }).text;
+
+  it.each(['203.0.113.7', '::1', '2001:db8::8a2e:370:7334', '::ffff:192.0.2.128'])(
+    'renders %s, which is an address',
+    (address) => {
+      expect(RENDERED(address)).toContain(address);
+    },
+  );
+
+  it.each(['facade.de', 'dead.beef.cafe', 'abcdef.cc', 'add.ee'])(
+    'refuses %s, which is a hostname wearing hex digits',
+    (hostname) => {
+      const text = RENDERED(hostname);
+      expect(text).not.toContain(hostname);
+      expect(text).toContain('IP address: not recorded');
+    },
+  );
 });

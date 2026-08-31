@@ -19,11 +19,13 @@ import { formatUtcTimestamp, renderEmail, type RenderedEmail } from './layout.js
  * future edit dropping a credential into one of these bodies. The cost is real
  * and accepted: the recipient has to navigate to the product themselves.
  *
- * The context fields are all attacker-influenced. `ipAddress` comes from the
- * connection and `userAgent` is a request header the client chooses outright,
- * so both reach `escapeHtml` like everything else. They are optional because a
- * caller must never invent them: "unknown" is honest and a fabricated address
- * in a security notice is worse than an absent one.
+ * **There is no `userAgent` field on any context in this file** — H2 removed
+ * it, and the reasoning is under `NoticeOccurrenceContext` below. What remains
+ * that a caller supplies is `ipAddress`, and it is not rendered as given: it is
+ * held to an address shape by `renderableIpAddress`, so the line can carry an
+ * address or the words "not recorded" and nothing else. It stays optional
+ * because a caller must never invent one: "not recorded" is honest and a
+ * fabricated address in a security notice is worse than an absent one.
  */
 
 /**
@@ -110,11 +112,49 @@ const UNKNOWN = 'not recorded';
  * impossible for this line to carry a sentence, a URL, or markup. Hex digits,
  * dots and colons cannot form a scheme, an `href`, or a tag.
  */
-const IP_LITERAL = /^[0-9a-fA-F.:]{3,45}$/;
+/**
+ * A dotted quad of decimal digits, and nothing that merely resembles one.
+ *
+ * Deliberately not a validity check: `999.999.999.999` passes here and is not
+ * an address. This guard's job is to bound what the line can *say*, not to
+ * parse — `request.ip` is Express's socket peer address and is already a real
+ * one. A range check would be a second, weaker implementation of a question
+ * Postgres and Node have already answered.
+ */
+const IPV4_SHAPED = /^[0-9]{1,3}(?:\.[0-9]{1,3}){3}$/;
 
+/**
+ * Anything containing a colon, over the hex-address alphabet. The colon is the
+ * discriminator: a DNS label cannot contain one, so no hostname reaches this
+ * arm, and every IPv6 spelling — including the IPv4-mapped
+ * `::ffff:192.0.2.128` — does.
+ */
+const IPV6_SHAPED = /^(?=.*:)[0-9a-fA-F:.]{3,45}$/;
+
+/**
+ * WHY THE CHARACTER CLASS ALONE WAS NOT ENOUGH. N-4.
+ *
+ * The first version of this guard was `^[0-9a-fA-F.:]{3,45}$`, chosen to make
+ * it "impossible for this line to carry a sentence, a URL, or markup". It
+ * achieves the sentence and the markup. It did not achieve the URL: that class
+ * admits any string of hex letters and dots, and `facade.de`, `abcdef.cc` and
+ * `dead.beef.cafe` are all hostnames under real top-level domains, which many
+ * mail clients autolink from a bare domain with no scheme. The suite did not
+ * see it because its assertion is `https?://`, and a bare hostname has neither.
+ *
+ * Not reachable today — `trust proxy` is disabled, so this value is the socket
+ * peer address and never a client-chosen header (`request-context.ts`,
+ * `security/abuse-prevention.md` §1). It is narrowed anyway, because the day it
+ * becomes reachable is the day somebody is thinking about forwarded headers and
+ * not about a regular expression in an email template.
+ *
+ * H2's lesson, one layer down: the claim "this value cannot carry a URL" was
+ * asserted about the *source* and enforced against a *shape*, and the two were
+ * not the same set.
+ */
 function renderableIpAddress(value: string | undefined): string {
   if (value === undefined) return UNKNOWN;
-  return IP_LITERAL.test(value) ? value : UNKNOWN;
+  return IPV4_SHAPED.test(value) || IPV6_SHAPED.test(value) ? value : UNKNOWN;
 }
 
 function whereAndWhen(context: NoticeOccurrenceContext): readonly string[] {
@@ -221,8 +261,10 @@ export function renderMfaDisabled(context: SecurityNoticeContext): RenderedEmail
  * What `registrationAttempt` may be told, and it is deliberately narrower than
  * `SecurityNoticeContext`.
  *
- * H1. `whereAndWhen` renders `Device: <userAgent>`, and on this one template the
- * user agent belongs to **a stranger**: `POST /auth/register` against an address
+ * H1, and the finding that started the chain H2 ended. `whereAndWhen` rendered
+ * `Device: <userAgent>` at the time — it renders no device line at all now, on
+ * any template — and on this one the user agent belonged to **a stranger**:
+ * `POST /auth/register` against an address
  * that already exists mails this notice to the account owner, and the caller
  * chose that header. Rendering it put up to 512 characters of attacker-supplied
  * text — a sentence, a URL — into a message wearing this product's branding,
@@ -288,7 +330,7 @@ export function renderRegistrationAttempt(context: RegistrationAttemptContext): 
       'Someone submitted this email address to the Sentinel sign-up form. This address is already in use, so no second account was created and nothing about your existing account has changed.',
       'If it was you: you already have an account, so sign in instead. If you cannot remember your password, use the "forgot password" option on the sign-in page.',
       // The timestamp only — NOT `whereAndWhen(context)`, which is the other
-      // four notices' block and carries the caller's IP and user agent. See
+      // four notices' block and carries the caller's IP. See
       // `RegistrationAttemptContext` above. The clock reading is ours, so it
       // stays: dropping the whole block would have cost the recipient the one
       // piece of context they can actually use.
@@ -326,12 +368,14 @@ export function renderRegistrationAttempt(context: RegistrationAttemptContext): 
  * `emailVerification` and `registrationAttempt` took, and `registry.spec.ts`'s
  * `NO_DISPLAY_NAME_TEMPLATE_IDS` partition is what holds it.
  *
- * **The IP and the user agent stay**, and that is ruling 63's licensed side of
- * the partition: for a verified address this message describes the recipient's
- * *own* new session, and the device string is exactly how they recognise one
- * that is not theirs. Both still pass through `escapeHtml` like every other
- * interpolated value, and the residual `registry.spec.ts` records for the
- * context-rendering notices applies here unchanged.
+ * **The IP stays and the user agent does not.** H2: this notice fires on an
+ * *unfamiliar* sign-in, so on the takeover path the device string is the
+ * attacker's sentence delivered to the victim under this product's branding —
+ * the recipient and the chooser are different people in exactly the case the
+ * message exists for. That is the condition ruling 63's own sentence forbids,
+ * which is why the carve-out it granted is withdrawn rather than narrowed. The
+ * IP survives because `renderableIpAddress` holds it to an address shape, so it
+ * is the one field here that cannot be made to say anything.
  */
 export type NewDeviceSignInContext = NoticeOccurrenceContext;
 
