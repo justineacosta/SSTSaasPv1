@@ -3,13 +3,22 @@ import type { ApiEnv } from '@sentinel/config';
 import { MailModule } from '../../infrastructure/mail/mail.module.js';
 import { PrismaModule } from '../../infrastructure/prisma/prisma.module.js';
 import { RedisModule } from '../../infrastructure/redis/redis.module.js';
-import { ENV } from '../../infrastructure/tokens.js';
+import { ENV, PRISMA } from '../../infrastructure/tokens.js';
 import { AuditModule } from '../audit/audit.module.js';
 import { AuthController } from './auth.controller.js';
 import { AuthMailer } from './auth-mailer.js';
-import { EmailVerificationService } from './email-verification.service.js';
-import { RegistrationService } from './registration.service.js';
 import {
+  activeOrganizationLookup,
+  type ActiveOrganizationLookup,
+  type TenantTransactionBase,
+} from './active-organization.store.js';
+import { EmailVerificationService } from './email-verification.service.js';
+import { LoginService } from './login.service.js';
+import { LogoutService } from './logout.service.js';
+import { RegistrationService } from './registration.service.js';
+import { SessionDocumentService } from './session-document.service.js';
+import {
+  ACTIVE_ORGANIZATION_LOOKUP,
   ARGON2_PARAMETERS,
   BREACH_CHECK_OPTIONS,
   HIBP_RANGE_TRANSPORT,
@@ -105,6 +114,20 @@ import { type SecretTokenTtlSeconds, TokenService } from './token.service.js';
     },
     // The port, so `SessionService` cannot reach an ioredis client directly.
     { provide: SESSION_CACHE, useClass: RedisSessionCache },
+    {
+      // THE ONE PLACE THE BASE PRISMA CLIENT REACHES THE ORGANISATION LOOKUP.
+      //
+      // `activeOrganizationLookup` closes over it to run
+      // `withTenantTransaction`, which is what sets `app.organization_id` and
+      // therefore what makes `Organization`'s row-level security policy admit
+      // the read at all — measured, and recorded in that file. Exposing the
+      // one question rather than the client means `SessionDocumentService`
+      // cannot read an organisation it was not asked about.
+      provide: ACTIVE_ORGANIZATION_LOOKUP,
+      inject: [PRISMA],
+      useFactory: (prisma: TenantTransactionBase): ActiveOrganizationLookup =>
+        activeOrganizationLookup(prisma),
+    },
     // The one place the real network transport is named. Every spec supplies
     // its own function instead, which is what keeps the suite hermetic
     // (ADR-0015) without any test-environment special case.
@@ -117,6 +140,9 @@ import { type SecretTokenTtlSeconds, TokenService } from './token.service.js';
     AuthMailer,
     RegistrationService,
     EmailVerificationService,
+    LoginService,
+    LogoutService,
+    SessionDocumentService,
   ],
   // `SessionRepository` is deliberately NOT exported. It is `SessionService`'s
   // Postgres access, and a consumer holding it could revoke a row without

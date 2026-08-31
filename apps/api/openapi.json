@@ -6,6 +6,164 @@
     "description": "Multi-tenant security testing, penetration-test management, and vulnerability management."
   },
   "paths": {
+    "/api/v1/auth/login": {
+      "post": {
+        "operationId": "AuthController_login",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Sign in.",
+        "description": "Verifies a password and issues a session. The response is one of exactly two shapes: `{ mfaRequired: false }` with a session cookie, or `{ mfaRequired: true, pendingToken }` with no cookie at all. Every failure — an address with no account, a wrong password, an account with no credential — is the same 401 `INVALID_CREDENTIALS`, and a full Argon2id verification is performed either way so the cases do not differ in cost. Repeated failures lock the account temporarily and notify its owner.",
+        "requestBody": {
+          "description": "`rememberMe` is optional. Absent means a session that ends with the browser; `true` means the 30-day absolute lifetime and a cookie carrying `Max-Age`. The schema is strict, so an unknown field is a 400 rather than a silently dropped value.",
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "maxLength": 254
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 12,
+                    "maxLength": 256
+                  },
+                  "rememberMe": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "email",
+                  "password"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated, or authenticated so far. `Set-Cookie` carries `__Host-session` and `__Host-csrf` on the first shape and is absent on the second.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "mfaRequired": {
+                          "type": "boolean",
+                          "enum": [
+                            false
+                          ]
+                        }
+                      },
+                      "required": [
+                        "mfaRequired"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "mfaRequired": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
+                        },
+                        "pendingToken": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "mfaRequired",
+                        "pendingToken"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credentials are not valid (`INVALID_CREDENTIALS`). Identical for an address with no account, a wrong password, and a credential that could not be read."
+          },
+          "403": {
+            "description": "The account is temporarily locked (`ACCOUNT_LOCKED`), or the request was refused as cross-site (`CSRF_TOKEN_INVALID`). `ACCOUNT_LOCKED` is returned only when the password was otherwise correct: answering it to any attempt would confirm the address is registered."
+          },
+          "429": {
+            "description": "Rate limited: 5 per 15 minutes per account and 20 per 15 minutes per IP."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "public"
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "operationId": "AuthController_logout",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Sign out.",
+        "description": "Revokes the session the request was made with and clears both cookies. The session row is retained with `revokedAt` set rather than deleted: it is the forensic record that the session existed, and the security settings screen reads it. Revocation is immediate — the cache entry is tombstoned before the row is written. Requires `X-CSRF-Token`.",
+        "requestBody": {
+          "description": "Empty. The schema is strict, so a body with anything in it is a 400.",
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Signed out. Both cookies are cleared."
+          },
+          "401": {
+            "description": "No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`)."
+          },
+          "403": {
+            "description": "Missing or mismatched `X-CSRF-Token` (`CSRF_TOKEN_INVALID`)."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "authenticated"
+        }
+      }
+    },
     "/api/v1/auth/register": {
       "post": {
         "operationId": "AuthController_register",
@@ -160,6 +318,138 @@
         },
         "x-sentinel-access": {
           "kind": "public"
+        }
+      }
+    },
+    "/api/v1/auth/session": {
+      "get": {
+        "operationId": "AuthController_session",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Describe the current session.",
+        "description": "The document the permission-aware frontend reads and nothing else. `permissions` is currently always empty: role assignment does not exist yet, so the effective permission set genuinely is empty rather than unavailable. `entitlements` is an open object and is currently always empty — billing arrives in a later phase. `activeOrganization` is null until an organisation has been chosen. The session identifier is deliberately absent.",
+        "responses": {
+          "200": {
+            "description": "The session document.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "userId": {
+                      "type": "string"
+                    },
+                    "activeOrganization": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "slug": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "slug",
+                        "name"
+                      ],
+                      "additionalProperties": false,
+                      "nullable": true
+                    },
+                    "permissions": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "organization.read",
+                          "organization.update",
+                          "organization.delete",
+                          "organization.manage_members",
+                          "organization.manage_roles",
+                          "project.read",
+                          "project.create",
+                          "project.update",
+                          "project.delete",
+                          "asset.read",
+                          "asset.create",
+                          "asset.update",
+                          "asset.delete",
+                          "asset.verify_ownership",
+                          "scope.read",
+                          "scope.update",
+                          "scan.read",
+                          "scan.create",
+                          "scan.cancel",
+                          "scan.create_aggressive",
+                          "finding.read",
+                          "finding.create",
+                          "finding.update",
+                          "finding.triage",
+                          "finding.accept_risk",
+                          "finding.delete",
+                          "evidence.read",
+                          "evidence.upload",
+                          "evidence.delete",
+                          "engagement.read",
+                          "engagement.create",
+                          "engagement.update",
+                          "engagement.delete",
+                          "report.read",
+                          "report.create",
+                          "report.download",
+                          "apikey.read",
+                          "apikey.create",
+                          "apikey.revoke",
+                          "webhook.read",
+                          "webhook.create",
+                          "webhook.update",
+                          "webhook.delete",
+                          "integration.read",
+                          "integration.manage",
+                          "notification.manage",
+                          "audit.read",
+                          "billing.read",
+                          "billing.manage"
+                        ]
+                      }
+                    },
+                    "entitlements": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    }
+                  },
+                  "required": [
+                    "userId",
+                    "activeOrganization",
+                    "permissions",
+                    "entitlements"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable session, or MFA has not been completed."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "authenticated"
         }
       }
     },

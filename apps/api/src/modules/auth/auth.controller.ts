@@ -1,5 +1,12 @@
-import { Body, Controller, HttpCode, Inject, Post, Req } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Inject, Post, Req, Res } from '@nestjs/common';
 import {
+  assertUserPrincipal,
+  type LoginRequest,
+  type LoginResponse,
+  loginRequestSchema,
+  loginResponseSchema,
+  type LogoutRequest,
+  logoutRequestSchema,
   type RegisterRequest,
   type RegisterResponse,
   registerRequestSchema,
@@ -8,29 +15,41 @@ import {
   type ResendVerificationResponse,
   resendVerificationRequestSchema,
   resendVerificationResponseSchema,
+  type SessionResponse,
+  sessionResponseSchema,
   type VerifyEmailRequest,
   type VerifyEmailResponse,
   verifyEmailRequestSchema,
   verifyEmailResponseSchema,
 } from '@sentinel/contracts';
-import type { Request } from 'express';
-import { Public } from '../../common/decorators/access.decorator.js';
+import type { Request, Response } from 'express';
+import { AuthenticatedOnly, Public } from '../../common/decorators/access.decorator.js';
+import { RefuseCrossSite } from '../../common/decorators/cross-site.decorator.js';
 import { ApiDoc } from '../../common/decorators/openapi.decorator.js';
 import { RateLimit } from '../../common/decorators/rate-limit.decorator.js';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
+import {
+  clearedCsrfCookie,
+  clearedSessionCookie,
+  serialiseCsrfCookie,
+  serialiseSessionCookie,
+} from './cookies.js';
+import { deriveCsrfToken } from './csrf-token.js';
 import { EmailVerificationService } from './email-verification.service.js';
+import { LoginService } from './login.service.js';
+import { LogoutService } from './logout.service.js';
 import { RegistrationService } from './registration.service.js';
 import { requestContextOf } from './request-context.js';
+import { SessionDocumentService } from './session-document.service.js';
 
 /**
- * THE FIRST THREE ROUTES THIS PRODUCT PUBLISHES.
+ * THE SIX ROUTES THIS PRODUCT PUBLISHES.
  *
- * `/api/v1/auth/register`, `/api/v1/auth/verify-email` and
- * `/api/v1/auth/resend-verification`. Until this file `AuthModule` registered
- * no controller and `pnpm check:openapi` reported four routes; it reports seven
- * from here.
+ * Task 8 shipped `/register`, `/verify-email` and `/resend-verification`, and
+ * `pnpm check:openapi` went from four routes to seven. Task 9 adds `/login`,
+ * `/logout` and `/session`, and it reports **ten**.
  *
- * # All three are `@Public()`, and therefore NOT CSRF-covered
+ * # The Task 8 three are `@Public()`, and therefore NOT CSRF-covered
  *
  * Carry-forward ruling 56, stated here rather than left for a reviewer to
  * discover. `CsrfGuard` skips `@Public()` routes deliberately: the expected
@@ -72,6 +91,9 @@ export class AuthController {
   constructor(
     @Inject(RegistrationService) private readonly registration: RegistrationService,
     @Inject(EmailVerificationService) private readonly verification: EmailVerificationService,
+    @Inject(LoginService) private readonly logins: LoginService,
+    @Inject(LogoutService) private readonly logouts: LogoutService,
+    @Inject(SessionDocumentService) private readonly sessionDocument: SessionDocumentService,
   ) {}
 
   /**
@@ -216,4 +238,229 @@ export class AuthController {
     await this.verification.resend({ email: body.email, ...requestContextOf(request) });
     return { status: 'VERIFICATION_REQUIRED' };
   }
+
+  /**
+   * Exchanges a password for a session cookie, or for a pending-MFA token.
+   *
+   * `login`: 5 / 15 min per account keyed on the body's `email`, 20 / 15 min
+   * per IP, fail closed (`security/abuse-prevention.md` §1). **This is the
+   * first route on which a `{ bodyField }` principal source has ever
+   * resolved** — the three routes above either carry no account in their body
+   * or key on it for a different class — so it is also the first time the
+   * per-account half of that table does anything at all. The two windows bite
+   * independently, which is `security/authentication.md` §7's actual property:
+   * one attacker guessing at one address must not consume the budget of
+   * everybody behind the same egress address, and one attacker behind one
+   * address must not lock out a whole tenant by naming their accounts in turn.
+   *
+   * `@RefuseCrossSite()` rather than CSRF. See the class docblock.
+   */
+  @Public()
+  @RefuseCrossSite()
+  @RateLimit('login')
+  @ApiDoc({
+    summary: 'Sign in.',
+    description:
+      'Verifies a password and issues a session. The response is one of exactly two shapes: ' +
+      '`{ mfaRequired: false }` with a session cookie, or `{ mfaRequired: true, pendingToken }` ' +
+      'with no cookie at all. Every failure — an address with no account, a wrong password, an ' +
+      'account with no credential — is the same 401 `INVALID_CREDENTIALS`, and a full Argon2id ' +
+      'verification is performed either way so the cases do not differ in cost. Repeated ' +
+      'failures lock the account temporarily and notify its owner.',
+    requestBody: {
+      description:
+        '`rememberMe` is optional. Absent means a session that ends with the browser; `true` ' +
+        'means the 30-day absolute lifetime and a cookie carrying `Max-Age`. The schema is ' +
+        'strict, so an unknown field is a 400 rather than a silently dropped value.',
+      schema: loginRequestSchema,
+    },
+    responses: [
+      {
+        status: 200,
+        description:
+          'Authenticated, or authenticated so far. `Set-Cookie` carries `__Host-session` and ' +
+          '`__Host-csrf` on the first shape and is absent on the second.',
+        schema: loginResponseSchema,
+      },
+      {
+        status: 401,
+        description:
+          'The credentials are not valid (`INVALID_CREDENTIALS`). Identical for an address with ' +
+          'no account, a wrong password, and a credential that could not be read.',
+      },
+      {
+        status: 403,
+        description:
+          'The account is temporarily locked (`ACCOUNT_LOCKED`), or the request was refused as ' +
+          'cross-site (`CSRF_TOKEN_INVALID`). `ACCOUNT_LOCKED` is returned only when the ' +
+          'password was otherwise correct: answering it to any attempt would confirm the ' +
+          'address is registered.',
+      },
+      {
+        status: 429,
+        description: 'Rate limited: 5 per 15 minutes per account and 20 per 15 minutes per IP.',
+      },
+    ],
+  })
+  @HttpCode(200)
+  @Post('login')
+  async login(
+    @Body(new ZodValidationPipe(loginRequestSchema)) body: LoginRequest,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<LoginResponse> {
+    const result = await this.logins.login({
+      email: body.email,
+      password: body.password,
+      // `?? false` here rather than a `.default(false)` in the contract: the
+      // wire contract should say "absent means the server's default", and the
+      // default itself belongs to `SessionService.issue`. This is the one place
+      // the absent case becomes a value.
+      rememberMe: body.rememberMe ?? false,
+      ...requestContextOf(request),
+    });
+
+    if (result.kind === 'mfa-required') {
+      // NO `Set-Cookie` AT ALL. D9: the pending credential travels in the body,
+      // and nothing puts it in a browser's cookie jar — a cookie is ambient,
+      // and a `PENDING_MFA` session must be presented deliberately.
+      //
+      // **It is unreachable by any route that ships today**, stated rather than
+      // implied: `AuthenticationGuard` reads the session cookie and this token
+      // is not in one, and `@AllowPendingMfa()` sits on no shipped handler.
+      // Task 11 builds `mfa/verify`, and ADR-0018 is reserved for deciding how
+      // this credential is delivered — the response SHAPE is pinned by
+      // `loginResponseSchema` and already committed, so that decision can be
+      // made without a breaking wire change.
+      return { mfaRequired: true, pendingToken: result.pendingToken };
+    }
+
+    // BOTH COOKIES, IN ONE `Set-Cookie` ARRAY. The CSRF cookie is derived from
+    // the session token rather than stored (`csrf-token.ts`), so it needs no
+    // second source of truth and rotates whenever the session does. Its
+    // `Max-Age` matches the session cookie's for `cookies.ts`'s reason: a CSRF
+    // cookie that outlives its session, or dies before it, is a logged-in user
+    // who cannot submit a form.
+    response.setHeader('Set-Cookie', [
+      serialiseSessionCookie({ value: result.token, maxAgeSeconds: result.cookieMaxAgeSeconds }),
+      serialiseCsrfCookie({
+        value: deriveCsrfToken(result.token),
+        maxAgeSeconds: result.cookieMaxAgeSeconds,
+      }),
+    ]);
+    return { mfaRequired: false };
+  }
+
+  /**
+   * Revokes the caller's own session and clears both cookies.
+   *
+   * `generalSession`, declared explicitly — and **it resolves nothing today**.
+   * The limiter runs before the authentication guard by design
+   * (`architecture/backend.md` §3), so `principalSource: 'authenticated'`
+   * resolves on no request; the class is fail-open, and carry-forward ruling 55
+   * records that nothing reports this at the default log level. Declaring it is
+   * honest bookkeeping rather than a control. A route with no decorator falls
+   * to the same class *silently*, which is strictly worse — the decorator is
+   * what lets `auth.controller.spec.ts`'s exhaustiveness test say somebody
+   * chose.
+   *
+   * **204 with no body**, so there is nothing to say about what was revoked.
+   */
+  @AuthenticatedOnly()
+  @RateLimit('generalSession')
+  @ApiDoc({
+    summary: 'Sign out.',
+    description:
+      'Revokes the session the request was made with and clears both cookies. The session row ' +
+      'is retained with `revokedAt` set rather than deleted: it is the forensic record that the ' +
+      'session existed, and the security settings screen reads it. Revocation is immediate — ' +
+      'the cache entry is tombstoned before the row is written. Requires `X-CSRF-Token`.',
+    requestBody: {
+      description: 'Empty. The schema is strict, so a body with anything in it is a 400.',
+      schema: logoutRequestSchema,
+    },
+    responses: [
+      { status: 204, description: 'Signed out. Both cookies are cleared.' },
+      { status: 401, description: 'No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`).' },
+      { status: 403, description: 'Missing or mismatched `X-CSRF-Token` (`CSRF_TOKEN_INVALID`).' },
+    ],
+  })
+  @HttpCode(204)
+  @Post('logout')
+  async logout(
+    @Body(new ZodValidationPipe(logoutRequestSchema)) _body: LogoutRequest,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<void> {
+    await this.logouts.logout({
+      ...principalOf(request),
+      ...requestContextOf(request),
+    });
+
+    // Both, with the same attributes they were set with — a browser matches a
+    // replacement cookie on name, domain and path together, so a clearing
+    // header that shortened the attribute list would leave the original in
+    // place. `cookies.ts` repeats the list rather than deriving it for exactly
+    // this reason.
+    response.setHeader('Set-Cookie', [clearedSessionCookie(), clearedCsrfCookie()]);
+  }
+
+  /**
+   * The current principal, the active organisation, the effective permission
+   * set, and an entitlements placeholder.
+   *
+   * `generalSession`, and the same sentence applies as on `logout`: it resolves
+   * nothing today.
+   *
+   * **`permissions` is `[]` and that is the truth, not a stub.** There is no
+   * role-assignment machinery until Task 12 and nothing anywhere computes an
+   * effective permission set, so inventing a value would be a lie the frontend
+   * would believe and act on. `session-document.service.ts` carries the full
+   * argument, and its spec asserts the empty array so a future edit has to come
+   * past it.
+   */
+  @AuthenticatedOnly()
+  @RateLimit('generalSession')
+  @ApiDoc({
+    summary: 'Describe the current session.',
+    description:
+      'The document the permission-aware frontend reads and nothing else. `permissions` is ' +
+      'currently always empty: role assignment does not exist yet, so the effective permission ' +
+      'set genuinely is empty rather than unavailable. `entitlements` is an open object and is ' +
+      'currently always empty — billing arrives in a later phase. `activeOrganization` is null ' +
+      'until an organisation has been chosen. The session identifier is deliberately absent.',
+    responses: [
+      { status: 200, description: 'The session document.', schema: sessionResponseSchema },
+      { status: 401, description: 'No usable session, or MFA has not been completed.' },
+    ],
+  })
+  @Get('session')
+  async session(@Req() request: Request): Promise<SessionResponse> {
+    return this.sessionDocument.forPrincipal(principalOf(request));
+  }
+}
+
+/**
+ * The authenticated caller, or a loud failure.
+ *
+ * `AuthenticationGuard` sets `request.principal` on every non-public route, so
+ * `undefined` here is unreachable in a booted application — the boot-time
+ * access assertion refuses to start on a route that declares nothing, and both
+ * handlers above declare `@AuthenticatedOnly()`. It **throws** rather than
+ * coalescing to an anonymous default, for the reason `assertUserPrincipal`'s own
+ * docblock gives: a privileged path reachable by omission is only safe if
+ * reaching it is loud. A `?? { userId: '', sessionId: '' }` here would revoke
+ * session `''` and answer a session document for user `''`.
+ *
+ * `assertUserPrincipal` is what refuses the `apiKey` arm, which Phase 2 cannot
+ * construct and Task 12 will have to decide about.
+ */
+function principalOf(request: Request): { userId: string; sessionId: string } {
+  const principal = request.principal;
+  if (principal === undefined) {
+    throw new Error(
+      'Reached an authenticated handler with no principal on the request. AuthenticationGuard did not run.',
+    );
+  }
+  return assertUserPrincipal(principal);
 }
