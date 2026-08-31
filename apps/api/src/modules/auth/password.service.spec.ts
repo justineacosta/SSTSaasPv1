@@ -37,7 +37,7 @@ describe('PasswordService rehashing', () => {
     // The operator raises the configured parameters. Same stored hash, new service.
     const raisedService = new PasswordService(CURRENT);
     const result = await raisedService.verify(storedHash, PASSWORD);
-    expect(result).toEqual({ valid: true, needsRehash: true });
+    expect(result).toEqual({ valid: true, needsRehash: true, credentialUnreadable: false });
 
     // ...and the caller's transparent rehash actually replaces it.
     const replacement = await raisedService.hash(PASSWORD);
@@ -46,6 +46,7 @@ describe('PasswordService rehashing', () => {
     expect(await raisedService.verify(replacement, PASSWORD)).toEqual({
       valid: true,
       needsRehash: false,
+      credentialUnreadable: false,
     });
   });
 
@@ -59,6 +60,7 @@ describe('PasswordService rehashing', () => {
     expect(await service.verify(storedHash, PASSWORD)).toEqual({
       valid: true,
       needsRehash: false,
+      credentialUnreadable: false,
     });
   });
 
@@ -93,6 +95,7 @@ describe('PasswordService rehashing', () => {
       expect(await new PasswordService(raised).verify(stored, PASSWORD)).toEqual({
         valid: true,
         needsRehash: true,
+        credentialUnreadable: false,
       });
     },
   );
@@ -102,7 +105,11 @@ describe('PasswordService rehashing', () => {
     // credential downwards. `needsRehash` is one-directional by design.
     const stored = await new PasswordService(CURRENT).hash(PASSWORD);
     const lowered = new PasswordService(WEAK);
-    expect(await lowered.verify(stored, PASSWORD)).toEqual({ valid: true, needsRehash: false });
+    expect(await lowered.verify(stored, PASSWORD)).toEqual({
+      valid: true,
+      needsRehash: false,
+      credentialUnreadable: false,
+    });
   });
 });
 
@@ -131,6 +138,7 @@ describe('PasswordService.hash', () => {
     expect(await service.verify(await service.hash(longest), longest)).toEqual({
       valid: true,
       needsRehash: false,
+      credentialUnreadable: false,
     });
   });
 });
@@ -142,22 +150,69 @@ describe('PasswordService.verify', () => {
     expect(await service.verify(stored, 'a different password')).toEqual({
       valid: false,
       needsRehash: false,
+      credentialUnreadable: false,
     });
   });
 
-  it('rejects a malformed stored hash instead of throwing', async () => {
+  it('rejects a malformed stored hash instead of throwing, AND says it was unreadable', async () => {
+    // CARRY-FORWARD RULING 25, CLOSED HERE. Until Task 9 a stored credential
+    // argon2 refuses to read was indistinguishable from a wrong password, with
+    // no signal anywhere — `runVerification` swallowed the error correctly (its
+    // message derives from the stored hash, so logging it would leak one) and
+    // then said nothing at all.
+    //
+    // The distinction is reported rather than logged HERE, because this class
+    // has no logger and no user id: the caller with both is `LoginService`,
+    // which writes one `error` line naming the user and no fragment of the
+    // hash. What the caller sees on the wire is unchanged — `valid: false`,
+    // and the same `INVALID_CREDENTIALS` as any wrong password.
     const service = new PasswordService(CURRENT);
     expect(await service.verify('not a phc string', PASSWORD)).toEqual({
       valid: false,
       needsRehash: false,
+      credentialUnreadable: true,
     });
   });
 
-  it('returns not-valid for an absent credential', async () => {
+  it('reports a syntactically valid PHC string with a corrupt digest as unreadable too', async () => {
+    // The reason this is a property of the CATCH and not of `parseArgon2Phc`:
+    // this value parses cleanly as a v19 argon2id PHC string — a caller
+    // checking the format alone would call it healthy — and argon2 still
+    // refuses it. Only the site that catches the refusal knows.
+    const service = new PasswordService(CURRENT);
+    const stored = await service.hash(PASSWORD);
+    const fields = stored.split('$');
+    fields[5] = 'not-base64-$$';
+    const result = await service.verify(fields.join('$'), PASSWORD);
+    expect(result.valid).toBe(false);
+    expect(result.credentialUnreadable).toBe(true);
+  });
+
+  it('returns not-valid for an absent credential, and does NOT call that unreadable', async () => {
     // The timing half of this — that it still performs a full verification —
     // is proved in password.timing.spec.ts.
+    //
+    // `credentialUnreadable: false` is the load-bearing half here. There is no
+    // stored credential to be unreadable, and reporting one would hand the
+    // caller a way to tell "no such account" from "wrong password" — the exact
+    // distinction the dummy-hash path exists to erase. It would reach an
+    // operator's log rather than the wire, which is better and is not nothing.
     const service = new PasswordService(CURRENT);
-    expect(await service.verify(null, PASSWORD)).toEqual({ valid: false, needsRehash: false });
+    expect(await service.verify(null, PASSWORD)).toEqual({
+      valid: false,
+      needsRehash: false,
+      credentialUnreadable: false,
+    });
+  });
+
+  it('reports a correct password as readable', async () => {
+    const service = new PasswordService(CURRENT);
+    const stored = await service.hash(PASSWORD);
+    expect(await service.verify(stored, PASSWORD)).toEqual({
+      valid: true,
+      needsRehash: false,
+      credentialUnreadable: false,
+    });
   });
 });
 
