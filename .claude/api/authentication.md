@@ -29,26 +29,68 @@ Both resolve to the same `Principal`, so every downstream guard is written once.
 ## 2. Session flow
 
 ```
-POST /api/v1/auth/login          { email, password }
-  -> 200 { mfaRequired: false }  + Set-Cookie: __Host-session
-  -> 200 { mfaRequired: true, pendingToken }   # MFA enrolled
+POST /api/v1/auth/login          { email, password, rememberMe? }
+  -> 200 { mfaRequired: false }  + Set-Cookie: __Host-session, __Host-csrf
+  -> 200 { mfaRequired: true, pendingToken }   # MFA enrolled, NO Set-Cookie
 
 POST /api/v1/auth/mfa/verify     { pendingToken, code }
   -> 200 + Set-Cookie: __Host-session
 
-POST /api/v1/auth/logout         -> 204, cookie cleared, session row deleted
+POST /api/v1/auth/logout         -> 204, both cookies cleared, session REVOKED
 GET  /api/v1/auth/session        -> current principal, org, permissions, entitlements
 POST /api/v1/auth/switch-org     { organizationId } -> new session context
 ```
 
-The pending token is a short-lived credential that can do exactly one thing: complete MFA. It
-cannot read any resource. Login and MFA verification return in constant time whether or not
-the account exists or the code is correct.
+> **Status: login, logout and session are Implemented (Phase 2 Task 9).** `mfa/verify` is
+> Task 11's and `switch-org` is Task 13's; both shapes above are contracts with no handler.
+
+`rememberMe` is **optional** and was added by Task 9 — adding an optional field to a strict
+request schema is additive under [`conventions.md`](conventions.md) §8. Absent means a session
+that ends with the browser: the cookie carries no `Max-Age` and no `Expires`. `true` means the
+30-day absolute lifetime and a cookie that carries `Max-Age`. The cookie is never the authority
+on lifetime — `Session.absoluteExpiresAt` and `Session.idleExpiresAt` are, and both are
+re-checked on every request.
+
+**Login sets two cookies, not one.** `__Host-session` and `__Host-csrf`, in one `Set-Cookie`
+header. The CSRF value is derived from the session token by HMAC rather than stored, so it
+rotates whenever the session does and nothing has to remember to rotate it (§3).
+
+**The MFA arm sets no cookie at all.** The pending token travels in the response body. A cookie
+is ambient and a `PENDING_MFA` session must be presented deliberately. The pending token is a
+short-lived credential that can do exactly one thing: complete MFA. It cannot read any resource,
+and `GET /auth/session` presented with one answers 401 `MFA_REQUIRED`.
+
+**Logout REVOKES the session; it does not delete the row.** An earlier version of this document
+said "session row deleted" and it was wrong in three ways, all found in Task 9: the row is the
+forensic record that a session existed and an incident review reconstructs `rotatedFromId`
+chains from it; `Session.revokedAt` is what the security-settings screen reads to show a user
+their signed-out devices; and a delete would take the `LOGOUT` audit row's `resourceId` with it,
+leaving an event pointing at nothing. **The property that actually mattered — that revocation is
+immediate — is unchanged**: the cache entry is tombstoned *before* the row is written, so no warm
+entry can serve the session afterwards.
+
+`GET /auth/session` returns `{ userId, activeOrganization, permissions, entitlements }` and
+deliberately **not** the session identifier, which has no business being readable by a script
+running in the page. Two of those fields currently have no content and say so honestly rather
+than being filled with a guess:
+
+- **`permissions` is always `[]`.** There is no role-assignment machinery until Task 12 and
+  nothing anywhere computes an effective permission set, so the effective set genuinely is
+  empty rather than unavailable. A placeholder would be a lie the frontend would act on.
+- **`entitlements` is always `{}`.** Billing is Phase 5 and owns the real shape; an open object
+  is what lets that be filled additively.
+- `activeOrganization` is a real lookup and currently always resolves to `null`, because nothing
+  writes `Session.activeOrganizationId` until Task 13.
+
+**Login answers in the same shape whether or not the account exists.** A full Argon2id
+verification is performed either way — against a dummy hash when there is no account — so the two
+do not differ in cost either. See [`../security/authentication.md`](../security/authentication.md)
+§2 for the residual that remains.
 
 ## 3. CSRF
 
-> **Status: Implemented (Phase 2 Task 7).** No route it governs is cookie-authenticated yet;
-> Task 9 ships the first.
+> **Status: Implemented (Phase 2 Task 7).** `POST /api/v1/auth/logout` is the first route it
+> actually governs, shipped by Task 9.
 
 Cookie-authenticated `POST`/`PUT`/`PATCH`/`DELETE` require `X-CSRF-Token` matching the
 `__Host-csrf` cookie, compared in constant time and bound to the session. Missing or
@@ -72,6 +114,41 @@ already defeated.
 Cross-origin callers must send the header, which makes every unsafe request a preflighted
 one. `X-CSRF-Token` is on the CORS allowlist (ADR-0017); a client adding another custom
 header needs that list extended.
+
+### Login brings its own cross-site mechanism, and it is not double-submit
+
+The guard above skips `@Public()` routes, and it must: the expected token is derived from the
+`HttpOnly` session cookie, so a page sitting on the login form cannot produce it, and a caller
+arriving with a *stale* session cookie would be refused with no way to recover — the way out of a
+bad cookie is the login page. A cross-site login `POST` also carries no session cookie at all, so
+double-submit has nothing to bind to.
+
+What that leaves uncovered is **login CSRF**: an attacker submits a cross-site login carrying
+*their own* credentials, so the victim's browser is silently signed in to an account the attacker
+controls and everything the victim does afterwards accrues to it. Task 9 covers it with a
+separate, narrower guard that routes opt into by decoration:
+
+| | |
+|---|---|
+| Applies to | Handlers carrying `@RefuseCrossSite()`. Today that is `POST /api/v1/auth/login` and nothing else |
+| Rule 1 | `Sec-Fetch-Site: cross-site` → refuse |
+| Rule 2 | An `Origin` header that is present and is not the configured web origin → refuse. Compared exactly, never by prefix |
+| Rule 3 | Neither header present → allow |
+| Refusal | 403 `CSRF_TOKEN_INVALID` — the same code and message as the guard above, for the same reason |
+
+The two rules are AND-ed: a request reporting `cross-site` is refused even when its `Origin` is
+ours, so a forged `Origin` cannot re-open the arm the browser closed.
+
+**Absence is allowed, and that is the residual.** A non-browser client — curl, a CI script, an
+integration test — sends neither header, and what this control defends is a *browser* being
+driven cross-site. Refusing on absence would make the absent header the control and would fail
+every non-browser caller, while buying nothing: an attacker who can suppress both headers is not
+driving a browser and does not need CSRF at all.
+
+The registration, verification and resend routes deliberately do **not** opt in. They have the
+same gap and what it buys an attacker is bounded by what they do — register creates an account
+under an address the attacker must control to use, verify-email needs a 256-bit secret, and
+resend is rate limited per IP and per address.
 
 ## 4. API keys
 
@@ -125,17 +202,70 @@ The last row is deliberate: an IP-restricted key used from the wrong address ret
 error as an unknown key, so probing cannot distinguish "wrong key" from "right key, wrong
 network".
 
+**`ACCOUNT_LOCKED` is 403, not 401, and it is returned only when the password was otherwise
+correct.** The status is easy to get wrong: 401 means "we do not know who you are", and on a
+locked account we do — the caller has just proved it. What is refused is the action.
+
+The condition is the security control rather than the status code. Answering `ACCOUNT_LOCKED` to
+*any* attempt on a locked account would hand an enumeration oracle to precisely the caller who
+has just demonstrated they will make five attempts: the response would confirm the address is
+registered. So the password is verified first, always, and only then is the lock consulted:
+
+| | locked | not locked |
+|---|---|---|
+| correct password | 403 `ACCOUNT_LOCKED` | a session |
+| wrong password | 401 `INVALID_CREDENTIALS` | 401 `INVALID_CREDENTIALS` |
+| no account | — | 401 `INVALID_CREDENTIALS` |
+
+The top-left cell tells an attacker nothing they did not already have: reaching it requires the
+password, and with the password they can simply wait the lock out. It tells the real user the one
+thing they need — that their password is fine and the account is temporarily unavailable.
+
+Both kinds of lock answer with it: `User.lockedUntil`, the temporary automatic brute-force lock,
+and `User.status = LOCKED`/`DISABLED`, the separate administrative one. As a *refusal* they are
+one answer, because a second distinguishable outcome is a second thing a caller can learn by
+submitting values. **The message names no duration**: `lockedUntil` is a real timestamp, and
+returning it would let a caller measure which rung of the ladder an account is on and therefore
+how many failures it has accumulated — a fact about somebody else's account activity.
+
+`INVALID_CREDENTIALS` covers five situations and a caller cannot tell them apart: no account, a
+wrong password, an account with no `Credential` row, a stored credential Argon2 refuses to read,
+and a locked account whose password was also wrong.
+
 ## 7. Rate limits
 
 Authentication endpoints are limited per account **and** per IP
 ([`../security/abuse-prevention.md`](../security/abuse-prevention.md) §1), and fail closed if
 Redis is unavailable — an outage must not become a credential-stuffing window.
 
-The three routes that exist carry `registration` (3/hour per IP),
-`emailVerificationConsume` (30/hour per IP) and `emailVerificationResend` (3/hour per address,
-10/hour per IP). Only the resend has an account to key on: the other two carry no account in
-their request body, so "per account **and** per IP" is per IP alone for them, and a class that
-declared otherwise would resolve nothing while looking enforced.
+The six routes that exist carry:
+
+| Route | Class | Windows |
+|---|---|---|
+| `POST /auth/register` | `registration` | 3/hour per IP |
+| `POST /auth/verify-email` | `emailVerificationConsume` | 30/hour per IP |
+| `POST /auth/resend-verification` | `emailVerificationResend` | 3/hour per address, 10/hour per IP |
+| `POST /auth/login` | `login` | 5 / 15 min per account, 20 / 15 min per IP |
+| `POST /auth/logout` | `generalSession` | 1000/min per principal — **resolves nothing today** |
+| `GET /auth/session` | `generalSession` | as above |
+
+**Login is the first route on which a per-account window has ever actually resolved.** The class
+keys its principal on the request body's `email` field, and the three routes above it either
+carry no account in their body or key on it for a different class. The two windows bite
+independently, which is
+[`../security/authentication.md`](../security/authentication.md) §7's actual property rather than
+merely "a limit exists": one attacker guessing at one address must not consume the budget of
+everybody behind the same egress address, and one attacker behind one address must not lock out a
+whole tenant by naming their accounts in turn. Both directions are asserted through the real
+application.
+
+**`generalSession` on `logout` and `session` resolves nothing and is declared anyway.** Its only
+scope is `perPrincipal` with `principalSource: 'authenticated'`, and the limiter runs *before* the
+authentication guard by design ([`../architecture/backend.md`](../architecture/backend.md) §3), so
+`request.principalId` is never set when it reads it. The class is fail-open, and nothing reports
+the miss at the default log level. Declaring it is honest bookkeeping rather than a control — a
+route carrying no decorator falls to the same class **silently**, which is strictly worse, and the
+decorator is what lets a test assert that somebody chose.
 
 ## 8. Registration and email verification
 

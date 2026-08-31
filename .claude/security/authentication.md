@@ -87,6 +87,38 @@ subset — an API key is never simply "the user's powers over the wire".
 - Constant-time comparison. Login timing equalised whether or not the account exists.
 - Password change and reset **revoke all other sessions** and email the user.
 
+**Timing equality is a shipped property of a real endpoint as of Task 9, not an aspiration.**
+`PasswordService.verify` takes a nullable stored hash and performs a full Argon2id verification
+against a per-process dummy when it is `null`, so `POST /auth/login` cannot express "no such
+user, skip the hash" without deliberately not calling it. An account that exists but has no
+`Credential` row takes the same path. What is asserted is that the work *happens* on both paths,
+not a wall-clock comparison: a statistical timing assertion over a test database measures
+scheduling rather than behaviour.
+
+Two residuals, both measured and both open:
+
+- **The absent-account path skips one indexed read.** It has no `userId` to look a credential up
+  by. That is one index probe against a full Argon2id verification both paths pay, so a single
+  observation separates nothing — the same trade registration records on its own two paths.
+- **Equality holds against the dummy at *current* parameters, and not against hashes stored
+  before a parameter raise.** A pre-raise stored hash verifies at old, cheaper parameters while an
+  absent account verifies at current ones — measured at 35.9 ms against 7.7 ms, a factor of 4.6,
+  during Task 3. It is an enumeration oracle pointing the opposite way from the one the dummy
+  closes, and **it opens on the day an operator raises the parameters.** Task 9 inherited it and
+  did not touch it.
+
+**A stored credential Argon2 refuses to read is now distinguishable from a wrong password — to an
+operator, and to nobody else.** It is an operational fault: the row is corrupt, truncated, or
+written by something else. It is logged at `error` with the user id and **no fragment of the hash
+or the password**, and the caller receives the same `INVALID_CREDENTIALS` as any wrong password.
+Nothing is logged for an address with no account, because a log line there would answer "is this
+address registered?" in a file an operator reads.
+
+**A successful login does not yet rehash a credential stored at weaker parameters.** The
+verification reports that it needs one and nothing acts on it, so the "rehashed transparently on
+next successful login" half of the bullet above is **not implemented**. It is a write on the login
+path and belongs with the task that owns writing to `Credential`.
+
 ## 3. Sessions
 
 Opaque, server-side, revocable. Not JWTs — the argument is in ADR-0005, but the short
@@ -288,13 +320,80 @@ and applies it to organisation creation; Tasks 14 and 15 apply it to inviting. U
 - Progressive delay then temporary lock per account; independent per-IP limits so one
   attacker cannot lock out a whole tenant.
 - Registration, login, and reset return responses that do not distinguish existing from
-  non-existing accounts. **Registration is built (Task 8)**; login is Task 9's and reset is
+  non-existing accounts. **Registration is built (Task 8) and login is built (Task 9)**; reset is
   Task 10's. The registration half has a second part that is easy to leave out: the address that
   already has an account receives a notice about the attempt, so the person who can act on it
   learns what the wire response deliberately does not say.
 - Failed logins are audited with IP and user agent; a burst notifies the account owner.
 - CAPTCHA hook at the registration and reset endpoints, enabled by feature flag when abuse
   is detected rather than permanently degrading the experience.
+
+### The ladder, as built
+
+The two columns are `User.failedLoginCount` and `User.lockedUntil`, and the count is the number of
+**consecutive** failures after the attempt that just failed.
+
+| Consecutive failures | `lockedUntil` |
+|---|---|
+| 1–4 | not set |
+| 5 | now + 1 minute |
+| 6 | now + 5 minutes |
+| 7 | now + 15 minutes |
+| 8 or more | now + 30 minutes |
+
+**None of those figures is in this document's history — they are decisions taken in Task 9 and
+written here**, the same way Task 8 wrote 30/hour into
+[`abuse-prevention.md`](abuse-prevention.md) §1 rather than pretending it had transcribed it.
+Five is where it starts because four is a plausible number of genuine typos for somebody with two
+passwords in their head. **Thirty minutes is a cap, and the cap is the security property**: without
+one the ladder becomes an indefinite lock that an *unauthenticated* caller can impose on any
+account whose address they can guess, which is this section's own "one attacker cannot lock out a
+whole tenant" reappearing one level down with the tenant replaced by a person.
+
+**The escalating window IS the "progressive delay". There is no sleeping.** A login handler that
+sleeps is a handler an attacker can pin: N concurrent attempts hold N connections and N event-loop
+timers for as long as the attacker chooses, and the cost lands on the server rather than on them.
+Growing the lock costs the attacker time and costs us one integer and one timestamp.
+
+### What the lock deliberately does not do
+
+- **An attempt arriving while the lock is live changes no state at all** — no increment, no
+  extension, no new lock, and no audit row. Otherwise an attacker who wants an account offline
+  keeps it there forever by attempting once a minute, and an unauthenticated caller could grow an
+  append-only table one row per request. The `ACCOUNT_LOCKED` audit row already records that the
+  lock happened. What this costs is the forensic record of attempts *during* a lock.
+- **The counter is not reset by a lock expiring.** Only a successful login resets it, so the ladder
+  goes on climbing across cycles: an attacker who waits out the one-minute lock meets the
+  five-minute one.
+- **The lock is consulted only after the password has been verified.** Checking it first would make
+  a locked account answer measurably faster than an unlocked one, which is an oracle for "this
+  address is registered and somebody has been guessing at it".
+
+### The burst notice
+
+`failedLoginBurst` is sent **once per lock**, on the attempt that trips it, and not on every
+failure past the threshold — otherwise the notice is itself an outbound-email amplifier aimed at
+the victim, triggered by an unauthenticated caller at will, and the fifth message tells the
+recipient nothing the first did not.
+
+It renders **no display name, no IP address and no user agent**. A burst is somebody else's
+session: none of the three describes the recipient, and the user agent is a header the guessing
+party chose outright. Its context type carries `{ occurredAt, attemptCount }` and nothing else, so
+there is no parameter an attacker can reach — the structural fix rather than a filter. All three
+values are recorded in the `PlatformAuditEvent` row instead, which is where attacker-supplied text
+belongs. It is sent to an unverified address as well as a verified one, precisely because it
+carries nothing injectable and the person who most needs to hear "somebody is guessing at your
+account" is the one who has not finished setting it up.
+
+The unfamiliar-sign-in notice is the mirror image and is treated differently: it is sent **only to
+an address whose ownership has been proven**, it renders the IP and user agent because there they
+describe the recipient's own new session, and it renders **no display name** — `User.name` is free
+text an attacker seeds by registering a victim's address first, and the parameter was removed
+rather than filtered. "Unfamiliar" means the user has held no previous session, live or revoked,
+carrying the same IP and user agent. That is one indexed read and it is deliberately not device
+fingerprinting: an attacker who has the password can suppress the notice by copying a popular user
+agent, and a browser version bump or a change of mobile network will produce a false positive.
+False positives are the fail-safe direction.
 
 ## 8. SSO and SCIM
 

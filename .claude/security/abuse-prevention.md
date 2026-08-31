@@ -50,9 +50,29 @@ The fix is to split the limiter into an early per-IP stage and a late per-princi
 is owed and not built, and until it lands the only way to observe the gap is to run at
 `LOG_LEVEL=debug` and read for "could not be resolved".
 
+**A per-*account* window is a different thing and it does resolve — as of Phase 2 Task 9, on
+one route.** The three per-account rows in the table below are unauthenticated by definition:
+"5 / 15 min per account" means the account being *attempted*, which lives in the request body,
+not a principal the limiter could not have resolved anyway. `rate-limit.config.ts` expresses
+that as `principalSource: { bodyField: 'email' }`, and the value is hashed before it becomes a
+Redis key so an address never lands in the keyspace in plaintext.
+
+`POST /api/v1/auth/login` is the **first shipped route on which that source has ever
+resolved**. The `Login` row below is therefore live: both windows apply, and they bite
+independently, which is
+[`authentication.md`](authentication.md) §7's actual property rather than merely "a limit
+exists". Measured through the real application: six attempts against one address from one IP
+answer `401,401,401,401,401,429` while a second address from the same IP still signs in, and a
+sweep across distinct addresses from one IP is refused at the twenty-first attempt.
+
+`Email verification resend` also declares a `{ bodyField: 'email' }` source and has since Task
+8, but it is `3 / hour per account` on an endpoint that sends mail rather than one that checks
+a credential — the per-account half there bounds an outbound-email amplifier, not credential
+stuffing.
+
 | Endpoint class | Default |
 |---|---|
-| Login | 5 / 15 min per account, 20 / 15 min per IP |
+| Login | 5 / 15 min per account, 20 / 15 min per IP — **live on `POST /auth/login` since Task 9** |
 | Registration | 3 / hour per IP |
 | Password reset | 3 / hour per address, 10 / hour per IP |
 | Email verification resend | 3 / hour per account, 10 / hour per IP |
