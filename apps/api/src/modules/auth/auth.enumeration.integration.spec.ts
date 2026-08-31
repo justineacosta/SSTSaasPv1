@@ -66,6 +66,28 @@ const VOLATILE_HEADERS = new Set(['date', 'x-request-id']);
  */
 const NONCE = /'nonce-[^']+'/g;
 
+/**
+ * The per-request correlation id, blanked in an error body the same way the CSP
+ * nonce is blanked in a header.
+ *
+ * Task 8's comparisons were all of 200 responses whose bodies are a single
+ * constant literal, so nothing in a body varied. Task 9's login comparisons are
+ * of **error envelopes**, and `errorEnvelopeSchema` carries `requestId` — minted
+ * per request by `RequestIdMiddleware`, which is the entire point of it, and
+ * already excluded from the header comparison as `x-request-id`.
+ *
+ * Substituted rather than dropped: `code`, `message`, `details` and `timestamp`
+ * stay inside the comparison, and it is `code` and `message` that would carry an
+ * oracle. The timestamp is a second-resolution clock reading and is left in
+ * deliberately — the two requests are made back to back, and if it ever does
+ * differ the comparison should fail and be looked at rather than silently
+ * excluded.
+ */
+const REQUEST_ID = /"requestId":"[^"]*"/g;
+
+const comparableBody = (response: Response): Buffer =>
+  Buffer.from(response.text.replace(REQUEST_ID, '"requestId":"PER-REQUEST"'));
+
 function comparableHeaders(response: Response): [string, string][] {
   return Object.entries(response.headers)
     .filter(([name]) => !VOLATILE_HEADERS.has(name.toLowerCase()))
@@ -231,6 +253,116 @@ describe('POST /auth/resend-verification answers identically in all three cases'
 
     await post('/api/v1/auth/resend-verification', { email: unverified });
     expect(h.sent.map((mail) => mail.templateId)).toEqual(['emailVerification']);
+  });
+});
+
+describe('POST /auth/login answers identically for a wrong password and an unknown address', () => {
+  /**
+   * THE COMPARISON TASK 9 OWES, AND IT IS THE SHARPEST ONE IN THIS FILE.
+   *
+   * Registration's two paths differ in a mailbox. Login's two failing paths
+   * differ in nothing at all — one has an account behind it and one does not —
+   * and the whole of `security/authentication.md` §7's "responses that do not
+   * distinguish existing from non-existing accounts" rests on that being true
+   * byte for byte, not approximately.
+   *
+   * The fixtures sit on opposite sides of the branch and it is checked rather
+   * than assumed, exactly as the registration block above does it: the
+   * existing account is read back out of the database, and the unknown address
+   * is confirmed absent.
+   */
+  it('is byte-identical in status, headers and body', async () => {
+    const registered = freshAddress();
+    await post('/api/v1/auth/register', { email: registered, password: PASSWORD });
+    expect(await h.prisma.user.count({ where: { email: registered } })).toBe(1);
+
+    const unknown = `never-registered-${String(Date.now())}@example.test`;
+    expect(await h.prisma.user.count({ where: { email: unknown } })).toBe(0);
+
+    const forExisting = await post('/api/v1/auth/login', {
+      email: registered,
+      password: 'a completely different password',
+    });
+    const forUnknown = await post('/api/v1/auth/login', {
+      email: unknown,
+      password: 'a completely different password',
+    });
+
+    expect(forExisting.status).toBe(401);
+    expect(forUnknown.status).toBe(forExisting.status);
+    expect(comparableHeaders(forUnknown)).toEqual(comparableHeaders(forExisting));
+    expect(comparableBody(forUnknown)).toEqual(comparableBody(forExisting));
+  });
+
+  it('is byte-identical for an account that has no credential row at all', async () => {
+    // A third case reaching the same 401: `Credential` is a separate table and
+    // a `User` can exist without one. It takes the nullable-hash path, so it
+    // costs the same Argon2id verification and answers the same bytes.
+    const orphaned = freshAddress();
+    await post('/api/v1/auth/register', { email: orphaned, password: PASSWORD });
+    await h.prisma.credential.deleteMany({
+      where: { user: { email: orphaned } },
+    });
+
+    const unknown = `never-registered-${String(Date.now())}@example.test`;
+    const a = await post('/api/v1/auth/login', { email: orphaned, password: PASSWORD });
+    const b = await post('/api/v1/auth/login', { email: unknown, password: PASSWORD });
+
+    expect(a.status).toBe(401);
+    expect(comparableHeaders(a)).toEqual(comparableHeaders(b));
+    expect(comparableBody(a)).toEqual(comparableBody(b));
+  });
+
+  it('does not distinguish a LOCKED account from an unknown one on a WRONG password', async () => {
+    // D3's rule, as a byte comparison. `ACCOUNT_LOCKED` is returned only when
+    // the password was otherwise correct; answering it to any attempt would
+    // confirm the address is registered to exactly the caller who has just
+    // demonstrated they will make five attempts.
+    const locked = freshAddress();
+    await post('/api/v1/auth/register', { email: locked, password: PASSWORD });
+    await h.prisma.user.update({
+      where: { email: locked },
+      data: { failedLoginCount: 5, lockedUntil: new Date(Date.now() + 600_000) },
+    });
+
+    const unknown = `never-registered-${String(Date.now())}@example.test`;
+    const a = await post('/api/v1/auth/login', { email: locked, password: 'wrong wrong wrong' });
+    const b = await post('/api/v1/auth/login', { email: unknown, password: 'wrong wrong wrong' });
+
+    expect(a.status).toBe(401);
+    expect(comparableHeaders(a)).toEqual(comparableHeaders(b));
+    expect(comparableBody(a)).toEqual(comparableBody(b));
+  });
+
+  it('really did take two different paths', async () => {
+    // THE ANTI-VACUITY TEST, and this file's own docblock explains why it is
+    // here: every comparison above would pass identically if login had simply
+    // stopped finding accounts. The difference between the paths is in the
+    // audit table — one row names the account, one names nothing — and that is
+    // where it is checked, because the wire deliberately shows nothing.
+    const registered = freshAddress();
+    await post('/api/v1/auth/register', { email: registered, password: PASSWORD });
+    const user = await h.prisma.user.findUniqueOrThrow({ where: { email: registered } });
+
+    await post('/api/v1/auth/login', { email: registered, password: 'wrong wrong wrong' });
+    expect(
+      await h.prisma.platformAuditEvent.count({
+        where: { action: 'LOGIN_FAILED', resourceId: user.id },
+      }),
+    ).toBe(1);
+
+    const before = await h.prisma.platformAuditEvent.count({
+      where: { action: 'LOGIN_FAILED', resourceId: null },
+    });
+    await post('/api/v1/auth/login', {
+      email: `never-registered-${String(Date.now())}@example.test`,
+      password: 'wrong wrong wrong',
+    });
+    expect(
+      await h.prisma.platformAuditEvent.count({
+        where: { action: 'LOGIN_FAILED', resourceId: null },
+      }),
+    ).toBe(before + 1);
   });
 });
 

@@ -36,6 +36,14 @@ import type { Mailer, OutgoingMail, SentMail } from '../infrastructure/mail/mail
 loadDotenv({ path: fileURLToPath(new URL('../../../../.env', import.meta.url)) });
 
 export interface RedisLike {
+  /**
+   * Reads one key. Added in Task 9 so a spec can assert that a logout left a
+   * **tombstone** rather than merely deleting the entry — the two are
+   * indistinguishable from the outside (both make the next resolve miss) and
+   * only the tombstone survives a concurrent live write, which is the property
+   * `session.cache.ts`'s Lua compare-and-set exists for.
+   */
+  get(key: string): Promise<string | null>;
   del(...keys: string[]): Promise<number>;
   scan(
     cursor: string,
@@ -49,7 +57,27 @@ export interface RedisLike {
 export interface AuthHarness {
   readonly app: NestExpressApplication;
   readonly server: Server;
+  /**
+   * The schema-owner client the specs set fixtures up with.
+   *
+   * **It is a superuser and therefore bypasses row-level security**, which is
+   * exactly why it is the right tool for seeding and the wrong one for
+   * asserting that a production read works. See `appPrisma`.
+   */
   readonly prisma: PrismaClient;
+  /**
+   * A second client bound to `sentinel_app` — the least-privileged role the API
+   * process itself connects as, and the one every RLS policy applies to.
+   *
+   * It exists because of a measured trap. `Organization` carries
+   * `FORCE ROW LEVEL SECURITY` keyed on `id`, so a read without
+   * `app.organization_id` set returns **zero rows** for that role while
+   * returning the row for the owner. A spec that seeded and asserted through
+   * `prisma` alone would prove nothing about production and would go green over
+   * a lookup that always answers `null` there — carry-forward ruling 58's shape
+   * exactly: every fixture on one side of the branch under test.
+   */
+  readonly appPrisma: PrismaClient;
   readonly postgres: PostgresHarness;
   readonly redis: RedisLike;
   readonly sent: OutgoingMail[];
@@ -62,6 +90,7 @@ export async function startAuthHarness(): Promise<AuthHarness> {
 
   const postgres = await startPostgresHarness();
   const prisma = createUnscopedPrismaClient(postgres.ownerUrl);
+  const appPrisma = createUnscopedPrismaClient(postgres.appUrl);
   const sent: OutgoingMail[] = [];
   const recordingMailer: Mailer = {
     send: (mail): Promise<SentMail> => {
@@ -87,35 +116,49 @@ export async function startAuthHarness(): Promise<AuthHarness> {
     app,
     server: app.getHttpServer(),
     prisma,
+    appPrisma,
     postgres,
     redis,
     sent,
     stop: async () => {
       await app.close();
       await prisma.$disconnect();
+      await appPrisma.$disconnect();
       await postgres.stop();
     },
   };
 }
 
 /**
- * The rate-limit classes Task 8's routes carry. Their buckets are keyed on the
- * loopback address every request in these suites arrives from, so without this
- * the second test in a file is refused by the first test's window —
- * `registration` allows three an hour.
+ * The rate-limit classes the shipped auth routes carry. Their buckets are keyed
+ * on the loopback address every request in these suites arrives from, so
+ * without this the second test in a file is refused by the first test's window
+ * — `registration` allows three an hour, and `login` five per account per
+ * fifteen minutes.
  *
  * Scanned by class prefix rather than `FLUSHDB`: carry-forward ruling 33, the
  * compose Redis is shared with every other integration suite and with a
  * developer's running application.
+ *
+ * `generalSession` is in the list although `logout` and `session` carry it and
+ * it resolves nothing today (carry-forward ruling 55) — so it writes no keys
+ * and the scan finds none. It is listed so that the day the limiter is split
+ * into an early per-IP stage and it starts resolving, these suites do not begin
+ * failing on a window nobody remembered to clear.
  */
-export const TASK_8_RATE_LIMIT_CLASSES = [
+export const AUTH_RATE_LIMIT_CLASSES = [
   'registration',
   'emailVerificationConsume',
   'emailVerificationResend',
+  'login',
+  'generalSession',
 ] as const;
 
+/** @deprecated Task 8's name for the list above. Kept so its two specs still read. */
+export const TASK_8_RATE_LIMIT_CLASSES = AUTH_RATE_LIMIT_CLASSES;
+
 export async function clearRateLimits(redis: RedisLike): Promise<void> {
-  for (const className of TASK_8_RATE_LIMIT_CLASSES) {
+  for (const className of AUTH_RATE_LIMIT_CLASSES) {
     let cursor = '0';
     do {
       const [next, found] = await redis.scan(
