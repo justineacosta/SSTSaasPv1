@@ -437,11 +437,14 @@ export class LoginService {
       // branded security notice sent to an address nobody has proven belongs to
       // the account owner is still a message about somebody's account sent to
       // somebody who may not be them.
+      // NO USER AGENT. H2: it is the signing-in party's chosen header, and on
+      // the takeover path this message is going to somebody else. It is in the
+      // `LOGIN` audit row written above, which is where attacker-supplied text
+      // belongs. `AuthMailer.sendNewDeviceSignIn` has no parameter for it.
       await this.mailer.sendNewDeviceSignIn({
         to: user.email,
         occurredAt: now,
         ip: command.ip,
-        userAgent: command.userAgent,
       });
     }
 

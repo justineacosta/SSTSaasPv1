@@ -369,6 +369,37 @@ Growing the lock costs the attacker time and costs us one integer and one timest
   a locked account answer measurably faster than an unlocked one, which is an oracle for "this
   address is registered and somebody has been guessing at it".
 
+### No security notice renders a user agent
+
+**No message this product sends renders a `User-Agent`, on any template.** The field was removed
+from the shared context block outright, so there is no parameter for it to travel through.
+
+This replaces a narrower rule. The earlier one licensed a `Device:` line on the four notices that
+describe an action taken with the account's own credentials, on the grounds that "there it
+describes the recipient's own session". That exception produced **three findings in three tasks** —
+the caller's `User-Agent` in the registration-attempt notice, the stored display name through the
+same template, and then the unfamiliar-sign-in notice, whose entire purpose is to warn a victim
+that somebody *else* is in their account. On that path the recipient and the party who chose the
+header are different people, which is the condition the rule already forbade. A rule with an
+exception that has produced three findings in three tasks is not a rule with an exception.
+
+**The IP address stays, and the difference is enforced rather than assumed.** It is the socket peer
+address, read with `trust proxy` disabled, so a client cannot choose it. That was originally the
+*reason* for keeping the line and not a property of the code — a value that was not an address
+would have been rendered verbatim, and measurement showed a URL passed as the address produced a
+link in all four notices. The renderer now emits an address only when the value is an address
+literal, and `not recorded` otherwise, which is the same answer an absent one gets.
+
+The user agent is not discarded. It goes in the `PlatformAuditEvent` row, which is where
+attacker-supplied text belongs: read by an operator, in an append-only table built for exactly
+that, never rendered into a message sent to somebody else.
+
+**One residual is open and is not this rule's.** Three notices still greet by display name —
+password-changed and the two MFA notices — and `User.name` is free text an attacker seeds by
+registering a victim's address first. None of the three has a caller yet; the tasks that ship those
+callers own closing it, and the template suite asserts the residual from both sides so that closing
+it turns a test red.
+
 ### The burst notice
 
 `failedLoginBurst` is sent **once per lock**, on the attempt that trips it, and not on every
@@ -386,8 +417,8 @@ carries nothing injectable and the person who most needs to hear "somebody is gu
 account" is the one who has not finished setting it up.
 
 The unfamiliar-sign-in notice is the mirror image and is treated differently: it is sent **only to
-an address whose ownership has been proven**, it renders the IP and user agent because there they
-describe the recipient's own new session, and it renders **no display name** — `User.name` is free
+an address whose ownership has been proven**, it renders the IP address, and it renders **no display
+name and no user agent** — `User.name` is free
 text an attacker seeds by registering a victim's address first, and the parameter was removed
 rather than filtered. "Unfamiliar" means the user has held no previous session, live or revoked,
 carrying the same IP and user agent. That is one indexed read and it is deliberately not device

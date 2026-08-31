@@ -27,18 +27,56 @@ import { formatUtcTimestamp, renderEmail, type RenderedEmail } from './layout.js
  */
 
 /**
- * The three lines `whereAndWhen` renders, split out from the greeting.
+ * The two lines `whereAndWhen` renders, split out from the greeting.
  *
  * Separate from `SecurityNoticeContext` because Task 9 introduced the first
  * notice that renders the context block and **no** display name
  * (`newDeviceSignIn`). Composing the block out of a narrower type is what lets
  * that template drop `recipientName` from its own context without inventing a
  * fake one to satisfy this function's parameter.
+ *
+ * # THERE IS NO `userAgent` FIELD, AND THAT SUPERSEDES RULING 63
+ *
+ * Ruling 63's rule is *a message this product sends to one person must never
+ * render text a different person chose.* It licensed a `Device:` line on four
+ * notices with a carve-out: *"there it describes the recipient's own session"*.
+ *
+ * **That carve-out is withdrawn, deliberately, and this is the third finding it
+ * produced in three tasks** — Task 8's H1 (`registrationAttempt` rendering the
+ * caller's `User-Agent`), Task 8's F1 (the display name through the same
+ * template), and Task 9's H2. H2 is the case the carve-out's reasoning did not
+ * consider: `newDeviceSignIn` fires on an *unfamiliar* sign-in, so on the
+ * takeover path the recipient and the chooser are **different people** — which
+ * is precisely the condition ruling 63's own sentence forbids. The reviewer
+ * rendered it from the built module: a `Device:` line carrying
+ * `https://sentinel-verify.evil.example/login`, under a footer promising the
+ * message contains no link, aimed at the victim of the takeover the message
+ * exists to warn them about. Repeatable, too: familiarity is exact-match on the
+ * user agent, so varying it produces a fresh notice every time.
+ *
+ * A rule with an exception that has produced three findings in three tasks is
+ * not a rule with an exception; it is a rule nobody is following. The field is
+ * gone rather than filtered, for the reason the H1 fix gives: a denylist over
+ * attacker text is a defect waiting for a new encoding, and a parameter that
+ * does not exist is not.
+ *
+ * # `IP address:` stays, and the difference is not a matter of degree
+ *
+ * `ip` is `request.ip` — Express's socket peer address, with `trust proxy`
+ * disabled (`request-context.ts`), bounded to 45 characters and set to NULL
+ * rather than truncated when it does not fit (`session.service.ts`). It is not
+ * free text: a client cannot choose it, it cannot carry a URL or a sentence,
+ * and it is the one line in the block a recipient can actually act on. A user
+ * agent is a request header the client picks outright, up to 512 characters.
+ *
+ * The user agent is not discarded — it goes in the `PlatformAuditEvent` row,
+ * which is where attacker-supplied text belongs: read by an operator, in an
+ * append-only table built for exactly that, never rendered into a message sent
+ * to somebody else.
  */
 export interface NoticeOccurrenceContext {
   readonly occurredAt: Date;
   readonly ipAddress?: string | undefined;
-  readonly userAgent?: string | undefined;
 }
 
 export interface SecurityNoticeContext extends NoticeOccurrenceContext {
@@ -47,11 +85,42 @@ export interface SecurityNoticeContext extends NoticeOccurrenceContext {
 
 const UNKNOWN = 'not recorded';
 
+/**
+ * An IPv4 or IPv6 literal, and nothing else, may be rendered as an address.
+ *
+ * **This exists because the reason for keeping `IP address:` was a claim about
+ * today's caller rather than a property of the code.** H2's disposition kept
+ * the line on the grounds that "a socket peer address is not free text, cannot
+ * carry a URL, and is bounded and validated already". The first half is true of
+ * `request.ip` with `trust proxy` disabled; the second half was not true
+ * anywhere between that read and this line. `AuthMailer.sendNewDeviceSignIn`
+ * accepted `ip: string | null` and this function rendered whatever it was
+ * handed — measured against the built module: passing a URL as `ipAddress`
+ * produced a link in all four context-rendering notices, `newDeviceSignIn`
+ * included, under the footer promising there is none.
+ *
+ * That is carry-forward ruling 22's shape — a decision that is right with a
+ * reason beside it that is false — and it is what ruling 63's withdrawn
+ * carve-out was too. So the claim is enforced rather than asserted: a value
+ * that is not an address is rendered as `not recorded`, which is the same
+ * honest answer an absent one gets.
+ *
+ * Deliberately a **shape** check and not a parser. It does not need to accept
+ * every legal address or reject every illegal one; it needs to make it
+ * impossible for this line to carry a sentence, a URL, or markup. Hex digits,
+ * dots and colons cannot form a scheme, an `href`, or a tag.
+ */
+const IP_LITERAL = /^[0-9a-fA-F.:]{3,45}$/;
+
+function renderableIpAddress(value: string | undefined): string {
+  if (value === undefined) return UNKNOWN;
+  return IP_LITERAL.test(value) ? value : UNKNOWN;
+}
+
 function whereAndWhen(context: NoticeOccurrenceContext): readonly string[] {
   return [
     `When: ${formatUtcTimestamp(context.occurredAt)}`,
-    `IP address: ${context.ipAddress ?? UNKNOWN}`,
-    `Device: ${context.userAgent ?? UNKNOWN}`,
+    `IP address: ${renderableIpAddress(context.ipAddress)}`,
   ];
 }
 

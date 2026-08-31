@@ -62,7 +62,6 @@ interface AttackerStrings {
   readonly name: string;
   readonly organizationName: string;
   readonly ipAddress: string;
-  readonly userAgent: string;
 }
 
 /**
@@ -84,6 +83,11 @@ const NAMELESS_TEMPLATE_IDS = [
   'emailVerification',
   'registrationAttempt',
   'failedLoginBurst',
+  // Joined the list in the H2 fix round. It never took a name; it took a user
+  // agent (removed from `whereAndWhen` outright) and an IP address (now
+  // rendered only if it is an address literal), so there is no longer any
+  // attacker-chosen string for it to escape — the assertion for it is ABSENCE.
+  'newDeviceSignIn',
 ] as const satisfies readonly EmailTemplateId[];
 
 /**
@@ -149,12 +153,10 @@ const CASES: Record<EmailTemplateId, (s: AttackerStrings) => RenderedEmail> = {
   // `recipientName` field as of Task 9 (ruling 70). The IP and the user agent
   // are still passed and still escaped, because there they describe the
   // recipient's own session.
+  // NEITHER a name NOR a user agent, and neither can be passed: the context
+  // type carries no field for either (rulings 70 and, since H2, 63-as-amended).
   newDeviceSignIn: (s) =>
-    EMAIL_TEMPLATES.newDeviceSignIn({
-      occurredAt: OCCURRED_AT,
-      ipAddress: s.ipAddress,
-      userAgent: s.userAgent,
-    }),
+    EMAIL_TEMPLATES.newDeviceSignIn({ occurredAt: OCCURRED_AT, ipAddress: s.ipAddress }),
   registrationAttempt: () => EMAIL_TEMPLATES.registrationAttempt({ occurredAt: OCCURRED_AT }),
   // Two fields, neither of them caller-supplied text. `attemptCount` is our own
   // counter and `occurredAt` is our own clock reading.
@@ -163,11 +165,12 @@ const CASES: Record<EmailTemplateId, (s: AttackerStrings) => RenderedEmail> = {
 };
 
 function notice(s: AttackerStrings) {
+  // No `userAgent`. H2 removed it from `whereAndWhen`, so no notice template
+  // has a field for it and this helper cannot supply one.
   return {
     recipientName: s.name,
     occurredAt: OCCURRED_AT,
     ipAddress: s.ipAddress,
-    userAgent: s.userAgent,
   };
 }
 
@@ -175,7 +178,6 @@ const BENIGN: AttackerStrings = {
   name: 'Ada Lovelace',
   organizationName: 'Acme Security',
   ipAddress: '203.0.113.7',
-  userAgent: 'Mozilla/5.0 (X11; Linux x86_64)',
 };
 
 /**
@@ -202,7 +204,6 @@ const HOSTILE: AttackerStrings = {
   name: XSS_WITH_URL,
   organizationName: XSS_WITH_URL,
   ipAddress: XSS_WITH_URL,
-  userAgent: XSS_WITH_URL,
 };
 
 const SAMPLES = (id: EmailTemplateId): RenderedEmail => CASES[id](BENIGN);
@@ -494,7 +495,6 @@ describe.each(CONTEXT_FREE_NOTICE_IDS)('context-free notice %s', (id) => {
       ...BENIGN,
       name: XSS_WITH_URL,
       ipAddress: XSS_WITH_URL,
-      userAgent: XSS_WITH_URL,
     });
     expect(email.text).not.toMatch(/https?:\/\//);
     expect(email.html).not.toMatch(/https?:\/\//);
@@ -510,11 +510,9 @@ describe.each(CONTEXT_FREE_NOTICE_IDS)('context-free notice %s', (id) => {
     const email = CASES[id]({
       ...BENIGN,
       ipAddress: 'FIXTURE-ip-198.51.100.9',
-      userAgent: 'FIXTURE-agent-Chameleon/1.0',
     });
     for (const part of [email.html, email.text]) {
       expect(part).not.toContain('FIXTURE-ip-198.51.100.9');
-      expect(part).not.toContain('FIXTURE-agent-Chameleon/1.0');
       expect(part).not.toContain('Device:');
       expect(part).not.toContain('IP address:');
     }
@@ -564,20 +562,130 @@ describe('failedLoginBurst', () => {
   });
 });
 
-describe.each(CONTEXT_RENDERING_NOTICE_IDS)('context-rendering notice %s', (id) => {
-  it('DOES reflect the user agent it is given — an open residual, asserted so it is visible', () => {
-    // NOT an endorsement. This is a characterisation test: it records that the
-    // same injection H1 closed on `registrationAttempt` is still open on these
-    // four, so the residual lives in the suite rather than only in prose, and
-    // the day somebody closes it this test goes red and has to be deleted
-    // deliberately.
+describe.each(NOTICE_TEMPLATE_IDS)('notice %s renders no device string', (id) => {
+  it('says nothing about a user agent, because no template has a field for one', () => {
+    // THE TEST THAT REPLACED A CHARACTERISATION TEST, AND THE DELETION WAS THE
+    // POINT OF THE OLD ONE.
     //
-    // Lower severity than H1 and not zero: reaching these requires the
-    // account's own credentials, and none of the four has a caller yet
-    // (Tasks 9 and 11 add them). The device line is kept because it is how a
-    // recipient recognises a session that is not theirs.
-    const email = CASES[id]({ ...BENIGN, userAgent: 'FIXTURE-agent-Chameleon/1.0' });
-    expect(email.text).toContain('FIXTURE-agent-Chameleon/1.0');
+    // Until H2 this block asserted the opposite — that four notices DID render
+    // the caller's `User-Agent` — as a deliberate record of an accepted
+    // residual, with the note "the day somebody closes it this test goes red
+    // and has to be deleted deliberately". H2 is that day: it went red on all
+    // four when `whereAndWhen` stopped rendering the field, and it is deleted
+    // rather than adjusted.
+    //
+    // The risk acceptance it carried is void with it, and its stated grounds
+    // were what made this a finding rather than an inherited residual: *"none
+    // of the four has a caller yet (Tasks 9 and 11 add them)"*. Task 9 shipped
+    // `newDeviceSignIn`'s caller, edited this file in the same commit, and left
+    // the sentence — so nobody re-decided. The reviewer rendered the result
+    // from the built module: a `Device:` line carrying
+    // `https://sentinel-verify.evil.example/login`, under a footer promising
+    // the message contains no link, sent to the victim of the takeover the
+    // message exists to warn them about.
+    //
+    // The assertion below is weak on its own — no context type has a
+    // `userAgent` field, so `pnpm typecheck` is the real control and this
+    // cannot fail while that compiles. It is here so a reader of the suite sees
+    // the property stated, and so that reinstating the field means turning a
+    // test red rather than merely adding a line.
+    const email = SAMPLES(id);
+    for (const part of [email.html, email.text]) {
+      expect(part).not.toContain('Device:');
+      expect(part).not.toContain('Mozilla');
+    }
+  });
+});
+
+/**
+ * THE THREE NOTICES THAT STILL GREET BY NAME, AND THEREFORE STILL CARRY THE
+ * RESIDUAL RULING 70 NAMES.
+ *
+ * Measured during the H2 fix round, against the built module: with every other
+ * caller-supplied field benign, a `recipientName` that is a URL still produces
+ * a link in these three. `User.name` is 200 characters of free text written
+ * straight from a registration body, so this is ruling 70's open item, not a
+ * new one — the ruling assigns `passwordReset`'s copy of it to **Task 10** and
+ * the reasoning reaches the two MFA notices, which are **Task 11's**.
+ *
+ * **None of the three has a shipped caller**, and that is what makes this an
+ * inherited residual rather than a live defect. It is also the exact sentence
+ * that was false about `newDeviceSignIn` before H2 — Task 9 shipped its caller
+ * and left the claim standing — so it is stated here as a checkable fact rather
+ * than a reassurance: `grep -rn "sendPasswordChanged\|sendMfaEnabled\|sendMfaDisabled"
+ * apps/api/src` returns nothing but this comment.
+ *
+ * The block below is two-sided on purpose. It asserts that the residual is
+ * **exactly** the display name — every other field hostile produces no link —
+ * and that the display name **does** still carry one. A one-sided version could
+ * go vacuous; this one goes red the day either half changes, which is what the
+ * characterisation test H2 deleted failed to do.
+ */
+const NAME_GREETING_NOTICE_IDS = [
+  'passwordChanged',
+  'mfaEnabled',
+  'mfaDisabled',
+] as const satisfies readonly EmailTemplateId[];
+
+const RULING_70_CLEAN_NOTICE_IDS = NOTICE_TEMPLATE_IDS.filter(
+  (id) => !(NAME_GREETING_NOTICE_IDS as readonly EmailTemplateId[]).includes(id),
+);
+
+describe.each(NAME_GREETING_NOTICE_IDS)('notice %s still greets by name', (id) => {
+  it('renders no link when every field EXCEPT the display name is a URL', () => {
+    // The half H2 closed. Before the IP guard this failed here too: `ipAddress`
+    // was rendered verbatim, so a URL in it produced a link in all four
+    // context-rendering notices. Measured, and now enforced by
+    // `renderableIpAddress` rather than asserted about the caller.
+    const email = CASES[id]({
+      name: 'Ada Lovelace',
+      organizationName: XSS_WITH_URL,
+      ipAddress: XSS_WITH_URL,
+    });
+    for (const part of [email.html, email.text]) {
+      expect(part).not.toMatch(/https?:\/\//);
+      expect(part).not.toContain(INJECTED_URL);
+    }
+  });
+
+  it('DOES render a display name that is a URL — ruling 70 open, owned by Tasks 10 and 11', () => {
+    // NOT an endorsement, and not a test to adjust. It records the exact shape
+    // of what is left, so the residual lives in the suite rather than only in
+    // prose, and so that closing it turns this red and forces a deliberate
+    // deletion. The one it replaces made the same promise and had the wrong
+    // grounds written under it; these grounds are checkable — see the docblock.
+    const email = CASES[id]({
+      name: XSS_WITH_URL,
+      organizationName: 'Acme Security',
+      ipAddress: '203.0.113.7',
+    });
+    expect(email.text).toContain(INJECTED_URL);
+  });
+});
+
+describe.each(RULING_70_CLEAN_NOTICE_IDS)('notice %s under ruling 70 prescribed payload', (id) => {
+  it('renders no link when EVERY caller-supplied field it accepts is a URL', () => {
+    // RULING 70'S PRESCRIBED TEST, APPLIED TO EVERY NOTICE RATHER THAN TO TWO.
+    //
+    // "The test to write is 'no link when EVERY caller-supplied field is a
+    // URL', with the display name in the list." It existed over
+    // `CONTEXT_FREE_NOTICE_IDS` only — two templates — and the block that
+    // covered the other four passed BENIGN values for `ipAddress` and
+    // `userAgent` and hostile text only for the name. That is carry-forward
+    // ruling 58's family: a fixture sitting on one side of the branch under
+    // test, which is how H2 stayed green here while being live in production.
+    //
+    // Every caller-supplied field each template accepts now carries a URL.
+    const email = CASES[id]({
+      name: XSS_WITH_URL,
+      organizationName: XSS_WITH_URL,
+      ipAddress: XSS_WITH_URL,
+    });
+    for (const part of [email.html, email.text]) {
+      expect(part).not.toMatch(/https?:\/\//);
+      expect(part).not.toContain(INJECTED_URL);
+    }
+    expect(email.html).not.toContain('href');
   });
 });
 
