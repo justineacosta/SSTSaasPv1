@@ -115,6 +115,46 @@ describe('every authentication request schema rejects unknown fields', () => {
   }
 });
 
+describe('loginRequestSchema and rememberMe', () => {
+  // Carry-forward ruling 18. The field is OPTIONAL, which is what makes it
+  // additive under `api/conventions.md` §8: every client written against the
+  // two-field body keeps working, and a client that wants a 30-day session
+  // says so.
+  it('accepts a body without rememberMe at all', () => {
+    const parsed = loginRequestSchema.parse({ email: 'a@example.com', password: VALID_PASSWORD });
+    expect('rememberMe' in parsed).toBe(false);
+  });
+
+  it('accepts rememberMe: true and rememberMe: false', () => {
+    expect(
+      loginRequestSchema.parse({
+        email: 'a@example.com',
+        password: VALID_PASSWORD,
+        rememberMe: true,
+      }).rememberMe,
+    ).toBe(true);
+    expect(
+      loginRequestSchema.parse({
+        email: 'a@example.com',
+        password: VALID_PASSWORD,
+        rememberMe: false,
+      }).rememberMe,
+    ).toBe(false);
+  });
+
+  it('refuses a non-boolean rememberMe rather than coercing it', () => {
+    // A string `"false"` is truthy in JavaScript, so coercion here would turn
+    // an explicit refusal of a long session into a thirty-day credential.
+    expect(
+      loginRequestSchema.safeParse({
+        email: 'a@example.com',
+        password: VALID_PASSWORD,
+        rememberMe: 'false',
+      }).success,
+    ).toBe(false);
+  });
+});
+
 describe('loginResponseSchema', () => {
   it('accepts the no-MFA shape', () => {
     expect(loginResponseSchema.parse({ mfaRequired: false })).toEqual({ mfaRequired: false });
