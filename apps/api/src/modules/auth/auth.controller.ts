@@ -90,6 +90,13 @@ export class AuthController {
       'Creates an account and sends a verification link. The response is identical whether or ' +
       'not the address is already registered: an address that already has an account receives ' +
       'a notice about the attempt instead of a link, and nothing about the account changes.',
+    requestBody: {
+      description:
+        'The address is lower-cased and trimmed before use. Unknown fields are rejected, not ' +
+        'ignored: the schema is strict, so a typo in a field name is a 400 rather than a ' +
+        'silently dropped value.',
+      schema: registerRequestSchema,
+    },
     responses: [
       {
         status: 200,
@@ -139,6 +146,7 @@ export class AuthController {
       'Redeems a single-use verification token and marks the address confirmed. Unknown, ' +
       'expired, already-used and superseded tokens all produce the same refusal, so the ' +
       'endpoint cannot be used to discover which addresses are registered.',
+    requestBody: { schema: verifyEmailRequestSchema },
     responses: [
       {
         status: 200,
@@ -186,6 +194,7 @@ export class AuthController {
       'Issues a fresh verification link, which invalidates any previous one for that account. ' +
       'The response is identical for an address with no account, an address awaiting ' +
       'confirmation, and an address already confirmed.',
+    requestBody: { schema: resendVerificationRequestSchema },
     responses: [
       {
         status: 200,

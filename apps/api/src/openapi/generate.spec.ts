@@ -127,6 +127,55 @@ describe('buildOpenApiDocument', () => {
     });
   });
 
+  it('converts a declared Zod request schema into the request body', () => {
+    // M8. Until Task 8 this could not be expressed at all: Phase 1 shipped only
+    // GET health probes, so nothing ever asked the generator to describe a body,
+    // and the first three POST routes published what they answer and nothing
+    // about what to send.
+    const document = buildOpenApiDocument([
+      route({
+        method: 'POST',
+        path: '/api/v1/auth/register',
+        handler: 'register',
+        doc: {
+          summary: 'Register an account.',
+          requestBody: {
+            description: 'Unknown fields are rejected, not ignored.',
+            schema: z.object({ email: z.string().email() }).strict(),
+          },
+          responses: [],
+        },
+      }),
+    ]);
+
+    expect(document.paths['/api/v1/auth/register']?.['post']?.requestBody).toEqual({
+      description: 'Unknown fields are rejected, not ignored.',
+      required: true,
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: { email: { type: 'string', format: 'email' } },
+            required: ['email'],
+            // The published consequence of `.strict()`. A client cannot learn
+            // from the document that an unknown key is a 400 `UNKNOWN_FIELD`
+            // unless this survives the conversion.
+            additionalProperties: false,
+          },
+        },
+      },
+    });
+  });
+
+  it('omits requestBody entirely for a route that declares none', () => {
+    // A `GET` must not sprout an empty body object: `required: true` with no
+    // content would describe a probe as refusing an empty request.
+    const document = buildOpenApiDocument([
+      route({ doc: { summary: 'Liveness probe.', responses: [] } }),
+    ]);
+    expect(document.paths['/health/live']?.['get']).not.toHaveProperty('requestBody');
+  });
+
   it('documents a status code declared without a body', () => {
     const document = buildOpenApiDocument([
       route({

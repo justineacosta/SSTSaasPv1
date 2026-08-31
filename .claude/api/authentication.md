@@ -171,6 +171,13 @@ no field can vary with the account. Registration answers identically whether or 
 is already in use, and the resend answers identically for an address with no account, one
 awaiting confirmation, and one already confirmed.
 
+**The request bodies are published, and that is new.** The generated document describes what
+each of these three accepts, not only what it answers — including that a request schema is
+`.strict()`, which reaches the document as `additionalProperties: false`, so a client can see
+that an unknown field is a 400 `UNKNOWN_FIELD` rather than a silently discarded value. Phase 1
+shipped only `GET` health probes, so `ApiDoc` had no way to describe a body at all until these
+routes needed one.
+
 **Refusals.**
 
 | Situation | Status | Code |
