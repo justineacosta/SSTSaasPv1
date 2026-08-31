@@ -458,6 +458,17 @@ fingerprinting: an attacker who has the password can suppress the notice by copy
 agent, and a browser version bump or a change of mobile network will produce a false positive.
 False positives are the fail-safe direction.
 
+**It is not throttled, and that is an open gap rather than a decision.** Because familiarity is an
+exact match on the triple, somebody holding the password can send the account owner one notice per
+sign-in by varying the user agent — measured at five notices for five logins. Since the H2 fix the
+content is benign (no name, no user agent, an IP held to an address shape), so what is left is
+mailbox flooding and alert fatigue rather than phishing: the cost is that the notice which matters
+arrives among a hundred that do not. The burst notice solves the same problem for failed logins by
+sending once per lock; this one has no equivalent, because the natural key would be per device and
+the device is exactly what an attacker varies. **Closing it needs per-account notice throttling,
+which nothing in this product has yet** — a Phase 4 concern alongside the queue, and named here so
+the next person to touch this notice knows it is missing rather than deliberate.
+
 ## 8. SSO and SCIM
 
 > **Status: Not Implemented — Phase 11.** The data model does not block it.

@@ -723,6 +723,37 @@ describe('a successful login', () => {
   });
 });
 
+describe('the refusal message a locked account receives', () => {
+  it('is true of both kinds of lock, and names no duration', async () => {
+    /**
+     * L5, and the reason it needs a test rather than a comment: the second
+     * reviewer reverted this message to the version that said "temporarily
+     * locked … try again later, or reset your password" and **both lanes
+     * stayed green**. Nothing observed the string.
+     *
+     * All three clauses are false for `status = DISABLED`, which answers with
+     * the same code by design. One code and one message is right — a second
+     * distinguishable outcome is a second thing a caller can learn by
+     * submitting values — but non-disclosure must not be bought by telling the
+     * legitimate user something untrue.
+     */
+    const h = harness();
+    await seedAccount(h, { status: 'DISABLED' });
+
+    const error = await h.service.login(COMMAND).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(AccountLockedError);
+    expect((error as AccountLockedError).message).toBe(
+      'This account cannot be signed in to at the moment. If this is unexpected, contact your organisation owner or Sentinel support.',
+    );
+    // No duration, no promise that waiting helps, no advice to reset a password
+    // that is not the problem.
+    for (const claim of ['temporar', 'try again', 'reset your password', 'minute']) {
+      expect((error as AccountLockedError).message.toLowerCase()).not.toContain(claim);
+    }
+  });
+});
+
 describe('a lock committed while this request was hashing', () => {
   /**
    * THE H1 CAVEAT, AND IT IS THE SAME DEFECT ONE ARM OVER.

@@ -219,7 +219,13 @@ registered. So the password is verified first, always, and only then is the lock
 
 The top-left cell tells an attacker nothing they did not already have: reaching it requires the
 password, and with the password they can simply wait the lock out. It tells the real user the one
-thing they need — that their password is fine and the account is temporarily unavailable.
+thing they need — that their password is fine and the account is not signable-in right now.
+
+**The message does not say "temporarily", and that is L5.** It said so, and the sentence was false
+for `status = DISABLED`: not temporary, no later attempt will work, and resetting the password will
+not help. Non-disclosure was being bought by telling the legitimate user something untrue. The
+shipped message is true of both kinds and distinguishes neither, and
+`login.service.spec.ts` pins the string so a future edit cannot quietly reintroduce a duration.
 
 Both kinds of lock answer with it: `User.lockedUntil`, the temporary automatic brute-force lock,
 and `User.status = LOCKED`/`DISABLED`, the separate administrative one. As a *refusal* they are
@@ -256,8 +262,16 @@ independently, which is
 [`../security/authentication.md`](../security/authentication.md) §7's actual property rather than
 merely "a limit exists": one attacker guessing at one address must not consume the budget of
 everybody behind the same egress address, and one attacker behind one address must not lock out a
-whole tenant by naming their accounts in turn. Both directions are asserted through the real
-application.
+whole tenant by naming their accounts in turn. **What the integration lane asserts is that the two
+windows are independent** — not the sentence about the tenant, which no test bounds.
+
+**The second half is a bound, not a prohibition, and the arithmetic is worth writing down.** The
+per-IP window is 20 attempts per 15 minutes and one lock costs 5 attempts, so a single address can
+trip four locks per window, and holding an account at the 30-minute cap costs 5 attempts per
+account per 30 minutes — roughly **eight accounts held locked indefinitely from one address**, more
+if the ladder is allowed to lapse between cycles. That is what "independent per-IP limits" buys:
+it makes locking a tenant expensive and observable, not impossible. `security/authentication.md`
+§7 carries the same sentence and the same correction.
 
 **`generalSession` on `logout` and `session` resolves nothing and is declared anyway.** Its only
 scope is `perPrincipal` with `principalSource: 'authenticated'`, and the limiter runs *before* the
