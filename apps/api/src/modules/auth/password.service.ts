@@ -41,6 +41,33 @@ export interface PasswordVerification {
    * invite a caller to rehash a password it just rejected.
    */
   readonly needsRehash: boolean;
+  /**
+   * True when argon2 REFUSED TO READ the stored hash — carry-forward ruling 25,
+   * closed by Task 9.
+   *
+   * This is an operational fault, not a failed login: the row in `Credential`
+   * is corrupt, truncated, or written by something that is not this service.
+   * Until now it was indistinguishable from a wrong password and produced no
+   * signal at all, so an operator had no way to learn that a customer's
+   * credential had rotted — the customer simply could not sign in and the logs
+   * said nothing.
+   *
+   * **Reported rather than logged**, because this class has neither a logger
+   * nor a user id and both are needed for a line worth reading.
+   * `LoginService` writes it, at `error`, naming the user and no fragment of
+   * the hash or the password (critical security rule 6).
+   *
+   * **It never changes what the caller sees on the wire.** `valid` is `false`
+   * either way and the response is `INVALID_CREDENTIALS` either way. A
+   * distinguishable refusal here would tell whoever is guessing that the
+   * address is registered.
+   *
+   * **False when `storedHash` is `null`.** There is no stored credential to be
+   * unreadable, and reporting one for an absent account would put the
+   * account-existence distinction the dummy-hash path exists to erase back into
+   * an operator's log.
+   */
+  readonly credentialUnreadable: boolean;
 }
 
 /**
@@ -144,12 +171,20 @@ export class PasswordService {
   async verify(storedHash: string | null, password: string): Promise<PasswordVerification> {
     if (storedHash === null) {
       await this.runVerification(this.dummyHash, password);
-      return { valid: false, needsRehash: false };
+      // `credentialUnreadable: false` UNCONDITIONALLY on this path, and the
+      // result of the dummy verification above is discarded as it always was.
+      // The dummy is built by this process from live parameters, so it cannot
+      // be corrupt in the way a stored row can; and if it somehow were, saying
+      // so here would report "unreadable credential" for an account that does
+      // not exist. See the field's docblock.
+      return { valid: false, needsRehash: false, credentialUnreadable: false };
     }
 
-    const valid = await this.runVerification(storedHash, password);
-    if (!valid) return { valid: false, needsRehash: false };
-    return { valid: true, needsRehash: this.needsRehash(storedHash) };
+    const outcome = await this.runVerification(storedHash, password);
+    if (!outcome.ok) {
+      return { valid: false, needsRehash: false, credentialUnreadable: outcome.unreadable };
+    }
+    return { valid: true, needsRehash: this.needsRehash(storedHash), credentialUnreadable: false };
   }
 
   /**
@@ -174,15 +209,29 @@ export class PasswordService {
   /**
    * `verify` throws on a malformed hash rather than returning false. A stored
    * credential that will not parse is a database-integrity problem, and the
-   * thrown error's text is derived from the stored hash — so it is swallowed
-   * rather than logged (critical security rule 6) and the attempt simply
-   * fails.
+   * thrown error's text is derived from the stored hash — so the ERROR is
+   * swallowed rather than logged (critical security rule 6) and the attempt
+   * simply fails.
+   *
+   * **What is no longer swallowed is the FACT that it happened.** Carry-forward
+   * ruling 25: until Task 9 this catch discarded the only evidence anywhere in
+   * the system that a credential row had rotted. The boolean below carries that
+   * fact out — not the message, not the hash, not a fragment of either — and
+   * `LoginService` turns it into one `error` line naming the user id.
+   *
+   * This is the only place that knows. A format check outside it is not
+   * equivalent: a hash can parse cleanly as a v19 argon2id PHC string and still
+   * be refused for a corrupt salt or digest, and `password.service.spec.ts`
+   * asserts exactly that case.
    */
-  private async runVerification(storedHash: string, password: string): Promise<boolean> {
+  private async runVerification(
+    storedHash: string,
+    password: string,
+  ): Promise<{ ok: boolean; unreadable: boolean }> {
     try {
-      return await argon2Verify(storedHash, password);
+      return { ok: await argon2Verify(storedHash, password), unreadable: false };
     } catch {
-      return false;
+      return { ok: false, unreadable: true };
     }
   }
 }
