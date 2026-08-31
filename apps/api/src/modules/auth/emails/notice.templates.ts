@@ -26,16 +26,28 @@ import { formatUtcTimestamp, renderEmail, type RenderedEmail } from './layout.js
  * in a security notice is worse than an absent one.
  */
 
-export interface SecurityNoticeContext {
-  readonly recipientName: string;
+/**
+ * The three lines `whereAndWhen` renders, split out from the greeting.
+ *
+ * Separate from `SecurityNoticeContext` because Task 9 introduced the first
+ * notice that renders the context block and **no** display name
+ * (`newDeviceSignIn`). Composing the block out of a narrower type is what lets
+ * that template drop `recipientName` from its own context without inventing a
+ * fake one to satisfy this function's parameter.
+ */
+export interface NoticeOccurrenceContext {
   readonly occurredAt: Date;
   readonly ipAddress?: string | undefined;
   readonly userAgent?: string | undefined;
 }
 
+export interface SecurityNoticeContext extends NoticeOccurrenceContext {
+  readonly recipientName: string;
+}
+
 const UNKNOWN = 'not recorded';
 
-function whereAndWhen(context: SecurityNoticeContext): readonly string[] {
+function whereAndWhen(context: NoticeOccurrenceContext): readonly string[] {
   return [
     `When: ${formatUtcTimestamp(context.occurredAt)}`,
     `IP address: ${context.ipAddress ?? UNKNOWN}`,
@@ -157,7 +169,7 @@ export function renderMfaDisabled(context: SecurityNoticeContext): RenderedEmail
  * operator, in an append-only table built for exactly this, never rendered into
  * a message sent to somebody else.
  */
-export type RegistrationAttemptContext = Pick<SecurityNoticeContext, 'occurredAt'>;
+export type RegistrationAttemptContext = Pick<NoticeOccurrenceContext, 'occurredAt'>;
 
 /**
  * THE EIGHTH TEMPLATE, AND THE OTHER HALF OF ENUMERATION RESISTANCE.
@@ -226,18 +238,130 @@ export function renderRegistrationAttempt(context: RegistrationAttemptContext): 
 }
 
 /**
- * §7's "a burst notifies the account owner". Task 9 owns the burst detection
- * and therefore owns deciding what counts as a new device; this is the message
- * it sends when it does.
+ * What `newDeviceSignIn` may be told, and it lost `recipientName` in Task 9.
+ *
+ * **Ruling 70, applied one template further than the ruling itself demanded.**
+ * The ruling's rule is that a message to an address whose ownership has not
+ * been proven must render no stored display name, and this message *is* sent
+ * only to a proven address — `AuthMailer.sendNewDeviceSignIn` is called only
+ * when `User.emailVerifiedAt` is non-null, and `login.service.spec.ts` asserts
+ * that. So the ruling does not strictly reach it.
+ *
+ * The parameter is dropped anyway, because the cost of keeping it is the whole
+ * attack surface and the benefit is a greeting. `User.name` is 200 characters
+ * of free text written straight from a registration body; the moment somebody
+ * decides an unverified account may also receive this notice — which is a
+ * one-line change in a service, not a change to this file — the injection is
+ * live again with no test to catch it. A parameter that does not exist cannot
+ * be reintroduced by a caller's edit. This is the same structural fix
+ * `emailVerification` and `registrationAttempt` took, and `registry.spec.ts`'s
+ * `NO_DISPLAY_NAME_TEMPLATE_IDS` partition is what holds it.
+ *
+ * **The IP and the user agent stay**, and that is ruling 63's licensed side of
+ * the partition: for a verified address this message describes the recipient's
+ * *own* new session, and the device string is exactly how they recognise one
+ * that is not theirs. Both still pass through `escapeHtml` like every other
+ * interpolated value, and the residual `registry.spec.ts` records for the
+ * context-rendering notices applies here unchanged.
  */
-export function renderNewDeviceSignIn(context: SecurityNoticeContext): RenderedEmail {
+export type NewDeviceSignInContext = NoticeOccurrenceContext;
+
+/**
+ * `security/authentication.md` §3's unfamiliar-session notice.
+ *
+ * "Unfamiliar" is `LoginService`'s decision and is defined there, against what
+ * the `Session` table can actually answer. Nothing in this file knows how that
+ * question was asked.
+ */
+export function renderNewDeviceSignIn(context: NewDeviceSignInContext): RenderedEmail {
   return renderEmail({
     subject: 'New sign-in to your Sentinel account',
     paragraphs: [
-      `Hello ${context.recipientName},`,
+      // No greeting by name. See `NewDeviceSignInContext` above.
+      'Hello,',
       'Your Sentinel account was signed in to from a device we have not seen before.',
       ...whereAndWhen(context),
     ],
     footer: [...NOTICE_FOOTER],
+  });
+}
+
+/**
+ * THE NINTH TEMPLATE, AND THE FIRST THING THAT MAKES §7's LAST CLAUSE TRUE.
+ *
+ * `security/authentication.md` §7 has said "a burst notifies the account owner"
+ * since Phase 0 and no template covered it: the five notices Task 5 built are
+ * about changes to an account, and a burst of failed logins changes nothing.
+ * Task 9 sends this on the attempt that trips the per-account lock — **once per
+ * lock, not once per failure past the threshold**. The fifth message would tell
+ * the recipient nothing the first did not, and a notice sent per failure is an
+ * outbound-email amplifier aimed at the victim, triggered by an unauthenticated
+ * caller at will.
+ *
+ * # It renders no name, no IP address and no user agent
+ *
+ * Rulings 63 and 70 together, and here they point the same way for once.
+ *
+ * - **No display name.** `User.name` is free text an attacker seeds by
+ *   registering the victim's address first (F1). This notice reaches an account
+ *   whose address may never have been confirmed, which is exactly the case the
+ *   ruling is about.
+ * - **No user agent.** It is a request header the guessing party chose
+ *   outright — up to 512 characters of a sentence and a URL — and this message
+ *   goes to somebody else. That is H1 verbatim.
+ * - **No IP address.** Softer than the other two and still wrong: it is not the
+ *   recipient's address, so it describes nothing they can check, and printing
+ *   an arbitrary attacker's network location into a third party's mailbox
+ *   invites exactly the "I looked it up and it's in ..." response that helps
+ *   nobody. The IP is in the `PlatformAuditEvent` row, where an operator reads
+ *   it.
+ *
+ * What is left is `{ occurredAt, attemptCount }`: our own clock reading and our
+ * own counter. **Neither is caller-supplied**, so this template has no
+ * parameter an attacker can reach at all — which is the property, rather than
+ * an escaping claim about one.
+ *
+ * # It is a notice, so it carries no link
+ *
+ * `NOTICE_TEMPLATE_IDS`. The footer sends the recipient to the product the way
+ * they normally reach it, and says no action is needed — which is true: nothing
+ * about the account changed, and the lock is automatic and temporary. A notice
+ * that induces action is a notice worth triggering on purpose, and triggering
+ * this one costs an attacker five wrong passwords.
+ */
+export interface FailedLoginBurstContext {
+  readonly occurredAt: Date;
+  /**
+   * `User.failedLoginCount` at the moment the lock tripped.
+   *
+   * A number this product computed, not a value from a request. It is rendered
+   * because it is the one fact that separates "somebody mistyped" from
+   * "somebody is guessing", and the recipient can act on the difference.
+   */
+  readonly attemptCount: number;
+}
+
+export function renderFailedLoginBurst(context: FailedLoginBurstContext): RenderedEmail {
+  return renderEmail({
+    subject: 'Repeated failed sign-in attempts on your Sentinel account',
+    paragraphs: [
+      // No name. See the docblock above.
+      'Hello,',
+      `There have been ${String(context.attemptCount)} failed sign-in attempts on your Sentinel account. To protect it, signing in has been blocked temporarily and will unblock itself.`,
+      // The timestamp only. NOT `whereAndWhen`, which carries the IP and the
+      // user agent of whoever was guessing — neither of which is the
+      // recipient's, and one of which they chose.
+      `When: ${formatUtcTimestamp(context.occurredAt)}`,
+    ],
+    footer: [
+      // NOT `NOTICE_FOOTER`. Its first line tells the recipient to change their
+      // password immediately, and nothing about this account changed: the
+      // password was never accepted, which is why this message exists. The
+      // advice below is the true version — and "no action is needed" is what
+      // stops this being a message an attacker sends on purpose.
+      'If this was you, no action is needed: wait a few minutes and try again, or use the "forgot password" option on the sign-in page.',
+      'If it was not you, your password was not accepted and nothing about your account has changed. If you use this password anywhere else, change it there.',
+      NOTICE_NEVER_ASKS,
+    ],
   });
 }

@@ -1,5 +1,6 @@
 import type { RenderedEmail } from './layout.js';
 import {
+  renderFailedLoginBurst,
   renderMfaDisabled,
   renderMfaEnabled,
   renderNewDeviceSignIn,
@@ -32,14 +33,19 @@ import {
  * of it by existing** — adding a member below without adding its sample there
  * is a compile error.
  *
- * There are EIGHT members. Seven were built in Task 5, the invitation Task 15
+ * There are NINE members. Seven were built in Task 5, the invitation Task 15
  * will send among them. The eighth — `registrationAttempt` — is Task 8's, and
  * it is the message an address that is already registered receives instead of a
  * verification link, which is what keeps registration's response identical for
- * an address that exists and one that does not. It was added by writing one
- * line below and one line in `registry.spec.ts`'s `CASES` table, and it
- * inherited every assertion in that file by existing, which is the property
- * this registry was built for.
+ * an address that exists and one that does not. The ninth —
+ * `failedLoginBurst` — is Task 9's, and it is the first thing that makes
+ * `security/authentication.md` §7's "a burst notifies the account owner" true:
+ * the sentence has been in that document since Phase 0 with no template that
+ * could satisfy it.
+ *
+ * Each was added by writing one line below and one line in `registry.spec.ts`'s
+ * `CASES` table, and inherited every assertion in that file by existing, which
+ * is the property this registry was built for.
  *
  * @see .claude/security/authentication.md §2, §5, §6, §7
  */
@@ -52,12 +58,13 @@ export const EMAIL_TEMPLATES = {
   mfaDisabled: renderMfaDisabled,
   newDeviceSignIn: renderNewDeviceSignIn,
   registrationAttempt: renderRegistrationAttempt,
+  failedLoginBurst: renderFailedLoginBurst,
 } as const satisfies Readonly<Record<string, (input: never) => RenderedEmail>>;
 
 export type EmailTemplateId = keyof typeof EMAIL_TEMPLATES;
 
 /**
- * The three that carry a live credential in a `?token=` link, and the five
+ * The three that carry a live credential in a `?token=` link, and the six
  * that carry nothing and contain no link at all.
  *
  * Split rather than derived, because the two halves obey opposite rules and a
@@ -77,4 +84,5 @@ export const NOTICE_TEMPLATE_IDS = [
   'mfaDisabled',
   'newDeviceSignIn',
   'registrationAttempt',
+  'failedLoginBurst',
 ] as const satisfies readonly EmailTemplateId[];
