@@ -563,8 +563,9 @@ stale. And the compose Postgres privilege drift **has cleared** —
 `has_schema_privilege('sentinel_app','public','USAGE')` returns `t` where Task 7 measured `f` twice
 — which is what let this task's integration suite drive the endpoints end to end.
 
-**Branching. Task 8 is on `feat/phase-2-task-08`, cut from `main` at `a39f4b3`, unpushed, with no
-pull request** — one task of work, not two. The operator decides when it is pushed.
+**Branching. Task 8 is merged.** PR #14, rebased onto `main` on 2026-08-31 and the branch deleted,
+with CI green on a Linux runner first — runs `33370530376` (pull request) and `33370501611` (branch
+head), both `success`. `main` is at `47f59f6`. **Task 9 branches from `main`, not from a stack.**
 
 **Next action:** Task 9 — login, logout, the session endpoint and lockout, chained with Task 10
 (password reset). One implementer across both, reviewer fresh per task.
