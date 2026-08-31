@@ -104,16 +104,28 @@ export const resendVerificationResponseSchema = statusResponseSchema('VERIFICATI
 // --- Login, MFA, logout, session, switch-org (api/authentication.md §2) -----
 
 /**
- * `{ email, password }`, exactly as §2 documents it.
+ * `{ email, password }` from §2, plus the optional `rememberMe` Task 9 adds.
  *
- * There is no `rememberMe` field yet, although `Session.rememberMe` exists in
- * the schema. Adding an OPTIONAL field to a `.strict()` request schema is
- * additive under `api/conventions.md` §8; removing one is not. So the task that
- * actually implements the 30-day session (Task 9) adds it, rather than this
- * task guessing a name that `check:openapi` would then pin.
+ * Carry-forward ruling 18. `Session.rememberMe` has existed in the schema since
+ * Task 1 and `SessionService.issue` has implemented the 7-day / 30-day split
+ * since Task 6; until Task 9 there was no endpoint to carry the flag, so the
+ * field was deliberately not guessed at. Adding an OPTIONAL field to a
+ * `.strict()` request schema is additive under `api/conventions.md` §8 —
+ * every client written against the two-field body keeps working — while
+ * removing one is not, which is why the small shape was the safe direction to
+ * start from.
+ *
+ * **Not coerced.** `z.boolean()` refuses the string `"false"` rather than
+ * reading it as truthy, because a caller explicitly declining a thirty-day
+ * credential must not be handed one by a coercion rule.
+ *
+ * `.optional()` rather than `.default(false)`: the wire contract should say
+ * "absent means the server's default", and the default itself belongs to
+ * `SessionService.issue`, which already applies `false` (`issueSessionInputSchema`).
+ * A default here would be a second place for that answer to live.
  */
 export const loginRequestSchema = z
-  .object({ email: emailSchema, password: passwordSchema })
+  .object({ email: emailSchema, password: passwordSchema, rememberMe: z.boolean().optional() })
   .strict();
 
 /**
