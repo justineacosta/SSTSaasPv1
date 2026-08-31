@@ -1372,8 +1372,13 @@ All eighteen findings are dispositioned in
 
 **Tasks 6 and 7 are on `main` and CI is green on them**, which corrects the sentences above that
 call them unpushed with no pull request: both were merged and runs `33088717123` and `33088206506`
-concluded `success`. **Task 8 is on `feat/phase-2-task-08`, cut from `main` at `a39f4b3`, unpushed,
-with no pull request** — one task of work, not two.
+concluded `success`. **Task 8 was merged to `main` on 2026-08-31 as PR #14** (rebase, branch
+deleted), with CI green on a Linux runner before the merge: run `33370530376` on the pull request
+and `33370501611` on the branch head, both `success`, every stage executing — format, lint,
+typecheck, unit, `check:specs`, the compose stack, integration, build, `check:openapi`,
+`check:registry`, Playwright install and 5 E2E tests. Run **`33370854350`** on `main` after the
+merge also concluded `success`. **Nothing on this branch is now unproven
+outside this machine**, which was the gap Tasks 6 and 7 had carried.
 
 **The compose Postgres privilege drift has cleared.**
 `has_schema_privilege('sentinel_app','public','USAGE')` now returns `t` where Task 7 measured `f`
