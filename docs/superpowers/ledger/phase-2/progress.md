@@ -565,7 +565,10 @@ stale. And the compose Postgres privilege drift **has cleared** —
 
 **Branching. Task 8 is merged.** PR #14, rebased onto `main` on 2026-08-31 and the branch deleted,
 with CI green on a Linux runner first — runs `33370530376` (pull request) and `33370501611` (branch
-head), both `success`. `main` is at `47f59f6`. **Task 9 branches from `main`, not from a stack.**
+head), both `success`. Task 8's last code commit on `main` is `47f59f6`, followed by the docs commit
+that recorded the merge (PR #15). **Task 9 branches from whatever `main` is when you start** — pull
+first; do not cut from a commit named in this file, because this file is a dated record and `main`
+moves.
 
 **Next action:** Task 9 — login, logout, the session endpoint and lockout, chained with Task 10
 (password reset). One implementer across both, reviewer fresh per task.
