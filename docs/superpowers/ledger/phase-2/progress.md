@@ -19,7 +19,7 @@ Branch: `feat/phase-2-identity`
 | 7 | Authentication guard, CSRF, CORS | chained with 6 | **Done** — [brief](task-07/brief.md) · [report](task-07/report.md) · [review](task-07/review.md) · [fixes](task-07/fixes.md) · [rulings](task-07/rulings.md) |
 | 8 | Registration and email verification | subagent (fix round: orchestrator) | **Done** — [brief](task-08/brief.md) · [report](task-08/report.md) · [review](task-08/review.md) · [dispositions](task-08/fix-brief.md) · [fixes](task-08/fixes.md) |
 | 9 | Login, logout, session endpoint, lockout | chained with 10 | **Done** — [brief](task-09/brief.md) · [report](task-09/report.md) · [review](task-09/review.md) · [dispositions](task-09/fix-brief.md) · [fixes](task-09/fixes.md) · [fix review](task-09/fix-review.md) |
-| 10 | Password reset | chained with 9 | Not started |
+| 10 | Password reset | chained with 9 | **In progress** — [brief](task-10/brief.md) |
 | 11 | TOTP MFA and recovery codes | subagent | Not started |
 | 12 | Tenant resolution and the authorization guard | orchestrator | Not started |
 | **A** | **Checkpoint — verify, push, CI green, status recorded** | orchestrator | Not reached |
