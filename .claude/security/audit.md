@@ -77,7 +77,7 @@ denials, and scope rejections are the signal an investigation actually needs.
 
 ## 4. Actions
 
-Auth: `LOGIN`, `LOGIN_FAILED`, `LOGOUT`, `MFA_ENABLED`, `MFA_DISABLED`,
+Auth: `LOGIN`, `LOGIN_FAILED`, `ACCOUNT_LOCKED`, `LOGOUT`, `MFA_ENABLED`, `MFA_DISABLED`,
 `MFA_CHALLENGE_FAILED`, `PASSWORD_CHANGED`, `PASSWORD_RESET_REQUESTED`,
 `PASSWORD_RESET_COMPLETED`, `SESSION_REVOKED`, `USER_REGISTERED`,
 `REGISTRATION_BLOCKED_EXISTING_EMAIL`, `EMAIL_VERIFICATION_RESENT`, `EMAIL_VERIFIED`.
@@ -87,6 +87,23 @@ had no name for an account being created at all — the first event in every acc
 investigation — and `CLAUDE.md`'s tenth rule was therefore unsatisfiable for the endpoint that
 creates one. All four are written into `PlatformAuditEvent`, because none of them has an
 organisation.
+
+`ACCOUNT_LOCKED` was added in Phase 2 Task 9, and it is the only one of that task's four names
+this list did not already have. It records the failed attempt that trips the per-account lock —
+the moment `User.lockedUntil` moves into the future — and it is written **once per lock**, not
+once per failure past the threshold. Attempts arriving while a lock is already live change no
+state at all (§7 of [`authentication.md`](authentication.md)), so a row for each of them would be
+an append-only table an unauthenticated caller can grow at will.
+
+`LOGIN`, `LOGIN_FAILED`, `ACCOUNT_LOCKED` and `LOGOUT` are all `PlatformAuditEvent` rows and none
+of them may be an `AuditEvent` ([ADR-0019](../decisions/ADR-0019-platform-audit-event-table.md)):
+a login happens before any organisation is chosen, and `AuditEvent`'s row-level security policy
+refuses an insert that carries none. `LOGOUT`'s `resourceId` is the **`Session`** that was
+revoked, not the user — the user is unchanged by a logout and the session row is what moved;
+the other three name the `User`, except an attempt against an address with no account, which
+names nothing. On every failure the actor is `SYSTEM` with a null `actorId`, for the reason
+`REGISTRATION_BLOCKED_EXISTING_EMAIL` gives below: the row exists because it was probably not
+the account owner.
 
 `REGISTRATION_BLOCKED_EXISTING_EMAIL` is the failure half of §3's "failures and denials are
 audited". Registration answers identically whether or not the address exists, by design, so
