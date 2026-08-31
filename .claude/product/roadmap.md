@@ -14,7 +14,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Not Implemented** — Tasks 1–8 of 18 done 2026-08-31 (schema, migrations, registry, wire contracts, password hashing, the breach check, single-use secret tokens, the mailer with eight templates, the session service, the authentication stage with CSRF and CORS, and registration with email verification); the API publishes **7 routes** and a person can register and confirm an address, but **nothing authenticates anybody** — there is no login endpoint until Task 9 and no screen until Task 16 |
+| 2 | Identity | **Not Implemented** — Tasks 1–9 of 18 done 2026-08-31 (schema, migrations, registry, wire contracts, password hashing, the breach check, single-use secret tokens, the mailer with nine templates, the session service, the authentication stage with CSRF and CORS, registration with email verification, and login/logout/session with per-account lockout); the API publishes **10 routes** and a person can register, confirm an address, sign in, read their own session and sign out, but **nothing authorises anybody** — `GET /auth/session` returns an empty permission set until Task 12, and there is no screen until Task 16 |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -599,18 +599,22 @@ else is needed, and re-verifying Phase 1 is not part of it:
 4. The plan's section for **your task only**, plus the previous task's ledger entry at
    `docs/superpowers/ledger/phase-2/task-NN/`.
 
-**Status is Not Implemented and Tasks 1–8 do not change that.** The tables identity needs exist
+**Status is Not Implemented and Tasks 1–9 do not change that.** The tables identity needs exist
 and are proven to migrate, the wire contracts those endpoints validate against exist, a password can
-be hashed and a breached one detected, and **as of Task 8 three endpoints are live** — a person can
-register an account and confirm their email address. But **nothing authenticates anybody**: there is
-no login endpoint until Task 9, the session service Task 6 built has no caller that issues a cookie,
-and `apps/web`'s `(auth)` route group still holds a layout with no routes under it, so no screen
-reaches any of this until Task 16. Not one of the three exit criteria above is met. Per the plan,
-the status moves to **Partially Implemented** at Checkpoint A, after Task 12 — a schema is not a
-feature, a contract is not a feature, and a service no endpoint calls is not one either.
+be hashed and a breached one detected, and **as of Task 9 six endpoints are live** — a person can
+register an account, confirm their email address, sign in, read their own session document and sign
+out. The session service Task 6 built now has a caller that issues a cookie, and `logout` is the
+first cookie-authenticated route `CsrfGuard` actually governs. But **nothing authorises anybody**:
+`GET /auth/session` returns `permissions: []` because role assignment does not exist until Task 12,
+no request is refused for want of a permission, and `apps/web`'s `(auth)` route group still holds a
+layout with no routes under it, so no screen reaches any of this until Task 16. **Not one of the
+three exit criteria above is met**: there is no E2E journey, no authorization matrix test, and
+revocation is proved by integration tests rather than by the journey the criterion names. Per the
+plan, the status moves to **Partially Implemented** at Checkpoint A, after Task 12.
 
 **The `check:openapi` reports 4 routes below are dated evidence and stay as they are.** Each was
-correct for the commit it describes. `check:openapi` reports **7** from Task 8 onward, so the
+correct for the commit it describes. `check:openapi` reported **7** from Task 8 and reports **10**
+from Task 9 onward, so the
 sentence "this is the proof that no endpoint shipped" applies to those tables and to nothing
 current.
 
@@ -1385,6 +1389,84 @@ outside this machine**, which was the gap Tasks 6 and 7 had carried.
 twice, and **all eight migrations are applied** — the six from Phase 1 and Task 1, plus this
 task's two. The real application can reach the database on this
 machine again, which is what let this task's integration suite exercise the endpoints end to end.
+
+**Task 9 evidence, 2026-08-31 at the branch head after the fix round and the second review.** Every
+command re-run by the orchestrator on the finished tree rather than taken from an implementer's
+report, exit codes captured outside a pipe. Task 8 was re-verified the same way before Task 9 began
+— all ten commands exit 0 at the numbers its own table records.
+
+| Command | Exit | What it proves |
+|---|---|---|
+| `pnpm format:check` | 0 | Prettier style across the workspace. |
+| `pnpm lint` | 0 | 14 tasks. |
+| `pnpm typecheck` | 0 | 14 tasks. The types compile — and nothing about behaviour. |
+| `pnpm test` | 0 | **81 files / 1279 tests**, up from 76 / 1120 at Task 8. |
+| `pnpm check:specs` | 0 | 99 spec files, each claimed by exactly one Vitest project. |
+| `pnpm test:integration` | 0 | **18 files / 286 tests** against real Postgres 16 and real Redis, up from 17 / 230. |
+| `pnpm build` | 0 | 8 tasks. |
+| `pnpm check:secrets` | 0 | No credential-shaped literal in a committed file. |
+| `pnpm check:openapi` | 0 | Byte-identical, and **10 routes** where Task 8 published 7. |
+| `pnpm check:registry` | 0 | 15 models, unchanged — Task 9 added no table and **opened no migration**. |
+| `docker compose ps` | 0 | postgres, redis, minio, mailpit all `Up (healthy)`. |
+
+`pnpm test:e2e` was **not run** and has no row: `git diff --stat main..HEAD` is empty for both
+`apps/web` and `packages/ui`, so nothing this task changed can reach a rendered page.
+
+What that table licenses and nothing more: six endpoints exist and behave as their specs pin them,
+against a real database. **It says nothing about authorization**, because there is none — every
+route Task 9 ships is `@Public()` or `@AuthenticatedOnly()`, and `permissions: []` is what the
+session document returns.
+
+**What Task 9 delivered.** `POST /auth/login` returning either a session cookie plus a derived CSRF
+cookie or `{ mfaRequired: true, pendingToken }`; `POST /auth/logout` at 204, revoking the row and
+tombstoning the cache entry; `GET /auth/session` carrying the user, the active organisation, an
+empty permission set and an entitlements placeholder. A per-account lockout ladder — 1, 5, 15 then
+30 minutes — on the columns Task 1 created, with **no migration**. Failed logins audited into
+`PlatformAuditEvent` including attempts against addresses that have no account, which is the
+enumeration-sweep signal Task 8 could not write because its refusal rolled the transaction back. A
+new `failedLoginBurst` notice, and a cross-site guard covering the login route `CsrfGuard` cannot.
+
+**`ACCOUNT_LOCKED` is returned only when the password was otherwise correct**, which the plan did
+not specify. Answering it to any attempt on a locked account would confirm an address is registered
+to exactly the caller who has just proved they will make five attempts; wrong password on a locked
+account is `INVALID_CREDENTIALS`, byte-identical to every other failure.
+
+**Two Highs, and both were invisible to a fully green gate.** The lockout ladder did not count
+concurrent attempts: five parallel wrong passwords left the counter at **1**, no lock, no audit row
+and no notice, with a correct password afterwards answering 200 — because every lockout test in both
+lanes was sequential. And the unfamiliar-sign-in notice rendered the signing-in party's `User-Agent`
+to the victim under a footer promising no link, which is **the same defect for the third time in
+three tasks**. The second was closed by withdrawing ruling 63's carve-out rather than patching the
+template: no notice renders a user agent now.
+
+**The fix round was reviewed by a second fresh agent — the step Task 8 skipped, and the reason it
+shipped an open High.** That review returned 8 findings closed, 4 closed with caveats, **0 open**,
+and 5 of its own. One caveat was a real defect: the **success** path carried H1's shape one arm
+over, erasing a lock a sibling had just committed. All five are closed.
+
+**Two of the orchestrator's own written claims were measured false by the agents it briefed.** The
+brief's instruction for proving the organisation lookup would have shipped a lookup returning `null`
+in production with a green test, because the integration harness connects as the schema owner and
+bypasses RLS; and a disposition asserted that an IP address "cannot carry a URL", which was true of
+`request.ip` and false of the rendered line. Both are carry-forward rulings 75 and 72.
+
+**A gap this task owns and did not close.** ADR-0014 says a credential stored at weaker parameters
+is rehashed transparently "on next successful login", and login is the caller that clause names.
+`PasswordService.verify` returns `needsRehash` and nothing acts on it. That also leaves
+carry-forward ruling 24 open by construction: rehash-on-login is what would migrate old hashes, so a
+parameter raise opens the timing oracle and never closes it. **Task 10 is the natural owner** — it
+already writes credentials — but it is Task 9's debt.
+
+**One review finding is accepted rather than fixed**: the burst notice's SMTP send happens inside
+the request, which is ruling 68's timing oracle on a new endpoint and is not closable before the
+Phase 4 queue. It is named in `security/authentication.md` §2 and §7 rather than left implicit.
+
+**Task 9 is NOT merged.** It sits on `feat/phase-2-task-09`, unpushed, with no pull request and no
+CI run — unlike Task 8, which was on `main` with CI green before Task 9 began. Nothing on this
+branch is proven outside this machine.
+
+All findings and dispositions:
+[`docs/superpowers/ledger/phase-2/task-09/`](../../docs/superpowers/ledger/phase-2/task-09/).
 
 **Checkpoint A falls after Task 12** — the identity API enforced end to end with no UI. At that
 point the branch is pushed, CI must be green on a Linux runner, and this file gets an evidence

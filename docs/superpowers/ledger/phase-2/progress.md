@@ -18,7 +18,7 @@ Branch: `feat/phase-2-identity`
 | 6 | Session service | chained with 7 | **Done** — [brief](task-06/brief.md) · [report](task-06/report.md) · [review](task-06/review.md) · [fixes](task-06/fixes.md) · [rulings](task-06/rulings.md) |
 | 7 | Authentication guard, CSRF, CORS | chained with 6 | **Done** — [brief](task-07/brief.md) · [report](task-07/report.md) · [review](task-07/review.md) · [fixes](task-07/fixes.md) · [rulings](task-07/rulings.md) |
 | 8 | Registration and email verification | subagent (fix round: orchestrator) | **Done** — [brief](task-08/brief.md) · [report](task-08/report.md) · [review](task-08/review.md) · [dispositions](task-08/fix-brief.md) · [fixes](task-08/fixes.md) |
-| 9 | Login, logout, session endpoint, lockout | chained with 10 | Not started |
+| 9 | Login, logout, session endpoint, lockout | chained with 10 | **Done** — [brief](task-09/brief.md) · [report](task-09/report.md) · [review](task-09/review.md) · [dispositions](task-09/fix-brief.md) · [fixes](task-09/fixes.md) · [fix review](task-09/fix-review.md) |
 | 10 | Password reset | chained with 9 | Not started |
 | 11 | TOTP MFA and recovery codes | subagent | Not started |
 | 12 | Tenant resolution and the authorization guard | orchestrator | Not started |
@@ -509,81 +509,184 @@ Full reasoning and cost-if-wrong for each is in [`task-08/fixes.md`](task-08/fix
     sentence that was true about the data flow and false as an inference. A red test that a fix
     round turns off needs a second pair of eyes, not a comment.
 
+### From Task 9
+
+Full reasoning and cost-if-wrong for each is in [`task-09/review.md`](task-09/review.md),
+[`task-09/fixes.md`](task-09/fixes.md) and [`task-09/fix-review.md`](task-09/fix-review.md).
+
+71. **RULING 63'S CARVE-OUT IS WITHDRAWN. No notice renders a user agent — there is no field for
+    one on any notice context.** Ruling 63 licensed a device string on four templates "because
+    there it describes the recipient's *own* session", and marked itself *binds every later
+    notice*. That exception produced the same defect three times in three tasks: Task 8's H1 (the
+    `User-Agent` in `registrationAttempt`), Task 8's F1 (the display name), and Task 9's H2 — the
+    unfamiliar-sign-in notice, where the notice fires **because** a stranger signed in, so the
+    recipient and the chooser are different people in exactly the case the message exists for. The
+    rendered proof is in `review.md`: a `Device:` line carrying
+    `https://sentinel-verify.evil.example/login` under a footer promising the message contains no
+    link. **A rule whose exception has produced three findings is not a rule with an exception.**
+    What remains renderable is the time and the IP, and the IP is held to an address shape by
+    `renderableIpAddress` — see ruling 72.
+
+72. **"This value cannot carry a URL" is a claim about a SOURCE; a guard is a check on a SHAPE, and
+    the two are not the same set.** The H2 disposition kept the IP line on the grounds that a
+    socket peer address "cannot carry a URL, and is bounded and validated already" — true of
+    `request.ip`, untrue of everything between it and the rendered line, and the fix round found
+    ruling 70's widened test still red on four notices with `ipAddress` as the carrier. The first
+    guard then admitted `facade.de`, `abcdef.cc` and `dead.beef.cafe` — hostnames under real TLDs
+    that mail clients autolink from a bare domain, invisible to a suite asserting `https?://`
+    (N-4). It is now two shape arms: a dotted quad, or something containing a colon. **Enforce the
+    claim where the value is rendered, not where you believe it came from.**
+
+73. **Every write on the login path is decided from a row read BEFORE a ~40 ms hash, so every one
+    of them is conditional.** H1: `failedLoginCount + 1` computed from the pre-flight read and
+    written as an absolute value meant five parallel wrong passwords left the counter at **1**, no
+    lock, no `ACCOUNT_LOCKED` row, no burst notice, and a correct password afterwards answering
+    200. The fix is an atomic increment plus a not-locked predicate — and the predicate is what
+    makes "once per lock" true, not a refinement of it: with the increment alone, four siblings
+    that all read 4 all wrote 5, all locked and all sent. The **success** path had the same defect
+    one arm over (fix review's caveat): clearing `lockedUntil` from a stale decision *erased* a lock
+    a sibling had just committed. §7's "an attempt during a live lock changes no state" says
+    attempt, not failed attempt. **Binds Tasks 10, 11 and 14**, whose password change, MFA and
+    membership writes all read a row, do slow work, then write.
+
+74. **A sequential test cannot see a concurrency defect, and every lockout test in both lanes was
+    sequential.** 1,120 unit and 230 integration tests were green over a control that did not
+    engage. The probe that found it is five `POST /auth/login` in one `Promise.all`. **If a
+    property is about two requests, the test has to be two requests.**
+
+75. **The integration harness connects as the schema owner, so RLS is not enforced under it.**
+    M1: replacing `withTenantTransaction(…)` with a direct client call — the exact code the
+    docblock said returns `null` in production — left **both lanes green**, because
+    `auth-harness.ts` overrides `PRISMA` with a client bound to `postgres.ownerUrl`. Any spec
+    asserting a property that only RLS provides must drive the **least-privileged** role
+    explicitly, or it is asserting that Postgres has policies rather than that this code obeys
+    them. **Binds Task 12 hardest**, which is where tenant isolation becomes the product.
+
+76. **A message nothing reads is a message anyone can rewrite.** L5: the refusal for a locked
+    account told a permanently disabled user three false things ("temporarily", "try again later",
+    "reset your password"), and when the reviewer reverted the corrected message **both lanes
+    stayed green** — no test observed the string. One code and one message for both kinds of lock
+    is right; buying non-disclosure by telling the legitimate user something untrue is not. The
+    string is now pinned by a spec, and the mutation re-run to prove the pin bites.
+
+77. **An enumeration byte-comparison over an ERROR envelope is not Task 8's comparison.** Task 8
+    compared 200 bodies that are one constant literal; login's refusals carry a per-request
+    `requestId`, so the comparison substitutes it exactly as the CSP nonce is already substituted,
+    and `code`, `message`, `details` and `timestamp` stay in. **Binds Task 10**, whose reset
+    endpoints have the same shape.
+
+78. **The burst notice's send happens inside the request, and that is ruling 68's oracle on a new
+    endpoint** (M3, accepted not fixed). The fifth wrong password against a real address pays an
+    SMTP round trip the fifth against an unknown address does not. **Not closable before the Phase
+    4 queue** — the difference is a real send inside the request — and materially weaker than
+    ruling 68's, because reaching it costs five failed attempts against one address. Named in
+    `security/authentication.md` §2 and §7 rather than left for a later reader to rediscover.
+
+79. **The account lock is a bound, not a prohibition, and the documents said otherwise** (L7). One
+    address trips four locks per 15-minute window and can hold roughly **eight accounts locked
+    indefinitely**. §7's "independent per-IP limits so one attacker cannot lock out a whole tenant"
+    describes expense, not impossibility, and what the integration lane actually asserts is that
+    the two windows are independent. A control described as stronger than it is will not be
+    re-examined by the person who most needs to.
+
+80. **`ACCOUNT_LOCKED` is returned only when the password was otherwise correct.** Answering it to
+    any attempt on a locked account would hand an existence oracle to precisely the caller who has
+    just proved they will make five attempts. Wrong password on a locked account is
+    `INVALID_CREDENTIALS`, byte-identical to every other failure. The 403 is
+    `api/authentication.md` §6's, not 401.
+
+81. **The pending-MFA credential shipped provisional and ADR-0018 is still owed by Task 11.** Login
+    refuses to issue an `ACTIVE` session when a confirmed `MfaFactor` exists — the refusal half is
+    real, so Task 11 does not land on a latent bypass — and returns a `PENDING_MFA` session token
+    in the body with no cookie. It is unreachable by any shipped route (the guard reads the cookie
+    and `@AllowPendingMfa` sits on no handler), and `loginResponseSchema`'s committed shape lets
+    Task 11 change the delivery without a breaking wire change.
+
 ## Pause state
 
-**2026-08-31 — Task 8 complete and verified; Task 9 is next. Checkpoint A is four tasks away.**
+**2026-08-31 — Task 9 complete and verified; Task 10 is next. Checkpoint A is three tasks away.**
 
-Task 8 shipped **the first three routes this product has ever published**. `pnpm check:openapi`
-reports **7**, not 4, and every sentence in this ledger that cited 4 as the proof that no endpoint
-shipped now applies only to the dated table it sits in. A person can register an account and confirm
-an email address. **Nothing authenticates anybody yet** — there is no login endpoint until Task 9,
-and no screen until Task 16.
+Task 9 shipped **login, logout and the session endpoint**. `pnpm check:openapi` reports **10**
+routes, not 7. A person can now sign in, receive a session cookie and a CSRF cookie, read their own
+session document, and sign out — and `logout` is **the first cookie-authenticated route `CsrfGuard`
+has ever actually governed**, which the integration lane asserts on the shipped route rather than on
+a fixture. **Nothing authorises anybody yet**: `GET /auth/session` returns `permissions: []` because
+no role assignment machinery exists until Task 12, and there is still no screen until Task 16.
 
-**ADR-0019 was written and committed before any implementation**, as 0014–0017 were, and it decides
-where an audit event goes when the actor belongs to no organisation. The claim it rests on was
-measured rather than reasoned, and the reviewer reproduced it independently. **0018 stays reserved
-for Task 11.**
+**No migration was opened**, and `git diff --stat main..HEAD -- packages/db/prisma/migrations` is
+empty. Every column login needed — `failedLoginCount`, `lockedUntil`, `lastLoginAt` — was already
+there from Task 1.
 
-**One High, and it was live behaviour rather than a missing test.** An unauthenticated caller could
-inject 512 characters of chosen text, a URL included, into a security notice mailed to any address
-they could guess was registered — under a footer promising the message carries no link. Fixed with a
-type that cannot carry the value rather than a filter. The spec that should have caught it ran the
-benign fixture, which is ruling 58's third instance in three tasks.
+**The two Highs were both invisible to a green gate, and both were found by measurement.**
 
-**The fix round was written by the orchestrator — the implementer hit the weekly usage limit after
-landing the High fix — so a second fresh agent reviewed the fix commits before this branch was
-pushed. That review is why the branch does not ship an open High.**
+`H1`: the lockout ladder did not count concurrent attempts. Five parallel wrong passwords left
+`failedLoginCount` at **1**, the account unlocked, zero `ACCOUNT_LOCKED` rows, zero burst notices,
+and a correct password immediately afterwards answering 200 — with 1,120 unit and 230 integration
+tests green, because **every lockout test in both lanes was sequential**. Rulings 73 and 74.
 
-It found **H1 still open through a second channel**. The round closed the attacker-supplied
-`User-Agent` into `registrationAttempt` and left the attacker-supplied **display name** open — and
-its own new test had gone red on that field and been switched off with a reason that was true about
-the data flow and false as an inference ("a display name is the recipient's own"). It is not:
-**an attacker seeds a victim's `User.name` by registering the victim's address first**, then a second
-registration mails the victim a branded notice greeting them with the attacker's sentence and URL,
-under a footer promising no link. Closed structurally — `emailVerification` and `registrationAttempt`
-take no name at all. **Ruling 70, and it binds Task 10**, whose password-reset template still renders
-a name into an unauthenticated message that carries a live link.
+`H2`: the unfamiliar-sign-in notice rendered the signing-in party's `User-Agent` to the victim, a
+URL included, under a footer promising the message contains no link. That is the **third** instance
+of one defect in three tasks (Task 8's H1, Task 8's F1, this), so the fix withdrew ruling 63's
+carve-out rather than patching the instance: **no notice renders a user agent at all now**. Ruling
+71. The fix round then found a **fourth** channel the orchestrator's own disposition had asserted
+away — `ipAddress`, kept on the grounds that an address "cannot carry a URL" — and the guard it
+added first admitted `facade.de`. Ruling 72.
 
-It also found a **false claim that had propagated to four places** from one unverified sentence of
-mine — that the redacting logger blanks `body`/`text` by field name. It does not; it is a
-value-shape net, and a link-free notice body is emitted verbatim. Ruling 67 is rewritten, and it is
-the ruling that would otherwise have told a future implementer that `body` is a safe key.
+**The fix round was reviewed by a second fresh agent, and that is the thing Task 8 did not do.** It
+returned 8 CLOSED, 4 CLOSED WITH A CAVEAT, **0 OPEN**, plus 1 Medium and 4 Low of its own. Every one
+of those was then closed by the orchestrator, including a genuine code defect the caveats surfaced:
+the **success** path had H1's shape one arm over, clearing `lockedUntil` from a stale pre-flight
+decision and **erasing a lock a sibling had just committed** (measured 4 runs of 4). Both success
+arms now write under the same not-locked predicate as the failure arm.
 
-Seven further findings from that review are fixed. **The scoped review's own findings have not been
-re-reviewed** — that is where the chain stops, and Task 9's reviewer may treat the final fix commits
-as the least-examined code on this branch.
+**Two claims of the orchestrator's were measured false by the people it briefed, and both are worth
+more than the fixes.** The brief told the implementer to prove the organisation lookup by inserting
+a row — which would have shipped a lookup returning `null` in production with a green test, because
+the integration harness connects as the schema owner and bypasses RLS (ruling 75). And the H2
+disposition's "an IP cannot carry a URL" was true of `request.ip` and false of the rendered line
+(ruling 72). A brief is not evidence.
 
-**One finding is upheld as false and deliberately not fixed** — ruling 65, a comment inside an
-applied migration that cannot be corrected without costing the operator a database reset an agent
-cannot perform.
+**One finding is accepted rather than fixed** — M3, the burst notice's in-request SMTP send, which
+is ruling 68's oracle on a new endpoint and is not closable before the Phase 4 queue. It is named in
+`security/authentication.md` §2 and §7 and in ruling 78, because it was named nowhere at all when
+the reviewer found it.
 
-**Two local facts corrected from Task 7's pause state.** Tasks 6 and 7 **are** on `main` with CI
-green (runs `33088717123` and `33088206506`); the "unpushed with no pull request" sentences were
-stale. And the compose Postgres privilege drift **has cleared** —
-`has_schema_privilege('sentinel_app','public','USAGE')` returns `t` where Task 7 measured `f` twice
-— which is what let this task's integration suite drive the endpoints end to end.
+**Verified by the orchestrator on the finished tree**, every command re-run rather than taken from
+an implementer's report, exit codes captured outside a pipe: all eleven exit 0. `pnpm test` 81 files
+/ **1279** tests, `pnpm test:integration` 18 / **286**, `check:openapi` **10 routes**,
+`check:registry` 15 models, compose stack `Up (healthy)`. `pnpm test:e2e` has **no row** and was not
+run: `git diff --stat main..HEAD -- apps/web` and `-- packages/ui` are both empty.
 
-**Branching. Task 8 is merged.** PR #14, rebased onto `main` on 2026-08-31 and the branch deleted,
-with CI green on a Linux runner first — runs `33370530376` (pull request) and `33370501611` (branch
-head), both `success`. Task 8's last code commit on `main` is `47f59f6`, followed by the docs commit
-that recorded the merge (PR #15). **Task 9 branches from whatever `main` is when you start** — pull
-first; do not cut from a commit named in this file, because this file is a dated record and `main`
-moves.
+**Branching. Task 9 is NOT merged.** It sits on `feat/phase-2-task-09`, cut from `main` at
+`00ac4ab`, unpushed, with no pull request and no CI run. Task 8's branch was merged as PR #14 before
+Task 9 began; this one has not been. **Task 10 branches from whatever `main` is when you start** —
+pull first, and decide with the operator whether Task 9 merges first or Tasks 9 and 10 merge
+together, since the plan chains them.
 
-**Next action:** Task 9 — login, logout, the session endpoint and lockout, chained with Task 10
-(password reset). One implementer across both, reviewer fresh per task.
+**Next action:** Task 10 — password reset, `forgot-password`, `reset-password` and
+`change-password`, chained with Task 9. One implementer across both, reviewer fresh per task.
 
-Task 9 inherits more than any task so far. **Rulings 24, 25, 50 and 56**: the timing oracle that
-opens the day an operator raises the Argon2 parameters, the silently-corrupted-credential signal
-with no log line, the requirement that a `PENDING_MFA` → `ACTIVE` rotation carry its
-`mfaCompletedAt`, and **login CSRF, which Task 7 deliberately did not cover** — a cross-site login
-`POST` carries no session cookie, so double-submit has nothing to bind to, and Task 9 brings its own
-mechanism. **Ruling 18**: `loginRequestSchema` has no `rememberMe` and Task 9 adds it. **Ruling 62**:
-a login event has no organisation, so it is a `PlatformAuditEvent`. **Ruling 64**: assert the
-rate-limit class on the handler. **Ruling 69**: declare the request body. **Ruling 49**: pin one side
-of an expiry assertion to a fixed instant.
+Task 10 inherits more than any task so far. **Ruling 70**: `passwordReset` still renders
+`recipientName`, it is unauthenticated, and it carries a **live reset link** — Task 10 owns deciding
+whether the name is rendered only for a verified account or dropped outright, and
+`passwordChanged`/`mfaEnabled`/`mfaDisabled` still greet by display name with no shipped caller.
+**Ruling 73**: password change and reset read a row, do slow work, then write — the same shape H1
+had. **Ruling 77**: the reset endpoints have login's error-envelope enumeration shape. **Ruling
+75**: any RLS-dependent assertion must drive the least-privileged role. **Ruling 68 and 78**: the
+reset endpoint's send is inside the request, exactly as the resend's and the burst notice's are.
+And `SessionService.revokeAllForUser`'s own docblock names the ordering only Task 10 can get right:
+**write the new password hash BEFORE revoking sessions**, or a racing login mints a session with the
+old credential after the revoke has run.
 
-And the one Task 8 could not discharge: **no audit event is written for a failed verification**,
-because the refusal rolls back the transaction the event would live in. `audit.md` §3 says failures
-and denials are audited. **Task 9 meets this harder and owns solving it**, because a failed login is
-the single most important failure event in the taxonomy.
+**One gap is Task 9's own and is named rather than filed elsewhere.** ADR-0014 §48 says a
+credential stored at weaker parameters is rehashed transparently "on next successful login", and
+**login is the caller that clause names**. `PasswordService.verify` returns `needsRehash` and
+nothing acts on it — `login.service.ts:138` is a comment saying so. Task 9 shipped the endpoint and
+not the clause, which also leaves **carry-forward ruling 24 open by construction**: rehash-on-login
+is the mechanism that would migrate old hashes, and without it a parameter raise both opens the
+timing oracle ruling 24 describes and never closes it. Task 10 is the natural owner because it
+already writes credentials, but it is Task 9's debt, not an inheritance.
+
+**Still owed, and genuinely not Task 9's:** ADR-0018 for the pending-MFA credential (Task 11, ruling
+81), the rate limiter's per-principal stage that resolves nothing (ruling 55), and per-account
+notice throttling (ruling 79 and N-5).
