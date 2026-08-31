@@ -155,7 +155,50 @@ export function identityStoreFake(): IdentityStoreFake {
       },
       update: (args) => {
         calls.push({ name: 'tx.user.update', args: { where: args.where, data: args.data } });
+        // APPLIED TO THE STORED ROW, not merely recorded. Since H1 the failure
+        // path writes the counter and the lock in two statements and reads the
+        // counter back between them, so a fake that recorded without applying
+        // would let `findUnique` answer with a row the transaction had already
+        // changed — and every ladder assertion would then be about the fixture
+        // rather than about the code.
+        const row = users.get(args.where.id);
+        if (row !== undefined) {
+          const next = { ...row, ...args.data };
+          users.set(next.id, next);
+          users.set(next.email, next);
+        }
         return Promise.resolve(undefined);
+      },
+      updateMany: (args) => {
+        calls.push({ name: 'tx.user.updateMany', args: { where: args.where, data: args.data } });
+        const row = users.get(args.where.id);
+        if (row === undefined) return Promise.resolve({ count: 0 });
+
+        // THE PREDICATE, EVALUATED HONESTLY. `{ lockedUntil: null }` OR
+        // `{ lockedUntil: { lte: now } }` — the same condition Postgres
+        // evaluates, so a unit spec that seeds a live lock sees `count: 0` for
+        // the same reason production does.
+        //
+        // **This fake cannot and does not model the concurrency property.**
+        // What makes the real predicate work is that Postgres re-evaluates it
+        // after blocking on a row lock; there is no lock here and no second
+        // caller. `auth.login.integration.spec.ts`'s parallel probe owns that
+        // property against real Postgres, and nothing in this file may be read
+        // as evidence for it — the same division `redeemableUserId` records one
+        // field up.
+        const [, expiring] = args.where.OR;
+        const unlocked =
+          row.lockedUntil === null ||
+          row.lockedUntil.getTime() <= expiring.lockedUntil.lte.getTime();
+        if (!unlocked) return Promise.resolve({ count: 0 });
+
+        const next = {
+          ...row,
+          failedLoginCount: row.failedLoginCount + args.data.failedLoginCount.increment,
+        };
+        users.set(next.id, next);
+        users.set(next.email, next);
+        return Promise.resolve({ count: 1 });
       },
     },
     credential: {

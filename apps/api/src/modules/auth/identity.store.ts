@@ -60,23 +60,73 @@ export type IdentityUserUpdateData =
   /** Email verification (Task 8). */
   | { readonly emailVerifiedAt: Date }
   /**
-   * A failed login (Task 9): the new count and the lock that count implies,
-   * always together. `lockedUntil: null` is a real value here — it is what the
-   * first four failures write — and not an omission.
+   * The lock a failure has just earned (Task 9, H1).
+   *
+   * On its own, and deliberately **not** beside a `failedLoginCount`. The
+   * count is no longer computed by the application: it is produced by the
+   * atomic increment in `updateMany` below and read back inside the same
+   * transaction, so a statement that wrote both would have to restate a value
+   * the database had just chosen — which is exactly how H1 happened.
    */
-  | { readonly failedLoginCount: number; readonly lockedUntil: Date | null }
+  | { readonly lockedUntil: Date }
   /**
    * A successful login (Task 9). The counter and the lock are cleared in the
    * same statement that stamps `lastLoginAt`, so there is no instant at which
    * an account is signed in and still counted as failing.
+   *
+   * An absolute value is correct **here and nowhere else on the login path**: a
+   * successful login sets the counter to a constant rather than deriving it
+   * from a value it read earlier, so there is nothing for a concurrent request
+   * to make stale.
    */
-  | { readonly failedLoginCount: 0; readonly lockedUntil: null; readonly lastLoginAt: Date };
+  | { readonly failedLoginCount: 0; readonly lockedUntil: null; readonly lastLoginAt: Date }
+  /**
+   * The MFA arm of a successful login: the counter and the lock clear, and
+   * `lastLoginAt` is deliberately not stamped for a session that can do
+   * nothing but complete MFA.
+   */
+  | { readonly failedLoginCount: 0; readonly lockedUntil: null };
+
+/**
+ * THE PREDICATE THAT MAKES THE FAILURE COUNTER SURVIVE CONCURRENCY. H1.
+ *
+ * The condition is "this account is not currently locked", evaluated by
+ * Postgres while it holds the row lock rather than by the application from a
+ * row it read ~40 ms earlier, on the far side of an Argon2id verification.
+ * Under READ COMMITTED a second transaction blocks on the first's row lock and
+ * then **re-evaluates this predicate against the committed version** — so an
+ * attempt that raced the one which tripped the lock reports `count: 0` and
+ * changes nothing. That is `security/authentication.md` §7's "an attempt during
+ * a live lock changes no state" enforced where it can actually hold, instead of
+ * from a read that is stale by construction.
+ *
+ * `lte` rather than `lt` mirrors `isLocked` in `lockout.ts`, which is strictly
+ * greater-than: the two have to agree about the instant a lock ends, or a
+ * request can be refused by one and admitted by the other.
+ */
+export interface IdentityUserFailureWhere {
+  readonly id: string;
+  readonly OR: readonly [{ readonly lockedUntil: null }, { readonly lockedUntil: { lte: Date } }];
+}
 
 export interface IdentityTransaction
   extends VerificationTokenTransaction, PlatformAuditTransaction {
   user: IdentityUserDelegate & {
     create(args: { data: { id: string; email: string; name: string | null } }): Promise<unknown>;
     update(args: { where: { id: string }; data: IdentityUserUpdateData }): Promise<unknown>;
+    /**
+     * The atomic failure increment. **Only ever `{ increment: 1 }`** — the type
+     * admits no absolute value, because an absolute value derived from an
+     * earlier read is the H1 defect, and this is the one column on `User` that
+     * two requests routinely write at the same instant.
+     *
+     * Returns the affected-row count. `0` means the predicate did not hold: the
+     * account is locked, and this attempt changes nothing.
+     */
+    updateMany(args: {
+      where: IdentityUserFailureWhere;
+      data: { failedLoginCount: { increment: 1 } };
+    }): Promise<{ count: number }>;
   };
   credential: {
     create(args: { data: { id: string; userId: string; passwordHash: string } }): Promise<unknown>;

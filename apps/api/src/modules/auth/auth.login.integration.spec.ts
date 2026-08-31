@@ -430,6 +430,122 @@ describe('POST /auth/login — the lockout ladder', () => {
   });
 });
 
+describe('POST /auth/login — the ladder counts CONCURRENT attempts', () => {
+  /**
+   * H1. EVERY OTHER LOCKOUT TEST IN BOTH LANES IS SEQUENTIAL, AND A SEQUENTIAL
+   * TEST CANNOT SEE THIS.
+   *
+   * The original implementation read the user row, spent ~40 ms inside
+   * Argon2id, and then wrote `failedLoginCount + 1` as an **absolute value**
+   * computed from the pre-hash read. Five parallel wrong passwords therefore
+   * all wrote `1`: the review measured `failedLoginCount 1`, `lockedUntil
+   * null`, zero `ACCOUNT_LOCKED` rows, zero burst notices, and a correct
+   * password immediately afterwards answering 200.
+   *
+   * That is not a slow lock — it is no lock. `security/authentication.md` §7's
+   * per-account brute-force control and its burst notice are both triggered by
+   * this counter, so firing attempts in parallel rather than in series defeated
+   * both while leaving the whole eleven-command gate green.
+   *
+   * These tests are the review's probe, kept. They are deliberately written
+   * against the OBSERVABLE end state — the counter, the lock, the audit rows,
+   * the mailbox — rather than against the SQL, so a future change of mechanism
+   * (a `SELECT … FOR UPDATE`, a unique-key retry, a different statement
+   * shape) still has to satisfy them.
+   */
+
+  /** `count` logins fired at once, with the limiter cleared beforehand. */
+  async function loginInParallel(
+    email: string,
+    password: string,
+    count: number,
+  ): Promise<number[]> {
+    await clearRateLimits(h.redis);
+    const responses = await Promise.all(
+      Array.from({ length: count }, () =>
+        request(h.server).post('/api/v1/auth/login').send({ email, password }),
+      ),
+    );
+    return responses.map((response) => response.status);
+  }
+
+  it('counts five parallel wrong passwords as five, and locks', async () => {
+    const email = await account();
+    h.sent.length = 0;
+
+    // Five, not six: the per-account window is 5 / 15 min, so a sixth would be
+    // refused by the limiter and the test would be measuring the limiter.
+    expect(await loginInParallel(email, WRONG, 5)).toEqual([401, 401, 401, 401, 401]);
+
+    const user = await h.prisma.user.findUniqueOrThrow({ where: { email } });
+    expect(user.failedLoginCount).toBe(5);
+    expect(user.lockedUntil).not.toBeNull();
+  });
+
+  it('refuses a CORRECT password afterwards, because the lock actually engaged', async () => {
+    // The end-to-end statement of the defect: before the fix this answered 200
+    // and issued a session.
+    const email = await account();
+    await loginInParallel(email, WRONG, 5);
+
+    const response = await login({ email, password: PASSWORD });
+    expect(response.status).toBe(403);
+    expect(errorEnvelopeSchema.parse(response.body).error.code).toBe('ACCOUNT_LOCKED');
+  });
+
+  it('writes exactly one ACCOUNT_LOCKED row and sends exactly one burst notice', async () => {
+    // The half an atomic increment does NOT give for free. Five concurrent
+    // increments produce the counts 1..5, and only the transaction that
+    // observes 5 may write the row and send the notice — but nothing about an
+    // increment stops a sixth and seventh transaction from also observing a
+    // lockable count if they are admitted. The predicate that refuses to touch
+    // an already-locked row is what bounds it, and this is the assertion that
+    // holds it there.
+    const email = await account();
+    const user = await h.prisma.user.findUniqueOrThrow({ where: { email } });
+    h.sent.length = 0;
+
+    await loginInParallel(email, WRONG, 5);
+
+    expect(await platformEvents(user.id, 'ACCOUNT_LOCKED')).toHaveLength(1);
+    expect(h.sent.map((mail) => mail.templateId)).toEqual(['failedLoginBurst']);
+  });
+
+  it('gives every LOGIN_FAILED row a DIFFERENT consecutiveFailures, 1 through 5', async () => {
+    // The audit half of H1, and it is not cosmetic. Before the fix all five
+    // rows carried `consecutiveFailures: 1`, so an investigator reading the
+    // table saw five isolated typos rather than a burst — the exact signal the
+    // row exists to carry.
+    const email = await account();
+    const user = await h.prisma.user.findUniqueOrThrow({ where: { email } });
+
+    await loginInParallel(email, WRONG, 5);
+
+    const rows = await platformEvents(user.id, 'LOGIN_FAILED');
+    const counts = rows
+      .map((row) => (row.metadata as { consecutiveFailures?: number }).consecutiveFailures)
+      .sort((a, b) => (a ?? 0) - (b ?? 0));
+    expect(counts).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('does not count attempts that arrive in parallel WITH the locking one', async () => {
+    // D2 under concurrency. Four attempts land while the account is already at
+    // rung one; the pre-transaction read cannot see the lock a sibling request
+    // is about to commit, so the refusal has to be enforced where the row lock
+    // is — otherwise the ladder skips rungs and the burst notice repeats.
+    const email = await account();
+    await h.prisma.user.update({ where: { email }, data: { failedLoginCount: 4 } });
+    h.sent.length = 0;
+
+    await loginInParallel(email, WRONG, 5);
+
+    const user = await h.prisma.user.findUniqueOrThrow({ where: { email } });
+    // The fifth failure locks; the four that raced it change nothing at all.
+    expect(user.failedLoginCount).toBe(5);
+    expect(h.sent.map((mail) => mail.templateId)).toEqual(['failedLoginBurst']);
+  });
+});
+
 describe('POST /auth/login — the per-account and per-IP windows bite independently', () => {
   it('refuses a sixth attempt on one address while another address still works', async () => {
     // §7's ACTUAL property, and the reason `rate-limit.config.ts` carries a
