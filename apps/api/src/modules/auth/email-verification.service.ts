@@ -31,8 +31,6 @@ export interface ResendVerificationCommand extends AuthRequestContext {
   readonly email: string;
 }
 
-const ANONYMOUS_GREETING = 'there';
-
 /**
  * `POST /api/v1/auth/verify-email` and `POST /api/v1/auth/resend-verification`.
  *
@@ -174,7 +172,6 @@ export class EmailVerificationService {
     // After the commit. Ruling 44.
     await this.mailer.sendVerification({
       to: user.email,
-      recipientName: user.name ?? ANONYMOUS_GREETING,
       token: issued.token,
     });
   }

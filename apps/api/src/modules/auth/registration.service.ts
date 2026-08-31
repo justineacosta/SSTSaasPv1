@@ -23,16 +23,6 @@ export interface RegisterCommand extends AuthRequestContext {
 }
 
 /**
- * The name a message is addressed to when the account has none.
- *
- * `User.name` is nullable and `registerRequestSchema` makes it optional, so
- * "Hello ," is a reachable render. Not the email address: the token-link
- * templates refuse to name the recipient's address in the body (ruling B), and
- * a greeting is not an exception to that.
- */
-const ANONYMOUS_GREETING = 'there';
-
-/**
  * `POST /api/v1/auth/register`.
  *
  * # The response is identical whether or not the address exists
@@ -167,7 +157,6 @@ export class RegistrationService {
     // After the commit. Ruling 44.
     await this.mailer.sendVerification({
       to: command.email,
-      recipientName: command.name ?? ANONYMOUS_GREETING,
       token: issued.token,
     });
   }
@@ -216,7 +205,6 @@ export class RegistrationService {
     // `AuthMailer.sendRegistrationAttempt` has no parameter for them.
     await this.mailer.sendRegistrationAttempt({
       to: existing.email,
-      recipientName: existing.name ?? ANONYMOUS_GREETING,
       occurredAt,
     });
   }

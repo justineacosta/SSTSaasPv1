@@ -40,8 +40,10 @@ import { DomainError } from '../../common/errors/domain-error.js';
  * so the field is absent rather than filled with a value that says nothing.
  *
  * **Task 8 gave it its first caller.** `EmailVerificationService.verify` raises
- * it on four paths: a token `consume` refused (itself four outcomes), a user row
- * that has vanished, and an account whose `status` is not `ACTIVE`. Password
+ * it at three sites: a token `consume` refused (itself four outcomes — unknown,
+ * expired, consumed, superseded), a user row that has vanished, and an account
+ * whose `status` is not `ACTIVE`. An earlier version of this sentence said
+ * "four paths" and then listed three (F6). Password
  * reset (Task 10) and invitation acceptance (Task 15) are the remaining callers,
  * and `TokenService.consume` returning `null` is what each of them turns into it.
  */

@@ -157,10 +157,7 @@ export function renderMfaDisabled(context: SecurityNoticeContext): RenderedEmail
  * operator, in an append-only table built for exactly this, never rendered into
  * a message sent to somebody else.
  */
-export type RegistrationAttemptContext = Pick<
-  SecurityNoticeContext,
-  'recipientName' | 'occurredAt'
->;
+export type RegistrationAttemptContext = Pick<SecurityNoticeContext, 'occurredAt'>;
 
 /**
  * THE EIGHTH TEMPLATE, AND THE OTHER HALF OF ENUMERATION RESISTANCE.
@@ -182,6 +179,14 @@ export type RegistrationAttemptContext = Pick<
  * the only thing an attacker learns from a bounce or a shared inbox should be
  * nothing.
  *
+ * **It names nobody.** Not the address, not a display name. F1: the first
+ * version of this fix dropped the device and the IP and kept `recipientName`,
+ * on the reasoning that a display name is the recipient's own — but an attacker
+ * seeds it by registering the victim's address first, with up to 200 characters
+ * of free text in `name`. The greeting then carried the same injected sentence
+ * and URL that the device line had, under the same footer promising no link.
+ * A field that cannot be passed cannot be injected.
+ *
  * **It names no device and no IP address.** Every other notice does, because
  * there the string describes an action the recipient's own authenticated
  * session took and is how they recognise a session that is not theirs. Here it
@@ -198,7 +203,7 @@ export function renderRegistrationAttempt(context: RegistrationAttemptContext): 
   return renderEmail({
     subject: 'Someone tried to create a Sentinel account with your email address',
     paragraphs: [
-      `Hello ${context.recipientName},`,
+      'Hello,',
       'Someone submitted this email address to the Sentinel sign-up form. This address is already in use, so no second account was created and nothing about your existing account has changed.',
       'If it was you: you already have an account, so sign in instead. If you cannot remember your password, use the "forgot password" option on the sign-in page.',
       // The timestamp only — NOT `whereAndWhen(context)`, which is the other

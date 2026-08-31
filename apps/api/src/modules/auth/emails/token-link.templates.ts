@@ -29,15 +29,28 @@ interface TokenLinkInput {
   readonly ttlSeconds: number;
 }
 
-export interface EmailVerificationInput extends TokenLinkInput {
-  readonly recipientName: string;
-}
+/**
+ * NO `recipientName`, AND THE ABSENT FIELD IS THE CONTROL. F1.
+ *
+ * This message goes to an address whose ownership **nobody has proven** — that
+ * is the entire reason it is being sent. The stored `User.name` on such a row is
+ * not the recipient's name: anybody may `POST /auth/register` with somebody
+ * else's address and a `name` of up to 200 characters of free text, and the
+ * victim then receives this message greeting them with a stranger's sentence
+ * and, if it contains one, a stranger's URL.
+ *
+ * The first version of the H1 fix closed that channel on `registrationAttempt`
+ * and left it open here, and its own test excluded the field on the reasoning
+ * that a display name is "the recipient's own". It is not, until the address is
+ * verified — which is the thing this message exists to do.
+ */
+export type EmailVerificationInput = TokenLinkInput;
 
 export function renderEmailVerification(input: EmailVerificationInput): RenderedEmail {
   return renderEmail({
     subject: 'Confirm your email address',
     paragraphs: [
-      `Hello ${input.recipientName},`,
+      'Hello,',
       'Confirm this address to finish setting up your Sentinel account.',
       `This link can be used once and expires in ${formatDuration(input.ttlSeconds)}.`,
     ],

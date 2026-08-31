@@ -6,6 +6,22 @@
 Dated 2026-08-31. Dispositions in [`fix-brief.md`](fix-brief.md); findings in
 [`review.md`](review.md).
 
+> **CORRECTION, 2026-08-31, after this document was written.** A scoped adversarial review of this
+> very fix round — [`fix-review.md`](fix-review.md) — found that **H1 was not closed** and that two
+> claims below are false. This document is left as the dated record of what was believed at the
+> time; the corrections are:
+>
+> 1. **H1 remained open through `recipientName`** (F1), a channel this round closed on one field and
+>    left open on another — and its own test went red on that field and was reasoned into silence.
+>    Now closed: `emailVerification` and `registrationAttempt` render no name at all. Ruling 70.
+> 2. **"The redacting serialiser blanks `body` and `text` by field name" is false** (F2). It is a
+>    value-shape net; neither key is on the name denylist, and a link-free notice body logged under
+>    `body` is emitted verbatim. The exact-key-set fix below is still correct; the reasoning printed
+>    beside it was not. Ruling 67, rewritten.
+>
+> Ruling 22 applies to this document twice over: **a decision can be right while the reason written
+> beside it is false, and the false reason is still a defect.**
+
 ## Who did this round, and why it matters
 
 **The implementer subagent hit the weekly usage limit partway through and the orchestrator

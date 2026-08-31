@@ -15,12 +15,21 @@ import { type SecretTokenTtlSeconds, TokenService } from './token.service.js';
  * 39 integration tests stayed green, so the sentence was the only thing holding
  * it. For `emailVerification` that body contains the live `?token=` link.
  *
- * The redaction pattern in `@sentinel/observability` does catch a `?token=` URL
- * — the reviewer measured that too — but it is the **second** line of defence
- * and carry-forward ruling 47 records shapes it does not cover. So this file
- * asserts the stronger property: the body is not in the bindings at all. A spec
- * that only looked for the token would stay green if the whole body started
- * being logged and redaction happened to save it.
+ * **What the redactor does and does not do here, measured — an earlier version
+ * of this docblock got it wrong (F2).** It is a VALUE-shape net, not a
+ * field-name denylist for these keys: `SECRET_KEY_FRAGMENTS` in
+ * `packages/observability/src/redaction.ts` lists `password`, `token`,
+ * `cookie` and the rest, and neither `body` nor `text` is on it.
+ * `redact({ body: '<a notice body>' })` returns it **verbatim**;
+ * `redact({ body: '…?token=…' })` returns `[redacted]` because the value
+ * matched. So a verification body is saved by its own link and the five
+ * link-free notices are not saved at all.
+ *
+ * That is why this file asserts an EXACT KEY SET rather than searching the line
+ * for content. A value-based assertion cannot fail for a token-bearing template
+ * (the redactor rescues it) and would not have to fail for a notice (nothing
+ * rescues it) — only the key set holds the actual claim, which is that
+ * `deliver` passes no body in the first place.
  *
  * The same shape as `infrastructure/mail/mail.redaction.spec.ts`, one layer up.
  */
@@ -60,7 +69,6 @@ describe('AuthMailer, when a send fails', () => {
     await expect(
       mailer.sendVerification({
         to: 'ada@example.test',
-        recipientName: 'Ada Lovelace',
         token: 'FIXTURE_token_that_must_not_be_logged_00',
       }),
     ).resolves.toBeUndefined();
@@ -75,7 +83,7 @@ describe('AuthMailer, when a send fails', () => {
     const mailer = new AuthMailer(refusingMailer, ENV, new TokenService({} as never, TTL), logger);
     const token = 'FIXTURE_token_that_must_not_be_logged_00';
 
-    await mailer.sendVerification({ to: 'ada@example.test', recipientName: 'Ada', token });
+    await mailer.sendVerification({ to: 'ada@example.test', token });
 
     const line = lines.join('');
     expect(line).not.toContain(token);
@@ -103,7 +111,6 @@ describe('AuthMailer, when a send fails', () => {
 
     await mailer.sendVerification({
       to: 'ada@example.test',
-      recipientName: 'Ada',
       token: 'FIXTURE_x',
     });
 

@@ -65,10 +65,23 @@ interface AttackerStrings {
   readonly userAgent: string;
 }
 
+/**
+ * The two templates that render no attacker-supplied string whatsoever.
+ *
+ * Both are sent to an address whose ownership nobody has proven, which is what
+ * makes the stored display name untrustworthy: anyone may register somebody
+ * else's address with 200 characters of chosen text in `name` (F1). Neither
+ * takes a name, an IP or a user agent, so for these two the assertion is
+ * ABSENCE rather than escaping.
+ */
+const NAMELESS_TEMPLATE_IDS = [
+  'emailVerification',
+  'registrationAttempt',
+] as const satisfies readonly EmailTemplateId[];
+
 const CASES: Record<EmailTemplateId, (s: AttackerStrings) => RenderedEmail> = {
-  emailVerification: (s) =>
+  emailVerification: () =>
     EMAIL_TEMPLATES.emailVerification({
-      recipientName: s.name,
       webBaseUrl: BASE_URL,
       token: TOKEN,
       ttlSeconds: 86_400,
@@ -92,7 +105,7 @@ const CASES: Record<EmailTemplateId, (s: AttackerStrings) => RenderedEmail> = {
   mfaEnabled: (s) => EMAIL_TEMPLATES.mfaEnabled(notice(s)),
   mfaDisabled: (s) => EMAIL_TEMPLATES.mfaDisabled(notice(s)),
   newDeviceSignIn: (s) => EMAIL_TEMPLATES.newDeviceSignIn(notice(s)),
-  registrationAttempt: (s) => EMAIL_TEMPLATES.registrationAttempt(notice(s)),
+  registrationAttempt: () => EMAIL_TEMPLATES.registrationAttempt({ occurredAt: OCCURRED_AT }),
 };
 
 function notice(s: AttackerStrings) {
@@ -215,10 +228,24 @@ describe.each(IDS)('template %s', (id) => {
     }
   });
 
-  it('escapes an attacker-chosen display name into the html part', () => {
+  it('escapes every attacker-chosen string it does render into the html part', () => {
     // Ruling 44. A display name is chosen at registration, an organisation name
-    // at creation, and a user agent is a request header — all three reach these
-    // templates and all three are attacker-controlled.
+    // at creation, and a user agent is a request header — all three are
+    // attacker-controlled wherever a template renders them.
+    //
+    // Two templates render NONE of them and are skipped rather than asserted
+    // about: `emailVerification` and `registrationAttempt` take no name, no IP
+    // and no user agent at all (F1), so there is nothing here to escape. That
+    // skip is checked rather than trusted — the assertion below it proves the
+    // payload is absent instead of merely escaped.
+    if (NAMELESS_TEMPLATE_IDS.includes(id as (typeof NAMELESS_TEMPLATE_IDS)[number])) {
+      const { html, text } = ATTACKED(id);
+      for (const part of [html, text]) {
+        expect(part).not.toContain('script');
+        expect(part).not.toContain('steal()');
+      }
+      return;
+    }
     const { html } = ATTACKED(id);
     expect(html).not.toContain('<script>');
     expect(html).toContain('&lt;script&gt;');
@@ -300,28 +327,6 @@ describe.each(NOTICE_TEMPLATE_IDS)('notice template %s', (id) => {
     expect(email.html).not.toContain('href');
   });
 
-  it('carries no link when the value the CALLER supplied is a URL', () => {
-    // H1, generalised to the field that is actually third-party text.
-    //
-    // NOT the display name, and that exclusion is a measurement rather than a
-    // convenience. I first wrote this test with `name` injected too; it failed
-    // for all five notices, because every one of them greets the recipient by
-    // name — and then it stayed failing no matter what, because a greeting is
-    // the point. It is also not a defect: `recipientName` is always the
-    // RECIPIENT'S OWN stored name. An attacker who puts a URL there has put it
-    // in a message delivered to themselves.
-    //
-    // `userAgent` and `ipAddress` are different in kind. On
-    // `registrationAttempt` they come from whoever called `POST /auth/register`
-    // — a stranger — and the message goes to somebody else. That is the whole
-    // of H1.
-    const email = CASES[id]({ ...BENIGN, ipAddress: XSS_WITH_URL, userAgent: XSS_WITH_URL });
-    if (CONTEXT_FREE_NOTICE_IDS.includes(id as (typeof CONTEXT_FREE_NOTICE_IDS)[number])) {
-      expect(email.html).not.toMatch(/https?:\/\//);
-      expect(email.text).not.toMatch(/https?:\/\//);
-    }
-  });
-
   it('names when it happened, in UTC', () => {
     expect(SAMPLES(id).text).toContain('2026-08-26 09:41 UTC');
   });
@@ -381,7 +386,26 @@ describe.each(CONTEXT_FREE_NOTICE_IDS)('context-free notice %s', (id) => {
     // The fix is structural rather than a filter: the template does not render
     // the fields at all, so there is nothing to escape, encode around, or
     // denylist.
-    const email = CASES[id]({ ...BENIGN, ipAddress: XSS_WITH_URL, userAgent: XSS_WITH_URL });
+    // `name` IS in this list, and leaving it out was F1. The first version of
+    // the H1 fix excluded it, writing down that a display name is "the
+    // recipient's own" — true of the data flow, false as an inference. **An
+    // attacker sets a victim's `User.name` by registering the victim's address
+    // first**, with up to 200 characters of free text, and the victim then gets
+    // a branded message greeting them with a stranger's sentence and URL. The
+    // exclusion had made this test go red for the right reason and it was
+    // reasoned into silence instead.
+    //
+    // It passes now because neither context-free template takes a name at all.
+    // This assertion runs for every id in the block — F5: the earlier version
+    // of it lived in the NOTICE_TEMPLATE_IDS block behind an `if`, so it printed
+    // four green lines claiming a property that is false for the four notices
+    // that legitimately greet by name.
+    const email = CASES[id]({
+      ...BENIGN,
+      name: XSS_WITH_URL,
+      ipAddress: XSS_WITH_URL,
+      userAgent: XSS_WITH_URL,
+    });
     expect(email.text).not.toMatch(/https?:\/\//);
     expect(email.html).not.toMatch(/https?:\/\//);
     expect(email.text).not.toContain('token');

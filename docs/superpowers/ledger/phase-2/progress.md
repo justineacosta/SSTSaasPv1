@@ -456,12 +456,21 @@ Full reasoning and cost-if-wrong for each is in [`task-08/fixes.md`](task-08/fix
     Third instance of ruling 58's family in this task alone, and the first one found by the author
     rather than a reviewer.
 
-67. **The redacting serialiser blanks `body` and `text` by field NAME, not by value pattern.**
-    Measured: adding the rendered email to a log call emits `"body":"[redacted]"`, so no
-    value-based assertion can fail on it. That makes the denylist a real second line of defence —
-    and it is only the second. A binding named anything outside that list carries the value
-    straight through. **The assertion that holds "this call logs no body" is an exact key set**,
+67. **The redacting logger is a value-shape net, not a field-name denylist — so a log binding
+    named `body` is NOT safe.** Measured twice, and the second measurement corrected the first:
+    `SECRET_KEY_FRAGMENTS` in `packages/observability/src/redaction.ts` lists `password`, `token`,
+    `cookie`, `authorization` and the rest, and **neither `body` nor `text` is on it**.
+    `redact({ body: '<a notice body>' })` returns it **verbatim**;
+    `redact({ body: '…?token=…' })` returns `[redacted]` only because the VALUE matched a secret
+    pattern. So the three templates carrying a link are rescued by their own link, and the five
+    link-free notices are not rescued at all — logging one under any key emits it in full, against
+    `CLAUDE.md`'s rule 6. **The assertion that holds "this call logs no body" is an exact key set**,
     because a new binding changes the keys whether or not its value survives redaction.
+
+    *The Task 8 fix round asserted the opposite — that the two field names were blanked outright —
+    and propagated it into this ruling, `roadmap.md`, `fixes.md` and a code comment before a scoped
+    review measured it false. Four places from one unverified sentence, which is the propagation
+    path behind five of Phase 1's twelve.*
 
 68. **The resend endpoint is enumeration-resistant in its body and not in its timing.** Measured
     over 25 samples: no account 4.0 ms, already verified 4.2 ms, awaiting confirmation 8.6 ms, with
@@ -476,6 +485,29 @@ Full reasoning and cost-if-wrong for each is in [`task-08/fixes.md`](task-08/fix
     the same contract schema the `ZodValidationPipe` parses with, never a copy, so `.strict()`
     reaches the document as `additionalProperties: false` and a client can see that an unknown
     field is a 400 rather than a silently dropped value.
+
+70. **A message sent to an address whose ownership has not been proven must render NO stored
+    display name.** F1, and it is the H1 finding reopened through a second channel after the first
+    was closed. `User.name` is free text up to 200 characters written straight from the registration
+    body, and **an attacker seeds a victim's name by registering the victim's address first** — the
+    address then exists, so the next registration attempt mails `registrationAttempt` to the victim
+    greeting them with the attacker's sentence and URL, under a footer promising the message carries
+    no link. Step 1 alone already mails the victim a branded verification message carrying that text.
+    Closed the same way H1 was: `emailVerification` and `registrationAttempt` take no name, no IP and
+    no user agent, so no parameter exists for the value to travel through.
+
+    **Binds Task 10.** `passwordReset` still renders `recipientName`, its endpoint is unauthenticated,
+    and it targets an address by exactly the same reasoning — so a reset message to an
+    attacker-seeded, never-verified account carries the same injection **plus a live reset link**.
+    Task 10 owns deciding whether the name is rendered only for a verified account or dropped
+    outright. **Binds Task 15** for the invitation, which already names nobody, and any later
+    template: the test to write is "no link when EVERY caller-supplied field is a URL", with the
+    display name in the list.
+
+    **And the meta-lesson, which is worth more than the fix.** The round that closed H1 wrote this
+    exact test, watched it go red on the display name, and **reasoned it into silence** with a
+    sentence that was true about the data flow and false as an inference. A red test that a fix
+    round turns off needs a second pair of eyes, not a comment.
 
 ## Pause state
 
@@ -498,15 +530,28 @@ they could guess was registered — under a footer promising the message carries
 type that cannot carry the value rather than a filter. The spec that should have caught it ran the
 benign fixture, which is ruling 58's third instance in three tasks.
 
-**Read this before trusting the fix round: the implementer subagent hit the weekly usage limit after
-landing the High fix, and the orchestrator finished the remaining seventeen findings directly.**
-Nothing in that round has been adversarially reviewed. Every fix is proved by re-applying the
-reviewer's own mutation and pasting what went red, and the round found two defects in its own fixes
-by doing so — but the separation of author from reviewer that the rest of this phase depends on is
-absent for it. **Task 9's reviewer should treat Task 8's fix commits as unreviewed code**, in
-particular `auth.controller.spec.ts`, `request-context.spec.ts`, `auth-mailer.spec.ts`, the
-`redeemableUserId` control added to `identity-fakes.ts`, and the `requestBody` support added to the
-OpenAPI generator.
+**The fix round was written by the orchestrator — the implementer hit the weekly usage limit after
+landing the High fix — so a second fresh agent reviewed the fix commits before this branch was
+pushed. That review is why the branch does not ship an open High.**
+
+It found **H1 still open through a second channel**. The round closed the attacker-supplied
+`User-Agent` into `registrationAttempt` and left the attacker-supplied **display name** open — and
+its own new test had gone red on that field and been switched off with a reason that was true about
+the data flow and false as an inference ("a display name is the recipient's own"). It is not:
+**an attacker seeds a victim's `User.name` by registering the victim's address first**, then a second
+registration mails the victim a branded notice greeting them with the attacker's sentence and URL,
+under a footer promising no link. Closed structurally — `emailVerification` and `registrationAttempt`
+take no name at all. **Ruling 70, and it binds Task 10**, whose password-reset template still renders
+a name into an unauthenticated message that carries a live link.
+
+It also found a **false claim that had propagated to four places** from one unverified sentence of
+mine — that the redacting logger blanks `body`/`text` by field name. It does not; it is a
+value-shape net, and a link-free notice body is emitted verbatim. Ruling 67 is rewritten, and it is
+the ruling that would otherwise have told a future implementer that `body` is a safe key.
+
+Seven further findings from that review are fixed. **The scoped review's own findings have not been
+re-reviewed** — that is where the chain stops, and Task 9's reviewer may treat the final fix commits
+as the least-examined code on this branch.
 
 **One finding is upheld as false and deliberately not fixed** — ruling 65, a comment inside an
 applied migration that cannot be corrected without costing the operator a database reset an agent

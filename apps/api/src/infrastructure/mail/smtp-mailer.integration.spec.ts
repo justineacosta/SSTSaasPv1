@@ -127,7 +127,6 @@ describe('the SMTP adapter against the compose Mailpit', () => {
     const recipient = uniqueRecipient();
     const { token } = mintSecretToken();
     const rendered = EMAIL_TEMPLATES.emailVerification({
-      recipientName: 'Ada Lovelace',
       webBaseUrl: env.WEB_BASE_URL,
       token,
       ttlSeconds: env.TOKEN_TTL_EMAIL_VERIFICATION_SECONDS,
@@ -228,16 +227,22 @@ describe('the SMTP adapter against the compose Mailpit', () => {
     // template layer too; this proves nothing between the template and the
     // recipient's mailbox — MIME encoding, quoted-printable, the transport —
     // undoes it.
+    // `passwordChanged`, NOT `emailVerification`. F1 removed the display name
+    // from the two templates sent to an address whose ownership nobody has
+    // proven, so `emailVerification` no longer renders an attacker string and
+    // could not exercise this property any more. `passwordChanged` still greets
+    // by name — legitimately, since it reports an action on an account somebody
+    // is already signed in to — so it is the honest fixture for "escaping
+    // survives the transport".
     const recipient = uniqueRecipient();
-    const { token } = mintSecretToken();
     await mailer.send({
-      templateId: 'emailVerification',
+      templateId: 'passwordChanged',
       to: recipient,
-      ...EMAIL_TEMPLATES.emailVerification({
+      ...EMAIL_TEMPLATES.passwordChanged({
         recipientName: '<script>alert(1)</script>',
-        webBaseUrl: env.WEB_BASE_URL,
-        token,
-        ttlSeconds: env.TOKEN_TTL_EMAIL_VERIFICATION_SECONDS,
+        occurredAt: new Date('2026-08-26T09:41:00.000Z'),
+        ipAddress: '203.0.113.7',
+        userAgent: 'Mozilla/5.0',
       }),
     });
 
