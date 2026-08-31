@@ -1250,7 +1250,7 @@ every table-touching integration spec starts its own Testcontainers Postgres, bu
 application run against the compose database answers 500 from any path that reaches the database.
 Nothing was changed on the operator's machine to fix it.
 
-**Task 8 evidence, 2026-08-31 at commit `dea98cb`.** Every command re-run by the orchestrator on
+**Task 8 evidence, 2026-08-31 at the branch head after the second review's fixes.** Every command re-run by the orchestrator on
 the finished tree, exit codes captured outside a pipe. Task 7 was re-verified the same way before
 Task 8 began — all eleven commands exit 0 at the numbers its own table records.
 
@@ -1259,7 +1259,7 @@ Task 8 began — all eleven commands exit 0 at the numbers its own table records
 | `pnpm format:check` | 0 | Prettier style across the workspace. |
 | `pnpm lint` | 0 | 14 tasks. |
 | `pnpm typecheck` | 0 | 14 tasks. The types compile — and nothing about behaviour. |
-| `pnpm test` | 0 | **76 files / 1125 tests**, up from 69 / 1025 at Task 7. |
+| `pnpm test` | 0 | **76 files / 1120 tests**, up from 69 / 1025 at Task 7. |
 | `pnpm check:specs` | 0 | 93 spec files, each claimed by exactly one Vitest project. |
 | `pnpm test:integration` | 0 | **17 files / 230 tests** against real Postgres 16 and the compose Redis, up from 15 / 205. |
 | `pnpm build` | 0 | 8 tasks. |
@@ -1333,15 +1333,30 @@ be discovered. Registration's own two paths were measured at 47.8 ms against 44.
 near-total overlap, and a statistical timing assertion was deliberately **not** committed on that
 evidence — the spec asserts the hash happens on both paths instead.
 
-**The fix round was finished by the orchestrator, not the implementer, and nothing in it has been
-adversarially reviewed.** The implementer subagent hit the weekly usage limit after landing the High
+**The fix round was finished by the orchestrator, not the implementer, and it was then reviewed by
+a second fresh agent — which is the only reason this branch is not shipping an open High.** The implementer subagent hit the weekly usage limit after landing the High
 fix. Seventeen of eighteen findings are fixed and every fix is proved by re-applying the reviewer's
 own mutation, but the separation of author from reviewer that the rest of this phase relies on is
-absent for that round — so its "all green" is a self-report. It found **two defects in its own
-fixes** by running mutations: a vacuous test that passed for an unrelated reason, and a finding that
-measurement showed was partly wrong (the redacting serialiser blanks the `body` field by name, so
-the mutation the review called a survivor could not have been caught by any value-based assertion).
-Both are in
+absent for that round, so a **scoped adversarial review was run over the fix commits before the
+branch was pushed**. It found that **H1 was still open** — the round had closed the attacker-supplied
+`User-Agent` channel into the registration notice and left the attacker-supplied *display name*
+open, and its own test had gone red on that field and been reasoned into silence with an argument
+that was true about the data flow and false as an inference. **An attacker seeds a victim's
+`User.name` by registering the victim's address first.** Now closed the same structural way:
+`emailVerification` and `registrationAttempt` render no name, no IP and no user agent at all, so no
+parameter exists for the value to travel through. Ruling 70, which binds Task 10's password reset —
+the one remaining template that renders a name into an unauthenticated, unverified-address message,
+and it carries a live link.
+
+That review also found **a false claim this file carried**: the fix round asserted that the
+redacting serialiser blanks the `body` and `text` field names outright. It does not. It is a
+value-shape net — measured, `redact({ body: '<a notice body>' })` returns it verbatim, and only a
+value matching a secret pattern such as `?token=` is blanked — so the three link-carrying templates
+are rescued by their own link and the five link-free notices are not rescued at all. One unverified
+sentence had reached four places. Ruling 67 is rewritten.
+
+The earlier round had already found **two defects in its own  a vacuous test that passed for an unrelated reason, and a claim about the
+redacting serialiser that the scoped review then measured as false. All of it is in
 [`docs/superpowers/ledger/phase-2/task-08/fixes.md`](../../docs/superpowers/ledger/phase-2/task-08/fixes.md).
 
 **One finding is upheld as false and deliberately not fixed.** A comment in the applied
@@ -1362,7 +1377,8 @@ with no pull request** — one task of work, not two.
 
 **The compose Postgres privilege drift has cleared.**
 `has_schema_privilege('sentinel_app','public','USAGE')` now returns `t` where Task 7 measured `f`
-twice, and all six migrations are applied. The real application can reach the database on this
+twice, and **all eight migrations are applied** — the six from Phase 1 and Task 1, plus this
+task's two. The real application can reach the database on this
 machine again, which is what let this task's integration suite exercise the endpoints end to end.
 
 **Checkpoint A falls after Task 12** — the identity API enforced end to end with no UI. At that

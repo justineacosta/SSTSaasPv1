@@ -63,7 +63,6 @@ describe('a real verification email through the SMTP adapter', () => {
     const { logger, lines } = captureLogger();
     const { token } = mintSecretToken();
     const rendered = EMAIL_TEMPLATES.emailVerification({
-      recipientName: 'Ada Lovelace',
       webBaseUrl: 'https://app.sentinel.test',
       token,
       ttlSeconds: 86_400,
@@ -106,7 +105,6 @@ describe('a real verification email through the SMTP adapter', () => {
     const { logger, lines } = captureLogger();
     const { token } = mintSecretToken();
     const rendered = EMAIL_TEMPLATES.emailVerification({
-      recipientName: 'Ada Lovelace',
       webBaseUrl: 'https://app.sentinel.test',
       token,
       ttlSeconds: 86_400,

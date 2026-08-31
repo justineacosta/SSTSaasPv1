@@ -126,10 +126,13 @@ export function identityStoreFake(): IdentityStoreFake {
       },
       updateMany: (args) => {
         calls.push({ name: 'tx.verificationToken.updateMany', args: args.where });
-        // `consumedAt: null` in the predicate marks the REDEMPTION update;
-        // `issue`'s supersede pass carries `purpose` and `userId` instead. Only
-        // the former is allowed to report a hit, so setting the flag cannot
-        // accidentally make a supersede look like it consumed a row.
+        // `tokenHash` in the predicate marks the REDEMPTION update; `issue`'s
+        // supersede pass keys on `userId` + `purpose` and carries no hash. Only
+        // the former may report a hit, so setting the flag cannot accidentally
+        // make a supersede look like it consumed a row. (An earlier comment here
+        // named `consumedAt: null` as the discriminator — F4. Both predicates
+        // carry that, so it discriminates nothing; the code was always right and
+        // only the sentence was wrong.)
         const isRedemption = 'tokenHash' in args.where;
         return Promise.resolve({
           count: isRedemption && control.redeemableUserId !== null ? 1 : 0,

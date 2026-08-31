@@ -64,13 +64,14 @@ export class AuthMailer {
    * goes into the link and nowhere else: not into the log line below, which
    * names only the template id, and not into the audit event.
    */
-  async sendVerification(input: {
-    to: string;
-    recipientName: string;
-    token: string;
-  }): Promise<void> {
+  async sendVerification(input: { to: string; token: string }): Promise<void> {
+    // NO `recipientName`. F1: this message goes to an address nobody has
+    // proven belongs to the recipient, so the stored display name may be text
+    // an attacker chose when they registered that address. The parameter is
+    // gone rather than sanitised, for the reason the H1 fix gives one method
+    // down: a denylist over attacker text is a defect waiting for a new
+    // encoding; a parameter that does not exist is not.
     const rendered = EMAIL_TEMPLATES.emailVerification({
-      recipientName: input.recipientName,
       webBaseUrl: this.env.WEB_BASE_URL,
       token: input.token,
       // Read from the same configuration that stamped the expiry, so an
@@ -85,21 +86,14 @@ export class AuthMailer {
    * The message an address that is already registered gets instead of a
    * verification link. Ruling B.
    */
-  async sendRegistrationAttempt(input: {
-    to: string;
-    recipientName: string;
-    occurredAt: Date;
-  }): Promise<void> {
+  async sendRegistrationAttempt(input: { to: string; occurredAt: Date }): Promise<void> {
     // NO `ip` AND NO `userAgent`, AND THE SIGNATURE IS THE CONTROL. H1: the
     // caller of `POST /auth/register` chose those values and this message goes
     // to somebody else, so there must be no parameter for them to travel
     // through. `RegistrationAttemptContext` refuses them one layer down as
     // well. They are recorded in the `PlatformAuditEvent` row instead, which is
     // where attacker-supplied text belongs.
-    const rendered = EMAIL_TEMPLATES.registrationAttempt({
-      recipientName: input.recipientName,
-      occurredAt: input.occurredAt,
-    });
+    const rendered = EMAIL_TEMPLATES.registrationAttempt({ occurredAt: input.occurredAt });
     await this.deliver('registrationAttempt', input.to, rendered);
   }
 
