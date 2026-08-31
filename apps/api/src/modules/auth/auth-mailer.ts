@@ -7,8 +7,8 @@ import { EMAIL_TEMPLATES } from './emails/registry.js';
 import { TokenService } from './token.service.js';
 
 /**
- * The two messages the registration and verification endpoints send, and the
- * one place they decide what to do when a send fails.
+ * The four messages the registration, verification and login endpoints send,
+ * and the one place they decide what to do when a send fails.
  *
  * ## Every method here is called AFTER the transaction has committed
  *
@@ -95,6 +95,65 @@ export class AuthMailer {
     // where attacker-supplied text belongs.
     const rendered = EMAIL_TEMPLATES.registrationAttempt({ occurredAt: input.occurredAt });
     await this.deliver('registrationAttempt', input.to, rendered);
+  }
+
+  /**
+   * `security/authentication.md` §3's unfamiliar-session notice, sent after a
+   * successful login from an IP and user agent this user's sessions have not
+   * carried before.
+   *
+   * **The caller must not send this to an unverified address**, and the
+   * signature cannot enforce that — `LoginService` does, and
+   * `login.service.spec.ts` asserts it. What the signature *does* enforce is
+   * ruling 70: there is no `recipientName` parameter, so no stored display name
+   * can travel into a message this product sends, however the caller is edited
+   * later.
+   *
+   * The IP and user agent stay, and are the recipient's own: this is the
+   * session they just started, and the device string is how they recognise one
+   * that is not theirs (ruling 63's licensed side of the partition). Both are
+   * `null`-able rather than defaulted, for `notice.templates.ts`'s reason — a
+   * fabricated address in a security notice is worse than an absent one.
+   */
+  async sendNewDeviceSignIn(input: {
+    to: string;
+    occurredAt: Date;
+    ip: string | null;
+    userAgent: string | null;
+  }): Promise<void> {
+    const rendered = EMAIL_TEMPLATES.newDeviceSignIn({
+      occurredAt: input.occurredAt,
+      // `?? undefined`, because the template distinguishes "not recorded" from
+      // a value and `null` is this codebase's word for the former at every
+      // other boundary. The two spellings meet here and nowhere else.
+      ipAddress: input.ip ?? undefined,
+      userAgent: input.userAgent ?? undefined,
+    });
+    await this.deliver('newDeviceSignIn', input.to, rendered);
+  }
+
+  /**
+   * §7's "a burst notifies the account owner", sent once per lock.
+   *
+   * **No IP and no user agent, and the signature is the control** — the same
+   * shape `sendRegistrationAttempt` took for H1, applied to a message whose
+   * context belongs to somebody else entirely. A burst is not the recipient's
+   * session: the address that was guessing is not theirs, and the user agent is
+   * a header that party chose. Both are recorded in the `PlatformAuditEvent`
+   * row instead.
+   *
+   * `attemptCount` is `User.failedLoginCount`, a number this product computed.
+   */
+  async sendFailedLoginBurst(input: {
+    to: string;
+    occurredAt: Date;
+    attemptCount: number;
+  }): Promise<void> {
+    const rendered = EMAIL_TEMPLATES.failedLoginBurst({
+      occurredAt: input.occurredAt,
+      attemptCount: input.attemptCount,
+    });
+    await this.deliver('failedLoginBurst', input.to, rendered);
   }
 
   private async deliver(

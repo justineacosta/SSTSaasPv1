@@ -185,8 +185,9 @@ describe('the SMTP adapter against the compose Mailpit', () => {
     await mailer.send({
       templateId: 'newDeviceSignIn',
       to: recipient,
+      // No `recipientName`: `NewDeviceSignInContext` has none as of Task 9
+      // (ruling 70), so this is a compile error rather than a choice.
       ...EMAIL_TEMPLATES.newDeviceSignIn({
-        recipientName: 'Ada Lovelace',
         occurredAt: new Date('2026-08-26T09:41:07.512Z'),
         ipAddress: '203.0.113.7',
         userAgent: 'Mozilla/5.0 (X11; Linux x86_64)',

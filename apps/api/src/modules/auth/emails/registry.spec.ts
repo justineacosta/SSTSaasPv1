@@ -16,8 +16,8 @@ import {
  * iterates the exported registry instead, so the next template added to it
  * inherits every rule here by existing.
  *
- * The registry holds **eight** members: Task 5's seven, the invitation among
- * them, and Task 8's `registrationAttempt`.
+ * The registry holds **nine** members: Task 5's seven, the invitation among
+ * them, Task 8's `registrationAttempt`, and Task 9's `failedLoginBurst`.
  *
  * `CASES` below is a `Record<EmailTemplateId, …>`, which is the part that makes
  * that true — see its own docblock for why the benign and hostile passes share
@@ -66,17 +66,58 @@ interface AttackerStrings {
 }
 
 /**
- * The two templates that render no attacker-supplied string whatsoever.
+ * The templates that render no attacker-supplied string whatsoever.
  *
- * Both are sent to an address whose ownership nobody has proven, which is what
- * makes the stored display name untrustworthy: anyone may register somebody
- * else's address with 200 characters of chosen text in `name` (F1). Neither
- * takes a name, an IP or a user agent, so for these two the assertion is
- * ABSENCE rather than escaping.
+ * All three are sent to an address whose ownership nobody has proven, or
+ * describe somebody else's activity, which is what makes the stored display
+ * name untrustworthy: anyone may register somebody else's address with 200
+ * characters of chosen text in `name` (F1). None takes a name, an IP or a user
+ * agent, so for these the assertion is ABSENCE rather than escaping.
+ *
+ * `failedLoginBurst` joins them in Task 9 and is the sharpest case: the burst
+ * is *somebody else's* attempt, so neither the IP nor the user agent describes
+ * the recipient at all, and the user agent is attacker-chosen free text. Its
+ * context type is `{ occurredAt, attemptCount }` and there is no third field
+ * for any of it to travel through.
  */
 const NAMELESS_TEMPLATE_IDS = [
   'emailVerification',
   'registrationAttempt',
+  'failedLoginBurst',
+] as const satisfies readonly EmailTemplateId[];
+
+/**
+ * RULING 70, AS A PARTITION: WHICH TEMPLATES MAY RENDER A STORED DISPLAY NAME.
+ *
+ * "A message sent to an address whose ownership has not been proven must render
+ * NO stored display name." `User.name` is free text an attacker seeds by
+ * registering the victim's address first, so a template that greets by name is
+ * a template that can be made to greet with a stranger's sentence and URL.
+ *
+ * `newDeviceSignIn` moves into the left-hand list in Task 9, and its reason is
+ * narrower than the other three's: it is sent only when `emailVerifiedAt` is
+ * non-null, so ownership *has* been proven — but the name adds nothing the
+ * recipient needs and the parameter is the whole attack surface, so the type
+ * drops it. It keeps its IP and user agent, because there they describe the
+ * recipient's own new session, which is ruling 63's licensed side of the
+ * partition.
+ *
+ * `satisfies` makes this exhaustive at compile time: a new template must be
+ * classified here or the build fails.
+ */
+const NO_DISPLAY_NAME_TEMPLATE_IDS = [
+  'emailVerification',
+  'registrationAttempt',
+  'failedLoginBurst',
+  'newDeviceSignIn',
+] as const satisfies readonly EmailTemplateId[];
+
+const DISPLAY_NAME_TEMPLATE_IDS = [
+  'passwordReset',
+  'invitation',
+  'passwordChanged',
+  'mfaEnabled',
+  'mfaDisabled',
 ] as const satisfies readonly EmailTemplateId[];
 
 const CASES: Record<EmailTemplateId, (s: AttackerStrings) => RenderedEmail> = {
@@ -104,8 +145,21 @@ const CASES: Record<EmailTemplateId, (s: AttackerStrings) => RenderedEmail> = {
   passwordChanged: (s) => EMAIL_TEMPLATES.passwordChanged(notice(s)),
   mfaEnabled: (s) => EMAIL_TEMPLATES.mfaEnabled(notice(s)),
   mfaDisabled: (s) => EMAIL_TEMPLATES.mfaDisabled(notice(s)),
-  newDeviceSignIn: (s) => EMAIL_TEMPLATES.newDeviceSignIn(notice(s)),
+  // `s.name` IS NOT PASSED, and it cannot be: `NewDeviceSignInContext` has no
+  // `recipientName` field as of Task 9 (ruling 70). The IP and the user agent
+  // are still passed and still escaped, because there they describe the
+  // recipient's own session.
+  newDeviceSignIn: (s) =>
+    EMAIL_TEMPLATES.newDeviceSignIn({
+      occurredAt: OCCURRED_AT,
+      ipAddress: s.ipAddress,
+      userAgent: s.userAgent,
+    }),
   registrationAttempt: () => EMAIL_TEMPLATES.registrationAttempt({ occurredAt: OCCURRED_AT }),
+  // Two fields, neither of them caller-supplied text. `attemptCount` is our own
+  // counter and `occurredAt` is our own clock reading.
+  failedLoginBurst: () =>
+    EMAIL_TEMPLATES.failedLoginBurst({ occurredAt: OCCURRED_AT, attemptCount: 5 }),
 };
 
 function notice(s: AttackerStrings) {
@@ -173,9 +227,13 @@ describe('the email template registry', () => {
     expect(new Set(classified).size).toBe(classified.length);
   });
 
-  it('registers the eight templates authentication.md §2, §5, §6 and §7 require', () => {
+  it('registers the nine templates authentication.md §2, §5, §6 and §7 require', () => {
     expect([...IDS].sort()).toEqual([
       'emailVerification',
+      // Task 9. §7's "a burst notifies the account owner" had no template at
+      // all until now — the sentence was in the document and nothing could
+      // satisfy it.
+      'failedLoginBurst',
       'invitation',
       'mfaDisabled',
       'mfaEnabled',
@@ -188,6 +246,32 @@ describe('the email template registry', () => {
       // an attempt made against their address.
       'registrationAttempt',
     ]);
+  });
+
+  it('classifies every template as rendering a display name or not (ruling 70)', () => {
+    const classified = [...NO_DISPLAY_NAME_TEMPLATE_IDS, ...DISPLAY_NAME_TEMPLATE_IDS];
+    expect([...classified].sort()).toEqual([...IDS].sort());
+    expect(new Set(classified).size).toBe(classified.length);
+  });
+});
+
+describe.each(NO_DISPLAY_NAME_TEMPLATE_IDS)('name-free template %s', (id) => {
+  it('renders no display name even when the display name is a URL', () => {
+    // THE TEST RULING 70 SAYS TO WRITE. The payload is a sentence AND a link,
+    // because the escaping payload alone contains no scheme and would have
+    // passed a "carries no link" assertion vacuously (F-series, Task 8).
+    //
+    // It passes structurally rather than by filtering: none of these four
+    // templates has a parameter a display name could travel through, so the
+    // `CASES` entry above cannot pass one. That is the property — a value that
+    // cannot be supplied cannot be injected, and a denylist over attacker text
+    // is a defect waiting for a new encoding.
+    const email = CASES[id]({ ...BENIGN, name: XSS_WITH_URL });
+    for (const part of [email.html, email.text]) {
+      expect(part).not.toContain('steal()');
+      expect(part).not.toContain(INJECTED_URL);
+      expect(part).not.toContain('Ada Lovelace');
+    }
   });
 });
 
@@ -357,6 +441,12 @@ describe.each(NOTICE_TEMPLATE_IDS)('notice template %s', (id) => {
  */
 const CONTEXT_FREE_NOTICE_IDS = [
   'registrationAttempt',
+  // Task 9, and for a reason one step past `registrationAttempt`'s. A burst of
+  // failed logins is not the recipient's session: the IP and the user agent
+  // belong to whoever was guessing, so neither describes them, and the user
+  // agent is attacker-chosen free text besides. There is nothing here for a
+  // context line to be about.
+  'failedLoginBurst',
 ] as const satisfies readonly EmailTemplateId[];
 
 const CONTEXT_RENDERING_NOTICE_IDS = [
@@ -453,6 +543,24 @@ describe.each(CONTEXT_FREE_NOTICE_IDS)('context-free notice %s', (id) => {
       expect(part).toContain('no action is needed');
       expect(part).not.toContain('change your password immediately');
     }
+  });
+});
+
+describe('failedLoginBurst', () => {
+  it('says how many attempts there were, and nothing else about them', () => {
+    // §7's whole purpose for this message: the account owner learns that
+    // somebody is guessing. The count is ours — it is `User.failedLoginCount`
+    // at the moment the lock tripped — so it is safe to render, and it is the
+    // one fact that distinguishes this from a message the recipient can ignore.
+    const email = CASES.failedLoginBurst({ ...BENIGN });
+    expect(email.text).toContain('5');
+  });
+
+  it('is sent once per lock, which is why it says the account is locked', () => {
+    // Not a rule this file can enforce — `login.service.spec.ts` owns the
+    // once-per-lock assertion — but the copy has to be true of a message sent
+    // on the attempt that trips the lock rather than on every failure past it.
+    expect(CASES.failedLoginBurst({ ...BENIGN }).text.toLowerCase()).toContain('temporarily');
   });
 });
 
