@@ -40,19 +40,29 @@ import { DomainError } from '../../common/errors/domain-error.js';
  * submitting values. The message below is therefore true of both without
  * saying which.
  *
- * # The message does not name a duration
+ * # The message must be TRUE OF BOTH, and it was not
  *
- * `lockedUntil` is a real timestamp and putting it in the response would let a
- * caller measure the ladder, learn which rung an account is on, and therefore
- * how many failures it has accumulated — a fact about somebody else's account
- * activity. "Try again later" costs the legitimate user a little patience; the
- * exact instant costs the account owner their privacy.
+ * L5. It used to read *"This account is temporarily locked. Try again later, or
+ * reset your password."* For an administratively disabled account all three
+ * clauses are false: it is not temporary, trying again later will never work,
+ * and resetting the password will not help. The reasoning that produced it was
+ * about what an *operator* could infer from the response and never asked what
+ * the *user* was being told.
+ *
+ * Non-disclosure achieved by lying to the legitimate user is a worse trade than
+ * a vaguer sentence, so the message is now true of both kinds of lock and
+ * distinguishes neither. It names no duration and no cause: `lockedUntil` is a
+ * real timestamp, and returning it would let a caller measure which rung of the
+ * ladder an account is on and therefore how many failures it has accumulated —
+ * a fact about somebody else's account activity. It points at the one route
+ * that is correct in both cases, which is asking the people who can actually
+ * change the state.
  */
 export class AccountLockedError extends DomainError {
   constructor() {
     super(
       ERROR_CODES.ACCOUNT_LOCKED,
-      'This account is temporarily locked. Try again later, or reset your password.',
+      'This account cannot be signed in to at the moment. If this is unexpected, contact your organisation owner or Sentinel support.',
       403,
     );
     this.name = 'AccountLockedError';

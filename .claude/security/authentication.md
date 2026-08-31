@@ -95,11 +95,19 @@ user, skip the hash" without deliberately not calling it. An account that exists
 not a wall-clock comparison: a statistical timing assertion over a test database measures
 scheduling rather than behaviour.
 
-Two residuals, both measured and both open:
+Three residuals, all open:
 
 - **The absent-account path skips one indexed read.** It has no `userId` to look a credential up
   by. That is one index probe against a full Argon2id verification both paths pay, so a single
   observation separates nothing — the same trade registration records on its own two paths.
+- **The burst notice is sent inside the request, so the fifth wrong password against a real
+  address costs an SMTP round trip the fifth against an unknown address does not.** This is the
+  same shape as the resend endpoint's residual and it is **not closable without the queue**: the
+  difference is a real send happening on the response path, and moving it off that path is what
+  the queue is for. Two things bound it and are recorded rather than used as an argument to ignore
+  it — reaching it costs five failed attempts against one address, where the resend's costs a
+  single request, and the per-account window is 5 per 15 minutes. It is structural: the test
+  harness substitutes an in-memory mailer, so no test in this repository can see it.
 - **Equality holds against the dummy at *current* parameters, and not against hashes stored
   before a parameter raise.** A pre-raise stored hash verifies at old, cheaper parameters while an
   absent account verifies at current ones — measured at 35.9 ms against 7.7 ms, a factor of 4.6,
@@ -355,6 +363,23 @@ sleeps is a handler an attacker can pin: N concurrent attempts hold N connection
 timers for as long as the attacker chooses, and the cost lands on the server rather than on them.
 Growing the lock costs the attacker time and costs us one integer and one timestamp.
 
+### The per-IP window BOUNDS this; it does not prevent it
+
+§7's sentence is *"independent per-IP limits so one attacker cannot lock out a whole tenant"*, and
+the two windows are genuinely independent — but independence bounds the damage rather than
+preventing it, and this section previously read as though it settled the matter.
+
+The arithmetic: the per-IP window is 20 attempts per 15 minutes, and tripping a lock costs 5
+attempts, so **one address can trip four locks per window**. Holding an account at the 30-minute cap
+costs 5 attempts per account per 30 minutes, which is roughly **eight accounts held permanently
+locked from a single address** — more if the ladder is allowed to lapse between cycles. Against a
+small organisation that is a meaningful fraction of its people, and it costs one IP address.
+
+What actually prevents it is the cost of acquiring addresses, which is outside this control. The
+honest statement is that the per-IP window makes locking out a *whole tenant* expensive rather than
+impossible, and that a control described as stronger than it is will not be re-examined by the
+person who most needs to.
+
 ### What the lock deliberately does not do
 
 - **An attempt arriving while the lock is live changes no state at all** — no increment, no
@@ -401,6 +426,13 @@ callers own closing it, and the template suite asserts the residual from both si
 it turns a test red.
 
 ### The burst notice
+
+**The notice is sent inside the request, and that is an enumeration oracle this endpoint does not
+otherwise have.** The fifth wrong password against a registered address waits for an SMTP round
+trip; the fifth against an unknown address does not. The byte-comparison apparatus around this
+endpoint exists to deny exactly that kind of distinction, and it cannot see this one — the
+difference is in the wall clock, not the response. It is not closable here: moving the send off the
+response path needs the queue. See §2's residual list.
 
 `failedLoginBurst` is sent **once per lock**, on the attempt that trips it, and not on every
 failure past the threshold — otherwise the notice is itself an outbound-email amplifier aimed at
