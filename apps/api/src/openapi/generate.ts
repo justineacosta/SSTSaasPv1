@@ -26,11 +26,24 @@ export interface OpenApiResponse {
   readonly content?: Record<string, { readonly schema: Record<string, unknown> }>;
 }
 
+/**
+ * A described request body. Always `required`, because the only bodies this API
+ * documents are ones its Zod schema refuses to parse when absent — an optional
+ * body would be a claim that the handler accepts an empty request, which none
+ * of them do.
+ */
+export interface OpenApiRequestBody {
+  readonly description?: string;
+  readonly required: true;
+  readonly content: Record<string, { readonly schema: Record<string, unknown> }>;
+}
+
 export interface OpenApiOperation {
   readonly operationId: string;
   readonly tags: readonly string[];
   readonly summary?: string;
   readonly description?: string;
+  readonly requestBody?: OpenApiRequestBody;
   readonly responses: Record<string, OpenApiResponse>;
   /**
    * The route's access declaration, published as a vendor extension.
@@ -90,6 +103,19 @@ function operationFor(route: RegisteredRoute): OpenApiOperation {
     tags: [route.controller.replace(/Controller$/, '')],
     ...(route.doc === undefined ? {} : { summary: route.doc.summary }),
     ...(route.doc?.description === undefined ? {} : { description: route.doc.description }),
+    ...(route.doc?.requestBody === undefined
+      ? {}
+      : {
+          requestBody: {
+            ...(route.doc.requestBody.description === undefined
+              ? {}
+              : { description: route.doc.requestBody.description }),
+            required: true as const,
+            content: {
+              'application/json': { schema: toJsonSchema(route.doc.requestBody.schema) },
+            },
+          },
+        }),
     responses: responsesFor(route),
     ...(route.access === undefined ? {} : { 'x-sentinel-access': route.access }),
   };

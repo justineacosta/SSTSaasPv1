@@ -14,6 +14,39 @@
         ],
         "summary": "Register an account.",
         "description": "Creates an account and sends a verification link. The response is identical whether or not the address is already registered: an address that already has an account receives a notice about the attempt instead of a link, and nothing about the account changes.",
+        "requestBody": {
+          "description": "The address is lower-cased and trimmed before use. Unknown fields are rejected, not ignored: the schema is strict, so a typo in a field name is a 400 rather than a silently dropped value.",
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "maxLength": 254
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 12,
+                    "maxLength": 256
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                },
+                "required": [
+                  "email",
+                  "password"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Accepted. A message has been sent to the address, whatever it was.",
@@ -67,6 +100,27 @@
         ],
         "summary": "Send the verification link again.",
         "description": "Issues a fresh verification link, which invalidates any previous one for that account. The response is identical for an address with no account, an address awaiting confirmation, and an address already confirmed.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "maxLength": 254
+                  }
+                },
+                "required": [
+                  "email"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Accepted. Whether anything was sent is deliberately not reported.",
@@ -117,6 +171,27 @@
         ],
         "summary": "Confirm an email address.",
         "description": "Redeems a single-use verification token and marks the address confirmed. Unknown, expired, already-used and superseded tokens all produce the same refusal, so the endpoint cannot be used to discover which addresses are registered.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  }
+                },
+                "required": [
+                  "token"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "The address is confirmed.",
