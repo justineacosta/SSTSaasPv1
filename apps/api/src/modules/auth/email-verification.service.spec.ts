@@ -7,6 +7,7 @@ import { EmailVerificationService } from './email-verification.service.js';
 import {
   identityStoreFake,
   type IdentityStoreFake,
+  identityUserRow,
   mailerFake,
   type MailerFake,
 } from '../../testing/identity-fakes.js';
@@ -71,14 +72,10 @@ function withUser(
   db: IdentityStoreFake,
   overrides: Partial<{ emailVerifiedAt: Date | null; status: string; name: string | null }> = {},
 ) {
-  const row = {
-    id: 'usr_01M0T74WZZFY9T2QS56RGF3GQ7',
-    email: 'ada@example.test',
-    name: 'Ada Lovelace',
-    emailVerifiedAt: null,
-    status: 'ACTIVE',
-    ...overrides,
-  };
+  // `identityUserRow` supplies the columns this file does not care about —
+  // `failedLoginCount` and `lockedUntil` arrived with Task 9 — so a fixture
+  // here names only the fields it is actually about.
+  const row = identityUserRow({ name: 'Ada Lovelace', ...overrides });
   db.users.set(row.email, row);
   db.users.set(row.id, row);
   return row;
