@@ -435,7 +435,13 @@ describe('the lockout ladder', () => {
       'tx.platformAuditEvent.create',
       '$transaction:commit',
     ]);
-    expect(userUpdates(h.db)).toEqual([{ lockedUntil: expect.any(Date) }]);
+    // The lock statement carries the lock and NOTHING else — the exact key
+    // set, because restating the counter the database just chose is the H1
+    // defect and a `toMatchObject` would not see it come back.
+    const written = userUpdates(h.db);
+    expect(written).toHaveLength(1);
+    expect(Object.keys(written[0] ?? {})).toEqual(['lockedUntil']);
+    expect(written[0]?.['lockedUntil']).toBeInstanceOf(Date);
   });
 
   it('writes no ACCOUNT_LOCKED row on a failure that does not trip a lock', async () => {
