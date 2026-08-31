@@ -40,6 +40,29 @@ export interface IdentityStoreFake {
   readonly calls: RecordedCall[];
   /** Rows `user.findUnique` answers with, keyed by email and by id. */
   readonly users: Map<string, IdentityUserRow>;
+  /**
+   * Stored password hashes, keyed by `userId`, for `credential.findUnique`.
+   *
+   * A user in `users` with no entry here is a real state — an account whose
+   * credential row is missing — and the fake answers `null` for it, which is
+   * what makes `PasswordService.verify(null, ...)` reachable in a spec.
+   */
+  readonly credentials: Map<string, string>;
+  /**
+   * The `userId`s that have a CONFIRMED `MfaFactor`.
+   *
+   * A set of ids rather than rows: `IdentityMfaFactorDelegate` projects the id
+   * alone, and a fake that could hand back a secret is a fake that invites a
+   * spec to assert against one.
+   */
+  readonly confirmedMfaUserIds: Set<string>;
+  /**
+   * Sessions this user has held before, for the unfamiliar-device lookup.
+   *
+   * Matched on the exact `(userId, ip, userAgent)` triple, `null`s included,
+   * because that is exactly what the Prisma predicate does.
+   */
+  readonly priorSessions: { userId: string; ip: string | null; userAgent: string | null }[];
   readonly control: {
     /** Set to make `$transaction` reject at commit, after its body has run. */
     failTransaction: Error | null;
@@ -80,9 +103,35 @@ export interface IdentityStoreFake {
   readonly issuedTokenHashes: string[];
 }
 
+/**
+ * A complete `IdentityUserRow` with the login columns at their schema defaults.
+ *
+ * A helper rather than a literal in each spec, because `IdentityUserRow` grew
+ * two required fields in Task 9 and every fixture that spelled the row out by
+ * hand had to be edited. The next field it grows should be a one-line change
+ * here, not a sweep — and a spec that spells out `failedLoginCount: 0` when it
+ * does not care about the counter is a spec whose reader cannot tell which
+ * fields are load-bearing.
+ */
+export function identityUserRow(overrides: Partial<IdentityUserRow> = {}): IdentityUserRow {
+  return {
+    id: 'usr_01M0T74WZZFY9T2QS56RGF3GQ7',
+    email: 'ada@example.test',
+    name: null,
+    emailVerifiedAt: null,
+    status: 'ACTIVE',
+    failedLoginCount: 0,
+    lockedUntil: null,
+    ...overrides,
+  };
+}
+
 export function identityStoreFake(): IdentityStoreFake {
   const calls: RecordedCall[] = [];
   const users = new Map<string, IdentityUserRow>();
+  const credentials = new Map<string, string>();
+  const confirmedMfaUserIds = new Set<string>();
+  const priorSessions: { userId: string; ip: string | null; userAgent: string | null }[] = [];
   const issuedTokenHashes: string[] = [];
   const control = {
     failTransaction: null as Error | null,
@@ -164,6 +213,36 @@ export function identityStoreFake(): IdentityStoreFake {
         return Promise.resolve(find(args.where));
       },
     },
+    credential: {
+      findUnique: (args) => {
+        // The `userId` is recorded and the hash is not, for the same reason
+        // `tx.credential.create` records only the id: a recorded hash is a
+        // recorded credential, even a fake one.
+        calls.push({ name: 'credential.findUnique', args: args.where });
+        const passwordHash = credentials.get(args.where.userId);
+        return Promise.resolve(passwordHash === undefined ? null : { passwordHash });
+      },
+    },
+    mfaFactor: {
+      findFirst: (args) => {
+        calls.push({ name: 'mfaFactor.findFirst', args: args.where });
+        return Promise.resolve(
+          confirmedMfaUserIds.has(args.where.userId) ? { id: 'mfa_FIXTURE_confirmed' } : null,
+        );
+      },
+    },
+    session: {
+      findFirst: (args) => {
+        calls.push({ name: 'session.findFirst', args: args.where });
+        const seen = priorSessions.some(
+          (row) =>
+            row.userId === args.where.userId &&
+            row.ip === args.where.ip &&
+            row.userAgent === args.where.userAgent,
+        );
+        return Promise.resolve(seen ? { id: 'ses_FIXTURE_prior' } : null);
+      },
+    },
     $transaction: async (run) => {
       calls.push({ name: '$transaction:begin' });
       const result = await run(tx);
@@ -196,7 +275,17 @@ export function identityStoreFake(): IdentityStoreFake {
     $transaction: (run) => store.$transaction(run),
   };
 
-  return { store, tokenStore, calls, users, control, issuedTokenHashes };
+  return {
+    store,
+    tokenStore,
+    calls,
+    users,
+    credentials,
+    confirmedMfaUserIds,
+    priorSessions,
+    control,
+    issuedTokenHashes,
+  };
 }
 
 export interface MailerFake {

@@ -2,14 +2,14 @@ import type { PlatformAuditTransaction } from '../audit/platform-audit.service.j
 import type { VerificationTokenTransaction } from './token.service.js';
 
 /**
- * THE NARROW PRISMA PORT THE REGISTRATION AND VERIFICATION SERVICES SEE.
+ * THE NARROW PRISMA PORT THE REGISTRATION, VERIFICATION AND LOGIN SERVICES SEE.
  *
  * The same shape `TokenService`'s `VerificationTokenStore` and
  * `HealthService`'s `DatabaseProbe` use, and for the same reason: a service
  * typed against the whole `PrismaClient` makes every spec that touches it
  * either a mock of the world or an integration test. What is written out here
- * is exactly the four tables and six operations these two services perform,
- * which is also a readable inventory of everything registration touches.
+ * is exactly the tables and operations these three services perform, which is
+ * also a readable inventory of everything the unauthenticated surface touches.
  *
  * The transaction type extends `VerificationTokenTransaction` and
  * `PlatformAuditTransaction`, which is what lets one `$transaction` carry the
@@ -17,7 +17,19 @@ import type { VerificationTokenTransaction } from './token.service.js';
  * `security/audit.md` §2's "in the same transaction as the change".
  */
 
-/** The `User` columns these services read. Nothing selects a password hash. */
+/**
+ * The `User` columns these services read. **Nothing selects a password hash**;
+ * that is `IdentityCredentialDelegate` below, and it is a separate read for a
+ * reason — a row shape that carries a credential is a row shape somebody
+ * eventually spreads into a log line.
+ *
+ * `failedLoginCount` and `lockedUntil` arrive with Task 9. They sit on the user
+ * row rather than in a separate read because the login path already reads this
+ * row and the lock decision needs both — and because `schema.prisma` records
+ * that `lockedUntil` is the temporary automatic lock while `status = LOCKED` is
+ * the separate administrative one, so a caller reading only `status` misses
+ * every brute-force lock.
+ */
 export interface IdentityUserRow {
   readonly id: string;
   readonly email: string;
@@ -25,25 +37,110 @@ export interface IdentityUserRow {
   readonly emailVerifiedAt: Date | null;
   /** `UserStatus` — `ACTIVE`, `LOCKED` or `DISABLED`. */
   readonly status: string;
+  /** Consecutive failed logins. Reset to 0 only by a successful login. */
+  readonly failedLoginCount: number;
+  /** The temporary, automatic brute-force lock. Clears itself; see `lockout.ts`. */
+  readonly lockedUntil: Date | null;
 }
 
 export interface IdentityUserDelegate {
   findUnique(args: { where: { email: string } | { id: string } }): Promise<IdentityUserRow | null>;
 }
 
+/**
+ * The shapes a `user.update` inside one of these transactions may carry.
+ *
+ * A union rather than a `Partial`, and that is carry-forward ruling 6's habit
+ * applied one layer up: each arm is a complete statement of one operation, so a
+ * caller cannot write "increment the counter" and silently forget the lock, or
+ * stamp `lastLoginAt` without clearing the counter beside it. A partial would
+ * make all three of those a valid call, and two of them are defects.
+ */
+export type IdentityUserUpdateData =
+  /** Email verification (Task 8). */
+  | { readonly emailVerifiedAt: Date }
+  /**
+   * A failed login (Task 9): the new count and the lock that count implies,
+   * always together. `lockedUntil: null` is a real value here — it is what the
+   * first four failures write — and not an omission.
+   */
+  | { readonly failedLoginCount: number; readonly lockedUntil: Date | null }
+  /**
+   * A successful login (Task 9). The counter and the lock are cleared in the
+   * same statement that stamps `lastLoginAt`, so there is no instant at which
+   * an account is signed in and still counted as failing.
+   */
+  | { readonly failedLoginCount: 0; readonly lockedUntil: null; readonly lastLoginAt: Date };
+
 export interface IdentityTransaction
   extends VerificationTokenTransaction, PlatformAuditTransaction {
   user: IdentityUserDelegate & {
     create(args: { data: { id: string; email: string; name: string | null } }): Promise<unknown>;
-    update(args: { where: { id: string }; data: { emailVerifiedAt: Date } }): Promise<unknown>;
+    update(args: { where: { id: string }; data: IdentityUserUpdateData }): Promise<unknown>;
   };
   credential: {
     create(args: { data: { id: string; userId: string; passwordHash: string } }): Promise<unknown>;
   };
 }
 
+/**
+ * The stored password hash, read on its own.
+ *
+ * `Credential.userId` is `@unique`, so this is one index probe. It is a
+ * separate delegate from `user` deliberately: `IdentityUserRow` gets passed
+ * around, returned from helpers and reasoned about in audit code, and a
+ * password hash riding along inside it would eventually reach one of those
+ * places. Here the hash exists in one local variable, is handed straight to
+ * `PasswordService.verify`, and goes nowhere else.
+ */
+export interface IdentityCredentialDelegate {
+  findUnique(args: {
+    where: { userId: string };
+  }): Promise<{ readonly passwordHash: string } | null>;
+}
+
+/**
+ * "Does this user have a confirmed second factor?", and nothing more.
+ *
+ * The projection is the id alone. `MfaFactor.secretEncrypted` is the secret
+ * that gates every MFA challenge and login has no business reading it — Task
+ * 11's verification endpoint does. `confirmedAt: { not: null }` is the whole
+ * predicate, and it is load-bearing: carry-forward ruling 7 records that an
+ * *unconfirmed* factor occupies the `(userId, type)` unique slot, so an
+ * abandoned enrolment is a row that exists and must not gate a login.
+ */
+export interface IdentityMfaFactorDelegate {
+  findFirst(args: {
+    where: { userId: string; confirmedAt: { not: null } };
+    select: { id: true };
+  }): Promise<{ readonly id: string } | null>;
+}
+
+/**
+ * "Has this user signed in from this IP and user agent before?"
+ *
+ * The narrowest question `security/authentication.md` §3's unfamiliar-session
+ * notice can be answered with from the `Session` table, and deliberately not a
+ * device-fingerprinting scheme. See `LoginService`'s docblock for what it costs
+ * and, more importantly, for what it does not prove.
+ *
+ * `revokedAt` is NOT in the predicate: a user who signed out from this device
+ * yesterday holds no live session from it, and a notice on every sign-in after
+ * a sign-out is noise that teaches the recipient to ignore the one that
+ * matters.
+ */
+export interface IdentitySessionDelegate {
+  findFirst(args: {
+    where: { userId: string; ip: string | null; userAgent: string | null };
+    select: { id: true };
+  }): Promise<{ readonly id: string } | null>;
+}
+
 export interface IdentityStore {
   user: IdentityUserDelegate;
+  credential: IdentityCredentialDelegate;
+  mfaFactor: IdentityMfaFactorDelegate;
+  session: IdentitySessionDelegate;
   $transaction<T>(run: (tx: IdentityTransaction) => Promise<T>): Promise<T>;
 }
 

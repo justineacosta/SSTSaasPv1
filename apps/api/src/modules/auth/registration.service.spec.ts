@@ -7,6 +7,7 @@ import { BreachCheckService } from './breach-check.service.js';
 import {
   identityStoreFake,
   type IdentityStoreFake,
+  identityUserRow,
   mailerFake,
   type MailerFake,
 } from '../../testing/identity-fakes.js';
@@ -169,14 +170,9 @@ describe('a new address', () => {
 describe('an address that already exists', () => {
   function existing(overrides: Partial<{ emailVerifiedAt: Date | null; status: string }> = {}) {
     const { service, db, mail, passwords, breached } = harness();
-    const row = {
-      id: 'usr_01M0T74WZZFY9T2QS56RGF3GQ7',
-      email: COMMAND.email,
-      name: 'Grace Hopper',
-      emailVerifiedAt: null,
-      status: 'ACTIVE',
-      ...overrides,
-    };
+    // `identityUserRow` supplies the login columns this file does not care
+    // about, so a fixture here names only the fields it is actually about.
+    const row = identityUserRow({ email: COMMAND.email, name: 'Grace Hopper', ...overrides });
     db.users.set(row.email, row);
     db.users.set(row.id, row);
     return { service, db, mail, passwords, breached, row };
@@ -268,13 +264,10 @@ describe('two requests registering the same new address at once', () => {
     // be a 500 for one caller and a 200 for the other on identical input — an
     // existence oracle that needs one extra request to open.
     const { service, db, mail } = harness();
-    const winner = {
+    const winner = identityUserRow({
       id: 'usr_01M0T74WZZFY9T2QS56RGF3GQ8',
       email: COMMAND.email,
-      name: null,
-      emailVerifiedAt: null,
-      status: 'ACTIVE',
-    };
+    });
     // Shaped like Prisma's own `PrismaClientKnownRequestError`: an `Error` that
     // carries `code` as a property. A plain object would be a fixture the real
     // client never produces, and `isUniqueConstraintViolation` would then be
