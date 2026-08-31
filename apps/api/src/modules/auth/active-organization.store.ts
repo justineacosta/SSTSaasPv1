@@ -57,13 +57,27 @@ export interface ActiveOrganizationLookup {
  * ```
  *
  * So a plain `prisma.organization.findUnique` here would compile, pass review,
- * pass every integration test in this repository — the harness connects as the
- * container's owner role, which is a superuser and bypasses RLS — and return
- * `null` in production for every session that had an organisation. That is the
- * exact shape of carry-forward ruling 58: a check whose fixtures all sit on one
- * side of the branch under test. `auth.session.integration.spec.ts` therefore
- * drives this lookup over a **second client bound to the harness's `appUrl`**,
- * which is `sentinel_app` under the same RLS the production process runs under.
+ * and return `null` in production for every session that had an organisation.
+ *
+ * **AND IT DID PASS EVERY TEST IN THIS REPOSITORY — measured, not predicted.**
+ * The Task 9 reviewer applied exactly that mutation and both lanes stayed
+ * green: 81 files / 1252 tests, and 18 files / 275 tests. The claim this
+ * docblock made about being protected was false, and it was false for the
+ * reason it names one paragraph up: `auth-harness.ts` overrides `PRISMA` with a
+ * client bound to `postgres.ownerUrl`, so the whole application under
+ * integration test connects as the container superuser and RLS cannot bite.
+ * Carry-forward ruling 58, in the file that spends sixty lines explaining
+ * carry-forward ruling 58.
+ *
+ * `auth.login.integration.spec.ts` now drives **this function** over
+ * `appPrisma` — a second client bound to the harness's `appUrl`, which is
+ * `sentinel_app`, the role `DATABASE_URL` names and the API process actually
+ * connects as. Re-running the same mutation against it fails one test with
+ * `expected null to deeply equal { …(3) }`. Before the fix round the file cited
+ * here was `auth.session.integration.spec.ts`, which does not exist and never
+ * has (L1); the spec that did exist drove the raw client rather than this
+ * function, so it proved that Postgres enforces RLS and nothing about the
+ * lookup.
  *
  * `withTenantTransaction` is Phase 1's mechanism for exactly this and it is
  * already tested (`tenant-transaction.integration.spec.ts`): it extends the
