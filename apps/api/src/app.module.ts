@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD, DiscoveryModule } from '@nestjs/core';
+import type { ApiEnv } from '@sentinel/config';
 import { AuthenticationGuard } from './common/guards/authentication.guard.js';
+import { CrossSiteGuard, WEB_ORIGIN } from './common/guards/cross-site.guard.js';
 import { CsrfGuard } from './common/guards/csrf.guard.js';
 import { RateLimitGuard } from './common/guards/rate-limit.guard.js';
 import { ConfigModule } from './infrastructure/config/config.module.js';
@@ -10,6 +12,7 @@ import { RedisModule } from './infrastructure/redis/redis.module.js';
 import { StorageModule } from './infrastructure/storage/storage.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { HealthModule } from './modules/health/health.module.js';
+import { ENV } from './infrastructure/tokens.js';
 import { OpenApiModule } from './openapi/openapi.module.js';
 
 /**
@@ -49,6 +52,16 @@ import { OpenApiModule } from './openapi/openapi.module.js';
     OpenApiModule,
   ],
   providers: [
+    {
+      // The one browser origin, resolved once at boot from the same
+      // `WEB_BASE_URL` that `configureApp` hands to `CorsMiddleware`
+      // (`app-setup.ts`). One value, two readers: an allowlist and a
+      // cross-site refusal that each computed their own answer is how the two
+      // drift apart, and the one that drifts is always the one nobody looks at.
+      provide: WEB_ORIGIN,
+      inject: [ENV],
+      useFactory: (env: ApiEnv): string => env.WEB_BASE_URL,
+    },
     // Global, not opt-in. A limiter a route has to remember to ask for is a
     // limiter that is missing from the route nobody thought about — and the
     // table in abuse-prevention.md §1 has a default for the general API
@@ -92,6 +105,16 @@ import { OpenApiModule } from './openapi/openapi.module.js';
     // already been established, and so an unauthenticated caller gets 401
     // rather than 403 — one refusal, describing the first thing that was wrong.
     { provide: APP_GUARD, useClass: CsrfGuard },
+    // **The cross-site refusal LAST**, and it is the narrowest of the four: it
+    // governs only handlers carrying `@RefuseCrossSite()`, and every such
+    // handler is `@Public()` — which is exactly the set `CsrfGuard` skips
+    // (carry-forward ruling 56). Login CSRF has no double-submit token to
+    // compare, because a cross-site login `POST` carries no session cookie for
+    // one to bind to, so this is a separate mechanism rather than a widening of
+    // the guard above it. Position is almost free; last is the honest place,
+    // because a caller whose credential or CSRF token is wrong should hear
+    // about that first.
+    { provide: APP_GUARD, useClass: CrossSiteGuard },
   ],
 })
 export class AppModule {}
