@@ -79,7 +79,8 @@ and are unaffected; anything that must cover *every* response, routed or not, be
 | Rate limit | Guard, Redis-backed, every declared scope | Implemented (global `APP_GUARD`) |
 | Authenticate | Guard, session cookie or API key -> `Principal` | **Implemented (Task 7)** for the session-cookie half: `AuthenticationGuard`, global `APP_GUARD`, constructs a `UserPrincipal` onto `request.principal`. The API-key half is Not Implemented — no key can be issued in Phase 2 |
 | Tenant resolve | Guard, membership + org state -> `TenantContext` | Not Implemented (Phase 2). `TenantContext` is declared in `packages/contracts` as of Task 2; nothing constructs one |
-| CSRF | Guard, cookie-authenticated unsafe methods only | **Implemented (Task 7)**: `CsrfGuard`, global `APP_GUARD`, after Authenticate. Governs no cookie-authenticated route yet, because none exists |
+| CSRF | Guard, cookie-authenticated unsafe methods only | **Implemented (Task 7)**: `CsrfGuard`, global `APP_GUARD`, after Authenticate. **Governs `POST /api/v1/auth/logout` since Task 9** — the first cookie-authenticated unsafe route this product has published |
+| Cross-site refusal | Guard, opt-in per handler, for public unsafe routes | **Implemented (Task 9)**: `CrossSiteGuard`, global `APP_GUARD`, last. Applies only to handlers carrying `@RefuseCrossSite()`, which today is `POST /api/v1/auth/login` alone — see below |
 | Validate | Zod pipe against `packages/contracts` schemas | Implemented; no consumer until Phase 2 |
 | Authorize | Guard reading `@RequirePermission` | Decorator implemented and asserted at boot; **guard still Not Implemented** (Task 12). Task 7 added a third *declaration* arm, `@AuthenticatedOnly()`, which does not move this row: a route naming a permission is authenticated by Task 7's guard and its permission is evaluated by nobody |
 | Entitlement | Guard reading `@RequireEntitlement` | Not Implemented (Phase 10) |
@@ -104,11 +105,28 @@ global "so there is an answer for every endpoint", and this is a request shape w
 answer. It is **not** added to ADR-0017: an accepted ADR is superseded, never edited, and
 this is a consequence found after acceptance rather than a change of decision.
 
+**The cross-site refusal is a separate guard because CSRF cannot cover a public route.**
+`CsrfGuard` skips `@Public()` routes by design: its expected value is derived from the
+`HttpOnly` session cookie, so a page on the login form cannot produce it, and a caller
+arriving with a stale session cookie would be refused with no client-side remedy — the way out
+of a bad cookie is the login page. A cross-site login `POST` also carries no session cookie at
+all, so double-submit has nothing to bind to. `CrossSiteGuard` refuses on
+`Sec-Fetch-Site: cross-site` or a foreign `Origin`, allows a request carrying neither (a
+non-browser client sends neither, and what this defends is a *browser* being driven
+cross-site), and answers 403 `CSRF_TOKEN_INVALID` for both arms. It is **opt-in per handler**
+and reads `context.getHandler()` only, so a class-level annotation extends it to nothing —
+the mirror of the exemption rule `@AllowPendingMfa()` follows, and tested the same way, with a
+raw `@SetMetadata` on a fixture controller. Full rule in
+[`../api/authentication.md`](../api/authentication.md) §3.
+
 **Guard order is the order of the `APP_GUARD` providers in `app.module.ts`, and nothing
 else makes it visible** — a reordering is a one-line diff to an array that changes no type
 and still runs every guard. `app.module.spec.ts` asserts it: rate limit, authenticate,
-CSRF. Rate limiting stays first so an unauthenticated flood carrying a garbage cookie
-does not buy a Redis read and a Postgres read each before anything refuses it. The cost of
+CSRF, cross-site refusal. Rate limiting stays first so an unauthenticated flood carrying a
+garbage cookie does not buy a Redis read and a Postgres read each before anything refuses it.
+The cross-site refusal is last because it is the narrowest — every handler that opts into it is
+`@Public()`, which is exactly the set `CsrfGuard` skips, so its position is almost free, and a
+caller whose credential or CSRF token is wrong should hear about that first. The cost of
 that order is recorded rather than fixed: `generalSession` keys on
 `principalSource: 'authenticated'`, which reads `request.principalId` — a field the limiter
 reads before the authentication guard could set it — so that scope is unresolvable and
