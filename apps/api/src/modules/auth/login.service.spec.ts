@@ -927,6 +927,79 @@ describe('a non-ACTIVE account', () => {
     await expect(h.service.login(COMMAND)).rejects.toBeInstanceOf(AccountLockedError);
   });
 
+  it('AUDITS the denial — M2 — naming the status that caused it', async () => {
+    // `security/audit.md` §3 requires denials to be audited, and this is the
+    // most investigation-relevant denial this endpoint can produce: somebody is
+    // holding a WORKING credential for an account an operator deliberately
+    // switched off. Before the fix round it produced a 403 and zero rows.
+    //
+    // The report's argument for writing nothing during a live brute-force lock
+    // — that an unauthenticated caller must not be able to grow an append-only
+    // table one row per request — does not reach this path. Reaching it
+    // requires the correct password, and no `ACCOUNT_LOCKED` row exists for an
+    // administrative status, so there is no other record that it happened.
+    const h = harness();
+    const account = await seedAccount(h, { status: 'DISABLED' });
+
+    await expect(h.service.login(COMMAND)).rejects.toBeInstanceOf(AccountLockedError);
+
+    expect(actions(h.db)).toEqual(['LOGIN_FAILED']);
+    expect(auditEvents(h.db)[0]).toMatchObject({
+      // SYSTEM with a null actor, like every other failure row. The password
+      // was right, but an account an operator switched off is exactly the case
+      // where "the credential holder is the account owner" is the assumption
+      // worth not making in an append-only table.
+      actorType: 'SYSTEM',
+      actorId: null,
+      resourceType: 'User',
+      resourceId: account.id,
+      ip: COMMAND.ip,
+      requestId: COMMAND.requestId,
+    });
+    // THE EXACT KEY SET. `passwordAccepted` is the fact that makes this row
+    // worth reading: it separates "somebody guessed at a disabled account" from
+    // "somebody has its password".
+    expect(Object.keys(auditEvents(h.db)[0]?.['metadata'] ?? {}).sort()).toEqual([
+      'knownAccount',
+      'passwordAccepted',
+      'userStatus',
+    ]);
+    expect(auditEvents(h.db)[0]?.['metadata']).toMatchObject({
+      userStatus: 'DISABLED',
+      passwordAccepted: true,
+    });
+  });
+
+  it('writes that row in a transaction carrying nothing else, and changes no state', async () => {
+    // There is no state change to be atomic with — the counter is not touched,
+    // because the password was correct and the refusal is about the account
+    // rather than the attempt. The transaction is still opened, because
+    // `PlatformAuditService.record` writes through a handle the caller passes
+    // in and never opens its own.
+    const h = harness();
+    await seedAccount(h, { status: 'DISABLED' });
+
+    await expect(h.service.login(COMMAND)).rejects.toBeInstanceOf(AccountLockedError);
+
+    const sequence = names(h.db).slice(names(h.db).indexOf('$transaction:begin'));
+    expect(sequence).toEqual([
+      '$transaction:begin',
+      'tx.platformAuditEvent.create',
+      '$transaction:commit',
+    ]);
+    expect(names(h.db)).not.toContain('tx.user.updateMany');
+    expect(names(h.db)).not.toContain('tx.user.update');
+    expect(storedUser(h.db).failedLoginCount).toBe(0);
+  });
+
+  it('puts no password anywhere in that row', async () => {
+    const h = harness();
+    await seedAccount(h, { status: 'LOCKED' });
+    await expect(h.service.login(COMMAND)).rejects.toBeInstanceOf(AccountLockedError);
+    expect(JSON.stringify(auditEvents(h.db))).not.toContain(COMMAND.password);
+    expect(JSON.stringify(auditEvents(h.db))).not.toContain(COMMAND.email);
+  });
+
   it('answers INVALID_CREDENTIALS to a WRONG password on a LOCKED account, and counts it', async () => {
     const h = harness();
     await seedAccount(h, { status: 'LOCKED' });

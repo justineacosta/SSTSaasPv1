@@ -196,9 +196,69 @@ export class LoginService {
     // The password is correct. The administrative lock is consulted only now,
     // for D3's reason exactly: a wrong password against a `LOCKED` account must
     // be indistinguishable from a wrong password against any other.
-    if (user.status !== ACTIVE_USER_STATUS) throw new AccountLockedError();
+    if (user.status !== ACTIVE_USER_STATUS) {
+      await this.recordStatusDenial(user, command);
+      throw new AccountLockedError();
+    }
 
     return this.succeed(user, command);
+  }
+
+  /**
+   * M2. THE DENIAL THAT WROTE NOTHING.
+   *
+   * `security/audit.md` §3 requires failures and denials to be audited, and
+   * until the fix round this path produced a 403 and **zero** rows — measured
+   * by the reviewer. It is the most investigation-relevant denial this endpoint
+   * can produce: somebody is holding a **working credential** for an account an
+   * operator deliberately switched off, and nothing anywhere recorded it.
+   *
+   * **The "do not let an unauthenticated caller grow the table" argument does
+   * not reach here**, which is why this is written while an attempt during a
+   * live brute-force lock still is not. Reaching this line costs the correct
+   * password, so it is not a row anybody can produce at will — and unlike a
+   * brute-force lock there is no `ACCOUNT_LOCKED` row already recording that
+   * the state exists.
+   *
+   * **No state changes**, so there is nothing for the event to be atomic with.
+   * The counter is deliberately untouched: the password was right, and the
+   * refusal is about the account rather than about the attempt. A transaction is
+   * still opened because `PlatformAuditService.record` writes through a handle
+   * the caller passes in and never opens its own — `security/audit.md` §2's rule
+   * expressed as a signature.
+   *
+   * `LOGIN_FAILED` rather than `ACCOUNT_LOCKED`: this codebase gives the latter
+   * one meaning — *the failed attempt that tripped the per-account lock* — and
+   * `platform-audit.actions.ts` and `audit.md` §4 both say so. Reusing it here
+   * would make an administrative status and a brute-force lock indistinguishable
+   * in the table, which is the opposite of what an investigation needs.
+   * `metadata.userStatus` is what distinguishes this row, and
+   * `metadata.passwordAccepted` is the fact worth reading it for.
+   */
+  private async recordStatusDenial(user: IdentityUserRow, command: LoginCommand): Promise<void> {
+    await this.store.$transaction(async (tx: IdentityTransaction) => {
+      await this.audit.record(tx, {
+        // `SYSTEM` with a null actor, like every other failure row. The password
+        // was right, but an account an operator switched off is exactly the case
+        // where "the credential holder is the account owner" is the assumption
+        // worth not making in an append-only table.
+        actorType: 'SYSTEM',
+        actorId: null,
+        action: 'LOGIN_FAILED',
+        resourceType: 'User',
+        resourceId: user.id,
+        metadata: {
+          knownAccount: true,
+          // `ACTIVE | LOCKED | DISABLED`. Ours, from the column, never a
+          // caller-supplied string.
+          userStatus: user.status,
+          passwordAccepted: true,
+        },
+        ip: command.ip,
+        userAgent: command.userAgent,
+        requestId: command.requestId,
+      });
+    });
   }
 
   private async storedHashFor(userId: string): Promise<string | null> {
