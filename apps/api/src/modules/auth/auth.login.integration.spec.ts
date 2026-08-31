@@ -323,6 +323,65 @@ describe('POST /auth/login — a wrong password', () => {
   });
 });
 
+describe('POST /auth/login — a denial on a non-ACTIVE account', () => {
+  /**
+   * M2, through the real application and against the real append-only table.
+   *
+   * The reviewer measured `rows before 1  rows after 1` — a correct password
+   * against a `DISABLED` account produced a 403 and no new `PlatformAuditEvent`
+   * row at all.
+   */
+  async function disabled(status: 'DISABLED' | 'LOCKED'): Promise<{ email: string; id: string }> {
+    const email = await account();
+    const user = await h.prisma.user.update({ where: { email }, data: { status } });
+    return { email, id: user.id };
+  }
+
+  it('answers 403 and WRITES one LOGIN_FAILED row naming the status', async () => {
+    const { email, id } = await disabled('DISABLED');
+    const before = await platformEvents(id, 'LOGIN_FAILED');
+
+    const response = await login({ email, password: PASSWORD });
+    expect(response.status).toBe(403);
+    expect(errorEnvelopeSchema.parse(response.body).error.code).toBe('ACCOUNT_LOCKED');
+
+    const after = await platformEvents(id, 'LOGIN_FAILED');
+    expect(after.length).toBe(before.length + 1);
+    expect(after.at(-1)?.metadata).toMatchObject({
+      userStatus: 'DISABLED',
+      passwordAccepted: true,
+      knownAccount: true,
+    });
+  });
+
+  it('does the same for an administratively LOCKED account', async () => {
+    const { email, id } = await disabled('LOCKED');
+    await login({ email, password: PASSWORD });
+    expect((await platformEvents(id, 'LOGIN_FAILED')).at(-1)?.metadata).toMatchObject({
+      userStatus: 'LOCKED',
+    });
+  });
+
+  it('does not touch the failure counter, because the password was correct', async () => {
+    const { email } = await disabled('DISABLED');
+    await login({ email, password: PASSWORD });
+    expect((await h.prisma.user.findUniqueOrThrow({ where: { email } })).failedLoginCount).toBe(0);
+  });
+
+  it('records a WRONG password on such an account as an ordinary failure instead', async () => {
+    // The two paths must stay distinguishable in the table and identical on the
+    // wire. `passwordAccepted` is what separates them for an operator; the
+    // enumeration spec holds the wire half byte for byte.
+    const { email, id } = await disabled('DISABLED');
+    const response = await login({ email, password: WRONG });
+    expect(response.status).toBe(401);
+
+    const rows = await platformEvents(id, 'LOGIN_FAILED');
+    expect(rows.at(-1)?.metadata).toMatchObject({ knownAccount: true, consecutiveFailures: 1 });
+    expect(rows.at(-1)?.metadata).not.toHaveProperty('passwordAccepted');
+  });
+});
+
 describe('POST /auth/login — the lockout ladder', () => {
   /** Fails `times` times, clearing the limiter between attempts. */
   async function failTimes(email: string, times: number): Promise<void> {

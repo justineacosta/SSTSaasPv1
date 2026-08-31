@@ -95,6 +95,15 @@ once per failure past the threshold. Attempts arriving while a lock is already l
 state at all (§7 of [`authentication.md`](authentication.md)), so a row for each of them would be
 an append-only table an unauthenticated caller can grow at will.
 
+`LOGIN_FAILED` also covers a **denial on an account that is not `ACTIVE`** — an administratively
+locked or disabled account presented with a password that was otherwise correct. That row carries
+`userStatus` and `passwordAccepted: true` in its metadata, and it is the most
+investigation-relevant denial the login endpoint can produce: somebody is holding a working
+credential for an account an operator deliberately switched off. It is deliberately **not**
+`ACCOUNT_LOCKED`, which has one meaning here — the failed attempt that tripped the *brute-force*
+lock — and reusing it would make an administrative status and a brute-force lock
+indistinguishable in the table.
+
 `LOGIN`, `LOGIN_FAILED`, `ACCOUNT_LOCKED` and `LOGOUT` are all `PlatformAuditEvent` rows and none
 of them may be an `AuditEvent` ([ADR-0019](../decisions/ADR-0019-platform-audit-event-table.md)):
 a login happens before any organisation is chosen, and `AuditEvent`'s row-level security policy
