@@ -124,6 +124,24 @@ describe('the platform audit vocabulary', () => {
     expect(new Set(PLATFORM_AUDIT_ACTIONS).size).toBe(PLATFORM_AUDIT_ACTIONS.length);
   });
 
+  it('carries the four names login and logout write', () => {
+    // Task 9. `LOGIN`, `LOGIN_FAILED` and `LOGOUT` were already in §4's Auth
+    // list and had no producer; `ACCOUNT_LOCKED` was in neither, and is added
+    // to the document in the same change as the constant. Ruling 62 is why all
+    // four are here rather than in an `AuditEvent`: a login happens with no
+    // organisation in hand, and `AuditEvent`'s RLS policy refuses that insert.
+    for (const action of ['LOGIN', 'LOGIN_FAILED', 'LOGOUT', 'ACCOUNT_LOCKED']) {
+      expect(PLATFORM_AUDIT_ACTIONS as readonly string[]).toContain(action);
+    }
+  });
+
+  it('names `Session` as a resource type, because logout is about one', () => {
+    // A logout's `resourceId` is the session that was revoked, not the user:
+    // the user is still the user afterwards, and the thing that changed is the
+    // session row. The assertion below it proves `Session` is a real model.
+    expect(PLATFORM_AUDIT_RESOURCE_TYPES as readonly string[]).toContain('Session');
+  });
+
   it('names only resource types that are real Prisma models', () => {
     // A `resourceType` that names nothing is an audit row an investigation
     // cannot join to anything. Read from the datamodel rather than a literal,
