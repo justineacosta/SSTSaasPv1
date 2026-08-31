@@ -16,17 +16,34 @@ import { DomainError } from '../../common/errors/domain-error.js';
  * account oracle: "expired" tells the caller the token once existed, which tells
  * them the address is registered, which is precisely what
  * `security/authentication.md` §6's "response is identical whether or not the
- * address exists" forbids. The forensic record of *which* it was belongs in the
- * `AuditEvent` the endpoint writes, where only an operator sees it.
+ * address exists" forbids.
+ *
+ * **And no forensic record of which it was is written today.** This docblock
+ * used to promise one, in "the `AuditEvent` the endpoint writes" — false twice
+ * over as of Task 8, which is the task that gave this error its first caller.
+ * The table would be `PlatformAuditEvent` (ADR-0019: a verification failure has
+ * no organisation), and no event is written at all. The reason is structural
+ * rather than an oversight: the audit write lives inside the same transaction
+ * as the change, per `security/audit.md` §2, and every refusal here *throws*,
+ * which rolls that transaction back and takes any event in it along. Recording
+ * the failure means a second transaction after the rollback, which is a
+ * different mechanism than the one this codebase has.
+ *
+ * `security/audit.md` §3 says failures and denials are audited, not only
+ * successes, so this is a real gap and it is named rather than left to be
+ * discovered. **Owed by whichever task builds the failure-audit path** — Task 9
+ * meets the same problem first and harder, because a failed login is the single
+ * most important failure event in the taxonomy.
  *
  * **No `details`.** `PasswordBreachedError` carries `{ reason: ... }` because
  * there is only one reason and naming it helps. Here a reason is the oracle,
  * so the field is absent rather than filled with a value that says nothing.
  *
- * Nothing raises this yet: Task 4 ships no endpoint. Email verification
- * (Task 8), password reset (Task 10) and invitation acceptance (Task 15) are
- * its callers, and `TokenService.consume` returning `null` is what they turn
- * into it.
+ * **Task 8 gave it its first caller.** `EmailVerificationService.verify` raises
+ * it on four paths: a token `consume` refused (itself four outcomes), a user row
+ * that has vanished, and an account whose `status` is not `ACTIVE`. Password
+ * reset (Task 10) and invitation acceptance (Task 15) are the remaining callers,
+ * and `TokenService.consume` returning `null` is what each of them turns into it.
  */
 export class TokenInvalidError extends DomainError {
   constructor() {

@@ -40,8 +40,8 @@ export interface PlatformAuditEventInput {
    * **No raw secret ever goes in.** Not a password, not a password hash, not a
    * verification token, not a session token — `TokenService`'s own docblock
    * says the raw token never enters an audit event's metadata, and
-   * `platform-audit.integration.spec.ts` asserts it for the events this task
-   * writes rather than trusting the sentence.
+   * `auth.verification.integration.spec.ts` asserts it for the events this
+   * task writes rather than trusting the sentence.
    */
   readonly metadata: Readonly<Record<string, string | number | boolean | null>>;
   readonly ip: string | null;

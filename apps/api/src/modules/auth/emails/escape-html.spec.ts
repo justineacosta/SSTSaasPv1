@@ -10,8 +10,10 @@ import { escapeHtml } from './escape-html.js';
  * escape itself is right, which is what this file is for.
  *
  * A display name is attacker-controlled — a registering user chooses it — and
- * three of the seven templates address the recipient by it. An unescaped one is
- * stored XSS in whatever webmail client renders the message.
+ * seven of the eight templates address the recipient by it. An unescaped one is
+ * stored XSS in whatever webmail client renders the message. The eighth is the
+ * invitation, which addresses no one by name because its recipient may have no
+ * `User` row yet — see `renderInvitation`.
  */
 describe('escapeHtml', () => {
   it('neutralises a script tag', () => {

@@ -13,7 +13,7 @@ import { sanitizeSubject } from './subject.js';
  * environment provides — including Resend's own SMTP endpoint. ADR-0016.
  *
  * **It never logs a rendered body and never logs a link.** Ruling 47: three of
- * the seven templates put a live single-use credential in their body, and the
+ * the eight templates put a live single-use credential in their body, and the
  * redaction pattern in `@sentinel/observability` is the second line of defence
  * here rather than the first. What gets logged is the template id, the
  * recipient and the message id the server returned.

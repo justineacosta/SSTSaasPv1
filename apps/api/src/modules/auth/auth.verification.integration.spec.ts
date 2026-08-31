@@ -215,38 +215,47 @@ describe('verifying an address', () => {
     expect(withoutRequestId(unknown.body)).toEqual(withoutRequestId(used.body));
   });
 
-  it('refuses a LOCKED account and leaves the token unconsumed', async () => {
-    // Carry-forward ruling 37. `TokenService.consume` asserts nothing about the
-    // user, the FK cascade only clears a DELETED user's rows, and there is no
-    // RLS behind `VerificationToken` — so without the endpoint's own check this
-    // would succeed. The rollback is the second half: refusing must not destroy
-    // a credential that an unlock would make usable again.
-    const email = freshAddress();
-    await register(email);
-    const token = tokenFromMail(h.sent[0]);
-    const user = await h.prisma.user.findUniqueOrThrow({ where: { email } });
-    await h.prisma.user.update({ where: { id: user.id }, data: { status: 'LOCKED' } });
-    await clearRateLimits(h.redis);
+  // BOTH non-ACTIVE arms, not just the one. M2: with only the LOCKED case here,
+  // narrowing the service's check from `status !== 'ACTIVE'` to
+  // `status === 'LOCKED'` left 1085 unit and 39 integration tests green — a
+  // DISABLED account's verification link redeemed and nothing went red. The
+  // DISABLED fixture that did exist covered `resend`, not `verify`, and `verify`
+  // is the path carry-forward ruling 37 named.
+  it.each(['LOCKED', 'DISABLED'] as const)(
+    'refuses a %s account and leaves the token unconsumed',
+    async (status) => {
+      // Carry-forward ruling 37. `TokenService.consume` asserts nothing about the
+      // user, the FK cascade only clears a DELETED user's rows, and there is no
+      // RLS behind `VerificationToken` — so without the endpoint's own check this
+      // would succeed. The rollback is the second half: refusing must not destroy
+      // a credential that restoring the account would make usable again.
+      const email = freshAddress();
+      await register(email);
+      const token = tokenFromMail(h.sent[0]);
+      const user = await h.prisma.user.findUniqueOrThrow({ where: { email } });
+      await h.prisma.user.update({ where: { id: user.id }, data: { status } });
+      await clearRateLimits(h.redis);
 
-    const refused = await request(h.server)
-      .post('/api/v1/auth/verify-email')
-      .send({ token })
-      .expect(422);
-    expect(codeOf(refused.body)).toBe('TOKEN_INVALID');
+      const refused = await request(h.server)
+        .post('/api/v1/auth/verify-email')
+        .send({ token })
+        .expect(422);
+      expect(codeOf(refused.body)).toBe('TOKEN_INVALID');
 
-    const row = await h.prisma.verificationToken.findUniqueOrThrow({
-      where: { tokenHash: hashSecretToken(token) },
-    });
-    expect(row.consumedAt).toBeNull();
-    expect(
-      (await h.prisma.user.findUniqueOrThrow({ where: { id: user.id } })).emailVerifiedAt,
-    ).toBeNull();
+      const row = await h.prisma.verificationToken.findUniqueOrThrow({
+        where: { tokenHash: hashSecretToken(token) },
+      });
+      expect(row.consumedAt).toBeNull();
+      expect(
+        (await h.prisma.user.findUniqueOrThrow({ where: { id: user.id } })).emailVerifiedAt,
+      ).toBeNull();
 
-    // And it works again once the account is unlocked.
-    await h.prisma.user.update({ where: { id: user.id }, data: { status: 'ACTIVE' } });
-    await clearRateLimits(h.redis);
-    await request(h.server).post('/api/v1/auth/verify-email').send({ token }).expect(200);
-  });
+      // And it works again once the account is ACTIVE.
+      await h.prisma.user.update({ where: { id: user.id }, data: { status: 'ACTIVE' } });
+      await clearRateLimits(h.redis);
+      await request(h.server).post('/api/v1/auth/verify-email').send({ token }).expect(200);
+    },
+  );
 });
 
 describe('resending the verification link', () => {

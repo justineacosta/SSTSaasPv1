@@ -109,7 +109,7 @@ Concretely, mail differs from every row in §2 on each of this document's own me
 
 **Where it lives.** The port is `apps/api/src/infrastructure/mail/mailer.port.ts`, provided
 under the `MAILER` token by `MailModule`; the one adapter behind it speaks SMTP
-(`smtp-mailer.ts`). The seven templates are `apps/api/src/modules/auth/emails/`, behind a
+(`smtp-mailer.ts`). The eight templates are `apps/api/src/modules/auth/emails/`, behind a
 registry. The decision is [ADR-0016](../decisions/ADR-0016-smtp-mailer-port.md), which also
 records why the Resend HTTP adapter is deferred until the first staging deploy: that is the
 first moment an API key and a verified sending domain exist, and therefore the first moment
