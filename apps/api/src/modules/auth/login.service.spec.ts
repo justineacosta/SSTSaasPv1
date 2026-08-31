@@ -10,6 +10,7 @@ import {
   mailerFake,
   type MailerFake,
 } from '../../testing/identity-fakes.js';
+import type { IdentityUserRow } from './identity.store.js';
 import { AccountLockedError } from './account-locked.error.js';
 import { InvalidCredentialsError } from './invalid-credentials.error.js';
 import { LOCKOUT_LADDER_SECONDS } from './lockout.js';
@@ -154,6 +155,22 @@ const userUpdates = (db: IdentityStoreFake): Record<string, unknown>[] =>
     .filter((call) => call.name === 'tx.user.update')
     .map((call) => (call.args as { data: Record<string, unknown> }).data);
 
+/**
+ * The account row as it stands AFTER the call, read out of the fake.
+ *
+ * Since H1 the failure path no longer writes the counter as an absolute value
+ * it computed — Postgres computes it, from `{ increment: 1 }` under the row
+ * lock — so there is no update payload carrying it to assert against. These
+ * assertions read the end state instead, which is what the ladder is actually
+ * about and is a stronger statement than the payload ever was: it holds for
+ * whatever statement shape produces it.
+ */
+const storedUser = (db: IdentityStoreFake): IdentityUserRow => {
+  const row = db.users.get(COMMAND.email);
+  if (row === undefined) throw new Error('no account seeded');
+  return row;
+};
+
 /** Seeds an account with a real Argon2id hash of `PASSWORD`. */
 async function seedAccount(
   h: Harness,
@@ -278,7 +295,8 @@ describe('a wrong password on an existing account', () => {
       InvalidCredentialsError,
     );
 
-    expect(userUpdates(h.db)).toEqual([{ failedLoginCount: 1, lockedUntil: null }]);
+    expect(storedUser(h.db).failedLoginCount).toBe(1);
+    expect(storedUser(h.db).lockedUntil).toBeNull();
     expect(actions(h.db)).toEqual(['LOGIN_FAILED']);
     expect(auditEvents(h.db)[0]).toMatchObject({
       actorType: 'SYSTEM',
@@ -301,7 +319,11 @@ describe('a wrong password on an existing account', () => {
     const sequence = names(h.db).slice(names(h.db).indexOf('$transaction:begin'));
     expect(sequence).toEqual([
       '$transaction:begin',
-      'tx.user.update',
+      // The atomic increment FIRST, so the row lock it takes covers everything
+      // after it. H1: the count used below is the one Postgres produced, not
+      // one the application carried across a 40 ms hash.
+      'tx.user.updateMany',
+      'tx.user.findUnique',
       'tx.platformAuditEvent.create',
       '$transaction:commit',
     ]);
@@ -354,9 +376,9 @@ describe('the lockout ladder', () => {
   it('does not lock on the first four failures', async () => {
     for (const existing of [0, 1, 2, 3]) {
       const { h } = await failAt(existing);
-      expect(userUpdates(h.db), `after ${String(existing + 1)} failures`).toEqual([
-        { failedLoginCount: existing + 1, lockedUntil: null },
-      ]);
+      const row = storedUser(h.db);
+      expect(row.failedLoginCount, `after ${String(existing + 1)} failures`).toBe(existing + 1);
+      expect(row.lockedUntil, `after ${String(existing + 1)} failures`).toBeNull();
       expect(actions(h.db)).toEqual(['LOGIN_FAILED']);
     }
   });
@@ -371,9 +393,9 @@ describe('the lockout ladder', () => {
 
     for (const [existing, seconds] of rungs) {
       const { h, before } = await failAt(existing);
-      const update = userUpdates(h.db)[0];
-      expect(update?.['failedLoginCount']).toBe(existing + 1);
-      const until = update?.['lockedUntil'];
+      const row = storedUser(h.db);
+      expect(row.failedLoginCount).toBe(existing + 1);
+      const until = row.lockedUntil;
       expect(until).toBeInstanceOf(Date);
       // The delta, not two clock readings compared to each other: ruling 49.
       // `before` is taken immediately before the call, so the window here is
@@ -389,7 +411,8 @@ describe('the lockout ladder', () => {
 
   it('caps the ladder — a hundredth failure locks for the same thirty minutes as the eighth', async () => {
     const { h, before } = await failAt(99);
-    const until = userUpdates(h.db)[0]?.['lockedUntil'] as Date;
+    const until = storedUser(h.db).lockedUntil;
+    if (until === null) throw new Error('expected a lock');
     const delta = until.getTime() - before;
     expect(delta).toBeGreaterThanOrEqual(LOCKOUT_LADDER_SECONDS[3] * 1000 - 5_000);
     expect(delta).toBeLessThanOrEqual(LOCKOUT_LADDER_SECONDS[3] * 1000 + 5_000);
@@ -402,11 +425,17 @@ describe('the lockout ladder', () => {
     const sequence = names(h.db).slice(names(h.db).indexOf('$transaction:begin'));
     expect(sequence).toEqual([
       '$transaction:begin',
+      'tx.user.updateMany',
+      'tx.user.findUnique',
+      // The lock, written on its own and only when the count the database just
+      // produced earns one. It does not restate the counter: restating a value
+      // the database chose is the H1 defect.
       'tx.user.update',
       'tx.platformAuditEvent.create',
       'tx.platformAuditEvent.create',
       '$transaction:commit',
     ]);
+    expect(userUpdates(h.db)).toEqual([{ lockedUntil: expect.any(Date) }]);
   });
 
   it('writes no ACCOUNT_LOCKED row on a failure that does not trip a lock', async () => {
@@ -431,6 +460,7 @@ describe('an attempt while the lock is live', () => {
       InvalidCredentialsError,
     );
 
+    expect(names(h.db)).not.toContain('tx.user.updateMany');
     expect(names(h.db)).not.toContain('tx.user.update');
     expect(names(h.db)).not.toContain('$transaction:begin');
     expect(h.mail.sent).toEqual([]);
@@ -476,9 +506,10 @@ describe('an attempt while the lock is live', () => {
       InvalidCredentialsError,
     );
 
-    const update = userUpdates(h.db)[0];
-    expect(update?.['failedLoginCount']).toBe(6);
-    const delta = (update?.['lockedUntil'] as Date).getTime() - before;
+    const row = storedUser(h.db);
+    expect(row.failedLoginCount).toBe(6);
+    if (row.lockedUntil === null) throw new Error('expected a lock');
+    const delta = row.lockedUntil.getTime() - before;
     expect(delta).toBeGreaterThanOrEqual(LOCKOUT_LADDER_SECONDS[1] * 1000 - 5_000);
   });
 });
@@ -850,7 +881,8 @@ describe('a non-ACTIVE account', () => {
     await expect(h.service.login({ ...COMMAND, password: WRONG })).rejects.toBeInstanceOf(
       InvalidCredentialsError,
     );
-    expect(userUpdates(h.db)).toEqual([{ failedLoginCount: 1, lockedUntil: null }]);
+    expect(storedUser(h.db).failedLoginCount).toBe(1);
+    expect(storedUser(h.db).lockedUntil).toBeNull();
   });
 });
 

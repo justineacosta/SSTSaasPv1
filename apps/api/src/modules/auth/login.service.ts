@@ -245,17 +245,48 @@ export class LoginService {
     }
 
     const now = new Date();
-    const consecutiveFailures = user.failedLoginCount + 1;
-    const lockedUntil = lockedUntilFor(consecutiveFailures, now);
 
-    await this.store.$transaction(async (tx: IdentityTransaction) => {
-      await tx.user.update({
-        where: { id: user.id },
-        // Both columns together. `IdentityUserUpdateData`'s union is what makes
-        // "increment and forget the lock" unwritable rather than merely
-        // discouraged.
-        data: { failedLoginCount: consecutiveFailures, lockedUntil },
+    const counted = await this.store.$transaction(async (tx: IdentityTransaction) => {
+      // THE COUNT IS THE DATABASE'S, NOT OURS. H1.
+      //
+      // The previous version computed `user.failedLoginCount + 1` from a row
+      // read before a ~40 ms Argon2id verification and wrote it as an absolute
+      // value. Five parallel wrong passwords therefore all wrote `1`: the
+      // review measured the counter at 1, no lock, zero `ACCOUNT_LOCKED` rows,
+      // zero burst notices, and a correct password immediately afterwards
+      // answering 200. §7's brute-force control did not engage at all under the
+      // one access pattern an attacker would actually choose, and every test in
+      // both lanes was sequential, so the whole gate stayed green over it.
+      //
+      // `{ increment: 1 }` makes Postgres do the read-modify-write while it
+      // holds the row lock, and the predicate makes the "no state change during
+      // a live lock" rule hold there too — a racing attempt blocks, re-evaluates
+      // against the committed row, and reports `count: 0`.
+      const { count } = await tx.user.updateMany({
+        where: { id: user.id, OR: [{ lockedUntil: null }, { lockedUntil: { lte: now } }] },
+        data: { failedLoginCount: { increment: 1 } },
       });
+      // Locked by a sibling request that committed while this one was hashing.
+      // Nothing is written, audit row included — the same rule the pre-flight
+      // check applies from the stale read, applied here where it is authoritative.
+      if (count === 0) return null;
+
+      // Safe inside this transaction and nowhere else: the `UPDATE` above holds
+      // the row lock until commit, so no other transaction can move the counter
+      // between that statement and this read.
+      const updated = await tx.user.findUnique({ where: { id: user.id } });
+      // Unreachable — the update above just matched this row. Handled rather
+      // than asserted, because the alternative is a 500 on a failed login.
+      if (updated === null) return null;
+
+      const consecutiveFailures = updated.failedLoginCount;
+      const lockedUntil = lockedUntilFor(consecutiveFailures, now);
+
+      if (lockedUntil !== null) {
+        // The lock alone. The counter is not restated: it is the value the
+        // database chose one statement ago, and restating it is the defect.
+        await tx.user.update({ where: { id: user.id }, data: { lockedUntil } });
+      }
 
       await this.audit.record(tx, {
         actorType: 'SYSTEM',
@@ -290,12 +321,19 @@ export class LoginService {
           requestId: command.requestId,
         });
       }
+
+      return { consecutiveFailures, lockedUntil };
     });
 
-    if (lockedUntil !== null) {
-      // ONCE PER LOCK. Every subsequent failure arrives while the lock is live
-      // and returns above without reaching this method at all, so a cycle can
-      // produce exactly one of these. Sending per failure past the threshold
+    if (counted !== null && counted.lockedUntil !== null) {
+      // ONCE PER LOCK, AND THE PREDICATE IS WHY. Exactly one transaction can
+      // observe the count crossing the threshold, because every attempt that
+      // arrives afterwards — including the four that raced this one and were
+      // still hashing when it committed — re-evaluates the `updateMany`
+      // predicate against the locked row and reports `count: 0`. Before H1 was
+      // fixed this rested on the pre-flight `isLocked` read, which four
+      // concurrent requests all pass; the integration lane measured five burst
+      // notices from one burst. Sending per failure past the threshold
       // would make the notice an outbound-email amplifier aimed at the victim,
       // triggered by an unauthenticated caller at will, and the fifth message
       // would tell them nothing the first did not.
@@ -308,7 +346,7 @@ export class LoginService {
       await this.mailer.sendFailedLoginBurst({
         to: user.email,
         occurredAt: now,
-        attemptCount: consecutiveFailures,
+        attemptCount: counted.consecutiveFailures,
       });
     }
   }
