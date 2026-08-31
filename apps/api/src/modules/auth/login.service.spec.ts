@@ -766,6 +766,53 @@ describe('the new-device notice', () => {
     }
   });
 
+  it('renders NO USER AGENT, even one that is a sentence and a link — H2', async () => {
+    // THE FINDING, AT THE CALLER, THROUGH THE REAL MAILER AND THE REAL TEMPLATE.
+    //
+    // This notice fires on an *unfamiliar* sign-in, so on the takeover path the
+    // party who chose the `User-Agent` and the person reading the message are
+    // different people. The reviewer rendered the pre-fix output from the built
+    // module: `Device: Mozilla/5.0 -- SECURITY ALERT: confirm your account now
+    // at https://sentinel-verify.evil.example/login`, under a footer promising
+    // the message contains no link.
+    //
+    // `registry.spec.ts` holds the template side; this holds the side that
+    // matters for regression — that the SERVICE does not find some other way to
+    // put the header in front of the recipient. `AuthMailer.sendNewDeviceSignIn`
+    // has no parameter for it, so this cannot fail while `pnpm typecheck`
+    // passes; it is here because the caller is what changed the risk.
+    const h = harness();
+    await seedAccount(h);
+
+    await h.service.login({
+      ...COMMAND,
+      userAgent:
+        'Mozilla/5.0 -- SECURITY ALERT: confirm your account at https://sentinel-verify.evil.example/login',
+    });
+
+    const sent = h.mail.sent[0];
+    expect(sent?.templateId).toBe('newDeviceSignIn');
+    for (const part of [sent?.text ?? '', sent?.html ?? '']) {
+      expect(part).not.toContain('sentinel-verify.evil.example');
+      expect(part).not.toContain('SECURITY ALERT');
+      expect(part).not.toContain('Device:');
+      // The footer's promise, checked against the message that carries it.
+      expect(part).not.toMatch(/https?:\/\//);
+    }
+  });
+
+  it('still names the IP address, which is the one line the recipient can act on', async () => {
+    // The other side of H2's disposition: the user agent goes and the address
+    // stays. Two-sided so the fix cannot drift into removing the whole block —
+    // that would cost the recipient the only fact in the message they can check.
+    const h = harness();
+    await seedAccount(h);
+
+    await h.service.login(COMMAND);
+
+    expect(h.mail.sent[0]?.text).toContain(COMMAND.ip);
+  });
+
   it('leaves after the commit, and not at all when the commit fails', async () => {
     const h = harness();
     await seedAccount(h);

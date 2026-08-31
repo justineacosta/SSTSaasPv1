@@ -190,7 +190,6 @@ describe('the SMTP adapter against the compose Mailpit', () => {
       ...EMAIL_TEMPLATES.newDeviceSignIn({
         occurredAt: new Date('2026-08-26T09:41:07.512Z'),
         ipAddress: '203.0.113.7',
-        userAgent: 'Mozilla/5.0 (X11; Linux x86_64)',
       }),
     });
 
@@ -213,7 +212,6 @@ describe('the SMTP adapter against the compose Mailpit', () => {
         recipientName: 'Ada Lovelace',
         occurredAt: new Date('2026-08-26T09:41:07.512Z'),
         ipAddress: '203.0.113.7',
-        userAgent: 'Mozilla/5.0 (X11; Linux x86_64)',
       }),
     });
 
@@ -243,7 +241,6 @@ describe('the SMTP adapter against the compose Mailpit', () => {
         recipientName: '<script>alert(1)</script>',
         occurredAt: new Date('2026-08-26T09:41:00.000Z'),
         ipAddress: '203.0.113.7',
-        userAgent: 'Mozilla/5.0',
       }),
     });
 

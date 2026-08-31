@@ -109,25 +109,29 @@ export class AuthMailer {
    * can travel into a message this product sends, however the caller is edited
    * later.
    *
-   * The IP and user agent stay, and are the recipient's own: this is the
-   * session they just started, and the device string is how they recognise one
-   * that is not theirs (ruling 63's licensed side of the partition). Both are
-   * `null`-able rather than defaulted, for `notice.templates.ts`'s reason — a
-   * fabricated address in a security notice is worse than an absent one.
+   * **NO `userAgent` PARAMETER, and the signature is the control.** H2, and it
+   * supersedes ruling 63's carve-out — see `notice.templates.ts`'s
+   * `NoticeOccurrenceContext`. This notice fires on an *unfamiliar* sign-in, so
+   * on the takeover path the party who chose that header and the person reading
+   * the message are different people, and the reviewer rendered a `Device:`
+   * line carrying `https://sentinel-verify.evil.example/login` under a footer
+   * promising the message contains no link. The parameter is gone rather than
+   * sanitised, for the reason the H1 fix gave one method up: a denylist over
+   * attacker text is a defect waiting for a new encoding.
+   *
+   * The IP stays and is the recipient's own. It is `request.ip` — the socket
+   * peer address, `trust proxy` disabled — so a client cannot choose it and it
+   * cannot carry a URL. It is `null`-able rather than defaulted, for
+   * `notice.templates.ts`'s reason: a fabricated address in a security notice
+   * is worse than an absent one.
    */
-  async sendNewDeviceSignIn(input: {
-    to: string;
-    occurredAt: Date;
-    ip: string | null;
-    userAgent: string | null;
-  }): Promise<void> {
+  async sendNewDeviceSignIn(input: { to: string; occurredAt: Date; ip: string | null }): Promise<void> {
     const rendered = EMAIL_TEMPLATES.newDeviceSignIn({
       occurredAt: input.occurredAt,
       // `?? undefined`, because the template distinguishes "not recorded" from
       // a value and `null` is this codebase's word for the former at every
       // other boundary. The two spellings meet here and nowhere else.
       ipAddress: input.ip ?? undefined,
-      userAgent: input.userAgent ?? undefined,
     });
     await this.deliver('newDeviceSignIn', input.to, rendered);
   }
