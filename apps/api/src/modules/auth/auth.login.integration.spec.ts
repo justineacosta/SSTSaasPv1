@@ -4,6 +4,7 @@ import request from 'supertest';
 import { newId } from '@sentinel/db';
 import { errorEnvelopeSchema, sessionResponseSchema } from '@sentinel/contracts';
 import { type AuthHarness, clearRateLimits, startAuthHarness } from '../../testing/auth-harness.js';
+import { activeOrganizationLookup } from './active-organization.store.js';
 import { CSRF_COOKIE_NAME, SESSION_COOKIE_NAME } from './cookies.js';
 import { deriveCsrfToken } from './csrf-token.js';
 import { LOCKOUT_LADDER_SECONDS } from './lockout.js';
@@ -918,15 +919,16 @@ describe('GET /auth/session', () => {
     });
   });
 
-  it('reads that organisation over the least-privileged role, not the owner', async () => {
-    // THE MEASUREMENT THAT MAKES THE TEST ABOVE MEAN ANYTHING.
+  it('confirms Postgres really is enforcing RLS on Organization for the app role', async () => {
+    // The precondition for the test below, asserted separately so a failure
+    // says which half broke. `Organization` carries FORCE RLS keyed on `id`,
+    // and the API process connects as `sentinel_app`: invisible without
+    // `app.organization_id`, visible with it.
     //
-    // The harness's main client is the container owner, a superuser that
-    // bypasses row-level security — so the test above would pass over a lookup
-    // that returns `null` in production. `Organization` carries FORCE RLS keyed
-    // on `id`, and the API connects as `sentinel_app`. This asserts both halves
-    // directly: invisible without `app.organization_id`, visible with it, which
-    // is precisely what `withTenantTransaction` sets.
+    // On its own this proves something about POSTGRES and nothing about the
+    // lookup — which was M1. It is kept because if RLS were ever dropped from
+    // the table, the test below would go green for the wrong reason and this
+    // is the one that would say so.
     const organizationId = newId('org');
     await h.prisma.organization.create({
       data: { id: organizationId, slug: `rls-${organizationId}`, name: 'RLS Probe' },
@@ -940,5 +942,46 @@ describe('GET /auth/session', () => {
       return tx.organization.findMany({ where: { id: organizationId } });
     });
     expect(scoped).toHaveLength(1);
+  });
+
+  it('resolves through activeOrganizationLookup OVER THE LEAST-PRIVILEGED ROLE — M1', async () => {
+    // THE TEST THAT MAKES `active-organization.store.ts`'s "NOT OPTIONAL"
+    // DOCBLOCK TRUE, AND WITHOUT WHICH IT WAS A COMMENT.
+    //
+    // The reviewer replaced `withTenantTransaction(…)` with a direct
+    // `base.organization.findUnique(…)` — the exact code that docblock says
+    // returns `null` in production — and **both lanes stayed green**
+    // (81/1252 and 18/275). The reason is `auth-harness.ts`:
+    // `.overrideProvider(PRISMA).useValue(prisma)` where `prisma` is the
+    // container OWNER, a superuser that bypasses row-level security. Every
+    // route-level test in this file drives the lookup over a role RLS cannot
+    // bite, so the protection claimed for it could not be observed. That is
+    // carry-forward ruling 58 in the file that spends sixty lines explaining
+    // carry-forward ruling 58.
+    //
+    // This drives the REAL function over `appPrisma`, which is `sentinel_app` —
+    // the role `DATABASE_URL` names and the API process actually connects as.
+    // Remove the tenant transaction and this goes red; the fix round re-ran
+    // that mutation and the output is in `fixes.md`.
+    const organizationId = newId('org');
+    await h.prisma.organization.create({
+      data: { id: organizationId, slug: `lookup-${organizationId}`, name: 'Lookup Probe' },
+    });
+
+    const lookup = activeOrganizationLookup(h.appPrisma);
+    expect(await lookup.find(organizationId)).toEqual({
+      id: organizationId,
+      slug: `lookup-${organizationId}`,
+      name: 'Lookup Probe',
+    });
+  });
+
+  it('answers null over that role for an organisation that does not exist', async () => {
+    // The negative arm, over the same role. Without it the test above could be
+    // satisfied by a lookup that returned a constant, and "resolves to null for
+    // a missing organisation" is the behaviour `SessionDocumentService` relies
+    // on to distinguish "no organisation chosen" from a failure.
+    const lookup = activeOrganizationLookup(h.appPrisma);
+    expect(await lookup.find(newId('org'))).toBeNull();
   });
 });
