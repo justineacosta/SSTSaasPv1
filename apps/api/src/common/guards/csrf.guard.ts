@@ -30,8 +30,13 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE']);
  * bookmark, and `cross-site` is the shape of the attack. Absent means an older
  * browser or a non-browser client, and is not refused — see the guard's
  * docblock for why this is a *signal* and not the control.
+ *
+ * Exported since Task 9 so `CrossSiteGuard` can refuse on the same header value
+ * without restating the string. There it is the control rather than a signal,
+ * because the token comparison below is unavailable on a public route — but it
+ * must be the *same* string, and two literals is how that stops being true.
  */
-const CROSS_SITE = 'cross-site';
+export const CROSS_SITE = 'cross-site';
 
 function invalid(reason: string): DomainError {
   // ONE CODE AND ONE MESSAGE FOR EVERY REFUSAL. The `reason` is for the
