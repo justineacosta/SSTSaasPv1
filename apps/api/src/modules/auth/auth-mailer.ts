@@ -125,7 +125,11 @@ export class AuthMailer {
    * `notice.templates.ts`'s reason: a fabricated address in a security notice
    * is worse than an absent one.
    */
-  async sendNewDeviceSignIn(input: { to: string; occurredAt: Date; ip: string | null }): Promise<void> {
+  async sendNewDeviceSignIn(input: {
+    to: string;
+    occurredAt: Date;
+    ip: string | null;
+  }): Promise<void> {
     const rendered = EMAIL_TEMPLATES.newDeviceSignIn({
       occurredAt: input.occurredAt,
       // `?? undefined`, because the template distinguishes "not recorded" from
