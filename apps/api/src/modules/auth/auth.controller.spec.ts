@@ -4,6 +4,7 @@ import {
   ACCESS_METADATA_KEY,
   type AccessDeclaration,
 } from '../../common/decorators/access.decorator.js';
+import { REFUSE_CROSS_SITE_KEY } from '../../common/decorators/cross-site.decorator.js';
 import {
   RATE_LIMIT_EXEMPT_KEY,
   RATE_LIMIT_METADATA_KEY,
@@ -13,7 +14,7 @@ import type { RateLimitClass } from '../../common/guards/rate-limit.config.js';
 import { AuthController } from './auth.controller.js';
 
 /**
- * THE DECORATORS ON THE THREE SHIPPED HANDLERS, READ OFF THE REAL CONTROLLER.
+ * THE DECORATORS ON THE SIX SHIPPED HANDLERS, READ OFF THE REAL CONTROLLER.
  *
  * M1. Three mutations survived the entire eleven-command gate before this file
  * existed: downgrading all three routes to `generalSession`, deleting the three
@@ -33,9 +34,14 @@ import { AuthController } from './auth.controller.js';
  * Metadata is read off `AuthController.prototype`'s handler functions, which is
  * where `SetMetadata` as a `MethodDecorator` puts it — the same place
  * `Reflector.get(key, context.getHandler())` reads it from at runtime.
+ *
+ * **Task 9's three handlers arrived through the exhaustiveness test at the
+ * bottom of this file**, which went red naming them before a single row had
+ * been added here. That is exactly what ruling 64 built it for.
  */
 
-type HandlerName = 'register' | 'verifyEmail' | 'resendVerification';
+type HandlerName =
+  'register' | 'verifyEmail' | 'resendVerification' | 'login' | 'logout' | 'session';
 
 /**
  * A handler read off the prototype as a REFLECTION TARGET, never to be called.
@@ -51,21 +57,81 @@ const handlerOf = (name: HandlerName): object => AuthController.prototype[name];
 interface RouteExpectation {
   readonly handler: HandlerName;
   readonly path: string;
+  readonly method: RequestMethod;
   readonly rateLimit: RateLimitClass;
+  readonly access: AccessDeclaration;
+  /** Whether the handler carries `@RefuseCrossSite()`. */
+  readonly refusesCrossSite: boolean;
 }
 
 /**
- * The three routes, as an exact table. A fourth handler appearing on this
+ * The six routes, as an exact table. A seventh handler appearing on this
  * controller without a row here fails the exhaustiveness test below rather than
- * shipping undeclared — Task 9's login endpoint belongs on this controller.
+ * shipping undeclared — which is how Task 9's three arrived.
+ *
+ * `access` is in the table rather than asserted uniformly because Task 9 is
+ * where this controller stopped being all-public. A route on the wrong arm of
+ * that union is either an endpoint nobody can reach or an endpoint anybody can.
  */
 const ROUTES: readonly RouteExpectation[] = [
-  { handler: 'register', path: 'register', rateLimit: 'registration' },
-  { handler: 'verifyEmail', path: 'verify-email', rateLimit: 'emailVerificationConsume' },
+  {
+    handler: 'register',
+    path: 'register',
+    method: RequestMethod.POST,
+    rateLimit: 'registration',
+    access: { kind: 'public' },
+    refusesCrossSite: false,
+  },
+  {
+    handler: 'verifyEmail',
+    path: 'verify-email',
+    method: RequestMethod.POST,
+    rateLimit: 'emailVerificationConsume',
+    access: { kind: 'public' },
+    refusesCrossSite: false,
+  },
   {
     handler: 'resendVerification',
     path: 'resend-verification',
+    method: RequestMethod.POST,
     rateLimit: 'emailVerificationResend',
+    access: { kind: 'public' },
+    refusesCrossSite: false,
+  },
+  {
+    // The per-account window keys on the body's `email` — the first time a
+    // `{ bodyField }` principal source has ever resolved on a shipped route.
+    // `generalSession` here would be fail-open with no resolvable scope, and
+    // carry-forward ruling 55 records that nothing would say so.
+    handler: 'login',
+    path: 'login',
+    method: RequestMethod.POST,
+    rateLimit: 'login',
+    access: { kind: 'public' },
+    // The one route in the product that carries it. Carry-forward ruling 56:
+    // `CsrfGuard` skips public routes, so login CSRF needs its own mechanism.
+    refusesCrossSite: true,
+  },
+  {
+    handler: 'logout',
+    path: 'logout',
+    method: RequestMethod.POST,
+    // Resolves nothing today — the limiter runs before the authentication
+    // guard — and is declared anyway, because a route with no decorator falls
+    // to the same class SILENTLY. See the handler's docblock.
+    rateLimit: 'generalSession',
+    access: { kind: 'authenticated' },
+    // Not needed and not carried: this route IS cookie-authenticated, so
+    // `CsrfGuard` governs it — the first route in the product it ever has.
+    refusesCrossSite: false,
+  },
+  {
+    handler: 'session',
+    path: 'session',
+    method: RequestMethod.GET,
+    rateLimit: 'generalSession',
+    access: { kind: 'authenticated' },
+    refusesCrossSite: false,
   },
 ];
 
@@ -102,12 +168,10 @@ describe('the metadata keys this file reads', () => {
   });
 });
 
-const POST = RequestMethod.POST;
-
-describe.each(ROUTES)('$path', ({ handler, path, rateLimit }) => {
-  it('is registered as a POST on the expected path', () => {
+describe.each(ROUTES)('$path', ({ handler, path, method, rateLimit, access, refusesCrossSite }) => {
+  it('is registered on the expected path with the expected method', () => {
     expect(Reflect.getMetadata(PATH_METADATA, handlerOf(handler))).toBe(path);
-    expect(Reflect.getMetadata(METHOD_METADATA, handlerOf(handler))).toBe(POST);
+    expect(Reflect.getMetadata(METHOD_METADATA, handlerOf(handler))).toBe(method);
   });
 
   it('carries exactly the rate-limit class abuse-prevention.md §1 gives it', () => {
@@ -117,17 +181,31 @@ describe.each(ROUTES)('$path', ({ handler, path, rateLimit }) => {
     expect(Reflect.getMetadata(RATE_LIMIT_METADATA_KEY, handlerOf(handler))).toBe(rateLimit);
   });
 
-  it('is @Public(), and says so in metadata rather than by omission', () => {
+  it('declares its access arm in metadata rather than by omission', () => {
     // The boot-time access assertion refuses a route that declares nothing, so
     // "no metadata" would fail at startup — but it would fail as a crash, not
     // as a statement about which arm this route is on. `@AuthenticatedOnly()`
-    // here would be a route nobody could reach without an account, on three
-    // endpoints whose whole purpose is to serve people who have none.
-    const access = Reflect.getMetadata(
+    // on `register` would be a route nobody could reach without an account, on
+    // an endpoint whose whole purpose is to serve people who have none; and
+    // `@Public()` on `logout` or `session` would be an endpoint anybody can
+    // reach, which is the same mistake pointing the other way.
+    const declared = Reflect.getMetadata(
       ACCESS_METADATA_KEY,
       handlerOf(handler),
     ) as AccessDeclaration;
-    expect(access).toEqual({ kind: 'public' });
+    expect(declared).toEqual(access);
+  });
+
+  it('carries the cross-site refusal only if it is meant to', () => {
+    // Both directions matter. On `login` its absence would leave login CSRF
+    // uncovered, because `CsrfGuard` skips public routes by design (ruling 56)
+    // and would say nothing about it. On the other five its presence would be a
+    // control nobody chose: on the three Task 8 routes it changes behaviour
+    // that was reasoned about and accepted, and on `logout` and `session` it is
+    // redundant with a stronger control that already governs them.
+    expect(Reflect.getMetadata(REFUSE_CROSS_SITE_KEY, handlerOf(handler))).toBe(
+      refusesCrossSite ? true : undefined,
+    );
   });
 
   it('is not exempt from rate limiting and carries no email-verified gate', () => {
@@ -151,7 +229,14 @@ describe('the controller as a whole', () => {
     expect(Reflect.getMetadata(ACCESS_METADATA_KEY, AuthController)).toBeUndefined();
   });
 
-  it('exposes exactly the three handlers in the table above', () => {
+  it('declares no class-level cross-site refusal', () => {
+    // `CrossSiteGuard` reads `getHandler()` only, so a class-level annotation
+    // opts nothing in — but it would read as though it did, which is the
+    // failure `cross-site.guard.spec.ts` proves the guard against.
+    expect(Reflect.getMetadata(REFUSE_CROSS_SITE_KEY, AuthController)).toBeUndefined();
+  });
+
+  it('exposes exactly the six handlers in the table above', () => {
     const handlers = Object.getOwnPropertyNames(AuthController.prototype).filter(
       (name) => name !== 'constructor',
     );
