@@ -657,11 +657,12 @@ an implementer's report, exit codes captured outside a pipe: all eleven exit 0. 
 `check:registry` 15 models, compose stack `Up (healthy)`. `pnpm test:e2e` has **no row** and was not
 run: `git diff --stat main..HEAD -- apps/web` and `-- packages/ui` are both empty.
 
-**Branching. Task 9 is NOT merged.** It sits on `feat/phase-2-task-09`, cut from `main` at
-`00ac4ab`, unpushed, with no pull request and no CI run. Task 8's branch was merged as PR #14 before
-Task 9 began; this one has not been. **Task 10 branches from whatever `main` is when you start** —
-pull first, and decide with the operator whether Task 9 merges first or Tasks 9 and 10 merge
-together, since the plan chains them.
+**Branching. Task 9 is merged.** PR #17, rebased onto `main` on 2026-08-31 and the branch deleted,
+with CI green on a Linux runner **before** the merge — runs `33427279769` (pull request) and
+`33427247840` (branch head), both `success` at ~4m35s, every stage executing including Playwright.
+Task 9's last commit on `main` is `9b12ed9`, followed by the docs commit that recorded the merge.
+**Task 10 branches from whatever `main` is when you start** — pull first; do not cut from a commit
+named in this file, because this file is a dated record and `main` moves.
 
 **Next action:** Task 10 — password reset, `forgot-password`, `reset-password` and
 `change-password`, chained with Task 9. One implementer across both, reviewer fresh per task.
