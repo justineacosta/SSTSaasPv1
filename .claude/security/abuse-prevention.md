@@ -65,6 +65,13 @@ exists". Measured through the real application: six attempts against one address
 answer `401,401,401,401,401,429` while a second address from the same IP still signs in, and a
 sweep across distinct addresses from one IP is refused at the twenty-first attempt.
 
+**Independence bounds the damage; it does not prevent it.** The measurements above show the two
+windows applying separately, which is what §7 asks for — but 20 attempts per 15 minutes per IP at
+5 attempts per lock is four locks per window, and roughly eight accounts held permanently at the
+30-minute cap from a single address. `authentication.md` §7 carries the arithmetic. Presenting the
+independence as though it satisfied "one attacker cannot lock out a whole tenant" would overstate
+it.
+
 `Email verification resend` also declares a `{ bodyField: 'email' }` source and has since Task
 8, but it is `3 / hour per account` on an endpoint that sends mail rather than one that checks
 a credential — the per-account half there bounds an outbound-email amplifier, not credential

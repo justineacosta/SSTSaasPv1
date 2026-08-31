@@ -108,15 +108,23 @@ export class CrossSiteGuard implements CanActivate {
     if (request.headers['sec-fetch-site'] === CROSS_SITE) throw refused();
 
     const origin = request.headers.origin;
-    // `typeof origin === 'string'` rather than a truthiness check: Node joins
+    // `!== undefined` rather than a truthiness check, so an empty `Origin`
+    // header is compared rather than skipped.
+    //
+    // What this does NOT need is a branch for a repeated header. Node joins
     // repeated non-`Set-Cookie` headers into one comma-separated string
-    // (ruling 57, measured), so two `Origin` headers arrive here as
-    // `"<a>, <b>"` — a string that is not the configured origin, and is
-    // therefore refused by the comparison rather than by a branch that picks
-    // one. An array form from a future adapter is not a string, and falls to
-    // the refusal below for the same reason `cookie-header.ts` refuses two
-    // cookies of one name: an ambiguous credential is not a value to choose
-    // from.
+    // (ruling 57, measured), so two `Origin` headers arrive as `"<a>, <b>"` —
+    // a string that is not the configured origin, and therefore refused by the
+    // comparison itself rather than by a branch that would have to pick one.
+    // An array form from a future adapter is likewise neither `undefined` nor
+    // equal to the origin, so it too is refused. That is the same reasoning
+    // `cookie-header.ts` uses to refuse two cookies of one name: an ambiguous
+    // value is not a value to choose from.
+    //
+    // (L2: this comment previously quoted `typeof origin === 'string'`, which
+    // is not what the line below says and never was. The behaviour argued for
+    // was delivered anyway; the comment was describing code that was never
+    // written.)
     if (origin !== undefined && origin !== this.webOrigin) throw refused();
 
     return true;

@@ -64,11 +64,23 @@ Site: `login.service.ts`, the `if (isLocked(...))` branch.
 
 ### 2.2 `User.status` LOCKED / DISABLED answers `ACCOUNT_LOCKED` on a correct password
 
-The brief never mentions `User.status`. Carry-forward ruling 37 requires the endpoint to check
-it, and issuing a session for a `DISABLED` user would be a defect. The shape follows D3 exactly:
-the status is consulted **after** the password has been verified, so a wrong password on a
-`LOCKED` account is byte-identical to a wrong password on any other (asserted in
-`auth.enumeration.integration.spec.ts`), and a correct password gets 403 `ACCOUNT_LOCKED`.
+The brief never mentions `User.status`, and issuing a session for a `DISABLED` user would be a
+defect. The shape follows D3 exactly: the status is consulted **after** the password has been
+verified, so a wrong password on a `LOCKED` account is indistinguishable from a wrong password on
+any other, and a correct password gets 403 `ACCOUNT_LOCKED`.
+
+> **Two citations corrected in the fix round (L4).** This paragraph originally cited
+> `auth.enumeration.integration.spec.ts` for the byte-identical claim and carry-forward ruling 37
+> for the decision. Neither supports what it was cited for. That spec's locked-account test seeds
+> `{ failedLoginCount, lockedUntil }` and never sets `User.status`, so it asserts the *brute-force*
+> lock and not the administrative one — the behaviour is covered, in `login.service.spec.ts`, and
+> the citation named the wrong lane and the wrong lock. Ruling 37 is about `TokenService.consume`
+> returning a user whose status nobody checked, and it binds Tasks 8, 10 and 15; login consumes no
+> token and the ruling does not name Task 9. The decision is right; the reasons written beside it
+> were not mine to borrow. Carry-forward ruling 22's shape exactly.
+
+The fix round also found this path wrote **no audit event at all** (M2), which this section did not
+notice and no document recorded.
 
 *Cost if wrong:* the administrative lock and the brute-force lock are one refusal to a caller.
 An operator diagnosing "why can this person not sign in" cannot tell from the response which of

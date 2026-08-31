@@ -43,11 +43,14 @@ import { requestContextOf } from './request-context.js';
 import { SessionDocumentService } from './session-document.service.js';
 
 /**
- * THE SIX ROUTES THIS PRODUCT PUBLISHES.
+ * THE SIX ROUTES ON THIS CONTROLLER.
  *
- * Task 8 shipped `/register`, `/verify-email` and `/resend-verification`, and
- * `pnpm check:openapi` went from four routes to seven. Task 9 adds `/login`,
- * `/logout` and `/session`, and it reports **ten**.
+ * Six here, **ten in the product** — the health probes and the OpenAPI document
+ * itself make up the difference, and `pnpm check:openapi` counts all of them.
+ * Task 8 shipped `/register`, `/verify-email` and `/resend-verification` and
+ * took that total from four to seven; Task 9 adds `/login`, `/logout` and
+ * `/session` and takes it to ten. (L6: the heading previously said "the six
+ * routes this product publishes", which contradicted the sentence below it.)
  *
  * # The Task 8 three are `@Public()`, and therefore NOT CSRF-covered
  *
@@ -291,10 +294,11 @@ export class AuthController {
       {
         status: 403,
         description:
-          'The account is temporarily locked (`ACCOUNT_LOCKED`), or the request was refused as ' +
-          'cross-site (`CSRF_TOKEN_INVALID`). `ACCOUNT_LOCKED` is returned only when the ' +
-          'password was otherwise correct: answering it to any attempt would confirm the ' +
-          'address is registered.',
+          'The account cannot be signed in to (`ACCOUNT_LOCKED`) — either a temporary ' +
+          'brute-force lock or an administrative one, and the response deliberately does not ' +
+          'say which — or the request was refused as cross-site (`CSRF_TOKEN_INVALID`). ' +
+          '`ACCOUNT_LOCKED` is returned only when the password was otherwise correct: ' +
+          'answering it to any attempt would confirm the address is registered.',
       },
       {
         status: 429,

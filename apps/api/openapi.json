@@ -96,7 +96,7 @@
             "description": "The credentials are not valid (`INVALID_CREDENTIALS`). Identical for an address with no account, a wrong password, and a credential that could not be read."
           },
           "403": {
-            "description": "The account is temporarily locked (`ACCOUNT_LOCKED`), or the request was refused as cross-site (`CSRF_TOKEN_INVALID`). `ACCOUNT_LOCKED` is returned only when the password was otherwise correct: answering it to any attempt would confirm the address is registered."
+            "description": "The account cannot be signed in to (`ACCOUNT_LOCKED`) — either a temporary brute-force lock or an administrative one, and the response deliberately does not say which — or the request was refused as cross-site (`CSRF_TOKEN_INVALID`). `ACCOUNT_LOCKED` is returned only when the password was otherwise correct: answering it to any attempt would confirm the address is registered."
           },
           "429": {
             "description": "Rate limited: 5 per 15 minutes per account and 20 per 15 minutes per IP."

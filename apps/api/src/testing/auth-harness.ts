@@ -154,9 +154,6 @@ export const AUTH_RATE_LIMIT_CLASSES = [
   'generalSession',
 ] as const;
 
-/** @deprecated Task 8's name for the list above. Kept so its two specs still read. */
-export const TASK_8_RATE_LIMIT_CLASSES = AUTH_RATE_LIMIT_CLASSES;
-
 export async function clearRateLimits(redis: RedisLike): Promise<void> {
   for (const className of AUTH_RATE_LIMIT_CLASSES) {
     let cursor = '0';
