@@ -1461,9 +1461,11 @@ already writes credentials — but it is Task 9's debt.
 the request, which is ruling 68's timing oracle on a new endpoint and is not closable before the
 Phase 4 queue. It is named in `security/authentication.md` §2 and §7 rather than left implicit.
 
-**Task 9 is NOT merged.** It sits on `feat/phase-2-task-09`, unpushed, with no pull request and no
-CI run — unlike Task 8, which was on `main` with CI green before Task 9 began. Nothing on this
-branch is proven outside this machine.
+**Task 9 was merged to `main` on 2026-08-31 as PR #17** (rebase, branch deleted), with CI green on
+a Linux runner before the merge: runs `33427279769` on the pull request and `33427247840` on the
+branch head, both `success`, every stage executing — format, lint, typecheck, unit, `check:specs`,
+the compose stack, integration, build, `check:openapi`, `check:registry`, Playwright install and the
+E2E tests. Nothing on this branch is unproven outside this machine.
 
 All findings and dispositions:
 [`docs/superpowers/ledger/phase-2/task-09/`](../../docs/superpowers/ledger/phase-2/task-09/).
