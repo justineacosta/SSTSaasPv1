@@ -14,7 +14,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Not Implemented** — Tasks 1–7 of 18 done 2026-08-27 (schema, migrations, registry, wire contracts, password hashing, the breach check, single-use secret tokens, the mailer with seven templates, the session service, and the authentication stage with CSRF and CORS); the API still publishes **4 routes**, so nothing authenticates anybody and no email has a caller |
+| 2 | Identity | **Not Implemented** — Tasks 1–8 of 18 done 2026-08-31 (schema, migrations, registry, wire contracts, password hashing, the breach check, single-use secret tokens, the mailer with eight templates, the session service, the authentication stage with CSRF and CORS, and registration with email verification); the API publishes **7 routes** and a person can register and confirm an address, but **nothing authenticates anybody** — there is no login endpoint until Task 9 and no screen until Task 16 |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -87,12 +87,15 @@ file is byte-identical to what the code generates. `pnpm check:openapi` now enfo
 thing in CI's cheap lane, without Postgres.
 
 Rate limiting is built and globally registered — a Redis sliding window over the table in
-`security/abuse-prevention.md` §1 — but it limits **nothing today**, and that distinction
-matters more than the checkmark. No route carries any limit class: the only routes that exist
-are the health probes, and liveness is deliberately exempt from the limiter so that it depends
-on no backing service. What Phase 1 delivers
-is a control that is correct and tested in advance of the endpoints it will govern, not a
-control that is currently governing anything.
+`security/abuse-prevention.md` §1. **Through Task 7 it limited nothing, because no route carried
+a class; since Task 8 it governs three.** `registration` on `POST /api/v1/auth/register`,
+`emailVerificationConsume` on `POST /api/v1/auth/verify-email` and `emailVerificationResend` on
+`POST /api/v1/auth/resend-verification`, all three fail-closed and all three per-IP-resolvable on
+an unauthenticated request — measured live at `200,200,200,429,429` against the real application.
+Liveness stays deliberately exempt so that it depends on no backing service. **Every other class
+in the table still governs nothing**, and the per-principal half of `generalSession` remains
+unresolvable because the limiter runs before authentication by design, with nothing reporting
+that at the default log level.
 
 **`apps/web` now renders in a browser — two pages, neither of them a product.** A Next.js
 16 App Router shell with the three route groups from `architecture/frontend.md` §1:
@@ -596,18 +599,25 @@ else is needed, and re-verifying Phase 1 is not part of it:
 4. The plan's section for **your task only**, plus the previous task's ledger entry at
    `docs/superpowers/ledger/phase-2/task-NN/`.
 
-**Status is Not Implemented and Tasks 1–3 do not change that.** The tables identity will need now
-exist and are proven to migrate, the wire contracts those endpoints will validate against exist
-too, and as of Task 3 a password can be hashed and a breached one detected — but **nothing
-authenticates anybody**: the committed `openapi.json` still publishes **4 routes** (three health
-probes and the document itself), and `apps/web`'s `(auth)` route group still holds a layout with no
-routes under it. Not one of the three exit criteria above is met. Per the plan, the status moves to
-**Partially Implemented** at Checkpoint A, after Task 12 — a schema is not a feature, a contract is
-not a feature, and a service no endpoint calls is not one either.
+**Status is Not Implemented and Tasks 1–8 do not change that.** The tables identity needs exist
+and are proven to migrate, the wire contracts those endpoints validate against exist, a password can
+be hashed and a breached one detected, and **as of Task 8 three endpoints are live** — a person can
+register an account and confirm their email address. But **nothing authenticates anybody**: there is
+no login endpoint until Task 9, the session service Task 6 built has no caller that issues a cookie,
+and `apps/web`'s `(auth)` route group still holds a layout with no routes under it, so no screen
+reaches any of this until Task 16. Not one of the three exit criteria above is met. Per the plan,
+the status moves to **Partially Implemented** at Checkpoint A, after Task 12 — a schema is not a
+feature, a contract is not a feature, and a service no endpoint calls is not one either.
 
-`apps/api/src/modules/` now contains `auth` alongside `health`, and the sentence that used to read
-"only `health`" is corrected wherever it appeared. `AuthModule` exports **four services and registers no
-controller**: `PasswordService`, `BreachCheckService`, `TokenService` and — as of Task 6 —
+**The `check:openapi` reports 4 routes below are dated evidence and stay as they are.** Each was
+correct for the commit it describes. `check:openapi` reports **7** from Task 8 onward, so the
+sentence "this is the proof that no endpoint shipped" applies to those tables and to nothing
+current.
+
+`apps/api/src/modules/` now contains `auth` and `audit` alongside `health`. **`AuthModule`
+registered no controller until Task 8, and now registers one** — `AuthController`, carrying the
+three registration and verification routes. It exports four services: `PasswordService`,
+`BreachCheckService`, `TokenService` and — as of Task 6 —
 `SessionService`, all of them callable from Tasks 7–15 and called by nothing today. It
 provides two more it deliberately does not export, `SessionRepository` and
 `RedisSessionCache`, so no module outside `auth` can reach a session row or a cache key
@@ -1239,6 +1249,121 @@ empty data directory, and this volume predates that line. **The suites are unaff
 every table-touching integration spec starts its own Testcontainers Postgres, but the real
 application run against the compose database answers 500 from any path that reaches the database.
 Nothing was changed on the operator's machine to fix it.
+
+**Task 8 evidence, 2026-08-31 at commit `dea98cb`.** Every command re-run by the orchestrator on
+the finished tree, exit codes captured outside a pipe. Task 7 was re-verified the same way before
+Task 8 began — all eleven commands exit 0 at the numbers its own table records.
+
+| Command | Exit | What it proves |
+|---|---|---|
+| `pnpm format:check` | 0 | Prettier style across the workspace. |
+| `pnpm lint` | 0 | 14 tasks. |
+| `pnpm typecheck` | 0 | 14 tasks. The types compile — and nothing about behaviour. |
+| `pnpm test` | 0 | **76 files / 1125 tests**, up from 69 / 1025 at Task 7. |
+| `pnpm check:specs` | 0 | 93 spec files, each claimed by exactly one Vitest project. |
+| `pnpm test:integration` | 0 | **17 files / 230 tests** against real Postgres 16 and the compose Redis, up from 15 / 205. |
+| `pnpm build` | 0 | 8 tasks. |
+| `pnpm check:openapi` | 0 | **7 routes**, byte-identical. The number that had read 4 since Phase 1. |
+| `pnpm check:registry` | 0 | **15 models** — 3 tenant-owned, 1 tenant root, 11 deliberately global. `PlatformAuditEvent` is the new one. |
+| `pnpm check:secrets` | 0 | 368 tracked files, no credential-shaped literals. |
+| `docker compose ps` | 0 | postgres, redis, minio, mailpit all `Up (healthy)`. |
+
+`pnpm test:e2e` was **not run** and has no row: Task 8 touches no `apps/web` path.
+
+What that table licenses and nothing more: three endpoints exist, answer, and behave as their specs
+pin them against a real Postgres. **It says nothing about anybody being able to log in** — there is
+no login endpoint until Task 9 — and nothing about a person using any of this, because no screen
+calls it until Task 16.
+
+**The API publishes seven routes, and a dozen sentences in this file stop applying.** Every task
+since Phase 1 has cited `check:openapi` reporting 4 as the proof that no endpoint shipped. That
+proof is spent. `POST /api/v1/auth/register`, `POST /api/v1/auth/verify-email` and
+`POST /api/v1/auth/resend-verification` are live, `AuthModule` registers a controller, and the
+mailer has a caller for the first time since Task 5 built it.
+
+**What Task 8 delivered.** Registration writing `User`, `Credential`, a verification token and an
+audit event in one transaction with the mail sent after it commits (carry-forward ruling 44, which
+Task 5 could only write as a docblock because no endpoint existed to demonstrate it — Tasks 10, 11
+and 15 copy this). Verification consuming the token through Task 4's conditional update and checking
+`User.status` afterwards, per ruling 37. A resend path, which ruling 45 made this task owe because a
+failed first send is otherwise authoritative. An eighth email template. `PlatformAuditEvent` and its
+migration. The partial unique index on `VerificationToken` that ruling 32 had owed since Task 4 and
+assigned to whichever task next opened a migration. And an `emailVerifiedAt` gate that governs
+**zero routes today** — Task 8's three are all `@Public()`, so there is nothing for it to guard
+until Task 13 applies it, and it is proved against test controllers exactly as Task 7's
+`@AllowPendingMfa()` was.
+
+**ADR-0019 decides where an audit event goes when there is no organisation**, and it was written and
+committed before any implementation, as 0014–0017 were. `AuditEvent.organizationId` is NOT NULL with
+a `Restrict` FK — but the column type is the smaller half. The table carries RLS
+`USING/WITH CHECK ("organizationId" = current_setting('app.organization_id', true))`, so relaxing
+the column does not make the write work: **measured** on a scratch table carrying that exact policy,
+as `sentinel_app`, the tenant-scoped insert succeeded and the NULL insert was refused with `new row
+violates row-level security policy`. The reviewer reproduced it independently. So a second table,
+registered as deliberately global, with the same tamper resistance — and the cost named rather than
+hidden: the platform-admin cross-tenant view `audit.md` §6 describes becomes a union, paid by a
+reader that does not exist yet instead of by a table that already has readers. **0018 stays reserved
+for Task 11.**
+
+**One High, and it was a live behaviour rather than a missing test.** An unauthenticated caller
+could put up to 512 characters of chosen text, **including a URL**, into the security notice this
+product mails to any address they could guess was registered: `POST /auth/register` against an
+existing address renders the caller's `User-Agent` as `Device: <value>` in a message wearing
+Sentinel's branding, under a footer promising it never includes a link. Mail clients autolink a bare
+URL in a text part, so the message contradicted itself in the recipient's inbox. Fixed structurally
+— the template's context type cannot carry an IP or a user agent, so there is no parameter for the
+value to travel through — and the values go to the `PlatformAuditEvent` row instead, which is where
+attacker-supplied text belongs. **The spec that should have caught it ran the benign fixture**, and
+the hostile fixture two declarations away contained no `http`, so swapping it in would still not
+have failed. Carry-forward ruling 58, third instance in three tasks.
+
+**The OpenAPI document now describes request bodies, which it had never been able to do.**
+`ApiDocDeclaration` had no field for one, invisible while Phase 1 shipped only `GET` health probes.
+The first three `POST` routes therefore published what they answer and nothing about what to send —
+including that every request schema is `.strict()`, which now reaches the document as
+`additionalProperties: false`, so a client can see that an unknown field is a 400 `UNKNOWN_FIELD`
+rather than a value quietly dropped.
+
+**A known enumeration residual, measured and open: the resend is distinguishable by timing.**
+Twenty-five samples: no account 4.0 ms, already verified 4.2 ms, awaiting confirmation 8.6 ms, with
+non-overlapping ranges — so a response over roughly 7 ms identifies the case. The response body is
+byte-identical for all three, which is what the contract requires; the latency is not. Closing it
+needs the Phase 4 queue, and it is recorded in `security/authentication.md` §6 rather than left to
+be discovered. Registration's own two paths were measured at 47.8 ms against 44.5 ms median with
+near-total overlap, and a statistical timing assertion was deliberately **not** committed on that
+evidence — the spec asserts the hash happens on both paths instead.
+
+**The fix round was finished by the orchestrator, not the implementer, and nothing in it has been
+adversarially reviewed.** The implementer subagent hit the weekly usage limit after landing the High
+fix. Seventeen of eighteen findings are fixed and every fix is proved by re-applying the reviewer's
+own mutation, but the separation of author from reviewer that the rest of this phase relies on is
+absent for that round — so its "all green" is a self-report. It found **two defects in its own
+fixes** by running mutations: a vacuous test that passed for an unrelated reason, and a finding that
+measurement showed was partly wrong (the redacting serialiser blanks the `body` field by name, so
+the mutation the review called a survivor could not have been caught by any value-based assertion).
+Both are in
+[`docs/superpowers/ledger/phase-2/task-08/fixes.md`](../../docs/superpowers/ledger/phase-2/task-08/fixes.md).
+
+**One finding is upheld as false and deliberately not fixed.** A comment in the applied
+`platform_audit_event` migration overstates what replacing the append-only trigger function changes
+— measured, `AuditEvent`'s message is byte-identical, because `TG_TABLE_NAME` on that table *is*
+`AuditEvent`. Editing it would change the migration's checksum and break `prisma migrate dev` for
+every developer until a reset that carry-forward ruling 3 says an agent cannot perform. One
+misleading clause is cheaper than the operator's database. Recorded as ruling 65: **a migration
+comment is immutable the moment it runs, so measure before applying.**
+
+All eighteen findings are dispositioned in
+[`docs/superpowers/ledger/phase-2/task-08/`](../../docs/superpowers/ledger/phase-2/task-08/).
+
+**Tasks 6 and 7 are on `main` and CI is green on them**, which corrects the sentences above that
+call them unpushed with no pull request: both were merged and runs `33088717123` and `33088206506`
+concluded `success`. **Task 8 is on `feat/phase-2-task-08`, cut from `main` at `a39f4b3`, unpushed,
+with no pull request** — one task of work, not two.
+
+**The compose Postgres privilege drift has cleared.**
+`has_schema_privilege('sentinel_app','public','USAGE')` now returns `t` where Task 7 measured `f`
+twice, and all six migrations are applied. The real application can reach the database on this
+machine again, which is what let this task's integration suite exercise the endpoints end to end.
 
 **Checkpoint A falls after Task 12** — the identity API enforced end to end with no UI. At that
 point the branch is pushed, CI must be green on a Linux runner, and this file gets an evidence

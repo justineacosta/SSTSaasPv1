@@ -17,7 +17,7 @@ Branch: `feat/phase-2-identity`
 | 5 | Mail infrastructure and templates | subagent | **Done** — [brief](task-05/brief.md) · [report](task-05/report.md) · [review](task-05/review.md) · [rulings](task-05/rulings.md) |
 | 6 | Session service | chained with 7 | **Done** — [brief](task-06/brief.md) · [report](task-06/report.md) · [review](task-06/review.md) · [fixes](task-06/fixes.md) · [rulings](task-06/rulings.md) |
 | 7 | Authentication guard, CSRF, CORS | chained with 6 | **Done** — [brief](task-07/brief.md) · [report](task-07/report.md) · [review](task-07/review.md) · [fixes](task-07/fixes.md) · [rulings](task-07/rulings.md) |
-| 8 | Registration and email verification | either | Not started |
+| 8 | Registration and email verification | subagent (fix round: orchestrator) | **Done** — [brief](task-08/brief.md) · [report](task-08/report.md) · [review](task-08/review.md) · [dispositions](task-08/fix-brief.md) · [fixes](task-08/fixes.md) |
 | 9 | Login, logout, session endpoint, lockout | chained with 10 | Not started |
 | 10 | Password reset | chained with 9 | Not started |
 | 11 | TOTP MFA and recovery codes | subagent | Not started |
@@ -407,71 +407,134 @@ Full reasoning and cost-if-wrong for each is in [`task-07/rulings.md`](task-07/r
     the type is half the control; the class-level test is the other half, and it needs an
     inheritance case because `getAllAndOverride` walks the prototype chain.
 
+### From Task 8
+
+Full reasoning and cost-if-wrong for each is in [`task-08/fixes.md`](task-08/fixes.md) and
+[`task-08/review.md`](task-08/review.md).
+
+62. **An audit event for an action with no organisation goes in `PlatformAuditEvent`, not in
+    `AuditEvent` with a relaxed column.** ADR-0019. `AuditEvent` carries RLS
+    `USING/WITH CHECK ("organizationId" = current_setting('app.organization_id', true))`, so a
+    nullable column does not merely need a policy edit — the insert is **refused**, measured twice
+    (orchestrator and reviewer independently) with `new row violates row-level security policy`.
+    **Binds Tasks 9, 10 and 11**, whose login, reset and MFA events also happen with no
+    organisation in hand, and Phase 3's `/audit-logs`, which must union two tables for the
+    platform-admin view `audit.md` §6 describes.
+
+63. **A message this product sends to one person must never render text a different, unauthenticated
+    person chose.** H1. `registrationAttempt` rendered the caller's `User-Agent` as `Device: <value>`
+    in a notice mailed to the account owner — 512 characters of attacker text, a URL included,
+    under a footer promising the message contains no link. The fix is a type that cannot carry the
+    value, not a filter: a denylist over attacker-controlled text is a defect waiting for a new
+    encoding. **Binds every later notice**: the other four templates legitimately render a device
+    string because there it describes the recipient's *own* session, and `registry.spec.ts`
+    partitions the two kinds so a new template must choose a side. Attacker-supplied strings belong
+    in the audit row, which an operator reads, not in a message a third party reads.
+
+64. **A route's rate-limit class must be asserted on the shipped handler, not on the config table.**
+    M1. `rate-limit.config.spec.ts` asserts the table value by value and
+    `rate-limit.integration.spec.ts` drives a fixture controller, and with both green all three
+    routes could be downgraded to fail-open `generalSession`, or lose their decorators entirely,
+    with the whole eleven-command gate passing. A silently defaulted route produces no log line at
+    the default level (ruling 55), so nothing would ever say the limit had stopped applying.
+    **Binds every task that adds a route**: `auth.controller.spec.ts` is the pattern, and its
+    exhaustiveness test fails when a handler arrives without a row.
+
+65. **A migration comment is immutable the moment it runs, so measure before applying.** Task 8
+    shipped one unmeasured sentence in an applied migration — that replacing the append-only
+    trigger function changes `AuditEvent`'s message, which measurement showed it does not, because
+    `TG_TABLE_NAME` on that table *is* `AuditEvent`. It is **deliberately not corrected**: editing
+    an applied migration changes its checksum and breaks `prisma migrate dev` for every developer
+    until a reset that ruling 3 says an agent cannot perform. One misleading clause is cheaper than
+    the operator's database, and the real lesson is upstream.
+
+66. **A test that passes both before and after the mutation is not a test, and a fake's default can
+    make it one.** L4's first fix issued a token, deleted the user and asserted the refusal — and
+    passed, because the identity fake's `updateMany` always reports `count: 0`, so `verify` threw at
+    `consumed === null` and never reached the branch under test. Only re-running the mutation caught
+    it. **Before believing any test of a refusal, check which refusal it is actually observing.**
+    Third instance of ruling 58's family in this task alone, and the first one found by the author
+    rather than a reviewer.
+
+67. **The redacting serialiser blanks `body` and `text` by field NAME, not by value pattern.**
+    Measured: adding the rendered email to a log call emits `"body":"[redacted]"`, so no
+    value-based assertion can fail on it. That makes the denylist a real second line of defence —
+    and it is only the second. A binding named anything outside that list carries the value
+    straight through. **The assertion that holds "this call logs no body" is an exact key set**,
+    because a new binding changes the keys whether or not its value survives redaction.
+
+68. **The resend endpoint is enumeration-resistant in its body and not in its timing.** Measured
+    over 25 samples: no account 4.0 ms, already verified 4.2 ms, awaiting confirmation 8.6 ms, with
+    non-overlapping ranges — a response over roughly 7 ms identifies the case. The three responses
+    are byte-identical, which is what the contract requires. **Binds Task 10**, whose password-reset
+    endpoint has the same shape and the same three cases, and it is not closable without the
+    Phase 4 queue: the difference is a real send happening inside the request.
+
+69. **`ApiDoc` can describe a request body as of Task 8, and every route with a body must.** M8.
+    The field did not exist until now because Phase 1 shipped only `GET` probes, so the first three
+    `POST` routes published nothing about what to send. **Binds every later endpoint task**: pass
+    the same contract schema the `ZodValidationPipe` parses with, never a copy, so `.strict()`
+    reaches the document as `additionalProperties: false` and a client can see that an unknown
+    field is a 400 rather than a silently dropped value.
+
 ## Pause state
 
-**2026-08-27 — Task 7 complete and verified; Task 8 is next. Checkpoint A is five tasks away.**
+**2026-08-31 — Task 8 complete and verified; Task 9 is next. Checkpoint A is four tasks away.**
 
-Task 7 landed the authentication stage and the controls around it: `AuthenticationGuard`,
-`CsrfGuard`, a cookie-header parser, `csrf-token.ts`, a CORS middleware, the third access
-declaration `@AuthenticatedOnly()`, and `@AllowPendingMfa()`. **ADR-0017 was written and committed
-before any implementation commit** (`7029038`), as ADRs 0014, 0015 and 0016 were. Six `.claude/`
-documents changed. Evidence is in `roadmap.md`.
+Task 8 shipped **the first three routes this product has ever published**. `pnpm check:openapi`
+reports **7**, not 4, and every sentence in this ledger that cited 4 as the proof that no endpoint
+shipped now applies only to the dated table it sits in. A person can register an account and confirm
+an email address. **Nothing authenticates anybody yet** — there is no login endpoint until Task 9,
+and no screen until Task 16.
 
-**Still four routes.** `pnpm check:openapi` reports 4, `AuthModule` registers no controller, and
-every guard in this task is proved against purpose-built controllers through
-`apps/api/src/testing/routing-app.ts`. Nothing authenticates anybody yet because there is nothing to
-authenticate against.
+**ADR-0019 was written and committed before any implementation**, as 0014–0017 were, and it decides
+where an audit event goes when the actor belongs to no organisation. The claim it rests on was
+measured rather than reasoned, and the reviewer reproduced it independently. **0018 stays reserved
+for Task 11.**
 
-**No High findings, and the reason is worth stating rather than celebrating.** Both of Task 6's
-Highs were mutations that survived the suite. Here the reviewer wrote twelve mutations of its own
-beyond the implementer's five, and the only survivor was a **missing test over correct code** — the
-`PENDING_MFA` class-metadata exemption, which this codebase has already shipped as a real bug once
-in `@RateLimitExempt()`. Ruling 61.
+**One High, and it was live behaviour rather than a missing test.** An unauthenticated caller could
+inject 512 characters of chosen text, a URL included, into a security notice mailed to any address
+they could guess was registered — under a footer promising the message carries no link. Fixed with a
+type that cannot carry the value rather than a filter. The spec that should have caught it ran the
+benign fixture, which is ruling 58's third instance in three tasks.
 
-**The orchestrator wrote a false sentence and it propagated.** The Task 7 brief's ruling B claimed
-the rate limiter's `unresolvedWarned` path would make the unresolvable per-principal scope visible at
-runtime. It cannot fire for `generalSession`, which is fail-open with `perPrincipal` as its only
-scope. The sentence reached a code comment and two documents before the review caught it — the exact
-propagation path behind five of Phase 1's twelve false claims. Ruling 55. **The rule that
-implementers do not write status prose does not exempt whoever writes the brief.**
+**Read this before trusting the fix round: the implementer subagent hit the weekly usage limit after
+landing the High fix, and the orchestrator finished the remaining seventeen findings directly.**
+Nothing in that round has been adversarially reviewed. Every fix is proved by re-applying the
+reviewer's own mutation and pasting what went red, and the round found two defects in its own fixes
+by doing so — but the separation of author from reviewer that the rest of this phase depends on is
+absent for it. **Task 9's reviewer should treat Task 8's fix commits as unreviewed code**, in
+particular `auth.controller.spec.ts`, `request-context.spec.ts`, `auth-mailer.spec.ts`, the
+`redeemableUserId` control added to `identity-fakes.ts`, and the `requestBody` support added to the
+OpenAPI generator.
 
-**Two measurements now exist that did not before.** `Cross-Origin-Resource-Policy: same-origin` does
-not block a CORS-mode credentialed fetch (Chromium 151, with `no-cors` blocked in the same run to
-prove CORP is live) — ruling 60; and Node's repeated-header semantics differ per header, with
-`Authorization` **silently dropping its second value** — ruling 57. Both began as an implementer
-disclosing that a claim was a reading rather than a measurement, which is the second and third time
-that has paid in this phase.
+**One finding is upheld as false and deliberately not fixed** — ruling 65, a comment inside an
+applied migration that cannot be corrected without costing the operator a database reset an agent
+cannot perform.
 
-**A local-environment fact the next session needs.** The compose Postgres has drifted: the reviewer
-measured `has_schema_privilege('sentinel_app','public','USAGE')` returning `f`, and the orchestrator
-re-measured it after a container restart with the same result. `infra/docker/postgres/init/01-app-role.sql:13`
-grants it, but Postgres init scripts run only against an empty data directory, so this volume
-predates that line. **The suites are unaffected** — every table-touching integration spec uses its
-own Testcontainers Postgres — but the real application run against the compose database answers 500
-from anything reaching the database, which is why the reviewer could not probe a *resolved* session
-in the browser. Nothing was changed on the operator's machine. The fix is one statement as the
-superuser, or a volume recreate.
+**Two local facts corrected from Task 7's pause state.** Tasks 6 and 7 **are** on `main` with CI
+green (runs `33088717123` and `33088206506`); the "unpushed with no pull request" sentences were
+stale. And the compose Postgres privilege drift **has cleared** —
+`has_schema_privilege('sentinel_app','public','USAGE')` returns `t` where Task 7 measured `f` twice
+— which is what let this task's integration suite drive the endpoints end to end.
 
-**Branching. Task 7 is on `feat/phase-2-task-07`, stacked on `feat/phase-2-task-06`, both unpushed
-with no pull request.** Tasks 1–5 were each one branch and one PR with CI green on a Linux runner
-before the merge; **two tasks of work have now accumulated without that**, and nothing on either
-branch has been proven anywhere but this machine. The operator decides when it happens; the longer
-it waits, the more a red CI run costs to unpick.
+**Branching. Task 8 is on `feat/phase-2-task-08`, cut from `main` at `a39f4b3`, unpushed, with no
+pull request** — one task of work, not two. The operator decides when it is pushed.
 
-**Next action:** Task 8 — registration and email verification. The plan calls it self-contained
-enough for a fresh implementer while feeding a chain, and either mode is acceptable with the choice
-recorded here. It is the first task that **ships a route**, so `check:openapi` stops reporting 4 and
-every "this is what proves no endpoint shipped" sentence in the ledger stops applying.
+**Next action:** Task 9 — login, logout, the session endpoint and lockout, chained with Task 10
+(password reset). One implementer across both, reviewer fresh per task.
 
-Task 8 inherits more than any task so far. **Rulings 37, 38 and 44** (check `User.status` after
-`consume`; the `AuditEvent` is the endpoint's and the raw token never enters its metadata; mail is
-sent after the transaction commits, never inside it) — **and Task 8 sets the pattern Tasks 10, 11
-and 15 copy.** **Ruling 45**: it owns a resend path, because a failed first verification send is
-otherwise authoritative. **Ruling 32**: the partial unique index is owed by whichever task next
-opens a migration, and Tasks 6 and 7 opened none. **Ruling 26**: `PasswordBreachedError` already
-exists — do not build a second. **Ruling 56**: its endpoints are `@Public()` and therefore not
-CSRF-covered, which is correct and must be stated rather than discovered.
+Task 9 inherits more than any task so far. **Rulings 24, 25, 50 and 56**: the timing oracle that
+opens the day an operator raises the Argon2 parameters, the silently-corrupted-credential signal
+with no log line, the requirement that a `PENDING_MFA` → `ACTIVE` rotation carry its
+`mfaCompletedAt`, and **login CSRF, which Task 7 deliberately did not cover** — a cross-site login
+`POST` carries no session cookie, so double-submit has nothing to bind to, and Task 9 brings its own
+mechanism. **Ruling 18**: `loginRequestSchema` has no `rememberMe` and Task 9 adds it. **Ruling 62**:
+a login event has no organisation, so it is a `PlatformAuditEvent`. **Ruling 64**: assert the
+rate-limit class on the handler. **Ruling 69**: declare the request body. **Ruling 49**: pin one side
+of an expiry assertion to a fixed instant.
 
-**Task 9 inherits rulings 24, 25, 50 and 56** — the timing oracle that opens when Argon2 parameters
-are raised, the silently-corrupted-credential signal, the requirement that a `PENDING_MFA` -> `ACTIVE`
-rotation carry its `mfaCompletedAt`, and login CSRF, which this task deliberately did not cover.
+And the one Task 8 could not discharge: **no audit event is written for a failed verification**,
+because the refusal rolls back the transaction the event would live in. `audit.md` §3 says failures
+and denials are audited. **Task 9 meets this harder and owns solving it**, because a failed login is
+the single most important failure event in the taxonomy.
