@@ -123,6 +123,89 @@ export const RATE_LIMIT_CLASSES = {
    * must not become an unbounded write channel.
    */
   emailVerificationConsume: { perIp: { limit: 30, windowSeconds: 3600 }, failMode: 'closed' },
+  /**
+   * Submitting a reset token and a new password —
+   * `POST /api/v1/auth/reset-password`.
+   *
+   * ADDED IN TASK 10, AND A DECISION RATHER THAN A TRANSCRIPTION. §1's table
+   * has a row for *requesting* a reset (`passwordReset` above, 3/hour per
+   * address and 10/hour per IP) and no row at all for completing one. The
+   * figure below is chosen here and written into that document in the same
+   * change, exactly as Task 8 did for `emailVerificationConsume`.
+   *
+   * **Defaulting it was not available**, for the reason `emailVerificationConsume`
+   * records one entry down: a route carrying no class falls to `generalSession`,
+   * which is `failMode: 'open'` with an unresolvable `perPrincipal` as its only
+   * scope, and carry-forward ruling 55 says nothing reports that at the default
+   * log level. The default is not a weak limit on this route; it is no limit
+   * and no signal.
+   *
+   * **Reusing `passwordReset` was not available either**, and the failure would
+   * have been silent. Its `principalSource` is the body field `email`, which
+   * `resetPasswordRequestSchema` — `{ token, password }` — does not contain, so
+   * the per-account half would resolve nothing on every single request while
+   * the per-IP half resolved. That is the exact silent miss this file's
+   * `PrincipalSource` docblock was written about.
+   *
+   * **Per IP only, because there is no account in the body to key on.**
+   * Deriving a principal from the token would mean a database read bought by an
+   * unauthenticated caller *before* the limiter has decided anything, which is
+   * what the limiter runs first to prevent.
+   *
+   * **20/hour rather than `emailVerificationConsume`'s 30, and the difference is
+   * the Argon2id hash.** Neither figure is about guessing the token —
+   * `secret-token.ts` fixes the secret at 32 random bytes, so brute force is
+   * infeasible at any rate this table could express. What both bound is
+   * unmetered work bought by an unauthenticated caller, and this endpoint's
+   * unit of work is strictly larger: a full Argon2id hash of the submitted
+   * password (~40 ms of CPU at production parameters, tuned to ~250 ms by
+   * ADR-0014's target) plus a conditional `UPDATE` inside a transaction, where
+   * verify-email pays only the transaction. A password reset is also a rarer
+   * act than an email confirmation — one submission, two if a copy-paste goes
+   * wrong — so 20 still leaves a family behind one NAT or one office egress
+   * address room to complete several resets in an hour.
+   *
+   * Fail closed with the rest of the authentication classes: a Redis outage
+   * must not become an unbounded CPU and write channel.
+   */
+  passwordResetConsume: { perIp: { limit: 20, windowSeconds: 3600 }, failMode: 'closed' },
+  /**
+   * Changing a password from inside a session —
+   * `POST /api/v1/auth/change-password`.
+   *
+   * ADDED IN TASK 10, AND THIS ONE IS A SECURITY CONTROL RATHER THAN
+   * BOOKKEEPING. The endpoint verifies the caller's **current** password, so it
+   * is a credential-guessing oracle for anyone holding a stolen session: the
+   * account is already fixed by the session cookie, the answer is a clean
+   * 401/200 split, and none of it touches `User.failedLoginCount` or the
+   * lockout ladder, which live on the login path. Without a class of its own
+   * this route would fall to `generalSession` — 1000/minute, fail-open, and
+   * resolving nothing (ruling 55) — which is to say a thousand password guesses
+   * a minute against a known account with no lock, no notice and no log line.
+   *
+   * **THE PER-PRINCIPAL HALF WOULD BE THE RIGHT KEY AND RESOLVES NOTHING
+   * TODAY.** The account being guessed at is the session's owner, and that is
+   * exactly the scope this limit wants — but the rate limiter runs *before* the
+   * authentication guard by design (`architecture/backend.md` §3), so
+   * `principalSource: 'authenticated'` resolves on no request that reaches
+   * here. Declaring it anyway would reproduce ruling 55's defect deliberately:
+   * an unresolvable scope, skipped silently because the per-IP scope did
+   * resolve, on a route whose headers would then advertise a limit that is not
+   * applied. It is left undeclared and named here instead, and it is the reason
+   * this class should be revisited by whichever task splits the limiter into an
+   * early per-IP stage and a post-authentication per-principal one (ruling 59
+   * wants that split for another reason already).
+   *
+   * **10/hour per IP.** Deliberately much tighter than the reset figures: a
+   * password change is a rare, deliberate act — a real user does it once and
+   * possibly twice — and unlike the reset endpoints this one has no legitimate
+   * high-volume case behind a shared egress address. Ten guesses an hour
+   * against one account is not a useful oracle; a thousand a minute is.
+   *
+   * Fail closed. An outage must not open a guessing window against every
+   * account whose session somebody has stolen.
+   */
+  passwordChange: { perIp: { limit: 10, windowSeconds: 3600 }, failMode: 'closed' },
   emailVerificationResend: {
     perPrincipal: { limit: 3, windowSeconds: 3600 },
     // §1's table names only the per-account figure, but §1's opening sentence
