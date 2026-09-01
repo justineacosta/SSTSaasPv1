@@ -222,3 +222,91 @@ the correct password both succeed", which the mutation above turns red, and (b) 
 sentences to say what the plumbing buys, which is one Argon2id verification per rehashing login.
 
 All mutations reverted; `git checkout -- login.service.ts` after each.
+
+---
+
+## M2 — CLOSED (the fifth channel). The sixth is characterised below, and yields NEW-2, a Low.
+
+**No template renders any stored `User.name`, and it is structural rather than asserted.**
+`grep -rn inviterName` over `apps/`, `packages/`, `scripts/` and `.claude/` finds it in exactly two
+places outside `dist/`: `registry.spec.ts`'s fixture type (deliberately — the field is now consumed
+by nothing, which is what makes the ruling-70 blocks a structural assertion for it) and prose. The
+complete set of caller-influenced string fields across the whole registry is now:
+
+```
+TokenLinkInput      : webBaseUrl, token, ttlSeconds
+InvitationInput     : + organizationName
+NoticeOccurrenceContext : occurredAt, ipAddress?
+MfaChangedInput     : + change
+FailedLoginBurstContext : occurredAt, attemptCount
+```
+
+One free-text field, in one template. `pnpm typecheck` is the control, as claimed.
+
+**Mutation M reproduced.** `inviterName` restored to `InvitationInput`, rendered into the first
+paragraph, and re-added to `CASES.invitation`:
+
+```
+pnpm vitest run --project unit .../emails/registry.spec.ts   EXIT=1
+× template invitation under ruling 70 > renders the recipient display name nowhere, even when it is a URL
+× token-link invitation under ruling 70 prescribed payload > contains exactly one link, the one this code built
+× the organisation name residual > renders no link from any field EXCEPT the organisation name
+Tests 3 failed | 128 passed (131)
+```
+
+Three blocks, exactly as `fixes.md` claims. Reverted.
+
+### The sixth channel: exactly what `organizationName` can do
+
+Rendered from the shipped module with a hostile value
+(`Acme https://evil.example/login?t=1 \r\nBcc: x@evil.test <script>steal()</script> AAAA…`):
+
+| Where it lands | What survives |
+|---|---|
+| SMTP `Subject:` header | **CR and LF collapsed to spaces.** No header injection. |
+| `text` part — the subject is repeated as the first block | raw, including any URL |
+| `text` part — the body paragraph | **raw, INCLUDING the CR/LF**, so it can forge additional lines |
+| `html` part (`<title>` and `<h1>` and the paragraph) | HTML-escaped — `&lt;script&gt;`, no `<script>` |
+
+**SMTP header injection is closed, at two layers**, and this resolves the first reviewer's open
+question. `layout.ts:172` passes every subject through `sanitizeSubject` before it leaves
+`renderEmail`, and `smtp-mailer.ts:192` does it again at the port — with unit tests pinning both
+(`sanitises the subject at the port, not only inside renderEmail`,
+`collapses any control character in the subject, not only CR and LF`). Nothing an organisation name
+contains can become a header.
+
+**What it genuinely can do is one step past what the fix round wrote down.** The documents say "a
+tenant who puts a URL in their organisation name gets it autolinked in the text part of every
+invitation they send", which is true and incomplete. The value also carries **newlines into the
+plain-text body**, so it can forge whole extra paragraphs inside a message that already carries a
+live token link — the phishing primitive is not "one bare URL" but "arbitrary attacker-authored
+lines above the product's own link". And `Organization.name` is a bare Prisma `String` with **no
+length cap in the schema** and no Zod constraint anywhere yet, so it is also unbounded. That is what
+Task 13 has to constrain, and "reject URLs" would not be sufficient on its own.
+
+### NEW-2 (Low) — the residual is pinned less tightly than its docblock says
+
+`registry.spec.ts`'s new block claims to pin `organizationName` "from both sides", and that the
+second test "asserts that `organizationName` **does** still reach the body as given, so the day
+somebody constrains it this block goes red".
+
+**Measured — two independent mutations, each leaving the whole file green:**
+
+| Mutation | Result |
+|---|---|
+| body paragraph → `You have been invited to join an organisation on Sentinel.` | EXIT=0, **131 passed** |
+| subject → `You have been invited to an organisation on Sentinel` | EXIT=0, **131 passed** |
+
+Neither bites, because `renderEmail` puts the subject into `text` as its first block
+(`layout.ts:159`), so `expect(email.text).toContain(INJECTED_URL)` is satisfied by *either* site
+alone. The block goes red only if the name is removed from **both**. It also would not go red at all
+for the constraint the docblock actually anticipates — Task 13 validating `Organization.name` on the
+way in — because this test hands the fixture straight to the template and never passes through Task
+13's validation.
+
+Not a security defect: the residual is real, recorded, and grades correctly. It is a coverage
+overstatement of exactly the kind this round was convened to remove, in one of the sentences this
+round wrote. Cost if left: a future round that removes the name from the body and leaves it in the
+subject will believe the residual is closed while it is not.
+
+**M2 verdict: CLOSED.**
