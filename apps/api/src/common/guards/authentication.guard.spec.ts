@@ -344,9 +344,12 @@ describe('a PENDING_MFA session — the other half of the MFA bypass', () => {
   });
 
   it('IS allowed through on the route carrying @AllowPendingMfa', async () => {
-    // The exception has to exist or MFA could never be completed. Task 11 builds
-    // the endpoint; the mechanism is proved here because a rule about routes
-    // cannot honestly be proved by a task that ships none.
+    // The exception has to exist or MFA could never be completed. Task 11
+    // shipped `POST /auth/mfa/verify` carrying the decorator — but that route is
+    // `@Public()`, so this guard exits before it reads the metadata and the
+    // exemption enforces nothing there. The mechanism is proved here, against a
+    // fixture controller that IS authenticated, because no shipped route
+    // exercises it.
     await request(server)
       .post('/api/v1/probe/mfa')
       .set('Cookie', cookie(PENDING_TOKEN))

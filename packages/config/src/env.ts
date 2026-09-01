@@ -234,8 +234,10 @@ const apiEnvObject = sharedEnvSchema.extend({
   // §5 gives the pending-MFA session no number at all — it says the session is
   // "short-lived" and "can do nothing but complete MFA". Ten minutes is a
   // choice made here, long enough to fetch a phone and short enough that a
-  // password-only credential is not left lying around; Task 11 owns the
-  // enrolment flow that will show whether it is right.
+  // password-only credential is not left lying around. Task 11 shipped the
+  // enrolment and challenge flows over it and did not change the number; what
+  // it added is a second bound on the same credential, since five failed codes
+  // revoke the pending session before the ten minutes are up.
   SESSION_PENDING_MFA_LIFETIME_SECONDS: z.coerce.number().int().min(1).default(600),
   // ADR-0005 promises "a short TTL" for the Redis cache and likewise gives no
   // number. Sixty seconds is the choice, and it is the bound on exactly one

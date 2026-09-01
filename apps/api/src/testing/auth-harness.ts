@@ -160,6 +160,12 @@ export const AUTH_RATE_LIMIT_CLASSES = [
   'passwordReset',
   'passwordResetConsume',
   'passwordChange',
+  // Task 11's two. `mfaVerify` is 60/hour per IP and `mfaManagement` 10/hour,
+  // both per IP only, and every request in `auth.mfa.integration.spec.ts`
+  // arrives from loopback — one `describe` block exhausts `mfaManagement`
+  // several times over without this.
+  'mfaVerify',
+  'mfaManagement',
 ] as const;
 
 export async function clearRateLimits(redis: RedisLike): Promise<void> {

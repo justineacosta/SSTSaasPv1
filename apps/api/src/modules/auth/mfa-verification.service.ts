@@ -53,6 +53,44 @@ export interface MfaVerifyResult {
 }
 
 /**
+ * D6'S REPLAY PREDICATE, EXPORTED SO A PROBE CAN DRIVE THE SAME STATEMENT.
+ *
+ * The atomicity claim is that two concurrent spends of one code produce exactly
+ * one affected row, and over HTTP the interleaving that would demonstrate it is
+ * a distribution rather than a determinism (carry-forward ruling 88) — the
+ * in-memory floor in `verifyTotpCode` usually refuses the second request first,
+ * so the endpoint probe stays green even with this predicate widened. Measured;
+ * Task 11's report has the table.
+ *
+ * A spec can force the interleaving by issuing two of these statements
+ * directly. **It is exported rather than copied into the spec** for
+ * carry-forward ruling 75's reason one layer over: a probe carrying its own
+ * copy of the predicate asserts that *Postgres* arbitrates, not that this code
+ * asks it to, and would stay green while the service was changed underneath it.
+ *
+ * `confirmedAt: { not: null }` is belt and braces with the caller's own check:
+ * this statement must not be able to move the floor on an unconfirmed factor.
+ */
+export function replaySpendWhere(
+  factorId: string,
+  step: number,
+): {
+  id: string;
+  confirmedAt: { not: null };
+  // A MUTABLE tuple, deliberately. It has to satisfy two consumers: this
+  // module's narrow port, which declares the pair as `readonly` (a mutable
+  // tuple is assignable to it), and the generated Prisma client in a spec,
+  // whose `MfaFactorWhereInput` refuses a `readonly` array outright.
+  OR: [{ lastAcceptedStep: null }, { lastAcceptedStep: { lt: number } }];
+} {
+  return {
+    id: factorId,
+    confirmedAt: { not: null },
+    OR: [{ lastAcceptedStep: null }, { lastAcceptedStep: { lt: step } }],
+  };
+}
+
+/**
  * `POST /api/v1/auth/mfa/verify` — the one route a `PENDING_MFA` session can
  * reach.
  *
@@ -221,13 +259,7 @@ export class MfaVerificationService {
     const now = new Date();
     const { count } = await this.store.$transaction(async (tx: MfaTransaction) =>
       tx.mfaFactor.updateMany({
-        where: {
-          id: factor.id,
-          // Belt and braces with the confirmed check above: this statement must
-          // not be able to move the floor on an unconfirmed factor.
-          confirmedAt: { not: null },
-          OR: [{ lastAcceptedStep: null }, { lastAcceptedStep: { lt: step } }],
-        },
+        where: replaySpendWhere(factor.id, step),
         data: { lastAcceptedStep: step, lastUsedAt: now },
       }),
     );
