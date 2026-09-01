@@ -1,4 +1,5 @@
 import { buildTokenLink } from './links.js';
+import { sanitizeSubject } from '../../../infrastructure/mail/subject.js';
 import { formatDuration, renderEmail, type RenderedEmail } from './layout.js';
 
 /**
@@ -179,15 +180,30 @@ export interface InvitationInput extends TokenLinkInput {
  * either. See `InvitationInput` above.
  */
 export function renderInvitation(input: InvitationInput): RenderedEmail {
+  // ONE LINE, ALWAYS — the sixth channel, closed at the render.
+  //
+  // `sanitizeSubject` already collapsed control characters on the way to the
+  // SMTP header, so header injection was never open. What was open is the
+  // **plain-text body**: the raw value carried CR and LF into it, so an
+  // organisation name could forge whole paragraphs above the product's own
+  // token link rather than merely contributing one autolinked URL. Reusing the
+  // subject's sanitiser rather than writing a second rule, because two
+  // implementations of "no control characters" drift.
+  //
+  // What this does NOT close, and Task 13 owns: a name that is a bare URL still
+  // autolinks in the text part, and `Organization.name` has no length cap in
+  // `schema.prisma` or in any Zod schema, so it is also unbounded. "Reject
+  // URLs" would not be sufficient on its own.
+  const organizationName = sanitizeSubject(input.organizationName);
   return renderEmail({
-    subject: `You have been invited to ${input.organizationName} on Sentinel`,
+    subject: `You have been invited to ${organizationName} on Sentinel`,
     paragraphs: [
       // "Someone", not the inviter's stored display name. M2: that name is a
       // `User.name`, which is free text, and this message carries a live link.
       // The organisation is what the recipient needs in order to decide whether
       // the invitation is expected — the individual who clicked the button is
       // not, and Task 15 records them in the audit row instead.
-      `You have been invited to join ${input.organizationName} on Sentinel.`,
+      `You have been invited to join ${organizationName} on Sentinel.`,
       'Sentinel is a platform for managing authorised security testing, findings and reports.',
       `This invitation is for this address only and expires in ${formatDuration(input.ttlSeconds)}.`,
     ],

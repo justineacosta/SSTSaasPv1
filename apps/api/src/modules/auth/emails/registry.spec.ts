@@ -822,12 +822,39 @@ describe('the organisation name residual', () => {
     // NOT an endorsement, and not a test to adjust. It records the exact shape
     // of what is left. A tenant who puts a URL in their organisation name gets
     // it autolinked in the text part of every invitation they send.
+    //
+    // **PINNED IN BOTH PLACES IT LANDS, WHICH IS NEW-2.** The first version
+    // asserted only `text` contains the value — and the subject is repeated
+    // into the text part, so dropping the name from the body paragraph OR from
+    // the subject each left the whole file green. Two mutations, both measured
+    // by the fix round's reviewer. Counting occurrences is what makes the two
+    // sites independently observable.
     const email = CASES.invitation({ ...BENIGN, organizationName: XSS_WITH_URL });
-    expect(email.text).toContain(INJECTED_URL);
+    expect(email.subject).toContain(INJECTED_URL);
+    expect(email.text.split(INJECTED_URL).length - 1).toBeGreaterThanOrEqual(2);
     // The html part escapes it, so the danger is the text part specifically —
     // which is exactly where M2's finding lived.
     expect(email.html).not.toContain('<script>');
     expect(email.html).toContain('&lt;script&gt;');
+  });
+
+  it('CANNOT forge a line of its own in the plain-text body', () => {
+    // THE SIXTH CHANNEL, and the half of it that is closed rather than
+    // recorded. An autolinked URL contributes one suspicious token to a message
+    // the recipient is already reading; CR and LF let the same value write
+    // whole paragraphs of its own above the product's live token link, which is
+    // a different primitive. `renderInvitation` runs the value through the
+    // subject sanitiser before it reaches either part.
+    const forged = 'Acme\r\nYour account was suspended. Reply with your password to restore it.';
+    const email = CASES.invitation({ ...BENIGN, organizationName: forged });
+
+    for (const part of [email.subject, email.text, email.html]) {
+      expect(part).not.toContain('\r');
+      expect(part).not.toContain('Acme\nYour account');
+    }
+    // The words survive — this is not a denylist, it is a shape constraint —
+    // but they stay on the line the template put them on.
+    expect(email.text).toContain('Acme Your account was suspended.');
   });
 });
 
