@@ -183,6 +183,14 @@ the submitted password on every request — ADR-0014 targets ~250 ms of it — w
 pays only a transaction. Twenty is the lower figure for that reason, and still generous for an
 act a real user performs once.
 
+**And the expensive work is bought BEFORE the token is validated**, which is what makes this
+figure the only control standing in front of it. `PasswordResetService` breach-checks and hashes
+the submitted password before it consumes the token, deliberately: validating first would let a
+caller submitting a garbage token learn — from the response time — that the expensive path was
+never entered, and the reset endpoint's whole contract is that its answer does not vary with what
+the caller submitted. The consequence for whoever tunes this row is that every request at this
+limit costs ~250 ms of Argon2id whether or not the token was ever real.
+
 `Password change` — `passwordChange`, 10 / hour per IP, fail closed — is the one row in this
 table that is a **security control rather than bookkeeping**, and the reasoning matters more than
 the number:

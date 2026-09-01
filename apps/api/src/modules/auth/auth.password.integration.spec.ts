@@ -1051,9 +1051,15 @@ describe('M1 — the reset credential predicate, against a real second writer', 
    * pretend otherwise.** The window between the reset's in-transaction
    * credential read and its write is one statement wide, so whether a competing
    * commit lands inside it is scheduling. An assertion on the refusal count
-   * would be flaky at roughly one run in twenty-five; this repository has a
-   * standing ruling about not trading determinism for coverage (ruling 33), and
-   * a flaky red is worse than an honest gap.
+   * would be flaky at roughly one run in twenty-five, and a flaky red is worse
+   * than an honest gap — **carry-forward ruling 22**, whose Task 3 case was a
+   * spec run at reduced Argon2 parameters because real ones "buy CI flake risk
+   * rather than proof". This docblock cited **ruling 33** for that, which is
+   * about test-runner parallelism and shared compose services and says nothing
+   * of the kind (NEW-4). Ruling 22's own closing sentence is the reason the
+   * miscitation is worth correcting rather than shrugging at: a decision can be
+   * right while the reason written beside it is false, and the false reason is
+   * still a defect.
    *
    * What is asserted instead is the invariant that holds on EVERY round and is
    * the thing a user would notice if the predicate misbehaved: the account is
