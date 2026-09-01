@@ -103,3 +103,130 @@ the login path — the `Session` insert must be conditional on the credential th
 and is correctly identified in the report as **owed and not built**. What is not acceptable as
 shipped is (a) the size of the hole being under-reported by 5x in the only document that names it,
 and (b) `password-reset.service.ts` asserting in code that the hole does not exist.
+
+### M1 (Medium) — the reset's compare-and-swap is asserted only by a fake, and the integration probe its own comment points at does not cover it
+
+D3 puts a compare-and-swap on all three credential writes. Two of them are held by a real
+two-request test. The reset's is not.
+
+**Measured.** Predicate removed at `password-reset.service.ts` (`where: { userId: user.id,
+passwordHash: existing.passwordHash }` becomes `where: { userId: user.id }`), then the whole
+password integration file re-run:
+
+```
+pnpm vitest run --project integration apps/api/src/modules/auth/auth.password.integration.spec.ts
+INTEGRATION EXIT=0    Test Files 1 passed (1)    Tests 25 passed (25)
+```
+
+All 25 integration tests stay green with the reset's compare-and-swap deleted. The only test that
+sees it is a unit test driving `identityStoreFake`'s `replaceCredentialAfterRead` flag, and that
+flag's own docblock says:
+
+> **It fakes the TIMING of the sibling's write, never the arbitration of it.** … there is no lock
+> here and no second caller. `auth.password.integration.spec.ts`'s parallel probe owns that against
+> real Postgres, and nothing set through this flag may be read as evidence for it
+
+That sentence is true of `password-change`: `LETS EXACTLY ONE OF TWO PARALLEL CHANGES COMMIT` does
+own it, and I confirmed it bites (see the mutation table below). It is **false of the reset**. The
+only parallel reset probe is `lets EXACTLY ONE of two parallel redemptions of the same token
+succeed`, which is arbitrated entirely by `TokenService.consume`'s conditional `UPDATE` and reaches
+the credential predicate on one branch only. There is no second caller in any lane for the reset's
+predicate.
+
+The race that predicate exists for is a reset against a concurrent `change-password` or the rehash:
+a session thief's password change landing between the reset's read and its write. I tried to force
+it (`reset-password` and `change-password` in one `Promise.all`, four rounds) and the *change* lost
+every time on its own predicate, so I could not produce the interleaving that would exercise the
+reset's. That is the point — nothing in this repository can currently observe whether the reset's
+predicate works.
+
+**Cost if left.** Exactly ruling 74's cost, one endpoint over from where it was paid last time: a
+control that reads correct, carries a comment saying a real probe owns it, and would be deleted by
+a refactor with the whole eleven-command gate green.
+
+### M2 (Medium) — the fifth channel: `invitation` renders a stored display name into a message carrying a live link
+
+The brief told me to assume a fifth channel for ruling 70. There is one, and it is in the registry
+this task declared closed.
+
+`token-link.templates.ts`'s `renderInvitation` takes `inviterName` and `organizationName` and
+renders both. `inviterName` is a stored `User.name` — the same 200 characters of free text ruling
+70 is about — and it reaches a recipient who chose none of it, in a message carrying a **live token
+link**, which is the property that made `passwordReset` "the sharpest instance in the codebase".
+
+**Measured**, rendering the shipped module with a hostile inviter name:
+
+```
+--- TEXT ---
+You have been invited to Acme on Sentinel
+
+Sam <script>x</script> https://evil.example/login?token=abc has invited you to join Acme on Sentinel.
+...
+Accept the invitation: https://app.sentinel.test/accept-invitation?token=FIXTURE_...
+```
+
+The HTML part escapes it, and the escaping test covers that. The **text** part does not, and mail
+clients autolink a bare URL in a `text/plain` part — which is precisely how Task 8's H1 and Task 9's
+H2 were rendered.
+
+**Why the suite does not see it.** `registry.spec.ts` has two ruling-70 blocks and neither reaches
+this:
+
+- `describe.each(IDS)('template %s under ruling 70')` runs over the whole registry but passes
+  `{ ...BENIGN, name: XSS_WITH_URL }`. Only the **recipient's** name is hostile; for `invitation`,
+  `inviterName` and `organizationName` stay at their benign fixtures.
+- `describe.each(NOTICE_TEMPLATE_IDS)('notice %s under ruling 70 prescribed payload')` passes the
+  fully `HOSTILE` fixture, but runs over `NOTICE_TEMPLATE_IDS` only — and `invitation` is a
+  token-link template.
+
+So the one template in the registry that actually renders caller-supplied text is the one template
+the hostile-everything payload is never run against. Carry-forward ruling 58's family again: every
+fixture on one side of the branch under test. The docblock over the second block says the test now
+runs "OVER THE WHOLE REGISTRY, WITH NO EXEMPT LIST"; it runs over the notices, and
+`ATTACKER_STRING_TEMPLATE_IDS` is an exempt list with one member in it.
+
+**What is genuinely true, and should be said instead.** No template renders the **recipient's**
+stored display name. That is what the implementer's report claims, in those words, and it holds.
+D1's list (`passwordReset`, `passwordChanged`, `mfaEnabled`, `mfaDisabled`) is complete, the field
+is gone from the context types, and `pnpm typecheck` is therefore the control. The residual test
+**was deleted rather than adjusted** — confirmed in the diff — and its replacement states in its own
+docblock that the typecheck is the real control rather than implying the assertion bites. That part
+of D1 is done properly, and more honestly than the previous two attempts at this ruling.
+
+**Cost if left.** `invitation` has no caller until Task 15, and ruling 71's own lesson is that
+"safe because it has no caller yet" is the sentence that shipped H2. Ruling 70 as written in
+`progress.md` says it "Binds Task 15 for the invitation, **which already names nobody**" — that
+clause is false, and closing ruling 70 now removes the pressure that would have caught it. Medium
+rather than High only because nothing sends this message today.
+
+### M3 (Medium) — `change-password` is a better password-guessing oracle than `login`, and nothing bounds it per account
+
+One of the eight decisions the brief left to the implementer, and the load-bearing one.
+`password-change.service.ts` deliberately keeps the endpoint out of the lockout ladder. The
+argument given is sound as far as it goes: `ACCOUNT_LOCKED` on an authenticated route would be a
+distinguishable outcome, and a caller who could lock an account with a stolen session could deny
+service. What is not stated is what the endpoint is left with by comparison.
+
+| | account fixed by | per-account bound | lockout | owner notified |
+|---|---|---|---|---|
+| `POST /auth/login` | the body's `email` | **5 / 15 min** | yes, ladder and `ACCOUNT_LOCKED` | `failedLoginBurst` on the lock |
+| `POST /auth/change-password` | the session cookie | **none** | no | **no message at all** |
+
+`passwordChange` is `perIp: { limit: 10, windowSeconds: 3600 }` and nothing else, and
+`rate-limit.config.ts` says plainly why the per-principal half cannot be declared today (ruling 55:
+the limiter runs before the authentication guard). So for an attacker holding a stolen session the
+per-account guess budget is 5 per 15 minutes at `/auth/login` and **unbounded by account** at
+`/auth/change-password`, bounded only by how many source addresses they have. Neither the ladder
+nor the burst notice fires, so the account owner learns nothing at all. The documented compensating
+signal is the `PASSWORD_CHANGE_FAILED` audit row, and nothing reads `PlatformAuditEvent` until
+Phase 3's `/audit-logs`.
+
+Confirmed by the shipped test `does NOT touch the lockout ladder`: six wrong current passwords
+leave `failedLoginCount` at 0 and `lockedUntil` null.
+
+**Cost if left.** The endpoint that requires a session in order to prove a password is a weaker
+guard on that password than the endpoint that requires nothing. It is reachable only with a stolen
+session, which is what keeps this Medium rather than High — but a stolen session is the exact
+premise the endpoint's own docblock argues from. Per-account throttling here needs neither the
+ladder nor `ACCOUNT_LOCKED`: a 429 keyed on the resolved principal would do it, and it is the same
+owed limiter stage rulings 55 and 59 already want.
