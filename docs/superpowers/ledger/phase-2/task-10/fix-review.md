@@ -128,3 +128,97 @@ accident. **Grade: not a new finding, correctly recorded as open.** See the New 
 whether it should have been fixed here.
 
 **Verdict: CLOSED.**
+
+---
+
+## The rehash trap — CLOSED WITH A CAVEAT (and it yields NEW-1, a Medium)
+
+**The trap itself is closed.** A rehashing login does not revoke itself, and a rehash racing a
+password change does not resurrect the old password. Both measured.
+
+A login that rehashes its own credential, nothing racing it — the committed test
+`does not revoke a login that rehashed its own credential` passes, and my own round of it agrees:
+the credential row moves off the weak hash, the session stays live, and the cookie answers 200.
+
+Six rounds of one `change-password` racing five *rehashing* logins (credential seeded at
+`m=8,t=1,p=1` so every login rehashes), then both passwords tried afterwards:
+
+```
+P-E
+ROUND 0: change=200 oldPasswordAfter=401 newPasswordAfter=200
+ROUND 1: change=200 oldPasswordAfter=401 newPasswordAfter=200
+ROUND 2: change=200 oldPasswordAfter=401 newPasswordAfter=200
+ROUND 3: change=401 oldPasswordAfter=200 newPasswordAfter=401
+ROUND 4: change=200 oldPasswordAfter=401 newPasswordAfter=200
+ROUND 5: change=200 oldPasswordAfter=401 newPasswordAfter=200
+```
+
+Round 3 is the change losing its own compare-and-swap to a concurrent rehash: it answers 401 and
+does not commit, so the old password is legitimately still the account's. **No round resurrected a
+password that had been replaced** — `rehashCredential`'s `where: { userId, passwordHash:
+verifiedHash }` is what prevents it, and it holds. Six rounds of one *reset* racing five rehashing
+logins is the same story with no refusals at all:
+
+```
+P-F
+ROUND 0..5: reset=200 liveRows=0 auth=0 old=401 new=200
+```
+
+**The caveat: the mechanism the code says closes the trap is not the mechanism that closes it, and
+neither half is observed by either lane.**
+
+`login()`'s comment says the rehash and the check "have to happen in a known order, in one place,
+**or a rehashing login revokes itself**". The integration test's docblock says the same: "a
+post-issue comparison against the hash the request originally READ … **every rehashing login would
+revoke itself**." Both are false.
+
+**Measured.** Mutation: `if (false && rehashed !== null) hashInForce = rehashed;` — the plumbing
+that carries the written hash forward is defeated, so the check compares against the hash the
+request originally read, which is exactly the scenario both sentences name.
+
+| Lane | Result |
+|---|---|
+| `pnpm vitest run --project unit apps/api/src/modules/auth` | EXIT=0 — **27 files, 564 tests, all green** |
+| `...--project integration auth.password.integration.spec.ts` | EXIT=0 — **31 tests, all green**, `does not revoke a login that rehashed its own credential` **passes** |
+
+No rehashing login revokes itself, because `credentialStillCurrent` does not stop at the byte
+comparison: on a mismatch it re-verifies the submitted password against whatever is stored now, and
+a rehash of the same password verifies. The `hashInForce` plumbing — the rehash moved before
+`issue`, `rehashCredential`'s changed return type, the `credential` parameter threaded into
+`succeed` — is a **fast path that saves one Argon2id verification**, not a correctness control.
+
+**And the control that IS load-bearing has no test at all.** Mutation: delete the re-verify fallback
+(`return (await this.passwords.verify(current, password)).valid;` → `return false;`).
+
+| Lane | Result |
+|---|---|
+| `...--project integration auth.password.integration.spec.ts` | EXIT=0 — **31 tests, all green** |
+
+Green, because in the committed rehash test `hashInForce` is correct and the fast path answers
+first. So each half individually can be deleted with the whole suite green. What that fallback
+actually holds, measured with a scratch probe — four concurrent logins with the **correct**
+password against an account whose credential is stored at weak parameters:
+
+```
+G   with the fallback (HEAD)          with the fallback deleted
+ROUND 0: 200,200,200,200 live=4       ROUND 0: 401,401,200,401 live=1
+ROUND 1: 200,200,200,200 live=4       ROUND 1: 200,401,401,401 live=1
+ROUND 2: 200,200,200,200 live=4       ROUND 2: 200,401,401,401 live=1
+ROUND 3: 200,200,200,200 live=4       ROUND 3: 401,401,200,401 live=1
+```
+
+**Three of four correct-password sign-ins refused**, for the whole duration of an Argon2 parameter
+migration — which is the one condition D8's rehash exists to serve. The `credentialStillCurrent`
+docblock predicts exactly this ("would make two simultaneous sign-ins with the correct password
+refuse each other for the lifetime of a parameter migration") and then ships no test for it.
+
+**NEW-1 (Medium).** Two sentences written this round state a failure mode that does not exist, the
+test named for that failure mode does not observe it, and the availability control that does the
+real work is observed by nothing in either lane. This is not a security hole — every measured
+outcome at HEAD is correct — it is ruling 74's cost on a third endpoint: a reader is told the wrong
+thing about why the code is safe, and a refactor can delete either half with the eleven-command gate
+green. What is owed is (a) a login-service unit test pinning "two concurrent rehashing logins with
+the correct password both succeed", which the mutation above turns red, and (b) rewording the two
+sentences to say what the plumbing buys, which is one Argon2id verification per rehashing login.
+
+All mutations reverted; `git checkout -- login.service.ts` after each.
