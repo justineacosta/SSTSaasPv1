@@ -25,11 +25,13 @@ re-litigated every six months by someone who cannot see why the obvious option w
 | [0015](ADR-0015-password-breach-check-fails-open.md) | The password breach check calls HIBP by k-anonymity, and fails open | Accepted |
 | [0016](ADR-0016-smtp-mailer-port.md) | One `Mailer` port with an SMTP adapter; Resend is deferred until a deploy exists | Accepted |
 | [0017](ADR-0017-cors-allowlist-with-credentials.md) | The browser reaches the API directly, under an explicit CORS allowlist with credentials | Accepted |
+| [0018](ADR-0018-pending-mfa-session-row.md) | The pending MFA credential is a `Session` row in `PENDING_MFA` status, not a Redis-only token | Accepted |
 | [0019](ADR-0019-platform-audit-events.md) | Actions with no organisation are audited in a separate `PlatformAuditEvent` table | Accepted |
 
-**0018 is missing on purpose.** It is reserved for the pending-MFA credential decision, which
-Phase 2 Task 11 makes and writes. Numbers are claimed when a decision is taken, and Task 8's was
-taken first.
+**0018 was claimed out of order and is now written.** It was reserved for the pending-MFA
+credential decision while Phase 2 Task 9 shipped that credential provisionally; Phase 2 Task 11
+took the decision and wrote it. Numbers are claimed when a decision is taken, and Task 8's was
+taken first, which is why 0019 was written before 0018.
 
 ## When to write one
 
