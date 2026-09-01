@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Response } from 'supertest';
 import request from 'supertest';
+import { hash as argon2Hash } from '@node-rs/argon2';
 import { errorEnvelopeSchema } from '@sentinel/contracts';
 import {
   type AuthHarness,
@@ -127,6 +128,15 @@ async function platformEvents(resourceId: string | null, action?: string) {
     orderBy: { createdAt: 'asc' },
   });
 }
+
+/**
+ * An Argon2id hash at parameters BELOW anything `.env` configures, so the
+ * login path reports `needsRehash` for it and rewrites the row. Built with the
+ * same library the service uses rather than pasted, so it cannot drift out of
+ * being a valid PHC string.
+ */
+const weakHash = async (password: string): Promise<string> =>
+  argon2Hash(password, { memoryCost: 8, timeCost: 1, parallelism: 1, algorithm: 2 });
 
 const liveSessions = async (email: string) =>
   h.prisma.session.findMany({ where: { user: { email }, revokedAt: null } });
@@ -707,5 +717,156 @@ describe('the rate-limit classes bite on the shipped routes', () => {
     }
     expect(statuses.slice(0, 10).every((status) => status === 401)).toBe(true);
     expect(statuses.at(-1)).toBe(429);
+  });
+});
+
+describe('H1 — a login racing a completed reset must not keep a live session', () => {
+  /**
+   * THE REVIEW'S OWN PROBE, KEPT IN THE SUITE.
+   *
+   * The first version of this block asserted the residual instead of closing
+   * it, on a measurement that said one session survived. The reviewer re-ran it
+   * five times and measured **25 of 25** — every racing login survived, each a
+   * fully privileged `ACTIVE` session answering `GET /auth/session` with 200 and
+   * living 7 days, or 30 with "remember me", with the idle clock renewed on
+   * every use. The endpoint exists to evict somebody who knows the old
+   * password, and that is exactly the party able to hold logins in flight.
+   *
+   * **The fix is on the login path, and it is complete rather than a
+   * narrowing.** After `SessionService.issue` returns, login re-reads the
+   * credential; if it no longer matches what this request authenticated
+   * against, the session just issued is revoked and the request answers
+   * `INVALID_CREDENTIALS`. There is no third interleaving:
+   *
+   * - the insert lands BEFORE the reset's revoke → `revokeLiveForUser` sweeps
+   *   the row, which is the existing mechanism and works;
+   * - the insert lands AFTER the revoke → the credential write necessarily
+   *   committed before the insert, so the post-issue re-read observes it and
+   *   the login revokes itself.
+   *
+   * Five rounds rather than one, because a single round of this probe passed
+   * over the defect once already.
+   */
+  it('leaves ZERO usable sessions across five rounds of five racing logins', async () => {
+    let survivors = 0;
+    let authenticating = 0;
+
+    for (let round = 0; round < 5; round += 1) {
+      const email = await account();
+      const token = await resetTokenFor(email);
+
+      await clearRateLimits(h.redis);
+      const outcomes = await Promise.all([
+        request(h.server)
+          .post('/api/v1/auth/reset-password')
+          .send({ token, password: NEW_PASSWORD }),
+        ...Array.from({ length: 5 }, () =>
+          request(h.server).post('/api/v1/auth/login').send({ email, password: PASSWORD }),
+        ),
+      ]);
+
+      const [reset, ...logins] = outcomes;
+      expect(reset?.status).toBe(200);
+
+      // Count what is live in the database...
+      survivors += (await liveSessions(email)).length;
+
+      // ...and, separately, drive every cookie a racing login actually handed
+      // back. A row counted live and a cookie that authenticates are two
+      // different claims, and the review measured both.
+      for (const login of logins) {
+        const cookie = cookieNamed(login, SESSION_COOKIE_NAME);
+        if (cookie === undefined) continue;
+        await clearRateLimits(h.redis);
+        const probe = await request(h.server)
+          .get('/api/v1/auth/session')
+          .set('Cookie', `${SESSION_COOKIE_NAME}=${valueOf(cookie)}`);
+        if (probe.status === 200) authenticating += 1;
+      }
+    }
+
+    expect(survivors).toBe(0);
+    expect(authenticating).toBe(0);
+  }, 180_000);
+
+  it('does the same when the racing logins ask to be remembered', async () => {
+    // The reviewer's second run: `rememberMe: true` produced 3-4 survivors per
+    // round with a 30-day absolute clock. A survivor here is the worst version
+    // of this defect, so it gets its own round rather than sharing a fixture.
+    const email = await account();
+    const token = await resetTokenFor(email);
+
+    await clearRateLimits(h.redis);
+    await Promise.all([
+      request(h.server).post('/api/v1/auth/reset-password').send({ token, password: NEW_PASSWORD }),
+      ...Array.from({ length: 5 }, () =>
+        request(h.server)
+          .post('/api/v1/auth/login')
+          .send({ email, password: PASSWORD, rememberMe: true }),
+      ),
+    ]);
+
+    expect(await liveSessions(email)).toHaveLength(0);
+  }, 120_000);
+
+  it('still lets an ordinary login through when nothing is racing it', async () => {
+    // THE ANTI-VACUITY HALF. Every assertion above is satisfied by a login
+    // endpoint that has stopped issuing sessions at all, which is exactly the
+    // failure a post-issue self-revocation could introduce.
+    const email = await account();
+
+    await clearRateLimits(h.redis);
+    const response = await request(h.server)
+      .post('/api/v1/auth/login')
+      .send({ email, password: PASSWORD });
+
+    expect(response.status).toBe(200);
+    expect(await liveSessions(email)).toHaveLength(1);
+
+    const cookie = cookieNamed(response, SESSION_COOKIE_NAME);
+    expect(cookie).toBeDefined();
+    await clearRateLimits(h.redis);
+    const probe = await request(h.server)
+      .get('/api/v1/auth/session')
+      .set('Cookie', `${SESSION_COOKIE_NAME}=${valueOf(cookie ?? '')}`);
+    expect(probe.status).toBe(200);
+  });
+
+  it('does not revoke a login that rehashed its own credential', async () => {
+    // THE TRAP THE DISPOSITION NAMES. D8 rewrites the stored hash on a
+    // successful login when the parameters have been raised, so a post-issue
+    // comparison against the hash the request originally READ would see a
+    // difference it caused itself, and every rehashing login would revoke
+    // itself. Reproduced against real Postgres by storing a credential at
+    // weaker parameters than the running configuration.
+    //
+    // `argon2id` at m=8,t=1,p=1 is below anything `.env` configures, so
+    // `needsRehash` is true for it and the login path rewrites the row.
+    const email = await account();
+    const user = await h.prisma.user.findUniqueOrThrow({ where: { email } });
+    const weak = await weakHash(PASSWORD);
+    await h.prisma.credential.update({
+      where: { userId: user.id },
+      data: { passwordHash: weak },
+    });
+
+    await clearRateLimits(h.redis);
+    const response = await request(h.server)
+      .post('/api/v1/auth/login')
+      .send({ email, password: PASSWORD });
+
+    expect(response.status).toBe(200);
+    // The rehash happened...
+    const after = await h.prisma.credential.findUniqueOrThrow({ where: { userId: user.id } });
+    expect(after.passwordHash).not.toBe(weak);
+    // ...and the session it issued is still live and still authenticates.
+    expect(await liveSessions(email)).toHaveLength(1);
+
+    const cookie = cookieNamed(response, SESSION_COOKIE_NAME);
+    await clearRateLimits(h.redis);
+    const probe = await request(h.server)
+      .get('/api/v1/auth/session')
+      .set('Cookie', `${SESSION_COOKIE_NAME}=${valueOf(cookie ?? '')}`);
+    expect(probe.status).toBe(200);
   });
 });
