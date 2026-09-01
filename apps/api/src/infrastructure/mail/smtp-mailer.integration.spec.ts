@@ -230,10 +230,14 @@ describe('the SMTP adapter against the compose Mailpit', () => {
     // Task 8's F1 took the display name off the templates sent to an unproven
     // address, and Task 10 took it off the remaining four (ruling 70, closed) —
     // so `passwordChanged` renders no attacker-chosen string any more and could
-    // not exercise this property. `invitation` is the ONLY template left that
-    // renders one: `inviterName` and `organizationName` are chosen by an
-    // authenticated member of the inviting organisation, which is a different
-    // person from the recipient but still not us. It is therefore the honest
+    // not exercise this property.
+    //
+    // `invitation` is the only template left that renders one, and after M2 it
+    // is down to a single field: `organizationName`. The inviter's stored
+    // display name is gone (it was ruling 70's fifth channel, into the text
+    // part of a message carrying a live link). What remains belongs to an
+    // accountable tenant rather than to an anonymous registrant, so it is
+    // rendered and escaped rather than removed — which makes it the honest
     // fixture for "escaping survives the transport", and the day it stops being
     // the only one, this comment is what says so.
     const recipient = uniqueRecipient();
@@ -241,8 +245,7 @@ describe('the SMTP adapter against the compose Mailpit', () => {
       templateId: 'invitation',
       to: recipient,
       ...EMAIL_TEMPLATES.invitation({
-        inviterName: '<script>alert(1)</script>',
-        organizationName: 'Acme Security',
+        organizationName: '<script>alert(1)</script>',
         webBaseUrl: env.WEB_BASE_URL,
         token: mintSecretToken().token,
         ttlSeconds: env.TOKEN_TTL_INVITATION_SECONDS,

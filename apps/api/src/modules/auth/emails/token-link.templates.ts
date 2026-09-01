@@ -119,8 +119,50 @@ export function renderPasswordReset(input: PasswordResetInput): RenderedEmail {
   });
 }
 
+/**
+ * NO `inviterName`, AND THE ABSENT FIELD IS THE CONTROL. M2 — RULING 70'S
+ * FIFTH CHANNEL, AND IT WAS IN THE REGISTRY THIS TASK DECLARED CLOSED.
+ *
+ * `inviterName` was a stored `User.name`: the same 200 characters of free text
+ * ruling 70 is about, chosen by somebody the recipient has never met, rendered
+ * into a message that carries a **live token link**. The HTML part escaped it;
+ * the **text** part did not, and mail clients autolink a bare URL in a
+ * `text/plain` part — which is exactly how Task 8's H1 and Task 9's H2 were
+ * rendered. That is four channels for one defect in three tasks, and this is
+ * the fifth.
+ *
+ * It survived the round that closed ruling 70 because neither ruling-70 block
+ * reached it: the whole-registry block sent the hostile payload through the
+ * RECIPIENT's name only, and the hostile-everything block ran over
+ * `NOTICE_TEMPLATE_IDS`, of which the invitation is not a member. So the one
+ * template in the registry that actually rendered a stored display name was the
+ * one template the payload was never run at. Ruling 58's family again.
+ *
+ * The field is gone rather than escaped, for the reason every previous round of
+ * this defect converged on: a denylist over attacker text is a defect waiting
+ * for a new encoding, and a parameter that does not exist is not. **Task 15
+ * sends this message and does not need the inviter's stored name to do it.** If
+ * it later decides it does, that is a decision made against this history rather
+ * than a default inherited from a template nobody had run a hostile payload at.
+ *
+ * # `organizationName` STAYS, and it is a different case — but not a closed one
+ *
+ * An invitation that does not name the organisation is useless, and the value
+ * belongs to an **accountable tenant** rather than to any anonymous registrant
+ * who typed somebody else's address: creating an organisation requires an
+ * authenticated, verified account, and the name is visible to every member.
+ * That is a materially different threat from the one ruling 70 is about.
+ *
+ * **It is still caller-influenced text in a link-bearing message, and it is
+ * still rendered into both parts and into the subject.** A tenant who puts a
+ * URL in their organisation name gets it autolinked in the text part of every
+ * invitation they send. That residual is real, it is recorded rather than
+ * asserted away, and `registry.spec.ts` pins it from both sides so that closing
+ * it turns a test red. **It binds Task 13**, which creates organisations and
+ * owns whatever constraint the name carries, **and Task 15**, which ships the
+ * endpoint that sends this message.
+ */
 export interface InvitationInput extends TokenLinkInput {
-  readonly inviterName: string;
   readonly organizationName: string;
 }
 
@@ -133,13 +175,19 @@ export interface InvitationInput extends TokenLinkInput {
  *
  * It addresses no one by name deliberately: an invitation is the one message
  * of the three whose recipient may have no `User` row at all, so there is no
- * display name to use.
+ * display name to use — and since M2 it names the **inviter** by no name
+ * either. See `InvitationInput` above.
  */
 export function renderInvitation(input: InvitationInput): RenderedEmail {
   return renderEmail({
     subject: `You have been invited to ${input.organizationName} on Sentinel`,
     paragraphs: [
-      `${input.inviterName} has invited you to join ${input.organizationName} on Sentinel.`,
+      // "Someone", not the inviter's stored display name. M2: that name is a
+      // `User.name`, which is free text, and this message carries a live link.
+      // The organisation is what the recipient needs in order to decide whether
+      // the invitation is expected — the individual who clicked the button is
+      // not, and Task 15 records them in the audit row instead.
+      `You have been invited to join ${input.organizationName} on Sentinel.`,
       'Sentinel is a platform for managing authorised security testing, findings and reports.',
       `This invitation is for this address only and expires in ${formatDuration(input.ttlSeconds)}.`,
     ],
