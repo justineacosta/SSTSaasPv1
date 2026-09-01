@@ -19,7 +19,7 @@ Branch: `feat/phase-2-identity`
 | 7 | Authentication guard, CSRF, CORS | chained with 6 | **Done** — [brief](task-07/brief.md) · [report](task-07/report.md) · [review](task-07/review.md) · [fixes](task-07/fixes.md) · [rulings](task-07/rulings.md) |
 | 8 | Registration and email verification | subagent (fix round: orchestrator) | **Done** — [brief](task-08/brief.md) · [report](task-08/report.md) · [review](task-08/review.md) · [dispositions](task-08/fix-brief.md) · [fixes](task-08/fixes.md) |
 | 9 | Login, logout, session endpoint, lockout | chained with 10 | **Done** — [brief](task-09/brief.md) · [report](task-09/report.md) · [review](task-09/review.md) · [dispositions](task-09/fix-brief.md) · [fixes](task-09/fixes.md) · [fix review](task-09/fix-review.md) |
-| 10 | Password reset | chained with 9 | **In progress** — [brief](task-10/brief.md) |
+| 10 | Password reset | chained with 9 | **Done** — [brief](task-10/brief.md) · [report](task-10/report.md) · [review](task-10/review.md) · [dispositions](task-10/fix-brief.md) · [fixes](task-10/fixes.md) · [fix review](task-10/fix-review.md) |
 | 11 | TOTP MFA and recovery codes | subagent | Not started |
 | 12 | Tenant resolution and the authorization guard | orchestrator | Not started |
 | **A** | **Checkpoint — verify, push, CI green, status recorded** | orchestrator | Not reached |
@@ -328,8 +328,17 @@ Full reasoning and cost-if-wrong for each is in [`task-06/rulings.md`](task-06/r
     the first poison list, and the review measured it resolving as valid from a warm cache entry
     **with Redis healthy**. **Binds Tasks 10 and 14:** what remains genuinely open is a session
     created *after* the write, so a password change must write the new hash **before** revoking and
-    member removal must write the membership change first. Otherwise a racing login mints a session
-    with the old credential once the revocation has finished.
+    member removal must write the membership change first.
+
+    **The last sentence used to read "otherwise a racing login mints a session with the old
+    credential once the revocation has finished", and that ordering is necessary but NOT
+    sufficient — corrected in Task 10 after measuring it.** Writing the hash first narrows the
+    window; it does not close it. A login whose credential read preceded the reset's commit and
+    whose `Session` insert follows the reset's revoke is never swept, because `updateMany` cannot
+    revoke a row that does not exist yet. Measured at **25 of 25** such logins surviving a
+    completed reset, each a fully privileged session lasting up to 30 days. What closes it is on
+    the login path — see ruling 82 — and **Task 14's member removal has the same shape with no
+    equivalent check.**
 
 52. **Revocation has one residual that no code here can close: Redis unreachable at the moment of
     revocation.** The row is revoked, no tombstone can be written, and an entry cached before the
@@ -500,9 +509,17 @@ Full reasoning and cost-if-wrong for each is in [`task-08/fixes.md`](task-08/fix
     and it targets an address by exactly the same reasoning — so a reset message to an
     attacker-seeded, never-verified account carries the same injection **plus a live reset link**.
     Task 10 owns deciding whether the name is rendered only for a verified account or dropped
-    outright. **Binds Task 15** for the invitation, which already names nobody, and any later
-    template: the test to write is "no link when EVERY caller-supplied field is a URL", with the
-    display name in the list.
+    outright. **Binds Task 15** for the invitation and any later template: the test to write is "no
+    link when EVERY caller-supplied field is a URL", with the display name in the list.
+
+    **"The invitation, which already names nobody" was false when this was written, and it stayed
+    false for two tasks.** `renderInvitation` rendered `inviterName` — a stored `User.name` — into
+    the **text** part of a message carrying a live token link, which is the worst shape this defect
+    has taken. Neither ruling-70 test block ever ran a hostile payload at it: the whole-registry
+    block passed only the *recipient's* name as hostile, and the fully hostile block ran over the
+    notices, of which the invitation is not one. Found by Task 10's reviewer as the fifth channel
+    and closed structurally; the clause is corrected here because a false clause in a ruling is
+    what tells the next implementer not to look.
 
     **And the meta-lesson, which is worth more than the fix.** The round that closed H1 wrote this
     exact test, watched it go red on the display name, and **reasoned it into silence** with a
@@ -602,92 +619,148 @@ Full reasoning and cost-if-wrong for each is in [`task-09/review.md`](task-09/re
     and `@AllowPendingMfa` sits on no handler), and `loginResponseSchema`'s committed shape lets
     Task 11 change the delivery without a breaking wire change.
 
+### From Task 10
+
+Full reasoning in [`task-10/review.md`](task-10/review.md),
+[`task-10/fixes.md`](task-10/fixes.md) and [`task-10/fix-review.md`](task-10/fix-review.md).
+
+82. **A session must be issued conditionally on the credential it was authenticated with, and
+    writing the hash before revoking is NOT enough.** H1, and it corrects ruling 51. A login whose
+    credential read preceded a reset's commit and whose `Session` insert follows the reset's revoke
+    is never swept — `updateMany` cannot revoke a row that does not exist yet. Measured at **25 of
+    25** survivors across five rounds, each a fully privileged `ACTIVE` session answering
+    `GET /auth/session` with 200 for up to 30 days, on the endpoint whose entire purpose is evicting
+    somebody who knows the old password. The window is **one Argon2id verification wide and grows
+    with the security parameter** — ~250 ms in production against ~40 ms in the harness. Closed by
+    re-reading the credential *after* `issue` and revoking the session just made: either the insert
+    precedes the revoke and is swept, or it follows and the re-read observes the new hash. There is
+    no third ordering. **Binds Task 14**, whose member removal has the same shape and no equivalent
+    check, and any later path that issues a credential-derived session.
+
+83. **The check must compare MEANING, not bytes.** The naive form revokes whenever the row changed
+    for any reason, and the transparent rehash gives it two innocent ones. A mismatch is the
+    question, not the answer: re-verify the submitted password against what is stored now. Deleting
+    that fallback refused **3 of 4** concurrent correct-password sign-ins for the duration of a
+    parameter migration — with the whole suite green, because the only rehash test was
+    single-threaded. **An availability property has no advocate unless a test holds it.**
+
+84. **A control read inside a READ COMMITTED transaction is not serialised by the transaction.**
+    NEW-3: the burst notice counted denials inside the transaction that wrote one, so parallel
+    denials each counted the threshold and each sent — 2 and 3 notices for one burst in two rounds
+    of four. Every test of it was sequential. This is **ruling 74 recurring inside the fix round for
+    a finding whose own dispositions cite ruling 74**. Closed with a per-account
+    `pg_advisory_xact_lock`, the mechanism `TokenService.issue` already uses: READ COMMITTED takes a
+    fresh snapshot per statement, so a transaction that waits sees what it waited for.
+
+85. **Ruling 70 is CLOSED for the recipient's display name, and the fifth channel is why it took
+    three tasks.** No template accepts a `recipientName`; the typecheck is the control and the
+    two-sided residual test was deleted rather than adjusted. The channel that survived two previous
+    closures was `invitation`'s **inviterName** — a different person's stored name, in the text part
+    of a message carrying a live token link — invisible because the whole-registry payload only made
+    the *recipient's* name hostile and the fully hostile payload ran over notices only. **A test that
+    covers "every template" over the wrong field is not coverage.**
+
+86. **The sixth channel is `organizationName`, and it is characterised rather than closed.** SMTP
+    header injection is shut at two layers. The CR/LF half was closed in Task 10 — the value could
+    otherwise forge whole paragraphs above the product's live link, which is a different primitive
+    from one autolinked URL. What remains: a bare URL still autolinks in the text part, and
+    **`Organization.name` has no length cap in `schema.prisma` or in any Zod schema**. **Binds Task
+    13**, and "reject URLs" is not sufficient on its own.
+
+87. **A concurrent test can still be vacuous.** The first parallel change-password probe used two
+    sessions, so the winner revoked the loser's session and the loser was refused by the
+    authentication guard before it ever reached the predicate under test — deleting the
+    compare-and-swap left it green. Ruling 74 sharpened: **making a test concurrent is not enough;
+    the two requests must differ only in the property under test.**
+
+88. **Some concurrency kills are distributions, not determinisms, and the honest move is to say so
+    in the docblock.** The reset's credential predicate is genuinely reachable — 3 of 20 rounds with
+    a real competing writer, 0 of 20 with it deleted — but the window is one statement wide, so an
+    assertion on the count would be flaky at roughly one run in twenty-five. The committed probe
+    asserts what holds every round and its docblock states plainly that deleting the predicate does
+    **not** turn it red. Recorded as an accepted limit rather than as coverage. (M1, judged
+    acceptable by the fix round's reviewer.)
+
+89. **A reset for an account with no `Credential` row SETS a password, which is right today and is a
+    Phase 11 SSO bypass.** It keeps SSO-only accounts from being permanently stranded. Once
+    `IdentityProviderLink` accounts exist, a reset link would mint password access to an account
+    whose owner never had one. Recorded at the site and in `security/authentication.md` §6; **binds
+    Phase 11.** Deliberately not fixed in Task 10, which cannot make a Phase 11 decision.
+
+90. **`change-password` is a weaker guard on the password than `login` is, by construction.** It
+    verifies a password while requiring only a stolen session, and it is deliberately outside the
+    lockout ladder — `ACCOUNT_LOCKED` there would be a distinguishable outcome and would let a
+    session thief lock the owner out. What it has instead is a per-IP limit and, since the fix round,
+    a burst notice to the owner. **The per-account 429 that would actually bound it needs the
+    limiter's per-principal stage, owed since ruling 55.**
+
 ## Pause state
 
-**2026-08-31 — Task 9 complete and verified; Task 10 is next. Checkpoint A is three tasks away.**
+**2026-08-31 — Task 10 complete and verified; Task 11 is next. Checkpoint A is two tasks away.**
 
-Task 9 shipped **login, logout and the session endpoint**. `pnpm check:openapi` reports **10**
-routes, not 7. A person can now sign in, receive a session cookie and a CSRF cookie, read their own
-session document, and sign out — and `logout` is **the first cookie-authenticated route `CsrfGuard`
-has ever actually governed**, which the integration lane asserts on the shipped route rather than on
-a fixture. **Nothing authorises anybody yet**: `GET /auth/session` returns `permissions: []` because
-no role assignment machinery exists until Task 12, and there is still no screen until Task 16.
+Task 10 shipped **password reset and password change**. `pnpm check:openapi` reports **13** routes.
+A person can now ask for a reset link, redeem it, or change their password while signed in — and
+every one of those paths revokes the sessions it should.
 
-**No migration was opened**, and `git diff --stat main..HEAD -- packages/db/prisma/migrations` is
-empty. Every column login needed — `failedLoginCount`, `lockedUntil`, `lastLoginAt` — was already
-there from Task 1.
+**Ruling 70 is closed for the recipient's display name** (ruling 85), after three tasks and five
+channels. No template accepts a `recipientName`; the typecheck is the control. The fifth channel —
+`invitation`'s **inviter** name, in the text part of a message carrying a live token link — was
+found by this task's reviewer, in the registry Task 10 had just declared closed. A sixth,
+`organizationName`, is characterised rather than closed and **binds Task 13** (ruling 86).
 
-**The two Highs were both invisible to a green gate, and both were found by measurement.**
+**The High was H1 and it was measured, not argued.** A login racing a completed reset kept a fully
+privileged session minted with the **old** password: 25 of 25 survivors across five rounds, up to 30
+days each, on the endpoint that exists to evict exactly that party. Writing the hash before revoking
+narrows the window and does not close it, which corrects **ruling 51**. Closed on the login path
+(ruling 82), verified independently by the second reviewer at **0 survivors** against 16 with the
+check disabled.
 
-`H1`: the lockout ladder did not count concurrent attempts. Five parallel wrong passwords left
-`failedLoginCount` at **1**, the account unlocked, zero `ACCOUNT_LOCKED` rows, zero burst notices,
-and a correct password immediately afterwards answering 200 — with 1,120 unit and 230 integration
-tests green, because **every lockout test in both lanes was sequential**. Rulings 73 and 74.
+**The second review found what a first review would not have.** 2 Medium and 3 Low of its own, all
+closed: the sentence explaining H1's fix named the wrong mechanism and the control doing the real
+work had no test at all (ruling 83); the burst notice's "once per burst" guarantee was defeated by
+concurrency — **ruling 74 recurring inside the fix round for a finding whose dispositions cite ruling
+74** (ruling 84); a residual pinned so loosely that two independent mutations left it green; a ruling
+number cited for a proposition it does not contain; and a document sentence claimed by the code and
+absent from the diff.
 
-`H2`: the unfamiliar-sign-in notice rendered the signing-in party's `User-Agent` to the victim, a
-URL included, under a footer promising the message contains no link. That is the **third** instance
-of one defect in three tasks (Task 8's H1, Task 8's F1, this), so the fix withdrew ruling 63's
-carve-out rather than patching the instance: **no notice renders a user agent at all now**. Ruling
-71. The fix round then found a **fourth** channel the orchestrator's own disposition had asserted
-away — `ipAddress`, kept on the grounds that an address "cannot carry a URL" — and the guard it
-added first admitted `facade.de`. Ruling 72.
+**Three orchestrator claims were measured false by the agents.** D2's ordering guarantee (quoted from
+`session.service.ts`'s own docblock, so it was false in the codebase before the brief repeated it);
+D9's atomically-countable revocation; and D5's ruling-77 note, right about `forgot-password` and
+incomplete about `reset-password`'s error envelopes. A brief is not evidence.
 
-**The fix round was reviewed by a second fresh agent, and that is the thing Task 8 did not do.** It
-returned 8 CLOSED, 4 CLOSED WITH A CAVEAT, **0 OPEN**, plus 1 Medium and 4 Low of its own. Every one
-of those was then closed by the orchestrator, including a genuine code defect the caveats surfaced:
-the **success** path had H1's shape one arm over, clearing `lockedUntil` from a stale pre-flight
-decision and **erasing a lock a sibling had just committed** (measured 4 runs of 4). Both success
-arms now write under the same not-locked predicate as the failure arm.
+**Verified by the orchestrator on the finished tree**, every command re-run rather than taken from a
+report, exit codes captured outside a pipe: all eleven exit 0. `pnpm test` 83 files / **1363**,
+`pnpm test:integration` 19 / **325**, `check:openapi` **13 routes**, `check:registry` 15 models,
+compose stack `Up (healthy)`. `pnpm test:e2e` has **no row**: `apps/web` and `packages/ui` diffs are
+empty. **No migration was opened.**
 
-**Two claims of the orchestrator's were measured false by the people it briefed, and both are worth
-more than the fixes.** The brief told the implementer to prove the organisation lookup by inserting
-a row — which would have shipped a lookup returning `null` in production with a green test, because
-the integration harness connects as the schema owner and bypasses RLS (ruling 75). And the H2
-disposition's "an IP cannot carry a URL" was true of `request.ip` and false of the rendered line
-(ruling 72). A brief is not evidence.
+**The last three fix commits are the least-examined code on this branch.** The fix round's own fixes
+were reviewed by a second fresh agent; the orchestrator's fixes for *that* review's five findings
+were not reviewed by anybody. Each was written test-first with the mutation re-run and pasted, but
+that is the author checking their own work. **Task 11's reviewer may treat `6bc88e4` and `a339e9b` as
+unexamined.**
 
-**One finding is accepted rather than fixed** — M3, the burst notice's in-request SMTP send, which
-is ruling 68's oracle on a new endpoint and is not closable before the Phase 4 queue. It is named in
-`security/authentication.md` §2 and §7 and in ruling 78, because it was named nowhere at all when
-the reviewer found it.
+**Branching. Task 10 is NOT merged.** It sits on `feat/phase-2-task-10`, cut from `main` at
+`cfc0cb7`, unpushed, with no pull request and no CI run. **Task 11 branches from whatever `main` is
+when you start** — pull first, and decide with the operator whether Task 10 merges first.
 
-**Verified by the orchestrator on the finished tree**, every command re-run rather than taken from
-an implementer's report, exit codes captured outside a pipe: all eleven exit 0. `pnpm test` 81 files
-/ **1279** tests, `pnpm test:integration` 18 / **286**, `check:openapi` **10 routes**,
-`check:registry` 15 models, compose stack `Up (healthy)`. `pnpm test:e2e` has **no row** and was not
-run: `git diff --stat main..HEAD -- apps/web` and `-- packages/ui` are both empty.
+**Next action:** Task 11 — TOTP MFA and recovery codes, a fresh implementer subagent per the plan's
+mode table, reviewer fresh as always.
 
-**Branching. Task 9 is merged.** PR #17, rebased onto `main` on 2026-08-31 and the branch deleted,
-with CI green on a Linux runner **before** the merge — runs `33427279769` (pull request) and
-`33427247840` (branch head), both `success` at ~4m35s, every stage executing including Playwright.
-Task 9's last commit on `main` is `9b12ed9`, followed by the docs commit that recorded the merge.
-**Task 10 branches from whatever `main` is when you start** — pull first; do not cut from a commit
-named in this file, because this file is a dated record and `main` moves.
+Task 11 inherits: **ADR-0018 is reserved for it and is owed** — the pending-MFA credential shape
+Task 9 shipped provisionally (ruling 81), a `PENDING_MFA` session token returned in the body with no
+cookie and no route that can reach it. **Ruling 7**: an unconfirmed `MfaFactor` occupies the
+`(userId, type)` unique slot, so an abandoned enrolment blocks re-enrolment with P2002 — upsert or
+delete-then-create. **Ruling 8**: `MfaFactor.secretKeyVersion` exists and nothing writes it.
+**Ruling 9**: the user-owned tables have no RLS, so a handler taking a `userId` must prove the caller
+is that user. **Ruling 50**: a `PENDING_MFA` → `ACTIVE` rotation must carry its `mfaCompletedAt`.
+**Rulings 82 and 83**: MFA completion issues a session and must make it conditional on the credential
+state the same way login now does. **Ruling 85**: `mfaEnabled` and `mfaDisabled` now take no display
+name — do not add one back. And the new-device notice is **not sent on the MFA arm** of login, which
+Task 9 recorded and Task 11 owns.
 
-**Next action:** Task 10 — password reset, `forgot-password`, `reset-password` and
-`change-password`, chained with Task 9. One implementer across both, reviewer fresh per task.
-
-Task 10 inherits more than any task so far. **Ruling 70**: `passwordReset` still renders
-`recipientName`, it is unauthenticated, and it carries a **live reset link** — Task 10 owns deciding
-whether the name is rendered only for a verified account or dropped outright, and
-`passwordChanged`/`mfaEnabled`/`mfaDisabled` still greet by display name with no shipped caller.
-**Ruling 73**: password change and reset read a row, do slow work, then write — the same shape H1
-had. **Ruling 77**: the reset endpoints have login's error-envelope enumeration shape. **Ruling
-75**: any RLS-dependent assertion must drive the least-privileged role. **Ruling 68 and 78**: the
-reset endpoint's send is inside the request, exactly as the resend's and the burst notice's are.
-And `SessionService.revokeAllForUser`'s own docblock names the ordering only Task 10 can get right:
-**write the new password hash BEFORE revoking sessions**, or a racing login mints a session with the
-old credential after the revoke has run.
-
-**One gap is Task 9's own and is named rather than filed elsewhere.** ADR-0014 §48 says a
-credential stored at weaker parameters is rehashed transparently "on next successful login", and
-**login is the caller that clause names**. `PasswordService.verify` returns `needsRehash` and
-nothing acts on it — `login.service.ts:138` is a comment saying so. Task 9 shipped the endpoint and
-not the clause, which also leaves **carry-forward ruling 24 open by construction**: rehash-on-login
-is the mechanism that would migrate old hashes, and without it a parameter raise both opens the
-timing oracle ruling 24 describes and never closes it. Task 10 is the natural owner because it
-already writes credentials, but it is Task 9's debt, not an inheritance.
-
-**Still owed, and genuinely not Task 9's:** ADR-0018 for the pending-MFA credential (Task 11, ruling
-81), the rate limiter's per-principal stage that resolves nothing (ruling 55), and per-account
-notice throttling (ruling 79 and N-5).
+**Still owed, none of it Task 10's:** ruling 55's per-principal limiter stage (now with ruling 90 as
+a second reason to want it), per-account notice throttling (ruling 79), the racing-login equivalent
+for member removal (ruling 82, Task 14), `Organization.name`'s absent length cap (ruling 86, Task
+13), and ruling 24's remaining half — the rehash drains weak hashes for accounts that sign in, and
+dormant accounts keep theirs indefinitely, which ADR-0014 §116 already acknowledges.
