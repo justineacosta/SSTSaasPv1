@@ -222,6 +222,148 @@ describe('change-password — the current password must be proved', () => {
   });
 });
 
+describe('change-password — the burst notice (M3)', () => {
+  /**
+   * THE ROW THE REVIEW FILLED IN.
+   *
+   * `login` bounds guessing per account (5 / 15 min), locks the account, and
+   * tells the owner. `change-password` deliberately does none of the first two
+   * — the argument for staying out of the lockout ladder stands, because a
+   * session thief who could lock the account gains a denial of service — but it
+   * was also telling the owner **nothing at all**, on the one endpoint that
+   * proves a password while requiring only a stolen session.
+   *
+   * So the signal is added without the ladder: consecutive refusals are counted
+   * from the `PASSWORD_CHANGE_FAILED` rows this service already writes, and the
+   * owner gets `failedLoginBurst` once per burst. Nothing touches
+   * `User.failedLoginCount`, which is the whole point — a counter a session
+   * thief can move is a lockout they can inflict.
+   */
+  async function fail(service: PasswordChangeService, times: number): Promise<void> {
+    for (let attempt = 0; attempt < times; attempt += 1) {
+      await expect(
+        service.change(command({ currentPassword: 'wrong wrong wrong' })),
+      ).rejects.toBeInstanceOf(InvalidCredentialsError);
+    }
+  }
+
+  it('sends nothing for four refused attempts', async () => {
+    const { service, db, mail, passwords } = harness();
+    await withAccount(db, passwords);
+
+    await fail(service, 4);
+
+    expect(mail.sent).toEqual([]);
+  });
+
+  it('sends ONE failedLoginBurst on the fifth', async () => {
+    const { service, db, mail, passwords } = harness();
+    await withAccount(db, passwords);
+
+    await fail(service, 5);
+
+    expect(mail.sent.map((sent) => sent.templateId)).toEqual(['failedLoginBurst']);
+  });
+
+  it('sends only that one, however many attempts follow', async () => {
+    // Once per burst, not once per failure past it. A message per failure would
+    // make this notice an outbound-email amplifier aimed at the account owner,
+    // triggered at will by whoever holds the session — the same rule `login`'s
+    // burst notice follows, and the same reason.
+    const { service, db, mail, passwords } = harness();
+    await withAccount(db, passwords);
+
+    await fail(service, 8);
+
+    expect(mail.sent.map((sent) => sent.templateId)).toEqual(['failedLoginBurst']);
+  });
+
+  it('NEVER touches the failure counter or the lock', async () => {
+    // The constraint the disposition names, and the reason this counts audit
+    // rows rather than a column: a session thief who could move
+    // `User.failedLoginCount` could lock the owner out of `login` outright,
+    // which is a denial of service handed to exactly the party this endpoint is
+    // defending against.
+    const { service, db, passwords } = harness();
+    const user = await withAccount(db, passwords);
+
+    await fail(service, 6);
+
+    const row = db.users.get(user.id);
+    expect(row?.failedLoginCount).toBe(0);
+    expect(row?.lockedUntil).toBeNull();
+    expect(names(db)).not.toContain('tx.user.updateMany');
+  });
+
+  it('does not vary the response on the attempt that sends it', async () => {
+    // The response must be the same 401 on every refused attempt. A different
+    // status, code or message on the fifth would tell whoever is guessing
+    // exactly where the threshold is.
+    const { service, db, passwords } = harness();
+    await withAccount(db, passwords);
+
+    const errors: unknown[] = [];
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      try {
+        await service.change(command({ currentPassword: 'nope' }));
+        errors.push(null);
+      } catch (error: unknown) {
+        errors.push(error);
+      }
+    }
+
+    for (const error of errors) {
+      expect(error).toBeInstanceOf(InvalidCredentialsError);
+    }
+  });
+
+  it('renders nothing an attacker supplied in the notice', async () => {
+    // `failedLoginBurst` takes `{ occurredAt, attemptCount }` and nothing else —
+    // both ours. Asserted with a hostile stored name present on the row, since
+    // this notice goes to the account owner while the attempts are somebody
+    // else's.
+    const { service, db, mail, passwords } = harness();
+    const user = await withAccount(db, passwords);
+    const hostile = { ...user, name: 'Ada <script>alert(1)</script> https://evil.test/x' };
+    db.users.set(user.id, hostile);
+    db.users.set(user.email, hostile);
+
+    await fail(service, 5);
+
+    const sent = mail.sent[0];
+    for (const part of [sent?.subject ?? '', sent?.html ?? '', sent?.text ?? '']) {
+      expect(part).not.toContain('evil.test');
+      expect(part).not.toContain('alert(1)');
+    }
+  });
+
+  it('sends AFTER the transaction has committed', async () => {
+    const { service, db, passwords } = harness();
+    await withAccount(db, passwords);
+
+    await fail(service, 5);
+
+    const order = names(db);
+    expect(order.lastIndexOf('$transaction:commit')).toBeGreaterThan(
+      order.lastIndexOf('tx.platformAuditEvent.count'),
+    );
+  });
+
+  it('resets after a SUCCESSFUL change, because the window counts refusals only', async () => {
+    // Four refusals, then a success, then four more must not trip it: the count
+    // is of `PASSWORD_CHANGE_FAILED` rows, and a success writes none.
+    const { service, db, mail, passwords } = harness();
+    await withAccount(db, passwords);
+
+    await fail(service, 4);
+    await service.change(command());
+    mail.sent.length = 0;
+    await fail(service, 4);
+
+    expect(mail.sent).toEqual([]);
+  });
+});
+
 describe('change-password — the accepted path', () => {
   it('replaces the credential with a hash of the NEW password', async () => {
     const { service, db, passwords } = harness();

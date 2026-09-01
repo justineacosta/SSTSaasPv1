@@ -199,6 +199,24 @@ export function identityStoreFake(): IdentityStoreFake {
   const confirmedMfaUserIds = new Set<string>();
   const priorSessions: { userId: string; ip: string | null; userAgent: string | null }[] = [];
   const issuedTokenHashes: string[] = [];
+  const auditRows: { action: string; resourceId: string | null; createdAt: Date }[] = [];
+  /**
+   * A MONOTONIC CLOCK FOR AUDIT ROWS, because a shared millisecond is not what
+   * a database produces.
+   *
+   * Each row this fake records is written by its own `$transaction`, and
+   * Postgres stamps those at microsecond resolution, so they are distinct and
+   * ordered. `new Date()` inside a fast unit test is not: five rows land in one
+   * millisecond, `createdAt` ties, and an ordering the production query relies
+   * on stops existing. That is a fake making a property true — or in this case
+   * false — by construction, so the tick is advanced explicitly instead.
+   *
+   * Anchored to real time rather than starting at zero: the production query
+   * counts failures inside a fifteen-minute window measured from `Date.now()`,
+   * so rows stamped near the epoch fall outside it and the burst never fires.
+   */
+  const auditEpoch = Date.now();
+  let auditClock = 0;
   const control = {
     failTransaction: null as Error | null,
     failUserCreate: null as Error | null,
@@ -385,7 +403,43 @@ export function identityStoreFake(): IdentityStoreFake {
     platformAuditEvent: {
       create: (args) => {
         calls.push({ name: 'tx.platformAuditEvent.create', args: { ...args.data } });
+        auditClock += 1;
+        auditRows.push({
+          action: args.data.action,
+          resourceId: args.data.resourceId,
+          createdAt: new Date(auditEpoch + auditClock),
+        });
         return Promise.resolve(undefined);
+      },
+      /**
+       * M3. Counts the rows this fake has actually recorded, so a spec that
+       * drives five failed changes through the service sees five — rather than
+       * a number the spec set, which would make the burst threshold true by
+       * construction.
+       *
+       * The `createdAt` window is honoured against the fake's own clock. Rows
+       * are stamped as they are written, so a spec cannot accidentally count a
+       * row from an earlier test.
+       */
+      count: (args) => {
+        calls.push({ name: 'tx.platformAuditEvent.count', args: args.where });
+        const matching = auditRows.filter(
+          (row) =>
+            row.action === args.where.action &&
+            row.resourceId === args.where.resourceId &&
+            row.createdAt.getTime() > args.where.createdAt.gt.getTime(),
+        );
+        return Promise.resolve(matching.length);
+      },
+      findFirst: (args) => {
+        calls.push({ name: 'tx.platformAuditEvent.findFirst', args: args.where });
+        const matching = auditRows
+          .filter(
+            (row) => row.action === args.where.action && row.resourceId === args.where.resourceId,
+          )
+          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+        const latest = matching[0];
+        return Promise.resolve(latest === undefined ? null : { createdAt: latest.createdAt });
       },
     },
     $queryRaw: () => {

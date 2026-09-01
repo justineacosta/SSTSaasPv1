@@ -9,6 +9,23 @@ import { PasswordBreachedError } from './password-breached.error.js';
 import { PasswordService } from './password.service.js';
 import type { AuthRequestContext } from './request-context.js';
 import { SessionService } from './session.service.js';
+import { LOCKOUT_THRESHOLD } from './lockout.js';
+
+/**
+ * How long a run of refused current-password attempts counts as one burst, and
+ * how many of them earn the owner a message. M3.
+ *
+ * Both match `login`'s per-account window and its lockout threshold, and that
+ * is the point rather than a coincidence: the two endpoints both refuse a
+ * password, and an account owner should not have to learn two different stories
+ * about what "somebody is guessing at your account" means.
+ *
+ * The window is counted over `PlatformAuditEvent` rows rather than a column,
+ * so nothing here can move `User.failedLoginCount` — see the notice's own
+ * docblock for why that separation is the whole design.
+ */
+const BURST_WINDOW_SECONDS = 900;
+const BURST_THRESHOLD = LOCKOUT_THRESHOLD;
 
 /**
  * The slice of `SessionService` a password change uses.
@@ -257,7 +274,7 @@ export class PasswordChangeService {
    * outcome on an authenticated route.
    */
   private async recordDenial(command: ChangePasswordCommand, reason: string): Promise<void> {
-    await this.store.$transaction(async (tx: IdentityTransaction) => {
+    const notify = await this.store.$transaction(async (tx: IdentityTransaction) => {
       await this.audit.record(tx, {
         // `SYSTEM` with a null actor, following every other failure row in this
         // module. Somebody holding this session could not produce the password,
@@ -278,6 +295,66 @@ export class PasswordChangeService {
         userAgent: command.userAgent,
         requestId: command.requestId,
       });
+
+      // M3. COUNTED AFTER THE ROW IS WRITTEN, so the attempt that trips the
+      // threshold is included in its own count — the same arithmetic
+      // `login`'s ladder uses, where the fifth failure is the one that acts.
+      //
+      // **CONSECUTIVE, NOT MERELY RECENT, AND THE DIFFERENCE IS NOT COSMETIC.**
+      // The first cut of this counted every failure in a fifteen-minute window
+      // and a test caught it: a user who mistypes four times, succeeds, and then
+      // mistypes once more would have been told somebody was guessing at their
+      // account. Failures are counted from the later of the window's start and
+      // the most recent successful change, so a success resets the run exactly
+      // as it does on `login`'s ladder.
+      const windowStart = new Date(Date.now() - BURST_WINDOW_SECONDS * 1000);
+      const lastSuccess = await tx.platformAuditEvent.findFirst({
+        where: { action: 'PASSWORD_CHANGED', resourceId: command.userId },
+        orderBy: { createdAt: 'desc' },
+        select: { createdAt: true },
+      });
+      const since =
+        lastSuccess !== null && lastSuccess.createdAt > windowStart
+          ? lastSuccess.createdAt
+          : windowStart;
+      const failures = await tx.platformAuditEvent.count({
+        where: {
+          action: 'PASSWORD_CHANGE_FAILED',
+          resourceId: command.userId,
+          createdAt: { gt: since },
+        },
+      });
+
+      // ONCE PER BURST, NOT ONCE PER FAILURE PAST IT. Exactly equal, not `>=`:
+      // the sixth and seventh attempts tell the recipient nothing the fifth did
+      // not, and a message per failure would make this notice an outbound-email
+      // amplifier aimed at the account owner, triggered at will by whoever holds
+      // the session. The same rule `login`'s burst notice follows.
+      if (failures !== BURST_THRESHOLD) return null;
+
+      const user = await tx.user.findUnique({ where: { id: command.userId } });
+      return user === null ? null : { email: user.email, attemptCount: failures };
+    });
+
+    if (notify === null) return;
+
+    // AFTER THE COMMIT (ruling 44), and before the refusal is thrown — the
+    // caller's answer is unchanged either way, because `AuthMailer` swallows a
+    // send failure and the thrown error is the same `INVALID_CREDENTIALS` on
+    // every path.
+    //
+    // **This is carry-forward ruling 78's residual on a third endpoint, and it
+    // is accepted rather than closed.** The fifth refused attempt pays an SMTP
+    // round trip that the first four do not, so the latency distinguishes them
+    // even though the response does not. It is not closable before the Phase 4
+    // queue, for the same reason `login`'s burst notice is not: the difference
+    // is a real send on the response path. Reaching it costs five refused
+    // attempts against one account by somebody already holding a session, which
+    // is a narrower oracle than the one on `forgot-password`.
+    await this.mailer.sendFailedLoginBurst({
+      to: notify.email,
+      occurredAt: new Date(),
+      attemptCount: notify.attemptCount,
     });
   }
 }
