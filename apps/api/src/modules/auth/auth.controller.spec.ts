@@ -14,7 +14,7 @@ import type { RateLimitClass } from '../../common/guards/rate-limit.config.js';
 import { AuthController } from './auth.controller.js';
 
 /**
- * THE DECORATORS ON THE SIX SHIPPED HANDLERS, READ OFF THE REAL CONTROLLER.
+ * THE DECORATORS ON THE NINE SHIPPED HANDLERS, READ OFF THE REAL CONTROLLER.
  *
  * M1. Three mutations survived the entire eleven-command gate before this file
  * existed: downgrading all three routes to `generalSession`, deleting the three
@@ -37,11 +37,21 @@ import { AuthController } from './auth.controller.js';
  *
  * **Task 9's three handlers arrived through the exhaustiveness test at the
  * bottom of this file**, which went red naming them before a single row had
- * been added here. That is exactly what ruling 64 built it for.
+ * been added here. That is exactly what ruling 64 built it for, and Task 10's
+ * three arrived the other way round — the rows were written first and every
+ * assertion for them was red until the handlers existed.
  */
 
 type HandlerName =
-  'register' | 'verifyEmail' | 'resendVerification' | 'login' | 'logout' | 'session';
+  | 'register'
+  | 'verifyEmail'
+  | 'resendVerification'
+  | 'login'
+  | 'logout'
+  | 'session'
+  | 'forgotPassword'
+  | 'resetPassword'
+  | 'changePassword';
 
 /**
  * A handler read off the prototype as a REFLECTION TARGET, never to be called.
@@ -65,7 +75,7 @@ interface RouteExpectation {
 }
 
 /**
- * The six routes, as an exact table. A seventh handler appearing on this
+ * The nine routes, as an exact table. A tenth handler appearing on this
  * controller without a row here fails the exhaustiveness test below rather than
  * shipping undeclared — which is how Task 9's three arrived.
  *
@@ -131,6 +141,46 @@ const ROUTES: readonly RouteExpectation[] = [
     method: RequestMethod.GET,
     rateLimit: 'generalSession',
     access: { kind: 'authenticated' },
+    refusesCrossSite: false,
+  },
+  {
+    // D7. The existing `passwordReset` class — 3/hour per address keyed on the
+    // body's `email`, 10/hour per IP, fail closed. The second shipped route on
+    // which a `{ bodyField }` principal source resolves, after login.
+    handler: 'forgotPassword',
+    path: 'forgot-password',
+    method: RequestMethod.POST,
+    rateLimit: 'passwordReset',
+    access: { kind: 'public' },
+    // D6. Public and state-changing, so `CsrfGuard` skips it (ruling 56) and
+    // `@RefuseCrossSite()` is what covers it — the mechanism Task 9 built for
+    // exactly this shape of route.
+    refusesCrossSite: true,
+  },
+  {
+    // D7. A class added by this task, not a row transcribed from §1: the body
+    // is `{ token, password }` and carries no account, so it is per-IP only,
+    // exactly as `emailVerificationConsume` is and for the same written reason.
+    handler: 'resetPassword',
+    path: 'reset-password',
+    method: RequestMethod.POST,
+    rateLimit: 'passwordResetConsume',
+    access: { kind: 'public' },
+    refusesCrossSite: true,
+  },
+  {
+    // D7. Also a new class, and this one is a security control rather than
+    // bookkeeping — the endpoint verifies a password, so it is a
+    // credential-guessing oracle for anyone holding a stolen session.
+    handler: 'changePassword',
+    path: 'change-password',
+    method: RequestMethod.POST,
+    rateLimit: 'passwordChange',
+    access: { kind: 'authenticated' },
+    // D6. NOT carried, and that is the decision rather than an omission: this
+    // route is cookie-authenticated, so `CsrfGuard` governs it — the same
+    // reasoning `logout` carries. `auth.password.integration.spec.ts` asserts
+    // that on the shipped route rather than on a fixture.
     refusesCrossSite: false,
   },
 ];
@@ -236,7 +286,7 @@ describe('the controller as a whole', () => {
     expect(Reflect.getMetadata(REFUSE_CROSS_SITE_KEY, AuthController)).toBeUndefined();
   });
 
-  it('exposes exactly the six handlers in the table above', () => {
+  it('exposes exactly the nine handlers in the table above', () => {
     const handlers = Object.getOwnPropertyNames(AuthController.prototype).filter(
       (name) => name !== 'constructor',
     );
