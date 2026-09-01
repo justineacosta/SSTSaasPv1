@@ -945,9 +945,10 @@ describe('the new-device notice', () => {
 
 describe('an account with a confirmed MFA factor', () => {
   it('issues a PENDING_MFA session and returns the pending token with no cookie', async () => {
-    // D9. No account can hold a confirmed factor until Task 11 ships enrolment,
-    // and login must refuse to issue an ACTIVE session when one exists anyway —
-    // otherwise Task 11 lands on top of a latent MFA bypass.
+    // D9. Task 9 shipped this refusal before any account could hold a confirmed
+    // factor, deliberately — otherwise Task 11 would have landed on top of a
+    // latent MFA bypass no fixture could reach. Task 11 shipped enrolment, so
+    // the predicate is live on every login now.
     const h = harness();
     const account = await seedAccount(h);
     h.db.confirmedMfaUserIds.add(account.id);
@@ -979,9 +980,9 @@ describe('an account with a confirmed MFA factor', () => {
 
   it('does not send the new-device notice for a login that has not completed', async () => {
     // "New sign-in to your Sentinel account" would be a false statement about a
-    // session that can do nothing but type a code. Task 11 owns the notice on
-    // MFA completion; this is recorded in the service docblock as an open item
-    // rather than left for someone to find as a missing email.
+    // session that can do nothing but type a code. Task 11 sends it on MFA
+    // completion instead, where the sign-in actually completes — see
+    // `mfa-verification.service.ts` and its integration spec.
     const h = harness();
     const account = await seedAccount(h);
     h.db.confirmedMfaUserIds.add(account.id);

@@ -396,13 +396,14 @@ export class AuthController {
       // and nothing puts it in a browser's cookie jar — a cookie is ambient,
       // and a `PENDING_MFA` session must be presented deliberately.
       //
-      // **It is unreachable by any route that ships today**, stated rather than
-      // implied: `AuthenticationGuard` reads the session cookie and this token
-      // is not in one, and `@AllowPendingMfa()` sits on no shipped handler.
-      // Task 11 builds `mfa/verify`, and ADR-0018 is reserved for deciding how
-      // this credential is delivered — the response SHAPE is pinned by
-      // `loginResponseSchema` and already committed, so that decision can be
-      // made without a breaking wire change.
+      // **It is reachable by exactly one route: `POST /auth/mfa/verify`**,
+      // which takes it in the body. `AuthenticationGuard` still cannot resolve
+      // it — it reads the session cookie and this token is not in one — which
+      // is why that route is `@Public()` and resolves the credential itself.
+      // **Task 11 built `mfa/verify`, and ADR-0018 records the decision**: the
+      // pending credential is a `Session` row in `PENDING_MFA` status, delivered
+      // in this body and in no cookie. The sentence above about
+      // unreachability is now false and is corrected below.
       return { mfaRequired: true, pendingToken: result.pendingToken };
     }
 

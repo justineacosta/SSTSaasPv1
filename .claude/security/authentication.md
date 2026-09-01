@@ -247,20 +247,86 @@ not exist yet.
 
 ## 5. MFA
 
-TOTP (RFC 6238), 30s step, ±1 window for clock drift.
+TOTP (RFC 6238), 30s step, ±1 window for clock drift, six digits, HMAC-SHA1.
 
-- Secret generated server-side, encrypted at rest with the application key, shown once as
-  a QR code, and **only persisted as enabled after the user proves one correct code**.
-- 10 single-use recovery codes, hashed like passwords, shown once, regenerable.
-- Enabling or disabling MFA requires the current password, writes an audit event, and
-  emails the user.
-- MFA is checked **after** password verification against a short-lived, unprivileged
-  pending session that can do nothing but complete MFA.
-- Failed attempts are rate limited and lock the pending session after 5.
-- Organisations may **require** MFA; members without it are forced into enrolment before
-  any other action. Enforced server-side on every request, not only at login.
-- WebAuthn is the intended second factor type. The `MfaFactor` table is typed and
-  multi-row from the start so adding it is not a migration of the auth model.
+**Every bullet below is either built by Phase 2 Task 11 or deliberately deferred by it, and
+says which.** The five routes are `POST /api/v1/auth/mfa/{enroll,confirm,verify,disable,
+recovery-codes}` — [`../api/authentication.md`](../api/authentication.md) §2 documents their
+bodies and errors.
+
+- **Built.** The secret is generated server-side (20 random bytes, RFC 4226 §4's recommended
+  length), **encrypted at rest** with `MFA_SECRET_ENCRYPTION_KEY` — AES-256-GCM, a random
+  12-byte IV per encryption, the auth tag stored beside the ciphertext in one self-describing
+  envelope. It is encrypted rather than hashed because verifying a code means recomputing it,
+  and it is the only field in this phase that is. It is returned **once**, by `mfa/enroll`, as
+  base32 and as an `otpauth://` URI; no endpoint can read it back. The QR **image** is the
+  frontend's (Phase 2 Task 17); the API returns the URI.
+- **Built.** `MfaFactor.secretKeyVersion` is written explicitly on every row, so key rotation
+  is incremental and resumable rather than an all-or-nothing re-encryption. A row whose column
+  and envelope disagree about the version is **refused**, not guessed at: that state means a
+  re-encryption wrote one and not the other, and guessing decrypts with the wrong key and hands
+  back bytes that look like a secret.
+- **Built.** The factor is **only persisted as enabled after the user proves one correct
+  code**. `confirmedAt IS NOT NULL` is the only test for "this user has MFA" anywhere in the
+  codebase; counting rows is the wrong query. An abandoned enrolment leaves an unconfirmed row
+  that gates nothing, and the next enrolment **replaces** it — without that, the
+  `(userId, type)` unique constraint would mean a user who closed the tab could never enable
+  MFA. Enrolment over a **confirmed** factor is refused with 409, because replacing a working
+  factor without proving a code is an account-takeover step.
+- **Built.** 10 single-use recovery codes, `XXXXX-XXXXX` over a 32-symbol alphabet with no
+  confusable pair left intact — 50 bits each. **Argon2id-hashed**, not SHA-256: they are
+  human-typed and low-entropy relative to a 256-bit token, so they need the work factor.
+  Shown once at confirmation and once at regeneration, never retrievable. Using one sets
+  `usedAt` under a conditional `UPDATE`, so the same code fails the second time under
+  concurrency as well as sequentially. Regeneration deletes the whole set and issues ten new
+  ones in one transaction.
+- **Built.** Enabling or disabling MFA requires the **current password**, writes an audit event
+  in the same transaction as the change, and emails the user. Regenerating recovery codes
+  requires the password too, for the same reason — it invalidates the ten codes the owner
+  printed. **A wrong password on any of the three writes `MFA_MANAGEMENT_DENIED`** and changes
+  nothing.
+- **Built.** MFA is checked **after** password verification, against a short-lived,
+  unprivileged pending session that can do nothing but complete MFA. That credential is a
+  `Session` row in `PENDING_MFA` status ([ADR-0018](../decisions/ADR-0018-pending-mfa-session-row.md)),
+  delivered in the login response body with no cookie. `GET /auth/session` presented with one
+  answers 401 `MFA_REQUIRED`.
+- **Built, and it is a control §5 did not previously mention: REPLAY.** A TOTP code accepted at
+  step `t` is never accepted again. The ±1 drift window means a single six-digit code stays
+  computable for about ninety seconds, so an attacker who observes one — over a shoulder,
+  through a phished form, from a proxy in front of the real site — can present it a second time
+  inside that window. **The drift window does not defend against this; it is what creates the
+  window**, and nothing else in the TOTP design does either. `MfaFactor.lastAcceptedStep`
+  records the last accepted step and any code at or below it is refused. The check and the
+  store are **one conditional `UPDATE`**, so two concurrent requests carrying the same valid
+  code produce exactly one success. A consequence users see: the code that confirmed enrolment
+  cannot be reused to complete the first challenge — they wait for the digits to roll over.
+- **Built.** Failed attempts are rate limited (`mfaVerify`, 60/hour per IP, fail closed —
+  [`abuse-prevention.md`](abuse-prevention.md) §1) **and lock the pending session after 5**.
+  The lock is durable rather than a Redis counter: it counts `MFA_CHALLENGE_FAILED` rows for
+  that pending session, under a per-session advisory lock so the count survives concurrent
+  attempts. The fifth failure revokes the pending session; the user starts again from login,
+  which costs them the password again. **The count is per pending session**, so signing in
+  again starts a fresh five — what is bounded is guessing at one challenge, and the outer bound
+  is the rate limit plus login's own 5 / 15 min per account.
+- **DEFERRED, AND ENFORCED BY NOTHING TODAY.** Organisations may **require** MFA; members
+  without a confirmed factor are to be forced into enrolment before any other action, enforced
+  server-side on every request and not only at login. The **decision** is built and unit-tested
+  (`apps/api/src/modules/auth/require-mfa.ts`, with `MFA_ENROLMENT_REQUIRED` as its refusal),
+  and it is **registered in no module and applied to no request**, because the check needs
+  tenant resolution and organisation membership, which Phase 2 Task 12 builds. `Organization.requireMfa`
+  is a column nothing reads. This is the same status `@RequirePermission()` has: metadata and a
+  mechanism, with no guard in the pipeline. **Task 12 places it.**
+- **DEFERRED.** WebAuthn is the intended second factor type and none of it is built. The
+  `MfaFactorType` enum carries `WEBAUTHN` and the `MfaFactor` table is typed and multi-row from
+  the start, so adding it is an insert rather than a migration of the authentication model —
+  that is the whole of Phase 2's WebAuthn work.
+
+**Two things Task 11 did NOT do, named here rather than left to be discovered.** Disabling MFA
+does **not** revoke existing sessions: the caller proved the password, so signing every device
+out would punish the legitimate user for a settings change, and the `mfaDisabled` notice is what
+reaches the owner's mailbox on the takeover path. And regeneration sends **no** email — §5
+requires a notice for enabling and disabling and names none for regeneration, and there is no
+template for one.
 
 ## 6. Email verification, reset, invitations
 

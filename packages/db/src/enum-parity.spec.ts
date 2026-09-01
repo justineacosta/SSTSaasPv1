@@ -56,7 +56,7 @@ const DB_ONLY_ENUMS: Record<string, string> = {
   SessionStatus:
     'PENDING_MFA vs ACTIVE is internal to the session machine. The wire says `mfaRequired: boolean` (authentication.md §2) instead.',
   MfaFactorType:
-    'Factor types reach the wire with the MFA enrolment contracts, which are Task 11 (Task 2 Ruling 5). WEBAUTHN is registered ahead of its implementation.',
+    'Factor types do not reach the wire. Task 11 shipped the MFA enrolment contracts and none of them names a factor type: the routes are TOTP-only by path, so there is nothing for a client to choose. WEBAUTHN is registered ahead of its implementation.',
   VerificationPurpose:
     'Chosen server-side from the endpoint being called; a client that could name the purpose could ask for a password-reset token by requesting email verification.',
   ActorType:

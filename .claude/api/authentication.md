@@ -34,15 +34,63 @@ POST /api/v1/auth/login          { email, password, rememberMe? }
   -> 200 { mfaRequired: true, pendingToken }   # MFA enrolled, NO Set-Cookie
 
 POST /api/v1/auth/mfa/verify     { pendingToken, code }
-  -> 200 + Set-Cookie: __Host-session
+  -> 200 { status: 'AUTHENTICATED' } + Set-Cookie: __Host-session, __Host-csrf
 
 POST /api/v1/auth/logout         -> 204, both cookies cleared, session REVOKED
 GET  /api/v1/auth/session        -> current principal, org, permissions, entitlements
 POST /api/v1/auth/switch-org     { organizationId } -> new session context
 ```
 
-> **Status: login, logout and session are Implemented (Phase 2 Task 9).** `mfa/verify` is
-> Task 11's and `switch-org` is Task 13's; both shapes above are contracts with no handler.
+> **Status: login, logout, session and `mfa/verify` are Implemented (Phase 2 Tasks 9 and 11).**
+> `switch-org` is Task 13's and the shape above is a contract with no handler.
+
+**The four MFA management routes** are all authenticated, all under `CsrfGuard`, and all
+rate-limited as `mfaManagement` (10/hour per IP, fail closed):
+
+```
+POST /api/v1/auth/mfa/enroll          { password }  -> 200 { secret, otpauthUri }
+POST /api/v1/auth/mfa/confirm         { code }      -> 200 { recoveryCodes: string[] }
+POST /api/v1/auth/mfa/disable         { password }  -> 200 { status: 'MFA_DISABLED' }
+POST /api/v1/auth/mfa/recovery-codes  { password }  -> 200 { recoveryCodes: string[] }
+```
+
+`secret`, `otpauthUri` and `recoveryCodes` are **shown once**. No endpoint reads any of them
+back: the TOTP secret exists to be recomputed against, not to be displayed twice, and the
+recovery codes are stored as Argon2id hashes. A user who loses them regenerates, which replaces
+the whole set.
+
+**Three of the four require the current password**, and `confirm` is the exception because it is
+reachable only in the window the enrolment opened. Enrolling an authenticator from a stolen
+session locks the real owner out rather than merely reading their data; disabling removes the
+one control that survives a stolen password; regenerating replaces the ten codes the owner
+printed with ten the attacker holds. A wrong password is 401 `INVALID_CREDENTIALS` and writes an
+audit row.
+
+**Errors specific to these four:** 409 `DUPLICATE_RESOURCE` when a confirmed factor already
+exists (enrol, confirm), and 422 `INVALID_STATE_TRANSITION` when there is nothing in that state
+to act on — confirming with no enrolment in progress, disabling or regenerating with MFA off.
+
+**`mfa/verify` accepts a TOTP code OR a recovery code in the same `code` field**, and the two
+are told apart by length: a TOTP code is exactly six characters and a normalised recovery code
+is exactly ten. A recovery code may be typed in any case, with or without its hyphen. Every
+failure — an unknown, expired, revoked or locked pending token, a wrong code, a **replayed**
+code, a spent recovery code, and a promotion refused because the account's password was replaced
+— is the same 401 `MFA_INVALID`, byte for byte.
+
+**A code that has already been accepted is refused**, even though the ±1 drift window would still
+compute it. See [`../security/authentication.md`](../security/authentication.md) §5. The
+practical consequence for a client: the code that confirmed enrolment cannot complete the first
+challenge, and the user waits for their authenticator to roll over.
+
+**Five failures revoke the pending session.** The sixth attempt is refused even with a correct
+code, and the user signs in again. The count is per pending session.
+
+**`mfa/verify` is `@Public()`**, and that is not a mistake to correct: no session cookie
+authenticates it. The login MFA arm sets no cookie at all, the pending token travels in the
+body, and `AuthenticationGuard` reads the cookie — a route declaring `@AuthenticatedOnly()`
+would answer 401 `UNAUTHENTICATED` to every caller. The pending token is a credential the
+handler resolves itself. Like `login`, it carries `@RefuseCrossSite()` rather than a CSRF token,
+because a request with no session cookie has nothing for a double-submit token to bind to.
 
 `rememberMe` is **optional** and was added by Task 9 — adding an optional field to a strict
 request schema is additive under [`conventions.md`](conventions.md) §8. Absent means a session
@@ -56,9 +104,21 @@ header. The CSRF value is derived from the session token by HMAC rather than sto
 rotates whenever the session does and nothing has to remember to rotate it (§3).
 
 **The MFA arm sets no cookie at all.** The pending token travels in the response body. A cookie
-is ambient and a `PENDING_MFA` session must be presented deliberately. The pending token is a
-short-lived credential that can do exactly one thing: complete MFA. It cannot read any resource,
-and `GET /auth/session` presented with one answers 401 `MFA_REQUIRED`.
+is ambient and a `PENDING_MFA` session must be presented deliberately —
+[ADR-0018](../decisions/ADR-0018-pending-mfa-session-row.md) records that decision and its cost.
+The pending token is a short-lived credential that can do exactly one thing: complete MFA. It
+cannot read any resource, and `GET /auth/session` presented with one answers 401 `MFA_REQUIRED`
+— which Phase 2 Task 11 is the first to put a test behind
+(`auth.mfa.integration.spec.ts`), including the strongest form: presenting the pending token
+*as* a session cookie does not work either.
+
+**Completing MFA rotates the pending session rather than issuing a new one**, so the token the
+caller held before the promotion cannot be used after it, and the promoted row carries
+`mfaCompletedAt` and `rotatedFromId`. **The promoted session gets the ordinary 7-day absolute
+lifetime even when the user ticked "remember me"**: login deliberately discards `rememberMe` on
+the MFA arm (a ten-minute pending credential is not a session anybody asked to be remembered)
+and rotation inherits the flag from the predecessor. That is a real behavioural gap rather than
+a design intent; ADR-0018's consequences section carries it.
 
 **Logout REVOKES the session; it does not delete the row.** An earlier version of this document
 said "session row deleted" and it was wrong in three ways, all found in Task 9: the row is the
@@ -191,7 +251,8 @@ distinctly so you can confirm the old one has stopped being used before it expir
 | Bad password | 401 | `INVALID_CREDENTIALS` |
 | Session expired or revoked | 401 | `SESSION_EXPIRED` |
 | MFA required | 401 | `MFA_REQUIRED` |
-| Bad MFA code | 401 | `MFA_INVALID` |
+| Bad MFA code, replayed code, spent recovery code, or unusable pending token | 401 | `MFA_INVALID` |
+| Organisation requires MFA and the member has no confirmed factor | 403 | `MFA_ENROLMENT_REQUIRED` |
 | Unverified email on a gated action | 403 | `EMAIL_NOT_VERIFIED` |
 | Locked account | 403 | `ACCOUNT_LOCKED` |
 | Unknown, malformed, or revoked key | 401 | `INVALID_API_KEY` |
@@ -201,6 +262,19 @@ distinctly so you can confirm the old one has stopped being used before it expir
 The last row is deliberate: an IP-restricted key used from the wrong address returns the same
 error as an unknown key, so probing cannot distinguish "wrong key" from "right key, wrong
 network".
+
+**`MFA_ENROLMENT_REQUIRED` is produced by no shipped route today.** The mechanism that raises it
+is written and registered nowhere — see [`../security/authentication.md`](../security/authentication.md)
+§5's deferred bullet. It is 403 and deliberately not `MFA_REQUIRED`'s 401: that code means "you
+hold a pending session, finish the challenge", and this one means "you hold a full session and
+your organisation will not let you use it until you enrol". A 401 would tell the frontend to show
+a sign-in form, which changes nothing for a caller who is already authenticated.
+
+**`MFA_INVALID` covers seven situations and a caller cannot tell them apart**, which includes one
+that is not about the code at all: a promotion refused because the account's password was
+replaced after the pending session was created. Telling that caller "your code was right but the
+password changed" would hand a useful fact to whoever is holding a password they should no longer
+have.
 
 **`ACCOUNT_LOCKED` is 403, not 401, and it is returned only when the password was otherwise
 correct.** The status is easy to get wrong: 401 means "we do not know who you are", and on a
@@ -244,7 +318,7 @@ Authentication endpoints are limited per account **and** per IP
 ([`../security/abuse-prevention.md`](../security/abuse-prevention.md) §1), and fail closed if
 Redis is unavailable — an outage must not become a credential-stuffing window.
 
-The nine routes that exist carry:
+The fourteen routes that exist carry:
 
 | Route | Class | Windows |
 |---|---|---|
@@ -257,6 +331,11 @@ The nine routes that exist carry:
 | `POST /auth/forgot-password` | `passwordReset` | 3/hour per address, 10/hour per IP |
 | `POST /auth/reset-password` | `passwordResetConsume` | 20/hour per IP |
 | `POST /auth/change-password` | `passwordChange` | 10/hour per IP |
+| `POST /auth/mfa/verify` | `mfaVerify` | 60/hour per IP |
+| `POST /auth/mfa/enroll` | `mfaManagement` | 10/hour per IP |
+| `POST /auth/mfa/confirm` | `mfaManagement` | 10/hour per IP |
+| `POST /auth/mfa/disable` | `mfaManagement` | 10/hour per IP |
+| `POST /auth/mfa/recovery-codes` | `mfaManagement` | 10/hour per IP |
 
 **Login is the first route on which a per-account window has ever actually resolved**, and
 `forgot-password` is the second. The class

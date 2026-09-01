@@ -84,9 +84,16 @@ export const RequirePermission = (permission: Permission): MethodDecorator & Cla
  * limit beneath it. The guard here reads `context.getHandler()` and nothing
  * else, so a class-level annotation — however it is written — exempts nothing.
  *
- * Task 11 builds the endpoint that carries it. Until then it is proved against
- * test controllers, which is the only honest way to prove a route rule in a
- * task that ships no route.
+ * **Task 11 built the endpoint that carries it, and it is `POST /auth/mfa/verify`
+ * — where it currently enforces nothing.** That route is `@Public()`, because
+ * no session cookie authenticates it (the pending token travels in the body,
+ * ADR-0018), and `AuthenticationGuard` exits at the `@Public()` check before it
+ * ever reads this key. The decorator is on the handler as documentation the
+ * typechecker keeps honest, and so that the day the pending token moves into a
+ * cookie the exemption is already in the right place rather than being
+ * remembered. The mechanism itself is still proved against test controllers in
+ * `authentication.guard.spec.ts`, which remains the only honest way to prove a
+ * rule about routes that no shipped route exercises.
  */
 export const ALLOW_PENDING_MFA_KEY = 'sentinel:allow-pending-mfa';
 

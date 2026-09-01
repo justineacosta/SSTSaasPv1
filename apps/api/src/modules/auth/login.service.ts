@@ -136,11 +136,14 @@ export type LoginResult =
  *
  * # What Task 9 does not do here, stated rather than left to be found
  *
- * - **No new-device notice on the MFA arm.** "New sign-in to your Sentinel
- *   account" would be a false statement about a session that can do nothing but
- *   type a code. Task 11 owns the notice on MFA completion, and until it lands
- *   an MFA-enrolled account gets no unfamiliar-session notice at all. No
- *   account can hold a confirmed factor today, so nothing is currently missed.
+ * - **No new-device notice on the MFA arm, and that debt is now paid one step
+ *   later.** "New sign-in to your Sentinel account" would be a false statement
+ *   about a session that can do nothing but type a code, so this path still
+ *   sends nothing. **Task 11 sends it on MFA completion**, where the sign-in
+ *   actually completes — see `mfa-verification.service.ts`, which asks
+ *   `isFamiliar` the same question this file defines and has to exclude the
+ *   pending session from the lookup, because by then that row exists and
+ *   carries this request's own `(userId, ip, userAgent)` triple.
  * # What Task 10 added here, and it is Task 9's debt rather than an inheritance
  *
  * **The transparent rehash on a successful login now exists** — see
@@ -787,10 +790,11 @@ export class LoginService {
   /**
    * D9. Looks for a **confirmed** factor and reads nothing but its id.
    *
-   * No account can hold one today — there is no enrolment endpoint until Task
-   * 11 — and login must still refuse to issue an `ACTIVE` session when one
-   * exists, or Task 11 lands on top of a latent MFA bypass that no test would
-   * have caught because no fixture could reach it.
+   * Task 9 shipped this refusal before any account could hold a confirmed
+   * factor, deliberately: had it not, Task 11 would have landed on top of a
+   * latent MFA bypass that no test would have caught, because no fixture could
+   * reach it. **Task 11 shipped enrolment, so accounts hold confirmed factors
+   * now** and this predicate is live on every login.
    *
    * `confirmedAt: { not: null }` is load-bearing: carry-forward ruling 7
    * records that an *unconfirmed* factor occupies the `(userId, type)` unique
