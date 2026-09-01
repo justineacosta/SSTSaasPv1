@@ -25,6 +25,35 @@ racing logins survived**, every one of them a fully privileged `ACTIVE` session 
 
 ---
 
+## Findings
+
+| | | |
+|---|---|---|
+| **H1** | High | A completed reset leaves every in-flight old-password login holding a live, fully privileged session for 7–30 days |
+| **M1** | Medium | The reset's compare-and-swap is asserted only by a fake; deleting it leaves all 25 integration tests green |
+| **M2** | Medium | Ruling 70's fifth channel — `invitation` renders a stored display name into the text part of a live-link message |
+| **M3** | Medium | `change-password` has no per-account bound, no lockout and no notice, so it is a weaker guard on the password than `login` |
+| **L1** | Low | `ownSessionRotated: true` is written before the rotation is attempted and can be false |
+| **L2** | Low | The unit lane cannot honestly evaluate the mutation "delete the predicate" — the fake returns `count: 0` where Postgres would write |
+| **L3** | Low | `reset-password` pays the breach check and a full Argon2id hash before it validates the token |
+| **L4** | Low | "A reset for a user with no `Credential` row sets a password" is an SSO bypass in Phase 11, and only the benign half is written down |
+| **L5** | Low | A completed reset proves mailbox control and does not record it |
+| **L6** | Low | `audit.md` §4 describes `liveSessionsAtWrite` incorrectly for the change row |
+| **L7** | Low | A completed reset does not clear `lockedUntil`, and no document says which remedy applies to which lock |
+| **P1–P7** | prose | Seven false or unsupported sentences, four of them about H1, listed separately below |
+
+**One High. Three Mediums. Seven Lows.** I found nothing at a level I have not listed: there is no
+second High, and I say that having gone looking — the compare-and-swaps, the revocation scope, the
+rotation, the enumeration comparison, the audit trail and the rate-limit class assertions were all
+attacked and all held.
+
+The work is of a materially higher standard than Tasks 8 and 9. The one structural failure is H1,
+and the implementer found it, measured it and named it owed before anyone reviewed it. What makes
+it a High rather than an accepted residual is not the hole but the four sentences shipped beside it
+that say it is not there.
+
+---
+
 ## Code defects
 
 ### H1 (High) — a completed password reset leaves every in-flight old-password login holding a live session
