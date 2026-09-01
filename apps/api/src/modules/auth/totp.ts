@@ -199,3 +199,20 @@ export function otpauthUri(input: { email: string; secret: Uint8Array }): string
   });
   return `otpauth://totp/${label}?${parameters.toString()}`;
 }
+
+/**
+ * D6's replay floor for a factor that has never accepted a code.
+ *
+ * `-1` rather than `null`, although `MfaFactor.lastAcceptedStep` is nullable.
+ * **Step 0 is a real counter** — the first thirty seconds of 1 January 1970 —
+ * so "the floor is zero" and "there is no floor" have to be different values,
+ * and a sentinel below every real step is the only one that cannot be mistaken
+ * for data. The column stays nullable for rows written before this task, and
+ * `minimumStepFor` treats `null` identically.
+ */
+export const NEVER_ACCEPTED_STEP = -1;
+
+/** The lowest step a factor may still accept: one past the last it accepted. */
+export function minimumStepFor(lastAcceptedStep: number | null): number {
+  return (lastAcceptedStep ?? NEVER_ACCEPTED_STEP) + 1;
+}

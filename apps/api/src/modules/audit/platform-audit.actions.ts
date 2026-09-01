@@ -253,6 +253,27 @@ export const PLATFORM_AUDIT_ACTIONS = [
    * `ACCOUNT_LOCKED` follows one endpoint over.
    */
   'MFA_PENDING_SESSION_LOCKED',
+  /**
+   * One of the three password-proving management routes — enrol, disable,
+   * regenerate — was refused because the CURRENT password was wrong.
+   *
+   * `audit.md` §3 requires denials to be audited, and Task 9's M2 was this same
+   * gap one endpoint over: a denial that produced a refusal and zero rows. One
+   * name for the three operations rather than three names, with
+   * `metadata.operation` distinguishing them — they are the same event with the
+   * same evidence and the same actor, and three names would make a query for
+   * "somebody is probing this account's password from a session" have to know
+   * all of them.
+   *
+   * It is the sharper signal of its kind: reaching it costs a **live session**,
+   * so unlike a failed login it cannot be produced by an anonymous caller at
+   * will, and the `DISABLE` operation is the one an account takeover performs
+   * first.
+   *
+   * `actorType` is `SYSTEM` with a null `actorId`, following every other failure
+   * row in this list. The account is named by `resourceId`.
+   */
+  'MFA_MANAGEMENT_DENIED',
 ] as const;
 
 export type PlatformAuditAction = (typeof PLATFORM_AUDIT_ACTIONS)[number];

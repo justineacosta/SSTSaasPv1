@@ -147,7 +147,10 @@ describe('the secret against the redacting logger and the error path', () => {
         cb();
       },
     });
-    return { logger: createLogger({ service: 'api', level: 'debug', pretty: false, stream }), lines };
+    return {
+      logger: createLogger({ service: 'api', level: 'debug', pretty: false, stream }),
+      lines,
+    };
   }
 
   it('does not survive under a key name the denylist knows', () => {

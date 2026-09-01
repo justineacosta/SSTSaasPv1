@@ -77,15 +77,15 @@ describe('totpCode against RFC 6238 Appendix B', () => {
     });
 
     it(`SHA256 at T=${String(seconds)}s is ${sha256}`, () => {
-      expect(totpCode(SEEDS.SHA256, step, { algorithm: 'SHA256', digits: 8, stepSeconds: 30 })).toBe(
-        sha256,
-      );
+      expect(
+        totpCode(SEEDS.SHA256, step, { algorithm: 'SHA256', digits: 8, stepSeconds: 30 }),
+      ).toBe(sha256);
     });
 
     it(`SHA512 at T=${String(seconds)}s is ${sha512}`, () => {
-      expect(totpCode(SEEDS.SHA512, step, { algorithm: 'SHA512', digits: 8, stepSeconds: 30 })).toBe(
-        sha512,
-      );
+      expect(
+        totpCode(SEEDS.SHA512, step, { algorithm: 'SHA512', digits: 8, stepSeconds: 30 }),
+      ).toBe(sha512);
     });
   }
 });
@@ -140,8 +140,9 @@ describe('verifyTotpCode drift window', () => {
   const current = stepAt(now, 30);
 
   it('accepts the current step and reports it', () => {
-    expect(verifyTotpCode({ secret, code: totpCode(secret, current, TOTP_PRODUCTION), atMs: now })
-      ).toBe(current);
+    expect(
+      verifyTotpCode({ secret, code: totpCode(secret, current, TOTP_PRODUCTION), atMs: now }),
+    ).toBe(current);
   });
 
   it('accepts one step behind and one step ahead', () => {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Post, RequestMethod } from '@nestjs/common';
 import {
   ACCESS_METADATA_KEY,
+  ALLOW_PENDING_MFA_KEY,
   type AccessDeclaration,
 } from '../../common/decorators/access.decorator.js';
 import { REFUSE_CROSS_SITE_KEY } from '../../common/decorators/cross-site.decorator.js';
@@ -14,7 +15,8 @@ import type { RateLimitClass } from '../../common/guards/rate-limit.config.js';
 import { AuthController } from './auth.controller.js';
 
 /**
- * THE DECORATORS ON THE NINE SHIPPED HANDLERS, READ OFF THE REAL CONTROLLER.
+ * THE DECORATORS ON THE FOURTEEN SHIPPED HANDLERS, READ OFF THE REAL
+ * CONTROLLER.
  *
  * M1. Three mutations survived the entire eleven-command gate before this file
  * existed: downgrading all three routes to `generalSession`, deleting the three
@@ -51,7 +53,12 @@ type HandlerName =
   | 'session'
   | 'forgotPassword'
   | 'resetPassword'
-  | 'changePassword';
+  | 'changePassword'
+  | 'mfaVerify'
+  | 'mfaEnroll'
+  | 'mfaConfirm'
+  | 'mfaDisable'
+  | 'mfaRecoveryCodes';
 
 /**
  * A handler read off the prototype as a REFLECTION TARGET, never to be called.
@@ -75,7 +82,7 @@ interface RouteExpectation {
 }
 
 /**
- * The nine routes, as an exact table. A tenth handler appearing on this
+ * The fourteen routes, as an exact table. A fifteenth handler appearing on this
  * controller without a row here fails the exhaustiveness test below rather than
  * shipping undeclared — which is how Task 9's three arrived.
  *
@@ -183,7 +190,80 @@ const ROUTES: readonly RouteExpectation[] = [
     // that on the shipped route rather than on a fixture.
     refusesCrossSite: false,
   },
+  {
+    // D4. `@Public()` because NO SESSION COOKIE AUTHENTICATES IT: the login MFA
+    // arm sets no cookie at all, the pending token travels in the body, and
+    // `AuthenticationGuard` reads the cookie. `@AuthenticatedOnly()` here would
+    // be 401 `UNAUTHENTICATED` for every caller — an endpoint nobody can reach,
+    // on the one route that exists to finish signing in.
+    //
+    // `@AllowPendingMfa()` is asserted separately below, because it is not part
+    // of `AccessDeclaration` — deliberately, per `access.decorator.ts`.
+    handler: 'mfaVerify',
+    path: 'mfa/verify',
+    method: RequestMethod.POST,
+    // D5. A class added by this task; §1 had no MFA row at all.
+    rateLimit: 'mfaVerify',
+    access: { kind: 'public' },
+    // Public and state-changing, so `CsrfGuard` skips it (ruling 56) and
+    // `@RefuseCrossSite()` is what covers it — the same shape as `login`.
+    refusesCrossSite: true,
+  },
+  {
+    handler: 'mfaEnroll',
+    path: 'mfa/enroll',
+    method: RequestMethod.POST,
+    // One class for the four management routes, matching `passwordChange`'s
+    // figure because three of them verify the current password and are the same
+    // credential-guessing oracle at the same strength.
+    rateLimit: 'mfaManagement',
+    access: { kind: 'authenticated' },
+    // NOT carried, and that is the decision: these four are
+    // cookie-authenticated, so `CsrfGuard` governs them — the same reasoning
+    // `logout` and `change-password` carry.
+    refusesCrossSite: false,
+  },
+  {
+    handler: 'mfaConfirm',
+    path: 'mfa/confirm',
+    method: RequestMethod.POST,
+    rateLimit: 'mfaManagement',
+    access: { kind: 'authenticated' },
+    refusesCrossSite: false,
+  },
+  {
+    handler: 'mfaDisable',
+    path: 'mfa/disable',
+    method: RequestMethod.POST,
+    rateLimit: 'mfaManagement',
+    access: { kind: 'authenticated' },
+    refusesCrossSite: false,
+  },
+  {
+    handler: 'mfaRecoveryCodes',
+    path: 'mfa/recovery-codes',
+    method: RequestMethod.POST,
+    rateLimit: 'mfaManagement',
+    access: { kind: 'authenticated' },
+    refusesCrossSite: false,
+  },
 ];
+
+/**
+ * `@AllowPendingMfa()` sits on exactly one handler, and on no other.
+ *
+ * Carry-forward ruling 61 is the whole reason this is asserted rather than
+ * assumed. The decorator is an EXEMPTION — it is what lets a `PENDING_MFA`
+ * session past `AuthenticationGuard` — and this codebase has shipped an
+ * exemption whose guard honoured class-level metadata while the type said
+ * otherwise, so one line on a controller disabled every limit beneath it.
+ *
+ * Both directions are asserted. Its absence from `mfaVerify` would matter the
+ * day this route stops being `@Public()`; its presence on any of the other
+ * thirteen would let a half-authenticated session reach an endpoint that
+ * assumes a full one.
+ */
+const PENDING_MFA_HANDLER: HandlerName = 'mfaVerify';
 
 /**
  * Nest's own route metadata keys, hard-coded — and then proved against a probe.
@@ -286,7 +366,22 @@ describe('the controller as a whole', () => {
     expect(Reflect.getMetadata(REFUSE_CROSS_SITE_KEY, AuthController)).toBeUndefined();
   });
 
-  it('exposes exactly the nine handlers in the table above', () => {
+  it('carries @AllowPendingMfa() on exactly one handler', () => {
+    for (const route of ROUTES) {
+      expect(
+        Reflect.getMetadata(ALLOW_PENDING_MFA_KEY, handlerOf(route.handler)),
+        route.handler,
+      ).toBe(route.handler === PENDING_MFA_HANDLER ? true : undefined);
+    }
+  });
+
+  it('declares no class-level @AllowPendingMfa()', () => {
+    // The guard reads `getHandler()` only, so a class-level annotation exempts
+    // nothing — and it would read as though it did. Ruling 61's other half.
+    expect(Reflect.getMetadata(ALLOW_PENDING_MFA_KEY, AuthController)).toBeUndefined();
+  });
+
+  it('exposes exactly the fourteen handlers in the table above', () => {
     const handlers = Object.getOwnPropertyNames(AuthController.prototype).filter(
       (name) => name !== 'constructor',
     );

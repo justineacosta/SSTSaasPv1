@@ -39,6 +39,11 @@ const env = {
   SESSION_IDLE_TIMEOUT_SECONDS: 86_400,
   SESSION_PENDING_MFA_LIFETIME_SECONDS: 600,
   SESSION_CACHE_TTL_SECONDS: 60,
+  // 32 bytes of a repeated byte: the right LENGTH for AES-256-GCM and
+  // deliberately not the right shape for a secret scanner to flag
+  // (`pnpm check:secrets`). `apiEnvSchema` refuses a wrong-length value at boot,
+  // so a module build never sees one — this stub is what a validated env holds.
+  MFA_SECRET_ENCRYPTION_KEY: Buffer.alloc(32, 0x2a).toString('base64'),
   REDIS_URL: 'redis://127.0.0.1:6399',
 } as unknown as ApiEnv;
 
