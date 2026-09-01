@@ -355,10 +355,26 @@ specific to a reset.
 - **A request for an address with no account still writes an audit row**, naming nothing and
   carrying no address in its metadata. The wire response is identical for every input by design,
   so that row is the only trace a distributed sweep leaves. See [`audit.md`](audit.md) §4.
-- **An account that has never confirmed its address does get a link.** The opposite of the
-  resend's rule, and deliberate: the link is itself the proof of mailbox control, the message
-  renders nothing a caller supplied, and refusing would strand anybody who registered and then lost
-  their password before confirming.
+- **An account that has never confirmed its address does get a link**, and **completing the reset
+  now confirms the address**. The opposite of the resend's rule, and deliberate: the link is itself
+  the proof of mailbox control, the message renders nothing a caller supplied, and refusing would
+  strand anybody who registered and then lost their password before confirming. Redeeming it is the
+  same evidence `emailVerifiedAt` carries, so the reset stamps it rather than leaving the account
+  excluded from everything verification gates.
+- **A completed reset clears the temporary brute-force lock.** `User.lockedUntil` is the ladder's
+  lock and is independent of `User.status`, so before this an account could complete a reset and
+  still be refused at `login` with `ACCOUNT_LOCKED` while holding the correct new password — the
+  failure mode reset exists to fix, inflicted on somebody who had just proved mailbox control. The
+  failure counter clears with it. An **administrative** lock (`User.status`) is not cleared and
+  never should be: D4 refuses such a link outright.
+- **A reset for a user with NO `Credential` row sets a password, and that is a Phase 11 decision
+  waiting to happen.** It is correct today: a `User` without a `Credential` is currently only
+  reachable by deletion, and refusing would strand such an account permanently. But once
+  `IdentityProviderLink` accounts exist, that shape is exactly an **SSO-only** account, and letting
+  an emailed link mint a password credential on one makes mailbox control a second authentication
+  path onto an account an operator may have deliberately restricted to an identity provider.
+  **Binds Phase 11**, which must either gate the branch on the absence of a linked provider or
+  refuse for such accounts. Deliberately not decided here.
 
 ### The credential is written before anything is revoked, and that ordering is the control
 
@@ -384,29 +400,57 @@ the order of the two halves is what makes it worth anything.
   the account's password is whichever request happened to land last, with no error anywhere. An
   affected-row count of zero is a refusal, not a no-op.
 
-**Two residuals, measured, and neither is closed.**
+### The racing login, and why the ordering alone was not enough
 
-1. **The ordering narrows the racing-login window; it does not close it.** The sentence in
-   `SessionService.revokeAllForUser`'s docblock — that writing the hash first means a racing login
-   cannot mint a session with the old credential once the call has finished — overstates what the
-   ordering buys, and measurement showed it. A login that has *already read* the old credential
-   verifies successfully against the value it read and inserts its `Session` row when its Argon2
-   verification finishes; if that lands after the revocation, the row is never swept, because an
-   `updateMany` cannot revoke a row that does not exist yet. Measured through the real application:
-   five old-password logins fired alongside a reset left **one live session** behind.
+**This was shipped as an accepted residual, re-measured five times larger by review, and is now
+closed.** The history is worth keeping because the fix is a pair of mechanisms rather than one, and
+either half alone is insufficient.
 
-   What the ordering does deliver, and what holds: the credential is genuinely replaced, so no
-   login *started* after the reset commits can use the old password; and every session that existed
-   when the credential committed is revoked. The alternative ordering is strictly worse — under
-   revoke-then-write the vulnerable window is every login in flight from the revocation onwards,
-   where under write-then-revoke it is only a login whose verification straddles the few
-   milliseconds between the commit and the revocation.
+The claim originally written here — and in `SessionService.revokeAllForUser`'s own docblock — was
+that writing the new hash before revoking meant a racing login could not mint a session with the
+old credential. It could. A login that has *already read* the old credential verifies successfully
+against the value it read and inserts its `Session` row when its Argon2id verification finishes; if
+that lands after the revocation, the row is never swept, because an `updateMany` cannot revoke a
+row that does not exist yet.
 
-   Closing it needs the session insert itself to be conditional on the credential that was
-   verified, which is a change to the login path rather than to these endpoints. It is **owed and
-   not built**.
+This document first reported that as **one** surviving session out of five. Re-measured by review
+across five consecutive rounds: **25 of 25 racing logins survived**, every one a fully privileged
+`ACTIVE` session that answered `GET /auth/session` with 200, living seven days — thirty with
+"remember me" — with the idle clock renewed on every use. With `rememberMe: true` the survivors
+carried a thirty-day absolute clock. The vulnerable window is one Argon2id verification wide and
+therefore **grows with the security parameter**: ADR-0014 targets ~250 ms in production against the
+~40 ms the test harness runs at.
 
-2. **`forgot-password` is enumeration-resistant in its body and not in its timing**, which is the
+**What closes it, in two halves that only work together:**
+
+1. **The reset commits the new credential before it revokes anything** (the ordering above). This
+   is what makes the second half a guarantee rather than a narrowing.
+2. **Login re-reads the credential after `SessionService.issue` returns.** If the credential it
+   authenticated against is no longer the account's, it revokes the session it has just issued and
+   answers `INVALID_CREDENTIALS`.
+
+There are only two interleavings and both are covered: a `Session` insert landing *before* the
+revoke is swept by the revoke, and an insert landing *after* it means the credential write
+committed first, so the post-issue read observes it. There is no third ordering. Reverse the two
+halves of the reset and the guarantee evaporates — the login would read the old hash, find it
+unchanged, and keep its session.
+
+The check compares **meaning, not bytes**: a mismatch triggers a re-verification of the password
+against whatever is now stored, so a transparent rehash (§2) does not make a login revoke itself,
+while a reset or a change does. It costs one indexed read on a `@unique` column per successful
+login, and an extra verification only when the row actually moved.
+
+**What remains open.** `change-password` has the same shape of window and is protected only by
+timing rather than by construction — review measured 0 survivors out of 16, but that is an accident
+of the change path paying a verification *and* a hash before its transaction, which lands its
+revoke after the racing logins have already inserted. The same post-issue check belongs on any path
+that issues a session after verifying a credential; **Task 14's member removal is the next one**,
+and its equivalent does not exist. Carry-forward ruling 51 carries the original overstatement and
+moves with this.
+
+**One residual, measured, and not closed.**
+
+**`forgot-password` is enumeration-resistant in its body and not in its timing**, which is the
    same residual the resend has and the failed-login burst notice has. Measured on 2026-09-01
    through the real application against a Testcontainers Postgres, the compose Redis and a
    recording mailer (25 samples per case after 5 warm-up rounds, rate-limit windows cleared outside

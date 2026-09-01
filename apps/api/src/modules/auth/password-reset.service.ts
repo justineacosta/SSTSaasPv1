@@ -245,6 +245,21 @@ export class PasswordResetService {
    * ~40 ms of CPU at production parameters and holding a Postgres transaction
    * open across it would put every reset in contention with everything else
    * touching that user's rows.
+   *
+   * # L3: BOTH OF THOSE ARE PAID BEFORE THE TOKEN IS VALIDATED, AND THAT IS THE
+   * COST OF THE ORDERING ABOVE
+   *
+   * A caller submitting a token that was never issued still buys a full
+   * Argon2id hash — ADR-0014 targets ~250 ms of it in production — and an
+   * outbound HIBP request when the breach check is enabled. The ordering is
+   * deliberate and the reasons above stand, so this is a cost rather than a
+   * defect; what it means is that **`passwordResetConsume`'s per-IP figure is
+   * the whole control here**, because there is nothing cheaper in front of it.
+   * `security/abuse-prevention.md` §1 carries the same sentence beside the
+   * figure, so whoever tunes it can see what it is holding.
+   *
+   * Reordering would fix the cost and break the property: validating the token
+   * first means a breached password or a slow HIBP lookup burns the link.
    */
   async reset(command: ResetPasswordCommand): Promise<void> {
     if (await this.breachCheck.isBreached(command.password)) throw new PasswordBreachedError();
@@ -279,6 +294,26 @@ export class PasswordResetService {
         // as the only explanation it could ever be given, so the reset SETS a
         // password rather than replacing one.
         //
+        // **L4, AND THE OTHER HALF OF THE COST — WHICH THE FIRST VERSION OF
+        // THIS COMMENT DID NOT NAME. THIS IS RECORDED, NOT FIXED.**
+        //
+        // The sentence above is true today and describes a Phase 11 bypass.
+        // Once `IdentityProviderLink` accounts exist, "a `User` with no
+        // `Credential`" is precisely what an **SSO-only** account looks like —
+        // an account an operator may have deliberately restricted to an identity
+        // provider, with its own MFA, its own session policy and its own
+        // offboarding. Letting an emailed link MINT a password credential on
+        // such an account makes control of the mailbox a second authentication
+        // path onto it, which is a policy decision Phase 11 has to make and
+        // this task cannot.
+        //
+        // It is deliberately not fixed here. Refusing now would strand the only
+        // accounts that can currently reach this branch, and would encode a
+        // Phase 11 answer before Phase 11 can weigh it. **Binds Phase 11**: when
+        // `IdentityProviderLink` ships, this branch must be gated on the absence
+        // of a linked provider, or the reset must refuse for such accounts
+        // outright. `security/authentication.md` §6 carries the same note.
+        //
         // There is no compare-and-swap to do here and none is needed: the
         // concurrency this endpoint actually has is two redemptions of one
         // token, and `consumeInTransaction`'s conditional `UPDATE` has already
@@ -299,6 +334,36 @@ export class PasswordResetService {
         // and a retry — reading the credential afresh — succeeds.
         if (count === 0) throw new TokenInvalidError();
       }
+
+      // L5 AND L7. WHAT A COMPLETED RESET PROVES, AND WHAT IT THEREFORE CLEARS.
+      //
+      // L7: `User.lockedUntil` is the ladder's temporary brute-force lock and
+      // is independent of `User.status`, which D4 checks. So an account that was
+      // `ACTIVE` but currently locked could complete a reset and still be
+      // refused at `login` with `ACCOUNT_LOCKED` while holding the correct new
+      // password. Being locked out after a successful reset is the failure mode
+      // reset exists to fix. The counter clears with the lock, for the reason
+      // `login`'s success arms clear it: otherwise the account is one mistype
+      // from a fresh lock the instant it is recovered.
+      //
+      // L5: redeeming this link is proof of mailbox control, which is the whole
+      // reason an unconfirmed account is sent one. That is the same evidence
+      // `emailVerifiedAt` carries, so it is stamped — with the instant the
+      // token was consumed, not a second clock reading, for the reason
+      // `email-verification.service.ts` gives. An account that registered,
+      // never confirmed, and then reset was otherwise left unverified for ever
+      // while having demonstrably proved the thing verification asks for.
+      await tx.user.update({
+        where: { id: user.id },
+        data:
+          user.emailVerifiedAt === null
+            ? {
+                failedLoginCount: 0,
+                lockedUntil: null,
+                emailVerifiedAt: consumed.consumedAt,
+              }
+            : { failedLoginCount: 0, lockedUntil: null },
+      });
 
       // Counted INSIDE the transaction that writes the credential, so the
       // number and the change it describes are one atomic fact
@@ -330,6 +395,11 @@ export class PasswordResetService {
           // is the difference between a routine reset and an account that had no
           // password credential at all.
           replacedExistingCredential: existing !== null,
+          // L5. Recorded because it is a state change this row is the only
+          // evidence for: the reset is what confirmed the address, and an
+          // investigation reading `emailVerifiedAt` later should be able to
+          // find out which event set it.
+          confirmedAddress: user.emailVerifiedAt === null,
         },
         ip: command.ip,
         userAgent: command.userAgent,
@@ -340,8 +410,28 @@ export class PasswordResetService {
     });
 
     // AFTER THE COMMIT, AND THAT ORDERING IS D2. The new hash is durable before
-    // a single session is revoked, so there is no window in which the old
-    // password can mint a session that the revocation has already passed over.
+    // a single session is revoked.
+    //
+    // **P1: THE SENTENCE THAT USED TO FOLLOW THAT ONE WAS FALSE, AND IT WAS
+    // WRITTEN HERE BY THE SAME TASK THAT MEASURED IT FALSE.** It said the
+    // ordering meant "there is no window in which the old password can mint a
+    // session that the revocation has already passed over". There was: a login
+    // whose credential read preceded this commit and whose `Session` insert
+    // follows the revoke below is not swept, because an `updateMany` cannot
+    // revoke a row that does not exist yet. The reviewer measured 25 of 25 such
+    // logins surviving across five rounds, each a fully privileged session
+    // living up to 30 days.
+    //
+    // **What closes it is not this ordering alone.** It is this ordering PLUS
+    // the post-issue credential re-read in `login.service.ts`
+    // (`credentialStillCurrent`), and the two are a pair: because the credential
+    // is committed before anything is revoked, any login that inserts after the
+    // revoke is guaranteed to observe the new hash and revoke itself. Reverse
+    // the two halves here and that guarantee is gone — the login would read the
+    // old hash, find it unchanged, and keep its session.
+    //
+    // So this ordering is still load-bearing; it is just not sufficient on its
+    // own, and no comment here may say that it is.
     //
     // NO `exceptSessionId`: a reset revokes every session there is. The person
     // completing it is holding none — they arrived from a link in their mailbox —

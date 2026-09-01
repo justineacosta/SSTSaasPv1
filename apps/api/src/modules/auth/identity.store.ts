@@ -95,8 +95,33 @@ export type IdentityUserUpdateData =
    * The MFA arm of a successful login: the counter and the lock clear, and
    * `lastLoginAt` is deliberately not stamped for a session that can do
    * nothing but complete MFA.
+   *
+   * **A completed password reset for an already-confirmed account writes this
+   * same shape** (Task 10 fix round, L7), and it is the same statement: the
+   * ladder's temporary lock clears and no sign-in is recorded.
+   * `User.lockedUntil` is independent of `User.status`, so before that fix an
+   * account could complete a reset and still be refused at `login` with
+   * `ACCOUNT_LOCKED` while holding the correct new password — the failure mode
+   * reset exists to fix, inflicted on somebody who has just proved mailbox
+   * control. The counter clears with it so the account is not left one mistype
+   * from a fresh lock the moment it is recovered.
    */
-  | { readonly failedLoginCount: 0; readonly lockedUntil: null };
+  | { readonly failedLoginCount: 0; readonly lockedUntil: null }
+  /**
+   * A completed password reset for an account that had **never confirmed its
+   * address** (Task 10 fix round, L5 and L7).
+   *
+   * Redeeming a reset link is proof of mailbox control — it is the stated
+   * reason such an account is sent one at all — and that is the same evidence
+   * `emailVerifiedAt` carries. Before this the account completed a reset and
+   * stayed unverified, so it went on being excluded from everything
+   * verification gates, including the unfamiliar-sign-in notice.
+   */
+  | {
+      readonly failedLoginCount: 0;
+      readonly lockedUntil: null;
+      readonly emailVerifiedAt: Date;
+    };
 
 /**
  * THE PREDICATE THAT MAKES THE FAILURE COUNTER SURVIVE CONCURRENCY. H1.

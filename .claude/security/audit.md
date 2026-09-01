@@ -142,8 +142,13 @@ customer. Its actor is `SYSTEM` with a null `actorId` even when the account exis
 endpoint is unauthenticated and the caller may be anybody.
 
 `PASSWORD_RESET_COMPLETED` and `PASSWORD_CHANGED` both name the `User` and both carry
-`liveSessionsAtWrite` in their metadata: the number of sessions that existed at the instant the
-new credential committed. That number rather than one row per revoked session, because an
+`liveSessionsAtWrite` in their metadata — but **they count slightly different things, and the
+field name is the same on purpose**. On the reset row it is every session that existed at the
+instant the new credential committed, because a reset revokes all of them. On the change row it
+**excludes the caller's own session**, which is not revoked but rotated, so the number is the
+sessions that were about to be signed out. An earlier version of this paragraph described both as
+the former and was off by one for the change row (L6); the code was right and the document was
+wrong. That number rather than one row per revoked session, because an
 unauthenticated caller can trigger a reset and a row per session would let them size the table;
 and that number rather than the revocation's own count, because the revocation happens after the
 transaction the audit row lives in — see §2, and `security/authentication.md` §6 for why the

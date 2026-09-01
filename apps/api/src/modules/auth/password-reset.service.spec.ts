@@ -417,6 +417,62 @@ describe('reset-password', () => {
     );
   });
 
+  it('clears a live brute-force lock, so the new password actually works (L7)', async () => {
+    // `User.lockedUntil` is independent of `User.status`, which D4 checks. An
+    // account that is `ACTIVE` but currently locked receives a link, completes
+    // the reset, and — before this fix — was still refused at `login` with
+    // `ACCOUNT_LOCKED` while holding the correct new password.
+    const { service, db, passwords } = harness();
+    const user = withUser(db, { emailVerifiedAt: new Date() });
+    db.users.set(user.id, {
+      ...user,
+      lockedUntil: new Date(Date.now() + 600_000),
+      failedLoginCount: 5,
+    });
+    db.control.redeemableUserId = user.id;
+    db.credentials.set(user.id, await passwords.hash(OLD_PASSWORD));
+
+    await service.reset({ token: 'FIXTURE_live_token', password: NEW_PASSWORD, ...CONTEXT });
+
+    const row = db.users.get(user.id);
+    expect(row?.lockedUntil).toBeNull();
+    // Cleared with the lock: otherwise the account is one mistype from a fresh
+    // lock the instant it is recovered.
+    expect(row?.failedLoginCount).toBe(0);
+  });
+
+  it('confirms an address that a completed reset just proved (L5)', async () => {
+    // Redeeming the link IS mailbox control, which is the stated reason an
+    // unconfirmed account is sent one. Leaving `emailVerifiedAt` null afterwards
+    // kept the account excluded from everything verification gates, while it had
+    // demonstrably proved the thing verification asks for.
+    const { service, db, passwords } = harness();
+    const user = withUser(db, { emailVerifiedAt: null });
+    db.control.redeemableUserId = user.id;
+    db.credentials.set(user.id, await passwords.hash(OLD_PASSWORD));
+
+    await service.reset({ token: 'FIXTURE_live_token', password: NEW_PASSWORD, ...CONTEXT });
+
+    expect(db.users.get(user.id)?.emailVerifiedAt).not.toBeNull();
+    expect(auditRows(db)[0]).toMatchObject({ metadata: { confirmedAddress: true } });
+  });
+
+  it('does not restamp an address that was already confirmed', async () => {
+    // The instant `emailVerifiedAt` carries is when the address was FIRST
+    // proved. Overwriting it on every reset would quietly turn the column into
+    // "last reset", which is not what any reader of it will assume.
+    const confirmedAt = new Date('2026-01-01T00:00:00.000Z');
+    const { service, db, passwords } = harness();
+    const user = withUser(db, { emailVerifiedAt: confirmedAt });
+    db.control.redeemableUserId = user.id;
+    db.credentials.set(user.id, await passwords.hash(OLD_PASSWORD));
+
+    await service.reset({ token: 'FIXTURE_live_token', password: NEW_PASSWORD, ...CONTEXT });
+
+    expect(db.users.get(user.id)?.emailVerifiedAt).toBe(confirmedAt);
+    expect(auditRows(db)[0]).toMatchObject({ metadata: { confirmedAddress: false } });
+  });
+
   it('writes one PASSWORD_RESET_COMPLETED row carrying the live session count', async () => {
     // D9. The COUNT rather than one row per revoked session: an unauthenticated
     // caller can trigger a reset, and a row per session would let them size the
