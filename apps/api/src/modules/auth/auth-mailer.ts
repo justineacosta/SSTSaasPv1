@@ -7,8 +7,8 @@ import { EMAIL_TEMPLATES } from './emails/registry.js';
 import { TokenService } from './token.service.js';
 
 /**
- * The four messages the registration, verification and login endpoints send,
- * and the one place they decide what to do when a send fails.
+ * The six messages the registration, verification, login and password endpoints
+ * send, and the one place they decide what to do when a send fails.
  *
  * ## Every method here is called AFTER the transaction has committed
  *
@@ -80,6 +80,73 @@ export class AuthMailer {
       ttlSeconds: this.tokens.ttlSecondsFor('EMAIL_VERIFICATION'),
     });
     await this.deliver('emailVerification', input.to, rendered);
+  }
+
+  /**
+   * The password-reset link, for `POST /auth/forgot-password`.
+   *
+   * `token` is the raw secret `TokenService.issueInTransaction` returned exactly
+   * once. It goes into the link and nowhere else.
+   *
+   * **NO `recipientName`, and the absent parameter is the control — this is the
+   * one carry-forward ruling 70 named.** The endpoint is unauthenticated, so
+   * anybody may aim this message at any address they can type; `User.name` is
+   * 200 characters of free text an attacker seeds by registering the victim's
+   * address first; and unlike every notice this message carries a **live reset
+   * link**, so the injected sentence and URL would arrive beside a working
+   * credential under this product's branding. `PasswordResetInput` has no field
+   * for it, so there is no path from a stored row to this body at all.
+   *
+   * **No IP and no user agent either.** They are the requesting party's and this
+   * message goes to the account owner, which is the same argument
+   * `sendRegistrationAttempt` makes one method down. They are recorded in the
+   * `PlatformAuditEvent` row instead.
+   */
+  async sendPasswordReset(input: { to: string; token: string }): Promise<void> {
+    const rendered = EMAIL_TEMPLATES.passwordReset({
+      webBaseUrl: this.env.WEB_BASE_URL,
+      token: input.token,
+      // Read from the same configuration that stamped the expiry, so an
+      // operator who shortens the TTL during an incident does not leave this
+      // message claiming the old one.
+      ttlSeconds: this.tokens.ttlSecondsFor('PASSWORD_RESET'),
+    });
+    await this.deliver('passwordReset', input.to, rendered);
+  }
+
+  /**
+   * `security/authentication.md` §2's "password change and reset ... email the
+   * user", sent by BOTH `reset-password` and `change-password`.
+   *
+   * One template for two endpoints, so its copy says "Any other sessions were
+   * signed out" — true of a change, which keeps the caller's own session
+   * rotated, and true of a reset, which keeps none.
+   *
+   * **NO `recipientName` (ruling 70, closed) and no user agent (ruling 71).**
+   * What remains is the IP, and it is worth keeping even on the reset path where
+   * the person who completed it may be an attacker: it is the one line the
+   * recipient can check against where they actually were. It cannot say anything
+   * else, because `renderableIpAddress` holds it to an address literal —
+   * ruling 72's lesson, enforced where the value is rendered rather than
+   * asserted about where it came from.
+   *
+   * **This is the message that makes an account takeover visible to its
+   * victim**, which is why `AuthMailer` swallowing a send failure is a real cost
+   * here and is named in carry-forward ruling 45.
+   */
+  async sendPasswordChanged(input: {
+    to: string;
+    occurredAt: Date;
+    ip: string | null;
+  }): Promise<void> {
+    const rendered = EMAIL_TEMPLATES.passwordChanged({
+      occurredAt: input.occurredAt,
+      // `?? undefined`, because the template distinguishes "not recorded" from
+      // a value and `null` is this codebase's word for the former everywhere
+      // else. The two spellings meet here and in `sendNewDeviceSignIn`.
+      ipAddress: input.ip ?? undefined,
+    });
+    await this.deliver('passwordChanged', input.to, rendered);
   }
 
   /**
