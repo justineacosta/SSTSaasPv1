@@ -264,8 +264,8 @@ TOTP (RFC 6238), 30s step, ±1 window for clock drift.
 
 ## 6. Email verification, reset, invitations
 
-> **Status of the email-verification row: Implemented (Phase 2 Task 8).** The password-reset row
-> is Task 10's and the invitation row is Task 15's; both remain Designed only.
+> **Status of the email-verification row: Implemented (Phase 2 Task 8). The password-reset row:
+> Implemented (Phase 2 Task 10).** The invitation row is Task 15's and remains Designed only.
 
 All three use the same token discipline: 256-bit random, **hashed at rest**, single-use,
 expiring, invalidated by use or by a newer token, and delivered only by email.
@@ -277,7 +277,8 @@ expiring, invalidated by use or by a newer token, and delivered only by email.
 | Invitation | 7d | Bound to the invited address; revocable; accepting requires authentication as that address |
 
 Password reset does not reveal account existence, is rate limited per address and per IP,
-and revokes all sessions on completion.
+and revokes all sessions on completion. **The first clause is true of the response body and not
+of the response latency** — see the residuals under the reset heading below.
 
 ### The email-verification token, as Task 8 actually built it
 
@@ -334,6 +335,101 @@ and revokes all sessions on completion.
    person whose message was lost gets a success response and no email, and
    `POST /auth/resend-verification` is their only remedy.
 
+### The password-reset token, as Task 10 actually built it
+
+The bullets above about the email-verification token hold for this one too — it is the same
+`VerificationToken` machinery, the same partial unique index, the same single conditional `UPDATE`
+arbitrating a redemption, and the same `TOKEN_INVALID` for every refusal. What follows is what is
+specific to a reset.
+
+- **Redeeming checks `User.status`, and a refusal ROLLS BACK.** Same as verification, and the
+  argument is stronger here because the token is worth more: a link refused because an account was
+  administratively locked still works once an operator unlocks it, rather than being destroyed in
+  exchange for nothing. The integration lane proves that by refusing a locked account's link,
+  unlocking the account, and redeeming the same link successfully.
+- **Six outcomes, one refusal.** Unknown, expired, already used, superseded, not-active, and a
+  lost concurrent credential write all produce `TOKEN_INVALID`.
+- **The breach check runs before the token is spent**, so a `PASSWORD_BREACHED` refusal does not
+  cost the user their link. That matters for a check that is disabled by default and fails open
+  ([ADR-0015](../decisions/ADR-0015-hibp-breach-check.md)).
+- **A request for an address with no account still writes an audit row**, naming nothing and
+  carrying no address in its metadata. The wire response is identical for every input by design,
+  so that row is the only trace a distributed sweep leaves. See [`audit.md`](audit.md) §4.
+- **An account that has never confirmed its address does get a link.** The opposite of the
+  resend's rule, and deliberate: the link is itself the proof of mailbox control, the message
+  renders nothing a caller supplied, and refusing would strand anybody who registered and then lost
+  their password before confirming.
+
+### The credential is written before anything is revoked, and that ordering is the control
+
+§2's "password change and reset **revoke all other sessions**" stops being aspirational here, and
+the order of the two halves is what makes it worth anything.
+
+- **Reset revokes every session, with no exception.** The person completing it is holding none —
+  they arrived from a link in their mailbox — and if somebody else is holding one, that is exactly
+  the session being taken away.
+- **Change revokes every *other* session and ROTATES the one in hand.** Losing your own session on
+  a password change is a usability bug; keeping every other one is a security bug. §3 lists a
+  password change as a privilege change, so the rotation is required rather than cosmetic: the
+  token in the browser before the change cannot be used after it. The CSRF cookie is derived from
+  the session token rather than stored, so it rotates with it and the user is not left signed in
+  but unable to submit a form.
+- **The new hash is committed BEFORE either revocation runs.** `revokeLiveForUser` is one
+  `updateMany` whose predicate is evaluated at execution time, so it catches a session created
+  *during* the call — what nothing inside it can catch is one created *after* it, and the only
+  thing that prevents that is the old password having already stopped working.
+- **Every credential write is a compare-and-swap** predicated on the hash that was read, because
+  both endpoints read the credential, spend ~40 ms verifying or hashing, and only then write. Two
+  concurrent changes both verify against the same old hash; without the predicate both commit and
+  the account's password is whichever request happened to land last, with no error anywhere. An
+  affected-row count of zero is a refusal, not a no-op.
+
+**Two residuals, measured, and neither is closed.**
+
+1. **The ordering narrows the racing-login window; it does not close it.** The sentence in
+   `SessionService.revokeAllForUser`'s docblock — that writing the hash first means a racing login
+   cannot mint a session with the old credential once the call has finished — overstates what the
+   ordering buys, and measurement showed it. A login that has *already read* the old credential
+   verifies successfully against the value it read and inserts its `Session` row when its Argon2
+   verification finishes; if that lands after the revocation, the row is never swept, because an
+   `updateMany` cannot revoke a row that does not exist yet. Measured through the real application:
+   five old-password logins fired alongside a reset left **one live session** behind.
+
+   What the ordering does deliver, and what holds: the credential is genuinely replaced, so no
+   login *started* after the reset commits can use the old password; and every session that existed
+   when the credential committed is revoked. The alternative ordering is strictly worse — under
+   revoke-then-write the vulnerable window is every login in flight from the revocation onwards,
+   where under write-then-revoke it is only a login whose verification straddles the few
+   milliseconds between the commit and the revocation.
+
+   Closing it needs the session insert itself to be conditional on the credential that was
+   verified, which is a change to the login path rather than to these endpoints. It is **owed and
+   not built**.
+
+2. **`forgot-password` is enumeration-resistant in its body and not in its timing**, which is the
+   same residual the resend has and the failed-login burst notice has. Measured on 2026-09-01
+   through the real application against a Testcontainers Postgres, the compose Redis and a
+   recording mailer (25 samples per case after 5 warm-up rounds, rate-limit windows cleared outside
+   the timed region; Windows 11 x64, Node v26.7.0):
+
+   | Request | median | range |
+   |---|---|---|
+   | `forgot-password`, no such account | 11.4 ms | 9.4–16.4 ms |
+   | `forgot-password`, account not `ACTIVE` | 11.7 ms | 8.3–20.0 ms |
+   | `forgot-password`, active account (issues a token, sends a link) | 14.1 ms | 10.9–20.9 ms |
+
+   **These ranges overlap, unlike the resend's, and the figures understate the real gap.** The
+   overlap means a single observation separates nothing here; the difference in medians is the
+   token transaction and its advisory lock. The understatement is structural and is the important
+   half: the harness substitutes an **in-memory** mailer, so the active-account path pays no SMTP
+   round trip in this measurement and does in production. A real relay widens the gap rather than
+   narrowing it, and no test in this repository can see that — the same sentence §2 already carries
+   about the burst notice.
+
+   Closing it means moving the send off the response path, which needs the queue Phase 4 brings
+   ([ADR-0016](../decisions/ADR-0016-smtp-mailer-port.md)). Nothing in Phase 2 closes it, and no
+   document may describe this endpoint as enumeration-resistant without this qualification.
+
 ### Unverified users
 
 §6's table says an unverified user may sign in but may not create organisations, invite, or
@@ -349,10 +445,12 @@ and applies it to organisation creation; Tasks 14 and 15 apply it to inviting. U
 - Progressive delay then temporary lock per account; independent per-IP limits so one
   attacker cannot lock out a whole tenant.
 - Registration, login, and reset return responses that do not distinguish existing from
-  non-existing accounts. **Registration is built (Task 8) and login is built (Task 9)**; reset is
-  Task 10's. The registration half has a second part that is easy to leave out: the address that
-  already has an account receives a notice about the attempt, so the person who can act on it
-  learns what the wire response deliberately does not say.
+  non-existing accounts. **All three are built** — registration in Task 8, login in Task 9, reset
+  in Task 10 — and all three are proved by byte comparison rather than by inspection. The
+  registration half has a second part that is easy to leave out: the address that already has an
+  account receives a notice about the attempt, so the person who can act on it learns what the
+  wire response deliberately does not say. **The reset half is true of the body and not of the
+  latency**; §6 carries the measurement.
 - Failed logins are audited with IP and user agent; a burst notifies the account owner.
 - CAPTCHA hook at the registration and reset endpoints, enabled by feature flag when abuse
   is detected rather than permanently degrading the experience.
@@ -440,11 +538,20 @@ The user agent is not discarded. It goes in the `PlatformAuditEvent` row, which 
 attacker-supplied text belongs: read by an operator, in an append-only table built for exactly
 that, never rendered into a message sent to somebody else.
 
-**One residual is open and is not this rule's.** Three notices still greet by display name —
-password-changed and the two MFA notices — and `User.name` is free text an attacker seeds by
-registering a victim's address first. None of the three has a caller yet; the tasks that ship those
-callers own closing it, and the template suite asserts the residual from both sides so that closing
-it turns a test red.
+**That residual is closed as of Phase 2 Task 10, and it was closed to the class rather than to
+the instance.** Three notices still greeted by display name until then — password-changed and the
+two MFA notices — plus the password-reset link message, which was the sharpest case of all: its
+endpoint is unauthenticated and the message carries a live reset link, so a stored display name
+would have put a stranger's sentence and URL beside a working credential. `User.name` is free text
+an attacker seeds by registering a victim's address first.
+
+All four lost the field, although two of them have no caller until Task 11. That is deliberate:
+"safe because it has no caller yet" is the sentence that was left standing over the
+unfamiliar-sign-in notice in the very task that gave it one. **No template in this product now
+renders the recipient's stored display name**, and the template suite asserts that over the
+registry itself rather than over a list somebody has to remember to extend. The invitation still
+renders the *inviter's* name, which is a different person's, chosen by an authenticated member of
+the organisation, and it is escaped.
 
 ### The burst notice
 
