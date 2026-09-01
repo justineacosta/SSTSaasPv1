@@ -73,8 +73,16 @@ when there are real endpoints to raise them.
 ## 3. Codes
 
 **Auth:** `UNAUTHENTICATED`, `INVALID_CREDENTIALS`, `SESSION_EXPIRED`, `MFA_REQUIRED`,
-`MFA_INVALID`, `EMAIL_NOT_VERIFIED`, `ACCOUNT_LOCKED`, `INVALID_API_KEY`, `API_KEY_EXPIRED`,
-`CSRF_TOKEN_INVALID`.
+`MFA_INVALID`, `MFA_ENROLMENT_REQUIRED`, `EMAIL_NOT_VERIFIED`, `ACCOUNT_LOCKED`,
+`INVALID_API_KEY`, `API_KEY_EXPIRED`, `CSRF_TOKEN_INVALID`.
+
+`MFA_ENROLMENT_REQUIRED` was added by Phase 2 Task 11 and **no shipped route can produce it
+today**. It is 403 rather than 401 and it is deliberately not `MFA_REQUIRED`: that code means
+"you hold a pending session, finish the challenge", and this one means "you hold a full session
+and your organisation will not let you use it until you enrol a factor". Answering 401 would
+tell the frontend to show a sign-in form, which changes nothing for a caller who is already
+authenticated. The mechanism that raises it is `apps/api/src/modules/auth/require-mfa.ts`;
+**Task 12 is what places that guard in the request pipeline.**
 
 **Access:** `PERMISSION_DENIED`, `NOT_A_MEMBER`, `ORGANIZATION_SUSPENDED`,
 `RESOURCE_NOT_FOUND` (also returned for cross-tenant access).
