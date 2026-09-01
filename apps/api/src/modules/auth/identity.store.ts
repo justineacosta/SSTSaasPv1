@@ -1,4 +1,7 @@
-import type { PlatformAuditTransaction } from '../audit/platform-audit.service.js';
+import type {
+  PlatformAuditEventDelegate,
+  PlatformAuditTransaction,
+} from '../audit/platform-audit.service.js';
 import type { VerificationTokenTransaction } from './token.service.js';
 
 /**
@@ -119,6 +122,51 @@ export interface IdentityUserFailureWhere {
 
 export interface IdentityTransaction
   extends VerificationTokenTransaction, PlatformAuditTransaction {
+  /**
+   * The audit table, WRITE-ONLY except for one count. M3.
+   *
+   * `PasswordChangeService` needs to know how many times this account's current
+   * password has been refused recently, so it can notify the owner on a burst —
+   * and it must do that **without** touching `User.failedLoginCount`, because a
+   * session thief who could move that counter could lock the owner out of
+   * `login` outright. The append-only table it already writes to is the only
+   * other place that fact exists, so it is counted from there rather than from
+   * a new column: no migration, and no second source of truth to disagree with
+   * the audit trail.
+   *
+   * Deliberately a COUNT and not a list. Nothing here needs the rows.
+   */
+  platformAuditEvent: PlatformAuditEventDelegate & {
+    count(args: {
+      where: {
+        action: string;
+        resourceId: string;
+        /**
+         * STRICTLY AFTER, not at-or-after. The boundary is usually the instant
+         * of the last successful change, and that row's own timestamp must not
+         * be able to drag the failures that preceded it into the count when two
+         * rows land in the same tick.
+         */
+        createdAt: { gt: Date };
+      };
+    }): Promise<number>;
+    /**
+     * The most recent row of one action for one account, for the timestamp
+     * alone.
+     *
+     * This is what makes the burst count **consecutive** rather than merely
+     * recent: failures are counted from the last successful change, so a user
+     * who mistyped four times, succeeded, and then mistyped four more does not
+     * get a notice about a burst that never happened. `login`'s ladder has the
+     * same property — only a success resets it — and an account owner should
+     * not have to learn two different stories about what a burst means.
+     */
+    findFirst(args: {
+      where: { action: string; resourceId: string };
+      orderBy: { createdAt: 'desc' };
+      select: { createdAt: true };
+    }): Promise<{ readonly createdAt: Date } | null>;
+  };
   user: IdentityUserDelegate & {
     create(args: { data: { id: string; email: string; name: string | null } }): Promise<unknown>;
     update(args: { where: { id: string }; data: IdentityUserUpdateData }): Promise<unknown>;

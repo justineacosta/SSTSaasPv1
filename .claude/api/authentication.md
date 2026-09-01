@@ -402,8 +402,20 @@ is disabled by default and fails open.
 is a credential check, so `INVALID_CREDENTIALS` is the same code login gives for the same fact.
 It deliberately does not increment `User.failedLoginCount`: a caller who could lock an account by
 failing here could lock it with a stolen session, and the ladder's `ACCOUNT_LOCKED` refusal would
-then be a distinguishable outcome on an authenticated route. The bound is the rate-limit class
-below; the signal is the `PASSWORD_CHANGE_FAILED` audit row.
+then be a distinguishable outcome on an authenticated route.
+
+**It does, however, tell the account owner.** Staying out of the ladder used to mean this endpoint
+had no per-account bound, no lock and no message at all — a weaker guard on the password than
+`login`, on the one route that proves a password while requiring nothing but a stolen session.
+Five *consecutive* refused attempts within fifteen minutes now send the owner the same
+`failedLoginBurst` notice a burst of failed logins sends, once per burst. The count is taken from
+the `PASSWORD_CHANGE_FAILED` audit rows rather than from a column, precisely so that nothing here
+can move a counter a session thief would otherwise be able to weaponise, and a successful change
+resets the run. The response is the identical 401 on every attempt including the fifth.
+
+**A per-account 429 is the right long-term answer and is not built.** It needs the limiter's
+per-principal stage, which rulings 55 and 59 already owe. Until then the bounds are the per-IP
+rate-limit class below and the notice.
 
 **Rate limits.** Two of these classes are new and neither was transcribed from
 [`../security/abuse-prevention.md`](../security/abuse-prevention.md) §1 — that table had a row for

@@ -527,6 +527,41 @@ describe('POST /auth/change-password', () => {
     expect(user.lockedUntil).toBeNull();
   });
 
+  it('notifies the owner on a burst of refused current passwords (M3)', async () => {
+    // M3, against the real append-only table — the count is read from
+    // `PlatformAuditEvent` rather than from a column, so a fake cannot show
+    // that the query works. `login` bounds guessing per account, locks, and
+    // tells the owner; this endpoint deliberately does neither of the first two
+    // and was telling the owner nothing at all.
+    const email = await account();
+    const signed = await signIn(email);
+    const user = await h.prisma.user.findUniqueOrThrow({ where: { email } });
+    h.sent.length = 0;
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await clearRateLimits(h.redis);
+      const response = await request(h.server)
+        .post('/api/v1/auth/change-password')
+        .set('Cookie', signed.cookie)
+        .set('X-CSRF-Token', signed.csrf)
+        .send({ currentPassword: 'wrong wrong wrong', newPassword: NEW_PASSWORD });
+      // The response is the same 401 on every attempt, the fifth included. A
+      // different answer on the one that sends would tell whoever is guessing
+      // exactly where the threshold is.
+      expect(response.status).toBe(401);
+    }
+
+    expect(await platformEvents(user.id, 'PASSWORD_CHANGE_FAILED')).toHaveLength(5);
+    expect(h.sent.map((mail) => mail.templateId)).toEqual(['failedLoginBurst']);
+
+    // AND THE LADDER IS UNTOUCHED. This is the constraint that made the notice
+    // the right answer rather than the ladder: a session thief who could move
+    // this counter could lock the owner out of `login` outright.
+    const after = await h.prisma.user.findUniqueOrThrow({ where: { email } });
+    expect(after.failedLoginCount).toBe(0);
+    expect(after.lockedUntil).toBeNull();
+  }, 120_000);
+
   it('LETS EXACTLY ONE OF TWO PARALLEL CHANGES COMMIT', async () => {
     // D3 and carry-forward ruling 74. Both requests verify against the same
     // stored hash — the read happens before a ~40 ms Argon2 operation — so
