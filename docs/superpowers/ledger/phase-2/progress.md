@@ -740,9 +740,14 @@ were not reviewed by anybody. Each was written test-first with the mutation re-r
 that is the author checking their own work. **Task 11's reviewer may treat `6bc88e4` and `a339e9b` as
 unexamined.**
 
-**Branching. Task 10 is NOT merged.** It sits on `feat/phase-2-task-10`, cut from `main` at
-`cfc0cb7`, unpushed, with no pull request and no CI run. **Task 11 branches from whatever `main` is
-when you start** — pull first, and decide with the operator whether Task 10 merges first.
+**Branching. Task 10 is merged.** PR #19, rebased onto `main` on 2026-09-01 and the branch deleted,
+with CI green on a Linux runner before the merge — runs `33541294585` (branch head) and
+`33541330475` (pull request), both `success`. **The pull-request run failed once and was re-run**,
+and the cause is worth knowing because it will recur: `Failed to connect to Reaper` in
+`packages/db/src/tenant-transaction.integration.spec.ts`, which is Testcontainers' Ryuk cleanup
+container failing to start on the runner — infrastructure, not a test, and the other run on the same
+commit passed all 19 files. Re-running the failed job alone was green. **Task 11 branches from
+whatever `main` is when you start** — pull first; do not cut from a commit named in this file.
 
 **Next action:** Task 11 — TOTP MFA and recovery codes, a fresh implementer subagent per the plan's
 mode table, reviewer fresh as always.

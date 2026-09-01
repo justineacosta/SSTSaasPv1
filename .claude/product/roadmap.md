@@ -1536,8 +1536,11 @@ in twenty-five — so the docblock says plainly that deleting the predicate does
 They close the second review's five findings, each test-first with the mutation re-run, but that is
 the author checking their own work.
 
-**Task 10 is NOT merged.** It sits on `feat/phase-2-task-10`, unpushed, with no pull request and no
-CI run.
+**Task 10 was merged to `main` on 2026-09-01 as PR #19** (rebase, branch deleted), with CI green on
+a Linux runner before the merge: runs `33541294585` and `33541330475`, both `success`. The
+pull-request run failed once on `Failed to connect to Reaper` — Testcontainers' Ryuk cleanup
+container failing to start, in a Phase 1 spec, with the other run on the same commit passing all 19
+files — and was green on a re-run of the failed job alone.
 
 All findings and dispositions:
 [`docs/superpowers/ledger/phase-2/task-10/`](../../docs/superpowers/ledger/phase-2/task-10/).
