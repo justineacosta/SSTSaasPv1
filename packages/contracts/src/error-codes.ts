@@ -5,6 +5,15 @@ export const ERROR_CODES = {
   SESSION_EXPIRED: 'SESSION_EXPIRED',
   MFA_REQUIRED: 'MFA_REQUIRED',
   MFA_INVALID: 'MFA_INVALID',
+  // 403, not 401, and the distinction is the whole reason this is a separate
+  // code from MFA_REQUIRED. MFA_REQUIRED means "you hold a pending session,
+  // finish the challenge"; this means "you hold a FULL session and your
+  // organisation will not let you use it until you enrol a factor". A 401 would
+  // tell the frontend to show a sign-in form, which changes nothing — the
+  // caller is already authenticated. Phase 2 Task 11 builds the mechanism that
+  // raises it (`require-mfa.ts`); **Task 12 is what places that guard in the
+  // pipeline**, so until then no shipped route can produce this.
+  MFA_ENROLMENT_REQUIRED: 'MFA_ENROLMENT_REQUIRED',
   EMAIL_NOT_VERIFIED: 'EMAIL_NOT_VERIFIED',
   ACCOUNT_LOCKED: 'ACCOUNT_LOCKED',
   INVALID_API_KEY: 'INVALID_API_KEY',

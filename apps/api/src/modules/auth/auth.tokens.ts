@@ -37,3 +37,25 @@ export const SESSION_CACHE = 'SENTINEL_SESSION_CACHE';
  * question and `auth.module.ts` is the only place the client reaches it.
  */
 export const ACTIVE_ORGANIZATION_LOOKUP = 'SENTINEL_ACTIVE_ORGANIZATION_LOOKUP';
+/**
+ * The AES-256-GCM key `MfaFactor.secretEncrypted` is sealed with.
+ *
+ * A DI key holding a `Buffer`, resolved from `MFA_SECRET_ENCRYPTION_KEY` in
+ * `auth.module.ts` — the one place `ApiEnv` is read for it. Provided as the
+ * decoded bytes rather than the base64 string so no consumer has to remember to
+ * decode it, and so a wrong-length value cannot reach `createCipheriv`: the
+ * config layer has already refused the boot.
+ */
+export const MFA_SECRET_KEY = 'SENTINEL_MFA_SECRET_KEY';
+/**
+ * D8's lookup port: "does this organisation require MFA, and has this member
+ * confirmed a factor?"
+ *
+ * **NOTHING PROVIDES THIS TOKEN.** `MfaEnrolmentGuard` is written in Task 11
+ * and registered in no module; the query behind this port needs organisation
+ * membership under tenant scoping, which is Task 12's. Declaring the key here
+ * rather than in the guard keeps the DI surface of this module in one file, and
+ * an unresolved string token names itself in Nest's boot error if anybody
+ * registers the guard without providing it.
+ */
+export const MFA_ENROLMENT_POLICY = 'SENTINEL_MFA_ENROLMENT_POLICY';
