@@ -246,9 +246,19 @@ model MfaFactor {
   userId           String
   type             MfaFactorType
   secretEncrypted  String
-  /// WHICH KEY ENCRYPTED `secretEncrypted`. Nullable, and nothing in Phase 2
-  /// writes it — NULL means "the application key that was current when this row
-  /// was written", which is the only key that has ever existed.
+  /// WHICH KEY ENCRYPTED `secretEncrypted`. Nullable, and **Phase 2 Task 11
+  /// writes it on every row it creates** — the value is `1`, stated explicitly
+  /// rather than left to the default meaning, because a column nothing writes
+  /// is dead weight rather than cheap insurance (carry-forward ruling 8).
+  ///
+  /// NULL therefore describes no row in any database. It is still read, and it
+  /// still means "the application key that was current when this row was
+  /// written", which is version 1 — a rotation story that cannot read its own
+  /// oldest rows is not a rotation story. `mfa-secret.ts` also carries the
+  /// version inside `secretEncrypted`'s envelope and **refuses a row whose
+  /// column and envelope disagree**: that state means a re-encryption wrote one
+  /// and not the other, and guessing which is authoritative decrypts with the
+  /// wrong key and returns bytes that look like a secret.
   ///
   /// It exists for the same reason `IdentityProviderLink` does, one level down:
   /// a column costs nothing now, and retrofitting one is expensive precisely
@@ -267,6 +277,32 @@ model MfaFactor {
   confirmedAt      DateTime?     @db.Timestamptz(6)
   label            String?
   lastUsedAt       DateTime?     @db.Timestamptz(6)
+
+  /// THE REPLAY DEFENCE. The RFC 6238 step counter of the most recently
+  /// accepted code, and any code whose step is <= this is refused.
+  ///
+  /// Without it the ±1 drift window is an attack surface rather than a
+  /// tolerance: a code stays computable for ~90 seconds, so an attacker who
+  /// observes one — over a shoulder, through a phished form, from a proxy —
+  /// can present it again inside that window and it verifies. The drift window
+  /// does not defend against this and nothing else in the TOTP design does.
+  /// Storing the last accepted step is the standard answer and
+  /// `security/authentication.md` §5 names it.
+  ///
+  /// `Int`, not `BigInt`. At a 30-second step the counter reaches 2^31-1 in the
+  /// year 4011, so int4 is not a bound anyone will meet; `BigInt` would map to
+  /// a JavaScript `bigint`, which cannot be compared with a `number` without an
+  /// explicit conversion at every site — a footgun in a comparison that IS a
+  /// security control. Nullable because a factor that has never accepted a code
+  /// has no floor, and 0 would be a real step (1 January 1970) rather than an
+  /// absence.
+  ///
+  /// **The check and the write must be one statement.** Reading this column and
+  /// then updating it lets two concurrent requests carrying the same code both
+  /// pass; `mfa-verification.service.ts` writes it with a conditional
+  /// `updateMany` whose predicate is this column, so Postgres arbitrates and
+  /// exactly one request sees `count: 1`.
+  lastAcceptedStep Int?
   createdAt        DateTime      @default(now()) @db.Timestamptz(6)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
