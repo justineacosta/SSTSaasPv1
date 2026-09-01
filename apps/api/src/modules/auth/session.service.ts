@@ -691,11 +691,27 @@ export class SessionService {
    *
    * **What genuinely remains the caller's ordering problem** is a session
    * created *after* the write: nothing here has revoked it and nothing here
-   * could. A password change must write the new hash **before** calling this,
-   * so that a racing login cannot mint a session with the old credential once
-   * this call has finished. Task 10 owns that ordering, and Task 14 owns the
-   * equivalent for member removal; it is stated here because the failure is
-   * invisible from inside this method.
+   * could. A password change must write the new hash **before** calling this.
+   * Task 10 owns that ordering, and Task 14 owns the equivalent for member
+   * removal; it is stated here because the failure is invisible from inside
+   * this method.
+   *
+   * **P3: THIS PARAGRAPH USED TO CLAIM THAT ORDERING WAS SUFFICIENT, AND IT IS
+   * NOT.** It said writing the hash first meant "a racing login cannot mint a
+   * session with the old credential once this call has finished". Task 10
+   * measured that false — 25 of 25 racing logins survived a completed reset,
+   * each a fully privileged session — because a login already in flight inserts
+   * its row *after* this method's `updateMany` has evaluated its predicate.
+   *
+   * The ordering is necessary and not sufficient. What makes the promise true is
+   * the ordering plus a **post-issue credential re-read on the login path**
+   * (`login.service.ts`'s `credentialStillCurrent`), which revokes a session it
+   * has just issued when the credential moved underneath it. **Any future caller
+   * of this method that needs "and nothing survives" must pair it with an
+   * equivalent check on whatever path issues sessions** — Task 14's member
+   * removal is the next one, and its equivalent does not exist yet.
+   *
+   * Carry-forward ruling 51 carries the same overstatement and moves with this.
    */
   async revokeAllForUser(
     userId: string,

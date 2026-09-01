@@ -358,10 +358,19 @@ cookie-authenticated and the double-submit token has something to bind to. Both 
 asserted on the shipped routes rather than on a fixture controller.
 
 **Only `change-password` sets a cookie.** `reset-password` deliberately does not: completing a
-reset revokes **every** session, including any the caller happened to hold, and issuing a fresh
-one would sign in whoever redeemed the link. They sign in afterwards with the password they just
-chose, which is the step that proves they know it. `change-password` replaces both cookies with
-the rotated session's, or clears them when there was nothing left to rotate.
+reset revokes every session, including any the caller happened to hold, and issuing a fresh one
+would sign in whoever redeemed the link. They sign in afterwards with the password they just chose,
+which is the step that proves they know it. `change-password` replaces both cookies with the
+rotated session's, or clears them when there was nothing left to rotate.
+
+**"Every session" includes a login that was in flight while the reset ran, and that took two
+mechanisms rather than one.** The reset revokes what exists when its new credential commits; a
+login already in flight inserts its session afterwards and is not swept by that revocation, so
+login itself re-reads the credential after issuing and revokes the session it has just created if
+the credential moved. Before that second half existed, every racing login kept a fully privileged
+session for up to thirty days.
+[`../security/authentication.md`](../security/authentication.md) §6 carries the measurement and the
+argument that the two halves cover every interleaving.
 
 **`forgot-password`'s body is a constant**, in the same way registration's and the resend's are,
 and for the same reason: a field whose value never varies with the account cannot leak whether the

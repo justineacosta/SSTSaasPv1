@@ -540,6 +540,16 @@ export class AuthController {
    * happened to be holding, and issuing a fresh one here would sign in whoever
    * redeemed the link. They sign in afterwards with the password they just
    * chose, which is the step that proves they know it.
+   *
+   * **"Every session" is true, and it took two mechanisms rather than one** —
+   * P4, because this docblock and the `description` below are the copy a
+   * customer reads. The reset revokes what exists when its credential commits;
+   * a login already in flight inserts its session *after* that and is not swept
+   * by it, so `login.service.ts` re-reads the credential after issuing and
+   * revokes the session it just created when the credential has moved. Before
+   * that second half existed, every racing login kept a fully privileged
+   * session for up to thirty days. `security/authentication.md` §6 carries the
+   * measurement and why the two halves cover every interleaving.
    */
   @Public()
   @RefuseCrossSite()

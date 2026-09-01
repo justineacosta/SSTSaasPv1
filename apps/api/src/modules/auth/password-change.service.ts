@@ -210,10 +210,24 @@ export class PasswordChangeService {
           // own count can differ. A tidier name would be a false statement in
           // an append-only table.
           liveSessionsAtWrite,
-          // The caller keeps a session, unlike a reset. Worth one boolean so an
-          // investigation can tell the two credential replacements apart
-          // without joining to another row.
-          ownSessionRotated: true,
+          // L1. `ownSessionRotated: true` USED TO BE HERE, AND IT WAS A
+          // PREDICTION RATHER THAN A FACT.
+          //
+          // It was written inside this transaction, before `sessions.rotate()`
+          // was called — and `rotate` returns `null` when the caller's session
+          // was concurrently revoked, a case this service has a shipped test
+          // for. The reviewer logged the metadata in exactly that test and got
+          // `ownSessionRotated: true` with nothing rotated: one false fact in an
+          // append-only table, in the rarest and most interesting case.
+          //
+          // It is removed rather than corrected, because there is nothing true
+          // to write here: the rotation has not happened yet and this row cannot
+          // be updated afterwards. Nothing is lost — `PASSWORD_CHANGED` and
+          // `PASSWORD_RESET_COMPLETED` already distinguish the two credential
+          // replacements, which is all the boolean ever carried.
+          //
+          // This is the same rule the field above is named for, applied one
+          // field over: write what happened, not what was intended.
         },
         ip: command.ip,
         userAgent: command.userAgent,
