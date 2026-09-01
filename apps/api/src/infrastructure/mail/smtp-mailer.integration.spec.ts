@@ -160,8 +160,9 @@ describe('the SMTP adapter against the compose Mailpit', () => {
     // the adapter can still fail to attach one.
     const recipient = uniqueRecipient();
     const { token } = mintSecretToken();
+    // No `recipientName`: `PasswordResetInput` has none as of Task 10 (ruling
+    // 70, closed), so this is a compile error rather than a choice.
     const rendered = EMAIL_TEMPLATES.passwordReset({
-      recipientName: 'Ada Lovelace',
       webBaseUrl: env.WEB_BASE_URL,
       token,
       ttlSeconds: env.TOKEN_TTL_PASSWORD_RESET_SECONDS,
@@ -209,7 +210,6 @@ describe('the SMTP adapter against the compose Mailpit', () => {
       templateId: 'mfaDisabled',
       to: recipient,
       ...EMAIL_TEMPLATES.mfaDisabled({
-        recipientName: 'Ada Lovelace',
         occurredAt: new Date('2026-08-26T09:41:07.512Z'),
         ipAddress: '203.0.113.7',
       }),
@@ -226,21 +226,26 @@ describe('the SMTP adapter against the compose Mailpit', () => {
     // template layer too; this proves nothing between the template and the
     // recipient's mailbox — MIME encoding, quoted-printable, the transport —
     // undoes it.
-    // `passwordChanged`, NOT `emailVerification`. F1 removed the display name
-    // from the two templates sent to an address whose ownership nobody has
-    // proven, so `emailVerification` no longer renders an attacker string and
-    // could not exercise this property any more. `passwordChanged` still greets
-    // by name — legitimately, since it reports an action on an account somebody
-    // is already signed in to — so it is the honest fixture for "escaping
-    // survives the transport".
+    // `invitation`, NOT `passwordChanged`, and the fixture had to move twice.
+    // Task 8's F1 took the display name off the templates sent to an unproven
+    // address, and Task 10 took it off the remaining four (ruling 70, closed) —
+    // so `passwordChanged` renders no attacker-chosen string any more and could
+    // not exercise this property. `invitation` is the ONLY template left that
+    // renders one: `inviterName` and `organizationName` are chosen by an
+    // authenticated member of the inviting organisation, which is a different
+    // person from the recipient but still not us. It is therefore the honest
+    // fixture for "escaping survives the transport", and the day it stops being
+    // the only one, this comment is what says so.
     const recipient = uniqueRecipient();
     await mailer.send({
-      templateId: 'passwordChanged',
+      templateId: 'invitation',
       to: recipient,
-      ...EMAIL_TEMPLATES.passwordChanged({
-        recipientName: '<script>alert(1)</script>',
-        occurredAt: new Date('2026-08-26T09:41:00.000Z'),
-        ipAddress: '203.0.113.7',
+      ...EMAIL_TEMPLATES.invitation({
+        inviterName: '<script>alert(1)</script>',
+        organizationName: 'Acme Security',
+        webBaseUrl: env.WEB_BASE_URL,
+        token: mintSecretToken().token,
+        ttlSeconds: env.TOKEN_TTL_INVITATION_SECONDS,
       }),
     });
 
