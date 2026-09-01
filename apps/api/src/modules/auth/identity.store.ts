@@ -153,8 +153,32 @@ export interface IdentityTransaction
         | { failedLoginCount: 0; lockedUntil: null };
     }): Promise<{ count: number }>;
   };
-  credential: {
+  credential: IdentityCredentialDelegate & {
     create(args: { data: { id: string; userId: string; passwordHash: string } }): Promise<unknown>;
+  };
+  /**
+   * "How many sessions is this user holding right now?", asked inside the
+   * transaction that replaces their credential.
+   *
+   * Task 10, and the reason it is a COUNT rather than a list is
+   * `security/audit.md` §4: one audit row per revoked session would let an
+   * unauthenticated caller — anyone who can trigger a reset — size the session
+   * table for an account they do not own.
+   *
+   * The predicate is "not revoked", which is what `revokeAllForUser` will act
+   * on a moment later. It is deliberately NOT the same number as that call's
+   * return value, and `password-reset.service.ts` explains at length why the
+   * metadata field is named `liveSessionsAtWrite` rather than
+   * `sessionsRevoked`: the count is taken at the instant the new hash commits
+   * and the revocation happens afterwards, so a session created in between is
+   * revoked by the `updateMany` (ruling 51) and was never in this number.
+   * Naming it for what it measures is the difference between a fact and a
+   * false statement in an append-only table.
+   */
+  session: {
+    count(args: {
+      where: { userId: string; revokedAt: null; id?: { not: string } };
+    }): Promise<number>;
   };
 }
 
@@ -172,6 +196,35 @@ export interface IdentityCredentialDelegate {
   findUnique(args: {
     where: { userId: string };
   }): Promise<{ readonly passwordHash: string } | null>;
+  /**
+   * THE COMPARE-AND-SWAP THAT MAKES A CREDENTIAL WRITE SURVIVE CONCURRENCY. D3.
+   *
+   * `where` carries the hash the caller **verified against**, so the update
+   * applies only if the stored credential is still the one the decision was
+   * made from. Every write on this path is decided from a row read BEFORE a
+   * ~40 ms Argon2 operation — verify the old password, hash the new one — which
+   * is exactly the shape carry-forward ruling 73 records as Task 9's H1: two
+   * concurrent change-password requests both verify against the same old hash,
+   * and without this predicate both commit, so the second silently overwrites
+   * the first and the user's password is whichever request happened to land
+   * last.
+   *
+   * `count: 0` is a REFUSAL, not a no-op. It means another writer moved the
+   * credential between the read and this statement, so the decision to write —
+   * not the value — is stale, and the safe answer is to refuse and let the
+   * caller retry with a fresh read.
+   *
+   * Prisma compiles `updateMany` to a single `UPDATE ... WHERE`, so Postgres
+   * arbitrates row by row: the loser blocks on the row lock, re-evaluates the
+   * predicate against the committed version, and reports `count: 0`. A `SELECT`
+   * followed by an `update` passes every sequential test and lets both through.
+   * Same discipline and the same reason as `login.service.ts`'s not-locked
+   * predicate.
+   */
+  updateMany(args: {
+    where: { userId: string; passwordHash: string };
+    data: { passwordHash: string };
+  }): Promise<{ count: number }>;
 }
 
 /**

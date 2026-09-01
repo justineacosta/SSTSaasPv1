@@ -105,9 +105,39 @@ export interface IdentityStoreFake {
      * that against real Postgres.
      */
     redeemableUserId: string | null;
+    /**
+     * Set to replace a stored credential **immediately after the next
+     * credential read**, one shot, then cleared — a sibling password write
+     * committing inside the exact window the compare-and-swap exists to close.
+     *
+     * The Task 10 twin of `lockRowOnTransaction`, and it exists for the same
+     * reason: both password endpoints decide what to write from a credential
+     * they read earlier, so the deciding read is stale by construction
+     * (carry-forward ruling 73). Seeding a different hash up front cannot
+     * exercise that — the read would simply return the new value and the
+     * compare-and-swap would succeed, which is a different branch.
+     *
+     * **After the READ rather than at `$transaction` open**, and the difference
+     * is what makes it model anything: `PasswordResetService` learns the
+     * `userId` only by consuming the token, so its credential read happens
+     * inside the transaction, and a hook that fired before it would be
+     * invisible to the predicate.
+     *
+     * **It fakes the TIMING of the sibling's write, never the arbitration of
+     * it.** What makes the real compare-and-swap hold is Postgres blocking the
+     * loser on a row lock and re-evaluating the predicate against the committed
+     * row; there is no lock here and no second caller.
+     * `auth.password.integration.spec.ts`'s parallel probe owns that against
+     * real Postgres, and nothing set through this flag may be read as evidence
+     * for it — the same division `redeemableUserId` and `lockRowOnTransaction`
+     * both record.
+     */
+    replaceCredentialAfterRead: { userId: string; passwordHash: string } | null;
   };
   /** The `tokenHash` of every token issued through the fake transaction. */
   readonly issuedTokenHashes: string[];
+  /** Sessions the `session.count` delegate answers with, by `userId`. */
+  readonly liveSessionCounts: Map<string, number>;
 }
 
 /**
@@ -163,6 +193,38 @@ export function identityStoreFake(): IdentityStoreFake {
      * records above.
      */
     lockRowOnTransaction: null as { userId: string; lockedUntil: Date } | null,
+    /** See the interface above. The Task 10 twin of `lockRowOnTransaction`. */
+    replaceCredentialAfterRead: null as { userId: string; passwordHash: string } | null,
+  };
+  const liveSessionCounts = new Map<string, number>();
+
+  /**
+   * The compare-and-swap, evaluated honestly against this fake's own state.
+   *
+   * `count: 1` only when the stored hash is still the one the caller verified
+   * against, which is the same condition Postgres evaluates — so a spec that
+   * moves the credential first sees `count: 0` for the same reason production
+   * does. What it cannot model is two callers racing; see
+   * `replaceCredentialOnTransaction`.
+   */
+  const readCredential = (userId: string): { passwordHash: string } | null => {
+    const passwordHash = credentials.get(userId);
+    // The sibling's write, landing between this read and the caller's write.
+    // One shot: a flag that stayed armed would move the row again on a retry
+    // and make a refusal look permanent when it is not.
+    const replacing = control.replaceCredentialAfterRead;
+    if (replacing !== null) {
+      credentials.set(replacing.userId, replacing.passwordHash);
+      control.replaceCredentialAfterRead = null;
+    }
+    return passwordHash === undefined ? null : { passwordHash };
+  };
+
+  const swapCredential = (where: { userId: string; passwordHash: string }, next: string) => {
+    const stored = credentials.get(where.userId);
+    if (stored === undefined || stored !== where.passwordHash) return { count: 0 };
+    credentials.set(where.userId, next);
+    return { count: 1 };
   };
 
   const find = (where: { email: string } | { id: string }): IdentityUserRow | null =>
@@ -243,7 +305,24 @@ export function identityStoreFake(): IdentityStoreFake {
         // recorded credential, even a fake one, and `pnpm check:secrets` reads
         // committed files rather than test output.
         calls.push({ name: 'tx.credential.create', args: { userId: args.data.userId } });
+        credentials.set(args.data.userId, args.data.passwordHash);
         return Promise.resolve(undefined);
+      },
+      findUnique: (args) => {
+        calls.push({ name: 'tx.credential.findUnique', args: args.where });
+        return Promise.resolve(readCredential(args.where.userId));
+      },
+      updateMany: (args) => {
+        // The `userId` and the affected-row count are recorded; neither hash
+        // is, for the reason `create` above gives.
+        calls.push({ name: 'tx.credential.updateMany', args: { userId: args.where.userId } });
+        return Promise.resolve(swapCredential(args.where, args.data.passwordHash));
+      },
+    },
+    session: {
+      count: (args) => {
+        calls.push({ name: 'tx.session.count', args: args.where });
+        return Promise.resolve(liveSessionCounts.get(args.where.userId) ?? 0);
       },
     },
     verificationToken: {
@@ -298,8 +377,11 @@ export function identityStoreFake(): IdentityStoreFake {
         // `tx.credential.create` records only the id: a recorded hash is a
         // recorded credential, even a fake one.
         calls.push({ name: 'credential.findUnique', args: args.where });
-        const passwordHash = credentials.get(args.where.userId);
-        return Promise.resolve(passwordHash === undefined ? null : { passwordHash });
+        return Promise.resolve(readCredential(args.where.userId));
+      },
+      updateMany: (args) => {
+        calls.push({ name: 'credential.updateMany', args: { userId: args.where.userId } });
+        return Promise.resolve(swapCredential(args.where, args.data.passwordHash));
       },
     },
     mfaFactor: {
@@ -375,6 +457,7 @@ export function identityStoreFake(): IdentityStoreFake {
     priorSessions,
     control,
     issuedTokenHashes,
+    liveSessionCounts,
   };
 }
 
