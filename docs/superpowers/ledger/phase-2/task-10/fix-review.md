@@ -19,11 +19,16 @@ Written and committed **incrementally**, finding by finding.
 
 | | Finding | Verdict |
 |---|---|---|
-| **H1** | racing login mints a session the reset never sweeps | *(below)* |
-| **M1** | reset CAS asserted only by a fake | *(below)* |
-| **M2** | ruling 70's fifth channel | *(below)* |
-| **M3** | `change-password` is a weaker guard than `login` | *(below)* |
-| **L1–L7, P1–P7** | *(below)* |
+| **H1** | racing login mints a session the reset never sweeps | **CLOSED** — 0 survivors, 0 authenticating, over 5 rounds; 16 with the check disabled |
+| — | the rehash trap | **CLOSED WITH A CAVEAT** — the trap is closed, by a different mechanism than the code says, and neither mechanism is tested (**NEW-1**) |
+| **M1** | reset CAS asserted only by a fake | **OPEN** at Medium — the branch is now exercised by a real writer, and deleting the predicate still leaves the integration lane green. Honestly reported. |
+| **M2** | ruling 70's fifth channel | **CLOSED** — mutation RED in three blocks. Sixth channel (`organizationName`) characterised; its pin is weaker than claimed (**NEW-2**) |
+| **M3** | `change-password` is a weaker guard than `login` | **CLOSED WITH A CAVEAT** — the notice works, is consecutive, and touches neither the ladder nor the response; "once per burst" is defeated by concurrency (**NEW-3**) |
+| **L1, L2, L4, L5, L6, L7** | | **CLOSED** (L4 correctly closed *as recorded*) |
+| **L3** | breach check and hash paid before the token is validated | **PARTIALLY FIXED** — site half done, document half claimed and absent (**NEW-5**) |
+| **P1–P7** | | **CLOSED** — and two new false sentences were introduced beside them (**NEW-4**, **NEW-5**) |
+
+**New defects: two Medium, three Low. Nothing at High** — stated plainly, having gone looking.
 
 ---
 
@@ -506,3 +511,114 @@ The reader the sentence is written for — "whoever tunes it" — does not learn
 `review.md`'s L3 asked for exactly that sentence, "beside the figure".
 
 **L3 verdict: PARTIALLY FIXED.** The site half is done well; the document half is claimed and absent.
+
+---
+
+## L1–L7 and P1–P7
+
+| | Verdict | Evidence |
+|---|---|---|
+| **L1** | CLOSED | `grep -rn ownSessionRotated` over `apps/`, `packages/`, `.claude/` finds it only in the comment recording its removal and in the ledger. The field is gone rather than corrected, which is right — there was nothing true to write. |
+| **L2** | CLOSED | `identity-fakes.ts` now records the trap and names the honest alternative mutation. I hit a *new* instance of the same family in M3 (renaming `gt` to `gte` makes the fake throw `TypeError` on `args.where.createdAt.gt`) and recorded it above, in the same spirit. |
+| **L3** | **PARTIALLY FIXED** | Site half done and well argued. Document half claimed and absent — NEW-5. |
+| **L4** | CLOSED as recorded, correctly | Both halves are now written at `password-reset.service.ts` and in `security/authentication.md` §6, with "**Binds Phase 11**" and the two acceptable Phase 11 answers named. The disposition said record, not fix, and that is what happened. |
+| **L5** | CLOSED | Mutation: delete the whole `tx.user.update` block → `× confirms an address that a completed reset just proved (L5)`. I also checked the new stamp cannot escalate anything: the only read of `emailVerifiedAt` on the login path is `login.service.ts:708`'s unfamiliar-sign-in notice; login itself never gates on it, so stamping it grants no access. |
+| **L6** | CLOSED | `audit.md` §4 now states the change row excludes the caller's own session, matches the code's `id: { not: command.sessionId }`, and names L6. |
+| **L7** | CLOSED | Same mutation → `× clears a live brute-force lock, so the new password actually works (L7)`. Administrative locks (`User.status`) deliberately untouched, and the reason (D4 refuses those links) is stated. |
+| **P1** | CLOSED | The false sentence is gone and replaced with the true one — the ordering is necessary and not sufficient, and it names the other half. Written against the code as it ended up, which is what the disposition asked. |
+| **P2** | CLOSED | §6 rewritten: 25 of 25, thirty days, window one Argon2id verification wide and growing with the parameter, and it now describes the fix rather than the residual. |
+| **P3** | CLOSED | `git diff 2df56b7..5a6de21 -- session.service.ts` is no longer empty. The paragraph is corrected in place, names the mechanism that keeps the promise, and warns that Task 14's equivalent does not exist. |
+| **P4** | CLOSED | `api/authentication.md` §9 and the controller docblock both now say which two mechanisms make "every session" true. `check:openapi` is byte-identical at 13 routes, so the client-facing `description` is unchanged and is now accurate. |
+| **P5** | CLOSED | The docblock no longer claims "no exempt list"; it says which block covers what, and mutation D proves both blocks now reach `invitation`. |
+| **P6** | CLOSED | `identity-fakes.ts` states which half of the integration coverage exists (`change-password`) and which does not (the reset), and does not overclaim the new probe. |
+| **P7** | orchestrator's, reported not written | Correctly escalated rather than edited unilaterally. |
+
+**Two new false sentences were introduced while correcting these**, which is the pattern the brief
+warned about: the ruling-33 citation (NEW-4) and the `abuse-prevention.md` cross-reference (NEW-5).
+Both sit in the same commit as corrections they stand beside.
+
+---
+
+## New defects introduced or left by the fix round
+
+| | Grade | Finding |
+|---|---|---|
+| **NEW-1** | Medium | Two sentences state a failure mode that does not exist ("a rehashing login revokes itself"); the test named for it does not observe it; and the availability control that actually prevents it — the re-verify fallback in `credentialStillCurrent` — is observed by nothing in either lane. Measured: deleting either half leaves 564 unit and 31 integration tests green; deleting the fallback refuses **3 of 4** concurrent correct-password sign-ins during a parameter migration. |
+| **NEW-3** | Medium | M3's "ONCE PER BURST" guarantee is defeated by concurrency. Measured: 4 sequential plus 8 concurrent refusals produced **2 and 3** `failedLoginBurst` notices in 2 of 4 rounds. Every test of the control is sequential — carry-forward ruling 74 verbatim, in the fix for a finding whose dispositions cite ruling 74. The false guarantee has also propagated to `api/authentication.md` §9 ("once per burst"). |
+| **NEW-2** | Low | The `organizationName` residual is pinned less tightly than its docblock claims. Measured: removing the name from the body **or** from the subject each leaves all 131 tests green, because `renderEmail` puts the subject into the text part. It also would not go red for the Task 13 constraint the docblock anticipates. |
+| **NEW-4** | Low | Ruling 33 is cited, in shipped code, for a proposition it does not contain (ruling 22 is the one that does). Ruling 11's class; the previous range's thirty citations all held. |
+| **NEW-5** | Low | `password-reset.service.ts` and `fixes.md` both say the L3 consequence was written into `abuse-prevention.md` §1. That file was not touched by this round. |
+
+**Nothing at High.** I say that having attacked the fix rather than read it: the racing-login probe
+at five rounds and at `rememberMe`, the MFA arm, the reset-vs-rehash and change-vs-rehash
+interleavings, the re-read's own ordering, the meaning-comparison's failure modes, the SMTP subject
+path, and the burst notice under concurrency. The one thing that produced a genuinely new
+*behaviour* defect is NEW-3, and it multiplies notification emails rather than granting access.
+
+**Also worth the orchestrator's attention, though not a defect of this round:** `change-password`
+still has H1's window and is protected only by timing. It is correctly disclosed in three places,
+and I reproduced the benign outcome (P-D: zero old-password sessions usable in five rounds). The fix
+is the same four lines that closed it on the login path, applied to that path's *other* trigger —
+and `session.service.ts`'s own new paragraph says every caller needing "and nothing survives" must
+pair the revoke with such a check. Leaving the one that already exists unpaired for another task is
+a choice, not a constraint.
+
+---
+
+## Verification I ran on the finished tree
+
+Exit codes captured outside a pipe. Tree clean apart from this file.
+
+| Command | Exit | Output |
+|---|---|---|
+| `pnpm format:check` | 0 | `All matched files use Prettier code style!` |
+| `pnpm lint` | 0 | 14 tasks successful |
+| `pnpm typecheck` | 0 | 14 tasks successful |
+| `pnpm test` | 0 | **83 files, 1362 tests** |
+| `pnpm check:specs` | 0 | 102 spec files, each claimed by exactly one project |
+| `pnpm test:integration` | 0 | **19 files, 323 tests**, 115 s — `M1 probe: reset predicate refused in 1/8 rounds` |
+| `pnpm build` | 0 | 8 tasks successful |
+| `pnpm check:openapi` | 0 | `routes: 13`, byte-identical |
+| `pnpm check:registry` | 0 | 15 models, 3 tenant-owned, 1 tenant root, 11 deliberately global |
+| `pnpm check:secrets` | 0 | 388 tracked files, no credential-shaped literals |
+| `docker compose ps` | 0 | four services `Up (healthy)` |
+
+Every row in `fixes.md` §5 reproduces exactly.
+
+### Mutations I applied and reverted
+
+| | Mutation | Result |
+|---|---|---|
+| A | `if (false && !(await this.credentialStillCurrent(...)))` | **16 survivors, 16 authenticating**; committed H1 tests **RED x2** |
+| B | `if (false && rehashed !== null) hashInForce = rehashed;` | unit **GREEN 564**, integration **GREEN 31** — NEW-1 |
+| C | `credentialStillCurrent`'s re-verify becomes `return false` | integration **GREEN 31**; 3 of 4 concurrent correct-password logins refused — NEW-1 |
+| D | restore `inviterName` and render it | registry.spec **RED x3 blocks** — reproduces the implementer's mutation M |
+| E | drop `organizationName` from the invitation body | **GREEN 131** — NEW-2 |
+| F | drop `organizationName` from the invitation subject | **GREEN 131** — NEW-2 |
+| G | `createdAt: { gt: new Date(since.getTime() - 1) }`, i.e. gte semantics | **GREEN 26** — the boundary correction is unobserved |
+| H | delete the reset's `tx.user.update` (L5 and L7) | **RED x2**, one per finding |
+| I | 8 concurrent refused current passwords after 4 sequential | **2 and 3 notices** in 2 of 4 rounds — NEW-3 |
+
+The tree was restored after every mutation, and the three scratch probe specs were deleted.
+`git status --porcelain` is empty apart from this file.
+
+---
+
+## What I could not check
+
+- **`pnpm test:e2e`.** Not run, and it correctly has no row — `git diff --stat 2df56b7..5a6de21` is
+  empty for `apps/web`, `packages/ui` and `packages/db/prisma/migrations`, which I verified.
+- **My MFA probe reported `mfaTokens=0`** because I read `body.mfaToken` and the contract's
+  discriminated union names that field differently. The `live=0` count it reports is a direct
+  `Session` query and is sound, so the MFA-arm conclusion stands; I did not separately confirm from
+  the response body that the `PENDING_MFA` arm was taken, beyond the seeded confirmed `MfaFactor`.
+- **Production Argon2id cost.** The ~250 ms figure everything here reasons about is ADR-0014's
+  target (carry-forward ruling 23), not a measurement. This harness runs at reduced parameters, so
+  every window in this document is narrower here than it is in production.
+- **The timing figures in `security/authentication.md` §6.** Unchanged by this round; I did not
+  re-run them, as the previous reviewer did not.
+- **Behaviour under a real SMTP relay.** The harness mailer is in-memory, so NEW-3's amplification
+  was measured as recorded `OutgoingMail` objects rather than as delivered messages.
+- **How far NEW-3 amplifies at scale.** I measured up to 3 notices from 8 concurrent requests on one
+  account and did not explore the maximum. The per-IP class of 10/hour is the practical bound from a
+  single address; I did not measure it from several.
