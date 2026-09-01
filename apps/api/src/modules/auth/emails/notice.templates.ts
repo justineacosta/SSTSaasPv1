@@ -31,11 +31,16 @@ import { formatUtcTimestamp, renderEmail, type RenderedEmail } from './layout.js
 /**
  * The two lines `whereAndWhen` renders, split out from the greeting.
  *
- * Separate from `SecurityNoticeContext` because Task 9 introduced the first
- * notice that renders the context block and **no** display name
- * (`newDeviceSignIn`). Composing the block out of a narrower type is what lets
- * that template drop `recipientName` from its own context without inventing a
- * fake one to satisfy this function's parameter.
+ * It was split out from a wider `SecurityNoticeContext` because Task 9
+ * introduced the first notice that renders the context block and **no** display
+ * name (`newDeviceSignIn`): composing the block out of a narrower type is what
+ * let that template drop `recipientName` without inventing a fake one to
+ * satisfy this function's parameter.
+ *
+ * **As of Task 10 the wider type is gone and this one is the only context type
+ * in the file** — ruling 70 closed to the class. The split survives it, because
+ * `whereAndWhen` should keep taking the narrowest thing it needs rather than
+ * whatever the notices happen to accept this year.
  *
  * # THERE IS NO `userAgent` FIELD, AND THAT SUPERSEDES RULING 63
  *
@@ -81,9 +86,29 @@ export interface NoticeOccurrenceContext {
   readonly ipAddress?: string | undefined;
 }
 
-export interface SecurityNoticeContext extends NoticeOccurrenceContext {
-  readonly recipientName: string;
-}
+/**
+ * `SecurityNoticeContext` USED TO LIVE HERE AND CARRIED A `recipientName`. IT
+ * IS GONE, AND ITS ABSENCE IS RULING 70 CLOSED.
+ *
+ * Every notice now takes `NoticeOccurrenceContext` and nothing else, so there
+ * is **no context type in this file with a display-name field**. `User.name` is
+ * free text an attacker seeds by registering a victim's address first, and the
+ * ruling's rule — a message sent to an address whose ownership has not been
+ * proven must render no stored display name — has produced findings through
+ * three separate channels now (Task 8's H1 and F1, Task 9's H2).
+ *
+ * Closed to the CLASS rather than to the instance with a caller, which is
+ * ruling 71's habit. `passwordChanged` gets its caller in Task 10;
+ * `mfaEnabled` and `mfaDisabled` do not get one until Task 11 and lost the
+ * field anyway. Task 9 is the case study for why: `newDeviceSignIn` was "safe
+ * because it has no caller yet" right up to the commit that gave it one, in the
+ * same task, and the sentence recording that safety was left behind.
+ *
+ * What a caller may still supply is an IP address, and it is not rendered as
+ * given — `renderableIpAddress` holds it to an address shape (ruling 72:
+ * enforce the claim where the value is rendered, not where you believe it came
+ * from).
+ */
 
 const UNKNOWN = 'not recorded';
 
@@ -188,12 +213,31 @@ const NOTICE_FOOTER = [
   NOTICE_NEVER_ASKS,
 ] as const;
 
-export function renderPasswordChanged(context: SecurityNoticeContext): RenderedEmail {
+/**
+ * `security/authentication.md` §2's "password change and reset revoke all other
+ * sessions and email the user", and Task 10 is where it gets its caller.
+ *
+ * **One template for both endpoints, and the copy has to be true of both.** A
+ * change signs out every *other* session and rotates the caller's own; a reset
+ * signs out every session there is, and the person completing it was holding
+ * none. "Any other sessions were signed out" is the sentence that is true on
+ * both paths — the earlier "Every other session was signed out" was written
+ * before either caller existed and is false of a reset, which signs out the
+ * one the sentence excludes.
+ *
+ * It renders **no display name** (see the block above `UNKNOWN`) and an IP
+ * address only when the value is an address literal. The IP is worth keeping
+ * here even though a reset may have been completed by an attacker: it is the
+ * one line the recipient can check against where they actually were, and
+ * `renderableIpAddress` is what stops it saying anything else.
+ */
+export function renderPasswordChanged(context: NoticeOccurrenceContext): RenderedEmail {
   return renderEmail({
     subject: 'Your Sentinel password was changed',
     paragraphs: [
-      `Hello ${context.recipientName},`,
-      'The password on your Sentinel account was changed. Every other session was signed out.',
+      // No greeting by name. Ruling 70, closed.
+      'Hello,',
+      'The password on your Sentinel account was changed. Any other sessions were signed out.',
       ...whereAndWhen(context),
     ],
     footer: [...NOTICE_FOOTER],
@@ -227,15 +271,21 @@ const MFA_COPY: Readonly<Record<MfaChange, { subject: string; body: readonly str
   },
 };
 
-export interface MfaChangedInput extends SecurityNoticeContext {
+export interface MfaChangedInput extends NoticeOccurrenceContext {
   readonly change: MfaChange;
 }
 
+/**
+ * **No display name, although Task 11 owns the callers and Task 10 shipped
+ * this.** Ruling 70 closed to the class rather than to the instance: leaving
+ * the field on a template with no caller is how `newDeviceSignIn` arrived at
+ * Task 9 carrying an injection with a written-down reason for why it was fine.
+ */
 export function renderMfaChanged(input: MfaChangedInput): RenderedEmail {
   const copy = MFA_COPY[input.change];
   return renderEmail({
     subject: copy.subject,
-    paragraphs: [`Hello ${input.recipientName},`, ...copy.body, ...whereAndWhen(input)],
+    paragraphs: ['Hello,', ...copy.body, ...whereAndWhen(input)],
     footer: [...NOTICE_FOOTER],
   });
 }
@@ -249,17 +299,17 @@ export function renderMfaChanged(input: MfaChangedInput): RenderedEmail {
  * make the two indistinguishable in exactly the place where the difference
  * matters, and it would give ruling 45's table only one of the two states.
  */
-export function renderMfaEnabled(context: SecurityNoticeContext): RenderedEmail {
+export function renderMfaEnabled(context: NoticeOccurrenceContext): RenderedEmail {
   return renderMfaChanged({ ...context, change: 'enabled' });
 }
 
-export function renderMfaDisabled(context: SecurityNoticeContext): RenderedEmail {
+export function renderMfaDisabled(context: NoticeOccurrenceContext): RenderedEmail {
   return renderMfaChanged({ ...context, change: 'disabled' });
 }
 
 /**
  * What `registrationAttempt` may be told, and it is deliberately narrower than
- * `SecurityNoticeContext`.
+ * `NoticeOccurrenceContext` — the timestamp alone, with no IP.
  *
  * H1, and the finding that started the chain H2 ended. `whereAndWhen` rendered
  * `Device: <userAgent>` at the time — it renders no device line at all now, on

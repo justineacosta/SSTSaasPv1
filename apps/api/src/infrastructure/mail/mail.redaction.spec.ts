@@ -83,8 +83,9 @@ describe('a real verification email through the SMTP adapter', () => {
     // can see what broke".
     const { logger, lines } = captureLogger();
     const { token } = mintSecretToken();
+    // No `recipientName`: `PasswordResetInput` has none as of Task 10 (ruling
+    // 70, closed), so passing one is a compile error rather than a choice.
     const rendered = EMAIL_TEMPLATES.passwordReset({
-      recipientName: 'Ada Lovelace',
       webBaseUrl: 'https://app.sentinel.test',
       token,
       ttlSeconds: 3_600,

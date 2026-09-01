@@ -59,7 +59,26 @@ const OCCURRED_AT = new Date('2026-08-26T09:41:07.512Z');
  * (carry-forward ruling 40 — it can be red while `pnpm test` is green).
  */
 interface AttackerStrings {
+  /**
+   * THE RECIPIENT'S OWN STORED DISPLAY NAME — `User.name` on the row this
+   * message is addressed to, and the value ruling 70 is about.
+   *
+   * It is free text up to 200 characters written straight from a registration
+   * body, and **an attacker seeds a victim's copy of it by registering the
+   * victim's address first**. As of Task 10 no template in this registry takes
+   * it: it is passed into every render below and must appear in none of them.
+   *
+   * Kept as a separate field from `inviterName` because the two are different
+   * facts about different people, and one table field standing for both is how
+   * a test about the first ends up asserting about the second.
+   */
   readonly name: string;
+  /**
+   * The display name of the **member sending an invitation**, which is a
+   * different person from the recipient and is chosen by somebody who is
+   * authenticated inside the organisation. `invitation` renders it, escaped.
+   */
+  readonly inviterName: string;
   readonly organizationName: string;
   readonly ipAddress: string;
 }
@@ -67,17 +86,26 @@ interface AttackerStrings {
 /**
  * The templates that render no attacker-supplied string whatsoever.
  *
- * All three are sent to an address whose ownership nobody has proven, or
- * describe somebody else's activity, which is what makes the stored display
- * name untrustworthy: anyone may register somebody else's address with 200
- * characters of chosen text in `name` (F1). None takes a name, an IP or a user
- * agent, so for these the assertion is ABSENCE rather than escaping.
+ * Each is sent to an address whose ownership nobody has proven, or describes
+ * somebody else's activity, which is what makes the stored display name
+ * untrustworthy: anyone may register somebody else's address with 200
+ * characters of chosen text in `name` (F1). None takes a name, an IP that
+ * survives `renderableIpAddress`, or a user agent, so for these the assertion
+ * is ABSENCE rather than escaping.
  *
- * `failedLoginBurst` joins them in Task 9 and is the sharpest case: the burst
+ * `failedLoginBurst` joined them in Task 9 and is the sharpest case: the burst
  * is *somebody else's* attempt, so neither the IP nor the user agent describes
  * the recipient at all, and the user agent is attacker-chosen free text. Its
  * context type is `{ occurredAt, attemptCount }` and there is no third field
  * for any of it to travel through.
+ *
+ * **Task 10 moves four more in, and after that only the invitation is left
+ * out.** Carry-forward ruling 70 is closed to the CLASS rather than to the
+ * instance that had a caller (ruling 71's habit): `passwordReset`,
+ * `passwordChanged`, `mfaEnabled` and `mfaDisabled` no longer accept a
+ * `recipientName`, so the only caller-supplied field any of them still takes is
+ * an IP address that `renderableIpAddress` refuses to render unless it is an
+ * address literal.
  */
 const NAMELESS_TEMPLATE_IDS = [
   'emailVerification',
@@ -88,41 +116,53 @@ const NAMELESS_TEMPLATE_IDS = [
   // rendered only if it is an address literal), so there is no longer any
   // attacker-chosen string for it to escape — the assertion for it is ABSENCE.
   'newDeviceSignIn',
-] as const satisfies readonly EmailTemplateId[];
-
-/**
- * RULING 70, AS A PARTITION: WHICH TEMPLATES MAY RENDER A STORED DISPLAY NAME.
- *
- * "A message sent to an address whose ownership has not been proven must render
- * NO stored display name." `User.name` is free text an attacker seeds by
- * registering the victim's address first, so a template that greets by name is
- * a template that can be made to greet with a stranger's sentence and URL.
- *
- * `newDeviceSignIn` moves into the left-hand list in Task 9, and its reason is
- * narrower than the other three's: it is sent only when `emailVerifiedAt` is
- * non-null, so ownership *has* been proven — but the name adds nothing the
- * recipient needs and the parameter is the whole attack surface, so the type
- * drops it. It keeps its IP and user agent, because there they describe the
- * recipient's own new session, which is ruling 63's licensed side of the
- * partition.
- *
- * `satisfies` makes this exhaustive at compile time: a new template must be
- * classified here or the build fails.
- */
-const NO_DISPLAY_NAME_TEMPLATE_IDS = [
-  'emailVerification',
-  'registrationAttempt',
-  'failedLoginBurst',
-  'newDeviceSignIn',
-] as const satisfies readonly EmailTemplateId[];
-
-const DISPLAY_NAME_TEMPLATE_IDS = [
+  // The four Task 10 closes. `passwordReset` is the one ruling 70 named — an
+  // unauthenticated endpoint mailing a live reset link — and the other three
+  // are changed with it rather than left for Task 11, because "safe, it has no
+  // caller yet" is the exact sentence Task 9 left standing over
+  // `newDeviceSignIn` in the commit that gave it one.
   'passwordReset',
-  'invitation',
   'passwordChanged',
   'mfaEnabled',
   'mfaDisabled',
 ] as const satisfies readonly EmailTemplateId[];
+
+/**
+ * The one template that still renders a string somebody else chose, and
+ * therefore the only one the escaping assertion has anything to say about.
+ *
+ * `invitation` renders `inviterName` and `organizationName`. Both are chosen by
+ * an **authenticated member of the organisation doing the inviting**, not by an
+ * anonymous caller who guessed an address, and the recipient of the message is
+ * the person that member deliberately named. Ruling 70's rule is about a
+ * display name attached to the RECIPIENT's own account — the value an attacker
+ * seeds by registering the victim's address first — and an invitation has no
+ * such field: its recipient may have no `User` row at all. Task 15 owns the
+ * endpoint; the escaping assertion is what holds it here until then.
+ */
+const ATTACKER_STRING_TEMPLATE_IDS = ['invitation'] as const satisfies readonly EmailTemplateId[];
+
+/**
+ * RULING 70 USED TO BE A PARTITION HERE. IT IS NOT ONE ANY MORE, BECAUSE THERE
+ * IS NOTHING LEFT ON THE OTHER SIDE.
+ *
+ * The rule is *"a message sent to an address whose ownership has not been
+ * proven must render NO stored display name"*, and it was expressed as two
+ * lists — templates that may greet by name and templates that may not — with
+ * `passwordReset`, `passwordChanged`, `mfaEnabled` and `mfaDisabled` on the
+ * permissive side and the residual pinned from both directions.
+ *
+ * **Task 10 removes `recipientName` from all four**, so the permissive list is
+ * empty and a two-sided partition would be a list nothing can join. The
+ * property is asserted over `IDS` instead — the registry itself — which is
+ * strictly stronger: a template added later is covered by existing, and cannot
+ * be added to the wrong list because there is no list.
+ *
+ * The invitation is not an exception to this. It renders the **inviter's**
+ * display name, which is a different person's, chosen by an authenticated
+ * member of the organisation, and it takes no field for the recipient's own —
+ * see `ATTACKER_STRING_TEMPLATE_IDS`.
+ */
 
 const CASES: Record<EmailTemplateId, (s: AttackerStrings) => RenderedEmail> = {
   emailVerification: () =>
@@ -131,16 +171,19 @@ const CASES: Record<EmailTemplateId, (s: AttackerStrings) => RenderedEmail> = {
       token: TOKEN,
       ttlSeconds: 86_400,
     }),
-  passwordReset: (s) =>
+  // NO `recipientName`, and the absent field is the control. Ruling 70, closed
+  // by Task 10: this message is mailed to an address nobody has proven belongs
+  // to the recipient AND it carries a live reset link, so a stored display name
+  // here is a stranger's sentence and URL beside a working credential.
+  passwordReset: () =>
     EMAIL_TEMPLATES.passwordReset({
-      recipientName: s.name,
       webBaseUrl: BASE_URL,
       token: TOKEN,
       ttlSeconds: 3_600,
     }),
   invitation: (s) =>
     EMAIL_TEMPLATES.invitation({
-      inviterName: s.name,
+      inviterName: s.inviterName,
       organizationName: s.organizationName,
       webBaseUrl: BASE_URL,
       token: TOKEN,
@@ -163,8 +206,12 @@ const CASES: Record<EmailTemplateId, (s: AttackerStrings) => RenderedEmail> = {
 function notice(s: AttackerStrings) {
   // No `userAgent`. H2 removed it from `whereAndWhen`, so no notice template
   // has a field for it and this helper cannot supply one.
+  //
+  // No `recipientName` either, as of Task 10. `SecurityNoticeContext` is gone
+  // and every notice takes `NoticeOccurrenceContext`, so `s.name` has nowhere
+  // to travel — which is why the ruling-70 prescribed test below can run over
+  // every notice with no exempt list.
   return {
-    recipientName: s.name,
     occurredAt: OCCURRED_AT,
     ipAddress: s.ipAddress,
   };
@@ -172,6 +219,7 @@ function notice(s: AttackerStrings) {
 
 const BENIGN: AttackerStrings = {
   name: 'Ada Lovelace',
+  inviterName: 'Grace Hopper',
   organizationName: 'Acme Security',
   ipAddress: '203.0.113.7',
 };
@@ -198,6 +246,7 @@ const XSS_WITH_URL = `${XSS} ${INJECTED_URL}`;
 
 const HOSTILE: AttackerStrings = {
   name: XSS_WITH_URL,
+  inviterName: XSS_WITH_URL,
   organizationName: XSS_WITH_URL,
   ipAddress: XSS_WITH_URL,
 };
@@ -245,26 +294,46 @@ describe('the email template registry', () => {
     ]);
   });
 
-  it('classifies every template as rendering a display name or not (ruling 70)', () => {
-    const classified = [...NO_DISPLAY_NAME_TEMPLATE_IDS, ...DISPLAY_NAME_TEMPLATE_IDS];
+  it('classifies every template as rendering an attacker-chosen string or not', () => {
+    // The partition the escaping test branches on. It used to branch on a bare
+    // `.includes()` over one list with no exhaustiveness check, so a template
+    // that belonged to neither side silently took the `else` arm and was
+    // asserted about as though it rendered a name. Ruling 58's family: a
+    // fixture on one side of the branch under test.
+    const classified = [...NAMELESS_TEMPLATE_IDS, ...ATTACKER_STRING_TEMPLATE_IDS];
     expect([...classified].sort()).toEqual([...IDS].sort());
     expect(new Set(classified).size).toBe(classified.length);
   });
 });
 
-describe.each(NO_DISPLAY_NAME_TEMPLATE_IDS)('name-free template %s', (id) => {
-  it('renders no display name even when the display name is a URL', () => {
-    // THE TEST RULING 70 SAYS TO WRITE. The payload is a sentence AND a link,
-    // because the escaping payload alone contains no scheme and would have
-    // passed a "carries no link" assertion vacuously (F-series, Task 8).
+describe.each(IDS)('template %s under ruling 70', (id) => {
+  it('renders the recipient display name nowhere, even when it is a URL', () => {
+    // THE TEST RULING 70 SAYS TO WRITE, AND IT NOW RUNS OVER THE WHOLE
+    // REGISTRY WITH NO EXEMPT LIST. Until Task 10 it ran over a four-member
+    // list, and the five templates left out were the ones that actually greeted
+    // by name — which is carry-forward ruling 58's family in its purest form.
     //
-    // It passes structurally rather than by filtering: none of these four
-    // templates has a parameter a display name could travel through, so the
-    // `CASES` entry above cannot pass one. That is the property — a value that
-    // cannot be supplied cannot be injected, and a denylist over attacker text
-    // is a defect waiting for a new encoding.
+    // The payload is a sentence AND a link, because the escaping payload alone
+    // contains no scheme and would have passed a 'carries no link' assertion
+    // vacuously (F-series, Task 8). It also carries a benign spelling of the
+    // name, so a template that rendered the field without the payload would
+    // still be caught.
+    //
+    // It passes STRUCTURALLY rather than by filtering: no template in the
+    // registry has a parameter the recipient's display name could travel
+    // through, so the `CASES` table above cannot pass one. A value that cannot
+    // be supplied cannot be injected, and a denylist over attacker text is a
+    // defect waiting for a new encoding.
+    //
+    // **Which means `pnpm typecheck` is the real control here and this test
+    // cannot fail while that compiles** — stated rather than left for a
+    // reviewer to work out, exactly as the device-string block below states it.
+    // Reinstating a `recipientName` field on a context type is what would make
+    // this reachable, and then it goes red. What the block earns as it stands
+    // is that the property is written down over the registry rather than over a
+    // list somebody has to remember to extend.
     const email = CASES[id]({ ...BENIGN, name: XSS_WITH_URL });
-    for (const part of [email.html, email.text]) {
+    for (const part of [email.subject, email.html, email.text]) {
       expect(part).not.toContain('steal()');
       expect(part).not.toContain(INJECTED_URL);
       expect(part).not.toContain('Ada Lovelace');
@@ -314,11 +383,17 @@ describe.each(IDS)('template %s', (id) => {
     // at creation, and a user agent is a request header — all three are
     // attacker-controlled wherever a template renders them.
     //
-    // Two templates render NONE of them and are skipped rather than asserted
-    // about: `emailVerification` and `registrationAttempt` take no name, no IP
-    // and no user agent at all (F1), so there is nothing here to escape. That
-    // skip is checked rather than trusted — the assertion below it proves the
-    // payload is absent instead of merely escaped.
+    // EIGHT of the nine render NONE of them and are skipped rather than
+    // asserted about — see `NAMELESS_TEMPLATE_IDS`, whose membership is
+    // partitioned against `ATTACKER_STRING_TEMPLATE_IDS` in an exhaustiveness
+    // test above, so a template cannot fall into this branch by being forgotten
+    // on both lists. After Task 10 removed `recipientName` from the last four
+    // (ruling 70, closed), `invitation` is the only member left with anything
+    // to escape.
+    //
+    // The skip is checked rather than trusted: the assertion inside it proves
+    // the payload is ABSENT rather than merely escaped, which is the stronger
+    // property and the one a structural fix actually delivers.
     if (NAMELESS_TEMPLATE_IDS.includes(id as (typeof NAMELESS_TEMPLATE_IDS)[number])) {
       const { html, text } = ATTACKED(id);
       for (const part of [html, text]) {
@@ -594,94 +669,77 @@ describe.each(NOTICE_TEMPLATE_IDS)('notice %s renders no device string', (id) =>
 });
 
 /**
- * THE THREE NOTICES THAT STILL GREET BY NAME, AND THEREFORE STILL CARRY THE
- * RESIDUAL RULING 70 NAMES.
+ * RULING 70'S PRESCRIBED TEST, OVER THE WHOLE REGISTRY, WITH NO EXEMPT LIST.
  *
- * Measured during the H2 fix round, against the built module: with every other
- * caller-supplied field benign, a `recipientName` that is a URL still produces
- * a link in these three. `User.name` is 200 characters of free text written
- * straight from a registration body, so this is ruling 70's open item, not a
- * new one — the ruling assigns `passwordReset`'s copy of it to **Task 10** and
- * the reasoning reaches the two MFA notices, which are **Task 11's**.
+ * The ruling says the test to write is *"no link when EVERY caller-supplied
+ * field is a URL, with the display name in the list"*. It has existed twice
+ * before and both versions carried an exemption:
  *
- * **None of the three has a shipped caller**, and that is what makes this an
- * inherited residual rather than a live defect. It is also the exact sentence
- * that was false about `newDeviceSignIn` before H2 — Task 9 shipped its caller
- * and left the claim standing — so it is stated here as a checkable fact rather
- * than a reassurance: `grep -rn "sendPasswordChanged\|sendMfaEnabled\|sendMfaDisabled"
- * apps/api/src` returns nothing but this comment.
+ * - Task 8 ran it over two context-free notices only, and passed BENIGN values
+ *   for the fields the other four actually render. That is carry-forward ruling
+ *   58's family — every fixture on one side of the branch under test — and it is
+ *   why H2 was live in production with this file green.
+ * - Task 9 widened it to four and carved out the three that still greeted by
+ *   name, pinning the residual **from both sides**: one test asserted no link
+ *   from every other field, and a second asserted that the display name **did**
+ *   still produce one. That second test's own docblock said closing the residual
+ *   should turn it red and force a deliberate deletion.
  *
- * The block below is two-sided on purpose. It asserts that the residual is
- * **exactly** the display name — every other field hostile produces no link —
- * and that the display name **does** still carry one. A one-sided version could
- * go vacuous; this one goes red the day either half changes, which is what the
- * characterisation test H2 deleted failed to do.
+ * **Task 10 is that day, and the test was deleted rather than adjusted.**
+ * `SecurityNoticeContext` no longer exists, so no notice has a field a display
+ * name could travel through, and the carve-out has nothing left to describe.
+ * What is below runs over `NOTICE_TEMPLATE_IDS` itself — the exported list, not
+ * a filtered copy of it — so a notice added later cannot be omitted from it.
  */
-const NAME_GREETING_NOTICE_IDS = [
-  'passwordChanged',
-  'mfaEnabled',
-  'mfaDisabled',
-] as const satisfies readonly EmailTemplateId[];
-
-const RULING_70_CLEAN_NOTICE_IDS = NOTICE_TEMPLATE_IDS.filter(
-  (id) => !(NAME_GREETING_NOTICE_IDS as readonly EmailTemplateId[]).includes(id),
-);
-
-describe.each(NAME_GREETING_NOTICE_IDS)('notice %s still greets by name', (id) => {
-  it('renders no link when every field EXCEPT the display name is a URL', () => {
-    // The half H2 closed. Before the IP guard this failed here too: `ipAddress`
-    // was rendered verbatim, so a URL in it produced a link in all four
-    // context-rendering notices. Measured, and now enforced by
-    // `renderableIpAddress` rather than asserted about the caller.
-    const email = CASES[id]({
-      name: 'Ada Lovelace',
-      organizationName: XSS_WITH_URL,
-      ipAddress: XSS_WITH_URL,
-    });
-    for (const part of [email.html, email.text]) {
-      expect(part).not.toMatch(/https?:\/\//);
-      expect(part).not.toContain(INJECTED_URL);
-    }
-  });
-
-  it('DOES render a display name that is a URL — ruling 70 open, owned by Tasks 10 and 11', () => {
-    // NOT an endorsement, and not a test to adjust. It records the exact shape
-    // of what is left, so the residual lives in the suite rather than only in
-    // prose, and so that closing it turns this red and forces a deliberate
-    // deletion. The one it replaces made the same promise and had the wrong
-    // grounds written under it; these grounds are checkable — see the docblock.
-    const email = CASES[id]({
-      name: XSS_WITH_URL,
-      organizationName: 'Acme Security',
-      ipAddress: '203.0.113.7',
-    });
-    expect(email.text).toContain(INJECTED_URL);
-  });
-});
-
-describe.each(RULING_70_CLEAN_NOTICE_IDS)('notice %s under ruling 70 prescribed payload', (id) => {
+describe.each(NOTICE_TEMPLATE_IDS)('notice %s under ruling 70 prescribed payload', (id) => {
   it('renders no link when EVERY caller-supplied field it accepts is a URL', () => {
-    // RULING 70'S PRESCRIBED TEST, APPLIED TO EVERY NOTICE RATHER THAN TO TWO.
-    //
-    // "The test to write is 'no link when EVERY caller-supplied field is a
-    // URL', with the display name in the list." It existed over
-    // `CONTEXT_FREE_NOTICE_IDS` only — two templates — and the block that
-    // covered the other four passed BENIGN values for `ipAddress` and
-    // `userAgent` and hostile text only for the name. That is carry-forward
-    // ruling 58's family: a fixture sitting on one side of the branch under
-    // test, which is how H2 stayed green here while being live in production.
-    //
-    // Every caller-supplied field each template accepts now carries a URL.
-    const email = CASES[id]({
-      name: XSS_WITH_URL,
-      organizationName: XSS_WITH_URL,
-      ipAddress: XSS_WITH_URL,
-    });
-    for (const part of [email.html, email.text]) {
+    const email = CASES[id](HOSTILE);
+    for (const part of [email.subject, email.html, email.text]) {
       expect(part).not.toMatch(/https?:\/\//);
       expect(part).not.toContain(INJECTED_URL);
     }
     expect(email.html).not.toContain('href');
+    // Absent, not merely stripped of its scheme. A payload that survives as
+    // inert text is still a stranger's sentence in this product's envelope.
+    expect(email.text).not.toContain('steal()');
+  });
+});
+
+/**
+ * THE SAME PAYLOAD AGAINST THE THREE TEMPLATES THAT DO CARRY A LINK.
+ *
+ * "No link at all" is not the property here — these messages exist to deliver
+ * one — so the prescribed test takes the only form it can take on this half of
+ * the registry: **the links in the message are exactly the one this code
+ * built.** A caller-supplied field that reached the body would show up as a
+ * second URL, and this is the assertion that would see it.
+ *
+ * Written over `TOKEN_LINK_TEMPLATE_IDS` so the whole registry is covered with
+ * no exempt list, which is what the brief for this task asked for and what the
+ * two earlier versions of the prescribed test did not have.
+ */
+describe.each(TOKEN_LINK_TEMPLATE_IDS)('token-link %s under ruling 70 prescribed payload', (id) => {
+  it('contains exactly one link, the one this code built', () => {
+    // The payload is hostile in the two fields ruling 70 is about — the
+    // recipient's stored display name and the request IP — and benign in the
+    // two the invitation legitimately renders about somebody else. This is not
+    // an exempt list of template ids: the same payload goes to all three, and
+    // for `emailVerification` and `passwordReset` it IS every caller-supplied
+    // field they accept, because after Task 10 neither accepts anything else.
+    const email = CASES[id]({ ...BENIGN, name: XSS_WITH_URL, ipAddress: XSS_WITH_URL });
+    for (const part of [email.html, email.text]) {
+      const urls = part.match(/https?:\/\/[^\s"'<>]+/g) ?? [];
+      expect(urls.length).toBeGreaterThan(0);
+      for (const url of urls) {
+        expect(new URL(url).origin).toBe(BASE_URL);
+        expect(new URL(url).searchParams.get('token')).toBe(TOKEN);
+      }
+    }
+    // The payload's own URL is on a different origin, so the loop above already
+    // refuses it — this states the conclusion so a reader does not have to
+    // derive it, and it would still fail if `INJECTED_URL` moved to `BASE_URL`.
+    expect(email.text).not.toContain(INJECTED_URL);
+    expect(email.subject).not.toContain(INJECTED_URL);
   });
 });
 
@@ -725,7 +783,7 @@ describe('the two MFA states', () => {
  */
 describe('renderableIpAddress rejects everything that is not an address', () => {
   const RENDERED = (ipAddress: string): string =>
-    CASES.newDeviceSignIn({ name: 'Ada Lovelace', organizationName: 'Acme', ipAddress }).text;
+    CASES.newDeviceSignIn({ ...BENIGN, ipAddress }).text;
 
   it.each(['203.0.113.7', '::1', '2001:db8::8a2e:370:7334', '::ffff:192.0.2.128'])(
     'renders %s, which is an address',

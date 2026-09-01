@@ -65,15 +65,43 @@ export function renderEmailVerification(input: EmailVerificationInput): Rendered
   });
 }
 
-export interface PasswordResetInput extends TokenLinkInput {
-  readonly recipientName: string;
-}
+/**
+ * NO `recipientName`, AND THE ABSENT FIELD IS THE CONTROL. RULING 70, CLOSED.
+ *
+ * This is the template the ruling named, and it is the sharpest instance of the
+ * defect in the codebase. Three facts stack:
+ *
+ * 1. `POST /auth/forgot-password` is **unauthenticated**, so anybody may aim
+ *    this message at any address they can type.
+ * 2. `User.name` is up to 200 characters of free text written straight from a
+ *    registration body, and **an attacker seeds a victim's copy of it by
+ *    registering the victim's address first** — the address then exists, so the
+ *    victim's reset message greets them with the attacker's sentence and URL.
+ * 3. Unlike every notice, this message carries a **live reset link**. So the
+ *    injected text arrives beside a working credential, in a branded message
+ *    the recipient has every reason to trust.
+ *
+ * The fix is the same structural one `emailVerification` took above and
+ * `registrationAttempt` took in Task 8: the parameter is **gone**, not filtered.
+ * A denylist over attacker text is a defect waiting for a new encoding; a field
+ * that does not exist cannot be injected however a caller is edited later.
+ *
+ * Ruling 71's habit applies too — this is fixed to the CLASS, not to the
+ * instance that happens to have a caller. `passwordChanged`, `mfaEnabled` and
+ * `mfaDisabled` lost the same field in the same change although two of them
+ * have no caller until Task 11. "Safe because it has no caller yet" is the
+ * exact sentence Task 9 left standing over `newDeviceSignIn` in the commit that
+ * gave it one.
+ */
+export type PasswordResetInput = TokenLinkInput;
 
 export function renderPasswordReset(input: PasswordResetInput): RenderedEmail {
   return renderEmail({
     subject: 'Reset your Sentinel password',
     paragraphs: [
-      `Hello ${input.recipientName},`,
+      // The unaddressed greeting the other two token-link templates already
+      // use. See the type above.
+      'Hello,',
       'Someone asked to reset the password on your Sentinel account. Use the link below to choose a new one.',
       `This link can be used once and expires in ${formatDuration(input.ttlSeconds)}. Resetting your password signs you out everywhere else.`,
     ],
