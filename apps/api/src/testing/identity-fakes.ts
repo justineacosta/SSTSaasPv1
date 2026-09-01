@@ -126,11 +126,31 @@ export interface IdentityStoreFake {
      * **It fakes the TIMING of the sibling's write, never the arbitration of
      * it.** What makes the real compare-and-swap hold is Postgres blocking the
      * loser on a row lock and re-evaluating the predicate against the committed
-     * row; there is no lock here and no second caller.
-     * `auth.password.integration.spec.ts`'s parallel probe owns that against
-     * real Postgres, and nothing set through this flag may be read as evidence
-     * for it — the same division `redeemableUserId` and `lockRowOnTransaction`
-     * both record.
+     * row; there is no lock here and no second caller. Nothing set through this
+     * flag may be read as evidence for that — the same division
+     * `redeemableUserId` and `lockRowOnTransaction` both record.
+     *
+     * **P6, and it is a correction: the integration coverage is not symmetric,
+     * and an earlier version of this docblock claimed it was.** It said
+     * "`auth.password.integration.spec.ts`'s parallel probe owns that against
+     * real Postgres", which is true of `change-password` — two requests, one
+     * session, and deleting the predicate turns it red — and was **false of the
+     * reset**, whose predicate no test in any lane could observe. The review
+     * measured that: deleting the reset's predicate left all 25 integration
+     * tests green. There is now a real second writer against the reset path too
+     * (`M1 — the reset credential predicate`), but its window is one statement
+     * wide, so it reaches the branch without deterministically killing the
+     * mutation, and its own docblock says so.
+     *
+     * **L2, a trap for whoever runs the obvious mutation next.** Deleting a
+     * predicate from a call site makes `where.passwordHash` `undefined` here,
+     * and `swapCredential` then reports `count: 0` where real Postgres would
+     * write the row. So in the unit lane that mutation makes every credential
+     * write **refuse** instead of **succeed twice**, and produces a wall of red
+     * that proves nothing about concurrency — the review measured seven red
+     * tests, none of them the concurrency one, which passed for the wrong
+     * reason. The honest unit-lane mutation is "re-read the credential inside
+     * the transaction and predicate on that".
      */
     replaceCredentialAfterRead: { userId: string; passwordHash: string } | null;
     /**
