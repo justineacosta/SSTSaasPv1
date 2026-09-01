@@ -84,11 +84,23 @@ function captureLogger(): { logger: Logger; lines: string[] } {
  * input is `session.service.spec.ts`'s and the integration lane's; what is
  * asserted here is what login ASKS FOR, which is the part login decides.
  */
-function issuerFake(): { issuer: SessionIssuer; issued: IssueSessionInput[] } {
+function issuerFake(): {
+  issuer: SessionIssuer;
+  issued: IssueSessionInput[];
+  revoked: string[];
+} {
   const issued: IssueSessionInput[] = [];
+  const revoked: string[] = [];
   return {
     issued,
+    revoked,
     issuer: {
+      // H1. Login revokes exactly one session and only its own — the one it
+      // just issued, when the credential moved underneath it.
+      revoke: (sessionId): Promise<boolean> => {
+        revoked.push(sessionId);
+        return Promise.resolve(true);
+      },
       issue: (input): Promise<IssuedSession> => {
         issued.push(input);
         return Promise.resolve({
@@ -117,6 +129,8 @@ interface Harness {
   readonly mail: MailerFake;
   readonly passwords: PasswordService;
   readonly issued: IssueSessionInput[];
+  /** Session ids login revoked — H1's post-issue self-revocation. */
+  readonly revoked: string[];
   readonly lines: string[];
 }
 
@@ -126,7 +140,7 @@ function harness(): Harness {
   const passwords = new PasswordService(ARGON2);
   const tokens = new TokenService(db.tokenStore, TTL);
   const { logger, lines } = captureLogger();
-  const { issuer, issued } = issuerFake();
+  const { issuer, issued, revoked } = issuerFake();
 
   const mailer = new AuthMailer(mail.mailer, ENV, tokens, logger);
   const service = new LoginService(
@@ -137,7 +151,7 @@ function harness(): Harness {
     mailer,
     logger,
   );
-  return { service, db, mail, passwords, issued, lines };
+  return { service, db, mail, passwords, issued, revoked, lines };
 }
 
 const names = (db: IdentityStoreFake): string[] => db.calls.map((call) => call.name);
@@ -1203,7 +1217,7 @@ describe('a successful login rehashes a credential stored at weaker parameters',
     const legacy = new PasswordService(WEAKER);
     const tokens = new TokenService(db.tokenStore, TTL);
     const { logger, lines } = captureLogger();
-    const { issuer, issued } = issuerFake();
+    const { issuer, issued, revoked } = issuerFake();
     const mailer = new AuthMailer(mail.mailer, ENV, tokens, logger);
     const service = new LoginService(
       db.store,
@@ -1213,7 +1227,7 @@ describe('a successful login rehashes a credential stored at weaker parameters',
       mailer,
       logger,
     );
-    return { service, db, mail, passwords, legacy, issued, lines };
+    return { service, db, mail, passwords, legacy, issued, revoked, lines };
   }
 
   async function withLegacyCredential(h: ReturnType<typeof upgradingHarness>) {
@@ -1253,21 +1267,65 @@ describe('a successful login rehashes a credential stored at weaker parameters',
     expect(after.needsRehash).toBe(false);
   });
 
-  it('writes it under a COMPARE-AND-SWAP on the hash it verified', async () => {
-    // D3 reaches here too. A rehash is a credential write decided from a row
-    // read before a ~40 ms verification, so a password change that committed in
-    // between must not be overwritten by a maintenance write carrying the old
-    // password's digest. Carry-forward ruling 73's shape on a third path.
+  it('writes it under a COMPARE-AND-SWAP, and H1 then refuses the login', async () => {
+    // TWO PROPERTIES IN ONE SCENARIO, AND THE SECOND ARRIVED IN THE FIX ROUND.
+    //
+    // D3 reaches the rehash too. A rehash is a credential write decided from a
+    // row read before a ~40 ms verification, so a password change that
+    // committed in between must not be overwritten by a maintenance write
+    // carrying the old password's digest. Carry-forward ruling 73's shape on a
+    // third path.
+    //
+    // **This test went red when H1's post-issue check landed, and the red was
+    // correct.** The scenario it sets up — a sibling changing the password while
+    // this login is in flight — is precisely the one H1 exists to refuse: the
+    // login authenticated against a credential that is no longer the account's,
+    // so the session it issued is revoked and the request answers
+    // `INVALID_CREDENTIALS`. The test asserted only the rehash half and
+    // therefore did not expect the throw. It now pins both halves, because
+    // either one regressing is a defect and the scenario is the same one.
+    //
+    // The rehash assertion still discriminates the compare-and-swap: with the
+    // predicate defeated, the rehash would overwrite the sibling's hash with a
+    // digest of the OLD password, and `toBe(changed)` fails.
     const h = upgradingHarness();
     const { row } = await withLegacyCredential(h);
     const changed = await h.passwords.hash('the user changed it mid-flight');
     h.db.control.replaceCredentialAfterRead = { userId: row.id, passwordHash: changed };
 
-    await h.service.login({ ...COMMAND, email: row.email });
+    await expect(h.service.login({ ...COMMAND, email: row.email })).rejects.toBeInstanceOf(
+      InvalidCredentialsError,
+    );
 
     // The sibling's password survives. Without the predicate the rehash would
     // reinstate the OLD password's hash and silently undo a password change.
     expect(h.db.credentials.get(row.id)).toBe(changed);
+    // And H1 took back the session it had already issued, rather than leaving a
+    // live credential behind a refused request.
+    expect(h.revoked).toHaveLength(1);
+  });
+
+  it('does NOT revoke when a CONCURRENT login rehashed the same password', async () => {
+    // H1 COMPARES MEANING, NOT BYTES, AND THIS IS THE TEST THAT SAYS SO.
+    //
+    // The naive form of the post-issue check is "the stored hash differs from
+    // the one I read, therefore revoke". D8 gives that two innocent ways to
+    // fire. This request's own rehash is handled by comparing against the hash
+    // it wrote; a **concurrent** login's rehash is not, and under a byte
+    // comparison two simultaneous correct sign-ins would refuse each other for
+    // the whole of a parameter migration.
+    //
+    // Here the credential moves to a DIFFERENT hash of the SAME password — the
+    // exact shape a sibling rehash leaves behind. The session must stand.
+    const h = upgradingHarness();
+    const { row } = await withLegacyCredential(h);
+    const siblingRehash = await h.passwords.hash(PASSWORD);
+    h.db.control.replaceCredentialAfterRead = { userId: row.id, passwordHash: siblingRehash };
+
+    const result = await h.service.login({ ...COMMAND, email: row.email });
+
+    expect(result).toMatchObject({ kind: 'authenticated' });
+    expect(h.revoked).toEqual([]);
   });
 
   it('does NOT rehash when the stored hash already meets current parameters', async () => {

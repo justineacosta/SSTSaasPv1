@@ -27,10 +27,17 @@ const ACTIVE_USER_STATUS = 'ACTIVE';
  * The same narrow-port shape `AuthenticationGuard`'s `SessionResolver` uses,
  * and for the same reason: a service typed against the whole session machine is
  * a service whose every spec is either a mock of the world or an integration
- * test. Login issues and never resolves, rotates or revokes.
+ * test.
+ *
+ * **It gained `revoke` in Task 10's fix round, and the reason is H1.** Login
+ * issues a session and then, if the credential it authenticated against has
+ * moved underneath it, has to take that session back — see
+ * `credentialStillCurrent` below. Nothing else here revokes: this is not a
+ * general capability, it is the second half of one check.
  */
 export interface SessionIssuer {
   issue(input: IssueSessionInput): Promise<IssuedSession>;
+  revoke(sessionId: string): Promise<boolean>;
 }
 
 export interface LoginCommand extends AuthRequestContext {
@@ -204,18 +211,15 @@ export class LoginService {
       throw new AccountLockedError();
     }
 
-    const result = await this.succeed(user, command);
-
-    // D8, AFTER the session exists and after every decision has been made.
-    // ADR-0014 §48's "rehashed transparently on next successful login", which
-    // Task 9 shipped this endpoint without. It runs on BOTH arms of `succeed` —
-    // the credential was proved correct, and whether a second factor is still
-    // owed says nothing about the parameters it was stored at.
-    if (verification.needsRehash && storedHash !== null) {
-      await this.rehashCredential(user.id, storedHash, command.password);
-    }
-
-    return result;
+    // The credential facts travel INTO `succeed` rather than being acted on
+    // afterwards, and that reordering is H1's. The rehash (D8) rewrites the
+    // stored hash, and the post-issue check `succeed` now performs compares
+    // against the hash in force — so the two have to happen in a known order,
+    // in one place, or a rehashing login revokes itself. See `succeed`.
+    return this.succeed(user, command, {
+      verifiedHash: storedHash,
+      needsRehash: verification.needsRehash,
+    });
   }
 
   /**
@@ -266,13 +270,14 @@ export class LoginService {
     userId: string,
     verifiedHash: string,
     password: string,
-  ): Promise<void> {
+  ): Promise<string | null> {
     try {
       const passwordHash = await this.passwords.hash(password);
       const { count } = await this.store.credential.updateMany({
         where: { userId, passwordHash: verifiedHash },
         data: { passwordHash },
       });
+      if (count === 1) return passwordHash;
       if (count === 0) {
         // The credential moved under us — a change or reset committed while
         // this login was verifying. Not an error, and not something to retry:
@@ -289,6 +294,65 @@ export class LoginService {
         'credential rehash on login failed; this account keeps its weaker stored parameters',
       );
     }
+    // `null` means "nothing was written", so the caller keeps comparing against
+    // the hash it verified. Returning the attempted value here would tell H1's
+    // check that a write happened when it did not.
+    return null;
+  }
+
+  /**
+   * H1. IS THE CREDENTIAL THIS REQUEST AUTHENTICATED WITH STILL THE ACCOUNT'S?
+   *
+   * Asked **after** `SessionService.issue` has returned, and that position is
+   * the whole point. A password reset commits its new hash and then revokes
+   * every session; `revokeLiveForUser` is one `updateMany` and cannot revoke a
+   * row that does not exist yet, so a login whose credential read preceded the
+   * reset's commit and whose `Session` insert follows the reset's revoke was
+   * never swept. The reviewer measured **25 of 25** such logins surviving across
+   * five rounds, each a fully privileged `ACTIVE` session answering
+   * `GET /auth/session` with 200 for up to 30 days.
+   *
+   * **This closes it rather than narrowing it, and the argument is that there
+   * are only two interleavings:**
+   *
+   * - the `Session` insert lands BEFORE the reset's revoke, and the revoke
+   *   sweeps the row — the existing mechanism, which works;
+   * - the insert lands AFTER the revoke, which means the reset's credential
+   *   write committed before the insert, so this read observes it.
+   *
+   * There is no third ordering, because the reset writes the credential before
+   * it revokes (D2) and this read happens after the insert.
+   *
+   * # It compares MEANING, not bytes, and that is not fussiness
+   *
+   * The naive form — compare the stored hash to the one this request read —
+   * revokes a login whenever the row changed for **any** reason, and D8 gives it
+   * two innocent reasons. This request's own rehash is handled by passing the
+   * hash it wrote (see `succeed`); a **concurrent** login's rehash is not, and
+   * would make two simultaneous sign-ins with the correct password refuse each
+   * other for the lifetime of a parameter migration.
+   *
+   * So a mismatch is not the answer, it is the question: re-verify the password
+   * against whatever is stored now. A rehash of the same password verifies and
+   * the session stands; a reset or a change does not and the session goes.
+   *
+   * **Cost.** One indexed read on a `@unique` column per successful login, and
+   * nothing else in the common case — the extra Argon2id verification is paid
+   * only when the row actually moved, which is the rare case this exists for.
+   *
+   * `null` from the read is treated as "the credential is gone", which is a
+   * reset that has not yet written or a deleted account; either way the session
+   * this request just issued should not stand.
+   */
+  private async credentialStillCurrent(
+    userId: string,
+    hashInForce: string | null,
+    password: string,
+  ): Promise<boolean> {
+    const current = await this.storedHashFor(userId);
+    if (current === hashInForce) return true;
+    if (current === null) return false;
+    return (await this.passwords.verify(current, password)).valid;
   }
 
   /**
@@ -507,7 +571,11 @@ export class LoginService {
    * afterwards matches itself, every login is familiar, and the notice never
    * fires again.
    */
-  private async succeed(user: IdentityUserRow, command: LoginCommand): Promise<LoginResult> {
+  private async succeed(
+    user: IdentityUserRow,
+    command: LoginCommand,
+    credential: { verifiedHash: string | null; needsRehash: boolean },
+  ): Promise<LoginResult> {
     const familiar = await this.isFamiliar(user.id, command);
     const mfaRequired = (await this.confirmedFactor(user.id)) !== null;
     const now = new Date();
@@ -561,6 +629,29 @@ export class LoginService {
       });
     });
 
+    // D8, AND IT RUNS BEFORE THE SESSION IS ISSUED SO THAT H1'S CHECK BELOW
+    // KNOWS WHAT THE HASH IN FORCE IS.
+    //
+    // ADR-0014 §48's "rehashed transparently on next successful login", which
+    // Task 9 shipped this endpoint without. It runs on BOTH arms — the
+    // credential was proved correct, and whether a second factor is still owed
+    // says nothing about the parameters it was stored at.
+    //
+    // It used to run in `login()` after `succeed()` returned. That was fine
+    // until H1 added a post-issue comparison, at which point a rehash happening
+    // afterwards would have been invisible to it and a rehash happening before
+    // it would have looked like somebody else's write. Moving it here makes the
+    // ordering explicit rather than incidental.
+    let hashInForce = credential.verifiedHash;
+    if (credential.needsRehash && credential.verifiedHash !== null) {
+      const rehashed = await this.rehashCredential(
+        user.id,
+        credential.verifiedHash,
+        command.password,
+      );
+      if (rehashed !== null) hashInForce = rehashed;
+    }
+
     // AFTER THE COMMIT, and that ordering matters here for a reason beyond
     // ruling 44's: a session minted inside a transaction that then rolls back
     // survives in Redis and in the caller's hand, and there is no row anywhere
@@ -583,6 +674,28 @@ export class LoginService {
       ip: command.ip,
       userAgent: command.userAgent,
     });
+
+    // H1. THE SESSION EXISTS; NOW CHECK THAT THE CREDENTIAL IT RESTS ON STILL
+    // DOES. Before the MFA return, so both arms are covered — a `PENDING_MFA`
+    // session minted from a password that has just been reset is the same
+    // defect wearing a shorter clock.
+    if (!(await this.credentialStillCurrent(user.id, hashInForce, command.password))) {
+      await this.sessions.revoke(issued.session.id);
+      // Not an audit row. The `LOGIN` row written above is a true statement —
+      // the password WAS correct when it was verified — and a contradicting row
+      // beside it would make the table harder to read rather than easier. What
+      // an operator needs is the fact that a session was taken back, and that
+      // is this line. No hash, no password, no fragment of either (critical
+      // security rule 6).
+      this.logger.warn(
+        { userId: user.id, sessionId: issued.session.id },
+        'credential changed while this login was in flight; the session it issued was revoked',
+      );
+      // The same refusal as every other login failure, byte for byte, so this
+      // path discloses nothing that the others do not. It is also honest: the
+      // credential this request authenticated with is no longer the account's.
+      throw new InvalidCredentialsError();
+    }
 
     if (mfaRequired) {
       // NO COOKIE. The controller returns this token in the body, per
