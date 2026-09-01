@@ -135,6 +135,26 @@ describe('the platform audit vocabulary', () => {
     }
   });
 
+  it('carries the four names password reset and change write', () => {
+    // Task 10. Three of the four were already in §4's Auth list with no
+    // producer, exactly as `LOGIN` and `LOGOUT` were before Task 9.
+    // `PASSWORD_CHANGE_FAILED` was in neither, and is added to the document in
+    // the same change as this constant.
+    //
+    // All four are `PlatformAuditEvent` rows for ruling 62's reason: a reset is
+    // requested and completed by somebody who has chosen no organisation, and
+    // `AuditEvent`'s RLS policy refuses an insert that carries none — measured
+    // twice in Task 8, not inferred.
+    for (const action of [
+      'PASSWORD_RESET_REQUESTED',
+      'PASSWORD_RESET_COMPLETED',
+      'PASSWORD_CHANGED',
+      'PASSWORD_CHANGE_FAILED',
+    ]) {
+      expect(PLATFORM_AUDIT_ACTIONS as readonly string[]).toContain(action);
+    }
+  });
+
   it('names `Session` as a resource type, because logout is about one', () => {
     // A logout's `resourceId` is the session that was revoked, not the user:
     // the user is still the user afterwards, and the thing that changed is the
