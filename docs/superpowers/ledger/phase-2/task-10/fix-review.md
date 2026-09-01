@@ -310,3 +310,100 @@ round wrote. Cost if left: a future round that removes the name from the body an
 subject will believe the residual is closed while it is not.
 
 **M2 verdict: CLOSED.**
+
+---
+
+## M3 — CLOSED WITH A CAVEAT, and it yields NEW-3, a Medium
+
+**What holds, measured through the real application.**
+
+Twelve consecutive refused current passwords on one account (sequential), driven at the HTTP
+endpoint:
+
+```
+H statuses=401,401,401,401,401,401,401,401,401,401,401,401  notices=1  allMail=failedLoginBurst
+```
+
+One notice, twelve identical 401s. The response does not vary on the attempt that sends — the
+threshold is not observable from outside.
+
+**The `consecutive`, not merely `recent`, correction is real and works end to end.** Four refusals,
+one successful change, four more refusals:
+
+```
+J changeStatus=200  noticesAfterReset=0
+```
+
+Zero. A success resets the run, exactly as `login`'s ladder does. This is the unpredicted red the
+implementer reports in `fixes.md` §2 and it was fixed correctly.
+
+**The ladder is untouched.** The committed integration test asserts `failedLoginCount === 0` and
+`lockedUntil === null` after five refusals; I re-ran the file and it passes, and the unit lane
+additionally asserts `tx.user.updateMany` is never called on this path.
+
+**The `gt` / `gte` boundary correction is unobserved by either lane.** Mutation: `createdAt: { gt:
+since }` → `createdAt: { gt: new Date(since.getTime() - 1) }`, which is `gte` at the fake's clock
+resolution.
+
+```
+pnpm vitest run --project unit .../password-change.service.spec.ts   EXIT=0   26 passed
+```
+
+The correction is defensively right and honestly reported, and nothing can currently see it — the
+fake stamps rows a millisecond apart and real Postgres stamps microseconds, so the tie the boundary
+guards against does not occur in either lane. Noted rather than graded; there is no behaviour to be
+wrong.
+
+(Recording a trap for the next round, in L2's family: the *obvious* mutation here — renaming the key
+to `gte` in `password-change.service.ts` — produces five red tests that are all
+`TypeError: Cannot read properties of undefined`, because `identity-fakes.ts` reads
+`args.where.createdAt.gt` by name. That red observes the fake, not the boundary.)
+
+### NEW-3 (Medium) — "once per burst" is defeated by concurrency, and the comment that states it as a guarantee was written this round
+
+`password-change.service.ts` says, of `if (failures !== BURST_THRESHOLD) return null;`:
+
+> **ONCE PER BURST, NOT ONCE PER FAILURE PAST IT. Exactly equal, not `>=`:** … a message per failure
+> would make this notice an **outbound-email amplifier aimed at the account owner, triggered at will
+> by whoever holds the session**.
+
+The count is read *inside* the same interactive transaction that writes the denial row. Prisma's
+interactive transactions run at Postgres READ COMMITTED, so concurrent denials do not see one
+another's uncommitted rows and several can each count exactly `BURST_THRESHOLD`.
+
+**Measured**, four rounds of *four sequential* refusals (count reaches 4, no notice) followed by
+*eight concurrent* refusals on the same session:
+
+```
+I round=0 statuses=401×8  noticesBefore=0  noticesAfter=1
+I round=1 statuses=401×8  noticesBefore=0  noticesAfter=1
+I round=2 statuses=401×8  noticesBefore=0  noticesAfter=2
+I round=3 statuses=401×8  noticesBefore=0  noticesAfter=3
+```
+
+**Two rounds of four produced more than one notice; one produced three.** That is the amplifier the
+comment names, at a smaller multiple than "one per failure" but by the same mechanism, and the
+guarantee as written is false.
+
+**Why nothing saw it.** Every test of this control is sequential — the eight unit tests loop
+`await fail(service, n)`, and the integration test loops five awaited requests. This is carry-forward
+ruling 74 verbatim, in the fix round for a finding whose own dispositions cite ruling 74: *a control
+that only arbitrates under concurrency, asserted only sequentially*. The same file, twenty lines
+away, contains `LETS EXACTLY ONE OF TWO PARALLEL CHANGES COMMIT`, which is the probe shape this
+needed.
+
+**Cost if left.** Bounded — `passwordChange` is `perIp: { limit: 10, windowSeconds: 3600 }`, so one
+address buys at most ten attempts an hour — but it is an outbound send the product pays for, aimed
+at the account owner, multiplied at will by whoever holds the stolen session, and it grows with the
+number of source addresses. It also degrades the signal: an owner who receives three identical
+notices for one burst learns less, not more. And separately: because `windowStart` slides, the notice
+is really *once per fifteen minutes* rather than once per burst — a session thief who keeps guessing
+earns a fresh notice every window, indefinitely. That second half is arguably the desired behaviour
+(it matches `login`), but "once per burst" is not what the code does either way.
+
+**The fix is small**: make the read-and-decide atomic — an `INSERT … RETURNING` ordinal, a conditional
+update on a marker row, or a Redis `INCR`-style once-per-window key — and add the parallel probe.
+
+**M3 verdict: CLOSED WITH A CAVEAT.** The row the review asked to be filled in *is* filled in: the
+owner is now told, the ladder is untouched, the response does not vary, and the count is consecutive
+and read from the real audit table. What is not true is the "once per burst" guarantee.
