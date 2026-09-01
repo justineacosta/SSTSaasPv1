@@ -14,7 +14,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Not Implemented** — Tasks 1–9 of 18 done 2026-08-31 (schema, migrations, registry, wire contracts, password hashing, the breach check, single-use secret tokens, the mailer with nine templates, the session service, the authentication stage with CSRF and CORS, registration with email verification, and login/logout/session with per-account lockout); the API publishes **10 routes** and a person can register, confirm an address, sign in, read their own session and sign out, but **nothing authorises anybody** — `GET /auth/session` returns an empty permission set until Task 12, and there is no screen until Task 16 |
+| 2 | Identity | **Not Implemented** — Tasks 1–10 of 18 done 2026-08-31 (schema, migrations, registry, wire contracts, password hashing, the breach check, single-use secret tokens, the mailer with nine templates, the session service, the authentication stage with CSRF and CORS, registration with email verification, login/logout/session with per-account lockout, and password reset and change); the API publishes **13 routes** and a person can register, confirm an address, sign in, read their own session, change or reset a password and sign out, but **nothing authorises anybody** — `GET /auth/session` returns an empty permission set until Task 12, and there is no screen until Task 16 |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -1469,6 +1469,78 @@ E2E tests. Nothing on this branch is unproven outside this machine.
 
 All findings and dispositions:
 [`docs/superpowers/ledger/phase-2/task-09/`](../../docs/superpowers/ledger/phase-2/task-09/).
+
+**Task 10 evidence, 2026-08-31 at the branch head after the fix round, its second review, and the
+orchestrator's fixes for that review.** Every command re-run by the orchestrator on the finished
+tree, exit codes captured outside a pipe. Task 9 was re-verified the same way on `main` **after its
+rebase** before Task 10 began — a branch that was green is a claim about a tree that no longer
+exists once its commits are replayed.
+
+| Command | Exit | What it proves |
+|---|---|---|
+| `pnpm format:check` | 0 | Prettier style across the workspace. |
+| `pnpm lint` | 0 | 14 tasks. |
+| `pnpm typecheck` | 0 | 14 tasks. The types compile — and nothing about behaviour. |
+| `pnpm test` | 0 | **83 files / 1363 tests**, up from 81 / 1279 at Task 9. |
+| `pnpm check:specs` | 0 | 102 spec files, each claimed by exactly one Vitest project. |
+| `pnpm test:integration` | 0 | **19 files / 325 tests** against real Postgres 16 and real Redis, up from 18 / 286. |
+| `pnpm build` | 0 | 8 tasks. |
+| `pnpm check:secrets` | 0 | No credential-shaped literal in a committed file. |
+| `pnpm check:openapi` | 0 | Byte-identical, and **13 routes** where Task 9 published 10. |
+| `pnpm check:registry` | 0 | 15 models, unchanged — Task 10 added no table and **opened no migration**. |
+| `docker compose ps` | 0 | postgres, redis, minio, mailpit all `Up (healthy)`. |
+
+`pnpm test:e2e` was **not run** and has no row: `git diff --stat main..HEAD` is empty for both
+`apps/web` and `packages/ui`.
+
+**What Task 10 delivered.** `POST /auth/forgot-password` answering identically for an unknown
+address, an unverified one and an active one; `POST /auth/reset-password` consuming the token,
+breach-checking and hashing the new password and revoking **every** session; `POST /auth/change-password`
+requiring the current password, revoking every **other** session and rotating the one in hand. Audit
+rows for all three, two new rate-limit classes written into `abuse-prevention.md` §1 as decisions
+rather than transcriptions, and the transparent Argon2 rehash on login that ADR-0014 has specified
+since Phase 1 and that Task 9 shipped login without.
+
+**The High was a session that survived the reset meant to kill it.** A login racing a completed
+password reset kept a fully privileged session minted with the **old** password — 25 of 25 survivors
+across five rounds, each lasting up to 30 days, on the endpoint whose entire purpose is evicting the
+party who knows that password. Writing the new hash before revoking narrows that window and does not
+close it, because `updateMany` cannot revoke a session row that does not exist yet. The fix is on the
+login path: after issuing a session, re-read the credential and revoke the session just issued if it
+moved. The second reviewer measured **0 survivors** against 16 with the check disabled.
+
+**Ruling 70 is closed after three tasks and five channels**, and the fifth was found in the registry
+this task had just declared closed: the invitation rendered the **inviter's** stored display name
+into the text part of a message carrying a live token link, invisible to both ruling-70 test blocks
+because one made only the recipient's name hostile and the other ran over notices only. A sixth
+channel — the organisation name — is characterised and bounded rather than closed, and binds Task 13.
+
+**The second review of the fix round found 2 Medium and 3 Low that a single review would not have.**
+The sentence explaining the High's fix named the wrong mechanism, and the control doing the real work
+had no test at all — deleting it refused three of four concurrent correct-password sign-ins during a
+parameter migration, with the whole suite green. The burst notice's "once per burst" guarantee was
+defeated by concurrency, which is the same defect class as Task 9's High, recurring **inside the fix
+round for a finding whose own dispositions cite it**.
+
+**Three claims of the orchestrator's were measured false by the agents it briefed**, including one
+quoted from `session.service.ts`'s own docblock — so it was false in the codebase before the brief
+repeated it. All three are corrected at the site and in the rulings register.
+
+**Two things are deliberately not fixed and are recorded instead.** A reset for an account with no
+credential row sets a password, which keeps SSO-only accounts from being stranded today and is a
+Phase 11 bypass once `IdentityProviderLink` accounts exist. And the reset's credential predicate is
+covered by a probe that cannot deterministically fail — the kill is a distribution at roughly one run
+in twenty-five — so the docblock says plainly that deleting the predicate does not turn it red.
+
+**The last two commits on this branch were written by the orchestrator and reviewed by nobody.**
+They close the second review's five findings, each test-first with the mutation re-run, but that is
+the author checking their own work.
+
+**Task 10 is NOT merged.** It sits on `feat/phase-2-task-10`, unpushed, with no pull request and no
+CI run.
+
+All findings and dispositions:
+[`docs/superpowers/ledger/phase-2/task-10/`](../../docs/superpowers/ledger/phase-2/task-10/).
 
 **Checkpoint A falls after Task 12** — the identity API enforced end to end with no UI. At that
 point the branch is pushed, CI must be green on a Linux runner, and this file gets an evidence
