@@ -152,6 +152,14 @@ export const AUTH_RATE_LIMIT_CLASSES = [
   'emailVerificationResend',
   'login',
   'generalSession',
+  // Task 10's three routes. `passwordReset` keys per address AND per IP, so a
+  // suite that registers many addresses from loopback exhausts the per-IP half
+  // (10/hour) long before it finishes; `passwordResetConsume` is 20/hour and
+  // `passwordChange` 10/hour, both per IP only, which one describe block can
+  // spend on its own.
+  'passwordReset',
+  'passwordResetConsume',
+  'passwordChange',
 ] as const;
 
 export async function clearRateLimits(redis: RedisLike): Promise<void> {
