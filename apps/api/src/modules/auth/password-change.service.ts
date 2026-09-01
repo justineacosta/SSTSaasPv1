@@ -289,6 +289,27 @@ export class PasswordChangeService {
    */
   private async recordDenial(command: ChangePasswordCommand, reason: string): Promise<void> {
     const notify = await this.store.$transaction(async (tx: IdentityTransaction) => {
+      // THE LOCK IS WHAT MAKES "ONCE PER BURST" TRUE. NEW-3.
+      //
+      // The count below is read inside this transaction, and Prisma runs
+      // interactive transactions at Postgres READ COMMITTED — so without this,
+      // concurrent denials cannot see one another's uncommitted rows, several
+      // can each count exactly `BURST_THRESHOLD`, and each sends. Measured by
+      // the fix round's reviewer at two and three notices for one burst in two
+      // rounds of four, from eight parallel refusals.
+      //
+      // Serialising per account fixes it because READ COMMITTED takes a fresh
+      // snapshot per **statement**: a transaction that blocks here and then
+      // runs its `count` sees every denial committed by the transaction it
+      // waited for. `TokenService.issue` takes the same kind of lock for the
+      // same kind of reason, and the subquery wrapper is its comment's — the
+      // function returns `void` and `$queryRaw` cannot deserialise that.
+      //
+      // Keyed per account, so two people failing on two accounts never wait on
+      // each other. Held to the end of this transaction, which is one insert
+      // and two reads with no network call in it.
+      await tx.$queryRaw`SELECT 1 AS locked FROM (SELECT pg_advisory_xact_lock(hashtext(${`pwc:${command.userId}`}))) AS lock_taken`;
+
       await this.audit.record(tx, {
         // `SYSTEM` with a null actor, following every other failure row in this
         // module. Somebody holding this session could not produce the password,

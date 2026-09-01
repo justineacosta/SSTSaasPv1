@@ -562,6 +562,71 @@ describe('POST /auth/change-password', () => {
     expect(after.lockedUntil).toBeNull();
   }, 120_000);
 
+  it('SENDS EXACTLY ONE BURST NOTICE WHEN THE REFUSALS ARRIVE IN PARALLEL (NEW-3)', async () => {
+    // CARRY-FORWARD RULING 74, IN THE FIX ROUND FOR A FINDING WHOSE OWN
+    // DISPOSITIONS CITE RULING 74.
+    //
+    // The "once per burst" guarantee was written as a comment and asserted only
+    // by sequential tests. The count is read inside the same interactive
+    // transaction that writes the denial row, and Prisma runs those at Postgres
+    // READ COMMITTED — so concurrent denials cannot see one another's
+    // uncommitted rows and several can each count exactly `BURST_THRESHOLD`.
+    // The second reviewer measured 2 and 3 notices for a single burst in two of
+    // four rounds.
+    //
+    // What that costs is small and real: an outbound send the product pays for,
+    // aimed at the account owner, multiplied at will by whoever holds the
+    // stolen session — and an owner who receives three identical notices for
+    // one burst learns less, not more.
+    //
+    // The fix is a per-account advisory lock taken before the denial row is
+    // written, so the write-count-decide sequence is serialised per account and
+    // each transaction's count statement sees every previously committed
+    // denial. `TokenService.issue` uses the same mechanism for the same reason.
+    const email = await account();
+    const signed = await signIn(email);
+    const user = await h.prisma.user.findUniqueOrThrow({ where: { email } });
+    h.sent.length = 0;
+
+    // Four sequential refusals first, so the burst threshold is one away and
+    // every one of the parallel requests below is a candidate to trip it.
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await clearRateLimits(h.redis);
+      await request(h.server)
+        .post('/api/v1/auth/change-password')
+        .set('Cookie', signed.cookie)
+        .set('X-CSRF-Token', signed.csrf)
+        .send({ currentPassword: 'wrong wrong wrong', newPassword: NEW_PASSWORD });
+    }
+    expect(h.sent).toHaveLength(0);
+
+    await clearRateLimits(h.redis);
+    const parallel = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        request(h.server)
+          .post('/api/v1/auth/change-password')
+          .set('Cookie', signed.cookie)
+          .set('X-CSRF-Token', signed.csrf)
+          .send({ currentPassword: 'wrong wrong wrong', newPassword: NEW_PASSWORD }),
+      ),
+    );
+
+    // Every one of them is refused identically — the notice never changes the
+    // answer, which is what keeps the threshold invisible to whoever is
+    // guessing.
+    expect(parallel.map((response) => response.status)).toEqual(Array(8).fill(401));
+    expect(await platformEvents(user.id, 'PASSWORD_CHANGE_FAILED')).toHaveLength(12);
+
+    // ONE notice for one burst, however the refusals were scheduled.
+    expect(h.sent.map((mail) => mail.templateId)).toEqual(['failedLoginBurst']);
+
+    // And the ladder is still untouched, which is the constraint that made the
+    // notice the right answer in the first place.
+    const after = await h.prisma.user.findUniqueOrThrow({ where: { email } });
+    expect(after.failedLoginCount).toBe(0);
+    expect(after.lockedUntil).toBeNull();
+  }, 120_000);
+
   it('LETS EXACTLY ONE OF TWO PARALLEL CHANGES COMMIT', async () => {
     // D3 and carry-forward ruling 74. Both requests verify against the same
     // stored hash — the read happens before a ~40 ms Argon2 operation — so
@@ -868,12 +933,23 @@ describe('H1 — a login racing a completed reset must not keep a live session',
   });
 
   it('does not revoke a login that rehashed its own credential', async () => {
-    // THE TRAP THE DISPOSITION NAMES. D8 rewrites the stored hash on a
-    // successful login when the parameters have been raised, so a post-issue
-    // comparison against the hash the request originally READ would see a
-    // difference it caused itself, and every rehashing login would revoke
-    // itself. Reproduced against real Postgres by storing a credential at
-    // weaker parameters than the running configuration.
+    // THE TRAP THE DISPOSITION NAMES, AND WHAT ACTUALLY HOLDS IT SHUT.
+    //
+    // D8 rewrites the stored hash on a successful login when the parameters
+    // have been raised, so a post-issue comparison against the hash the request
+    // originally READ sees a difference it caused itself.
+    //
+    // **This test does not observe the plumbing that avoids that**, and the
+    // docblock here used to say it did — NEW-1. Defeating `hashInForce` leaves
+    // this test green, because `credentialStillCurrent` re-verifies on a
+    // mismatch and a rehash of the same password verifies. What the plumbing
+    // saves is one Argon2id verification per rehashing login. The control that
+    // makes the outcome correct is the re-verify fallback, and the test that
+    // observes THAT is `two concurrent rehashing logins both succeed` below —
+    // deleting the fallback turns that one red and leaves this one green.
+    //
+    // Reproduced against real Postgres by storing a credential at weaker
+    // parameters than the running configuration.
     //
     // `argon2id` at m=8,t=1,p=1 is below anything `.env` configures, so
     // `needsRehash` is true for it and the login path rewrites the row.
@@ -904,6 +980,49 @@ describe('H1 — a login racing a completed reset must not keep a live session',
       .set('Cookie', `${SESSION_COOKIE_NAME}=${valueOf(cookie ?? '')}`);
     expect(probe.status).toBe(200);
   });
+
+  it('lets TWO CONCURRENT REHASHING LOGINS both succeed (NEW-1)', async () => {
+    // THE CONTROL NOTHING OBSERVED. NEW-1.
+    //
+    // `credentialStillCurrent` compares the stored hash to the one in force and,
+    // **on a mismatch, re-verifies the submitted password against whatever is
+    // stored now**. That fallback is what makes concurrent rehashing safe: two
+    // correct-password logins during a parameter migration each rewrite the row,
+    // so each sees a hash the other wrote, and a byte comparison alone would
+    // refuse them.
+    //
+    // Measured by the fix round's reviewer with the fallback deleted: **three of
+    // four** concurrent correct-password sign-ins refused, for the whole duration
+    // of a parameter migration — which is the one condition D8's rehash exists to
+    // serve. The suite was green throughout, because the only rehash test was the
+    // single-login one above, where the fast path answers first.
+    //
+    // This is an availability property, not a security one, and it is exactly the
+    // kind that has no advocate unless a test holds it.
+    const email = await account();
+    const user = await h.prisma.user.findUniqueOrThrow({ where: { email } });
+    await h.prisma.credential.update({
+      where: { userId: user.id },
+      data: { passwordHash: await weakHash(PASSWORD) },
+    });
+
+    await clearRateLimits(h.redis);
+    const responses = await Promise.all(
+      Array.from({ length: 4 }, () =>
+        request(h.server).post('/api/v1/auth/login').send({ email, password: PASSWORD }),
+      ),
+    );
+
+    // Every one of them holds a correct password. Nothing about a parameter
+    // migration may turn a correct password into a refusal.
+    expect(responses.map((response) => response.status)).toEqual([200, 200, 200, 200]);
+    expect(await liveSessions(email)).toHaveLength(4);
+
+    // And the row really did move off the weak hash, so the rehash ran rather
+    // than the test passing because nothing happened.
+    const after = await h.prisma.credential.findUniqueOrThrow({ where: { userId: user.id } });
+    expect(after.passwordHash).not.toBe(await weakHash(PASSWORD));
+  }, 120_000);
 });
 
 describe('M1 — the reset credential predicate, against a real second writer', () => {
