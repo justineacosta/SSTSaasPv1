@@ -1,6 +1,14 @@
 import { Body, Controller, Get, HttpCode, Inject, Post, Req, Res } from '@nestjs/common';
 import {
   assertUserPrincipal,
+  type ChangePasswordRequest,
+  type ChangePasswordResponse,
+  changePasswordRequestSchema,
+  changePasswordResponseSchema,
+  type ForgotPasswordRequest,
+  type ForgotPasswordResponse,
+  forgotPasswordRequestSchema,
+  forgotPasswordResponseSchema,
   type LoginRequest,
   type LoginResponse,
   loginRequestSchema,
@@ -15,6 +23,10 @@ import {
   type ResendVerificationResponse,
   resendVerificationRequestSchema,
   resendVerificationResponseSchema,
+  type ResetPasswordRequest,
+  type ResetPasswordResponse,
+  resetPasswordRequestSchema,
+  resetPasswordResponseSchema,
   type SessionResponse,
   sessionResponseSchema,
   type VerifyEmailRequest,
@@ -38,19 +50,23 @@ import { deriveCsrfToken } from './csrf-token.js';
 import { EmailVerificationService } from './email-verification.service.js';
 import { LoginService } from './login.service.js';
 import { LogoutService } from './logout.service.js';
+import { PasswordChangeService } from './password-change.service.js';
+import { PasswordResetService } from './password-reset.service.js';
 import { RegistrationService } from './registration.service.js';
 import { requestContextOf } from './request-context.js';
 import { SessionDocumentService } from './session-document.service.js';
 
 /**
- * THE SIX ROUTES ON THIS CONTROLLER.
+ * THE NINE ROUTES ON THIS CONTROLLER.
  *
- * Six here, **ten in the product** — the health probes and the OpenAPI document
- * itself make up the difference, and `pnpm check:openapi` counts all of them.
- * Task 8 shipped `/register`, `/verify-email` and `/resend-verification` and
- * took that total from four to seven; Task 9 adds `/login`, `/logout` and
- * `/session` and takes it to ten. (L6: the heading previously said "the six
- * routes this product publishes", which contradicted the sentence below it.)
+ * Nine here, **thirteen in the product** — the health probes and the OpenAPI
+ * document itself make up the difference, and `pnpm check:openapi` counts all
+ * of them. Task 8 shipped `/register`, `/verify-email` and
+ * `/resend-verification` and took that total from four to seven; Task 9 added
+ * `/login`, `/logout` and `/session` and took it to ten; Task 10 adds
+ * `/forgot-password`, `/reset-password` and `/change-password` and takes it to
+ * thirteen. (L6: the heading previously said "the six routes this product
+ * publishes", which contradicted the sentence below it.)
  *
  * # The Task 8 three are `@Public()`, and therefore NOT CSRF-covered
  *
@@ -97,6 +113,8 @@ export class AuthController {
     @Inject(LoginService) private readonly logins: LoginService,
     @Inject(LogoutService) private readonly logouts: LogoutService,
     @Inject(SessionDocumentService) private readonly sessionDocument: SessionDocumentService,
+    @Inject(PasswordResetService) private readonly passwordResets: PasswordResetService,
+    @Inject(PasswordChangeService) private readonly passwordChanges: PasswordChangeService,
   ) {}
 
   /**
@@ -441,6 +459,224 @@ export class AuthController {
   @Get('session')
   async session(@Req() request: Request): Promise<SessionResponse> {
     return this.sessionDocument.forPrincipal(principalOf(request));
+  }
+
+  /**
+   * Asks for a password-reset link, or does not, and says the same thing either
+   * way.
+   *
+   * D5. `{ status: 'RESET_REQUESTED' }` for an address with no account, one
+   * awaiting confirmation, and one fully active alike.
+   * `auth.enumeration.integration.spec.ts` proves that by byte comparison
+   * rather than by inspection — and note that these are 200s with a constant
+   * body, so unlike login's refusals the comparison needs no `requestId`
+   * substitution (carry-forward ruling 77).
+   *
+   * **THE TIMING RESIDUAL IS ACCEPTED, NOT CLOSED.** A path that sends pays an
+   * SMTP round trip and a path that does not costs nothing, so the latency
+   * separates the cases the bytes do not. That is carry-forward ruling 68 on a
+   * third endpoint and it is not closable before the Phase 4 queue. Measured
+   * figures are in this task's report and in `security/authentication.md` §6.
+   *
+   * `passwordReset`: 3/hour per address keyed on the body's `email`, 10/hour
+   * per IP, fail closed. The per-account half is what stops one caller aiming
+   * this at one address; the per-IP half is what stops it being an
+   * outbound-email amplifier pointed at people who are not our customers.
+   *
+   * `@RefuseCrossSite()` rather than CSRF — D6, and see the class docblock.
+   */
+  @Public()
+  @RefuseCrossSite()
+  @RateLimit('passwordReset')
+  @ApiDoc({
+    summary: 'Ask for a password-reset link.',
+    description:
+      'Sends a single-use reset link. The response is identical whether or not the address has ' +
+      'an account, and whether or not that account has confirmed its address — nothing about ' +
+      'which case occurred reaches the caller. An account that has never confirmed its address ' +
+      'does receive a link; an administratively locked or disabled one does not.',
+    requestBody: {
+      description: 'The address is lower-cased and trimmed before use. The schema is strict.',
+      schema: forgotPasswordRequestSchema,
+    },
+    responses: [
+      {
+        status: 200,
+        description: 'Accepted. Whether anything was sent is deliberately not reported.',
+        schema: forgotPasswordResponseSchema,
+      },
+      {
+        status: 403,
+        description: 'The request was refused as cross-site (`CSRF_TOKEN_INVALID`).',
+      },
+      {
+        status: 429,
+        description: 'Rate limited: 3 per hour per address and 10 per hour per IP address.',
+      },
+    ],
+  })
+  @HttpCode(200)
+  @Post('forgot-password')
+  async forgotPassword(
+    @Body(new ZodValidationPipe(forgotPasswordRequestSchema)) body: ForgotPasswordRequest,
+    @Req() request: Request,
+  ): Promise<ForgotPasswordResponse> {
+    await this.passwordResets.request({ email: body.email, ...requestContextOf(request) });
+    return { status: 'RESET_REQUESTED' };
+  }
+
+  /**
+   * Redeems a reset link and replaces the password.
+   *
+   * `passwordResetConsume`: 20/hour per IP, fail closed — a class added by this
+   * task, because the body is `{ token, password }` and carries no account to
+   * key a per-account window on. Defaulting the route was not available
+   * (carry-forward ruling 55), and reusing `passwordReset` would have declared
+   * a `perPrincipal` scope sourced from a body field that does not exist —
+   * resolving nothing on every request while the per-IP half resolved.
+   *
+   * **No `Set-Cookie` at all**, and that is a decision rather than an omission:
+   * completing a reset revokes *every* session (D2), including any the caller
+   * happened to be holding, and issuing a fresh one here would sign in whoever
+   * redeemed the link. They sign in afterwards with the password they just
+   * chose, which is the step that proves they know it.
+   */
+  @Public()
+  @RefuseCrossSite()
+  @RateLimit('passwordResetConsume')
+  @ApiDoc({
+    summary: 'Choose a new password from a reset link.',
+    description:
+      'Redeems a single-use reset token, replaces the password, and signs every session out — ' +
+      'including any the caller is holding. No session is issued: sign in afterwards with the ' +
+      'new password. Unknown, expired, already-used and superseded tokens, and a link for an ' +
+      'account that is not active, all produce the same refusal.',
+    requestBody: { schema: resetPasswordRequestSchema },
+    responses: [
+      {
+        status: 200,
+        description: 'The password is replaced and every session is revoked.',
+        schema: resetPasswordResponseSchema,
+      },
+      {
+        status: 403,
+        description: 'The request was refused as cross-site (`CSRF_TOKEN_INVALID`).',
+      },
+      {
+        status: 422,
+        description:
+          'The link is not redeemable (`TOKEN_INVALID`) — one code and one message for unknown, ' +
+          'expired, already-used, superseded and not-active alike; or the password appears in a ' +
+          'public breach corpus (`PASSWORD_BREACHED`), which is checked before the link is spent ' +
+          'so a refusal does not cost the link.',
+      },
+      { status: 429, description: 'Rate limited: 20 per hour per IP address.' },
+    ],
+  })
+  @HttpCode(200)
+  @Post('reset-password')
+  async resetPassword(
+    @Body(new ZodValidationPipe(resetPasswordRequestSchema)) body: ResetPasswordRequest,
+    @Req() request: Request,
+  ): Promise<ResetPasswordResponse> {
+    await this.passwordResets.reset({
+      token: body.token,
+      password: body.password,
+      ...requestContextOf(request),
+    });
+    return { status: 'PASSWORD_RESET' };
+  }
+
+  /**
+   * Changes the password of the signed-in caller, who must prove the current
+   * one.
+   *
+   * `passwordChange`: 10/hour per IP, fail closed — a new class, and the one
+   * row in `abuse-prevention.md` §1 that is a security control rather than
+   * bookkeeping. This endpoint verifies a password, so it is a
+   * credential-guessing oracle for anybody holding a stolen session.
+   *
+   * **`CsrfGuard` governs this route**, so it carries no `@RefuseCrossSite()` —
+   * D6, and the same reasoning `logout` carries. It is cookie-authenticated, so
+   * the double-submit token has something to bind to, which is exactly what a
+   * public route cannot offer (carry-forward ruling 56).
+   *
+   * **The response replaces both cookies.** Every other session is revoked and
+   * the caller's own is rotated, so the token in the browser before the change
+   * cannot be used after it — `security/authentication.md` §3 lists a password
+   * change as a privilege change. If there was nothing left to rotate, because
+   * the caller's session was revoked concurrently, the cookies are cleared
+   * instead.
+   */
+  @AuthenticatedOnly()
+  @RateLimit('passwordChange')
+  @ApiDoc({
+    summary: 'Change your password.',
+    description:
+      'Requires the current password as well as a session: changing a password from a stolen ' +
+      'session without proving the old one is an account-takeover step, not a settings edit. ' +
+      'Every other session is signed out and this one is rotated, so `Set-Cookie` carries a new ' +
+      '`__Host-session` and `__Host-csrf`. Requires `X-CSRF-Token`.',
+    requestBody: { schema: changePasswordRequestSchema },
+    responses: [
+      {
+        status: 200,
+        description:
+          'The password is changed. Every other session is revoked and this one is rotated.',
+        schema: changePasswordResponseSchema,
+      },
+      {
+        status: 401,
+        description:
+          'The current password is wrong (`INVALID_CREDENTIALS`), or there is no usable ' +
+          'session (`UNAUTHENTICATED` or `SESSION_EXPIRED`).',
+      },
+      { status: 403, description: 'Missing or mismatched `X-CSRF-Token` (`CSRF_TOKEN_INVALID`).' },
+      {
+        status: 422,
+        description:
+          'The new password appears in a public breach corpus (`PASSWORD_BREACHED`). This check ' +
+          'is disabled by default and fails open, so its absence is not a claim about the ' +
+          'password.',
+      },
+      { status: 429, description: 'Rate limited: 10 per hour per IP address.' },
+    ],
+  })
+  @HttpCode(200)
+  @Post('change-password')
+  async changePassword(
+    @Body(new ZodValidationPipe(changePasswordRequestSchema)) body: ChangePasswordRequest,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<ChangePasswordResponse> {
+    const result = await this.passwordChanges.change({
+      ...principalOf(request),
+      currentPassword: body.currentPassword,
+      newPassword: body.newPassword,
+      ...requestContextOf(request),
+    });
+
+    if (result.token === null) {
+      // Nothing was left to rotate — the caller's session was revoked while
+      // this request ran. The password IS changed, so this is still a 200;
+      // clearing the cookies signs them out rather than leaving a browser
+      // holding a credential that now resolves to nothing.
+      response.setHeader('Set-Cookie', [clearedSessionCookie(), clearedCsrfCookie()]);
+      return { status: 'PASSWORD_CHANGED' };
+    }
+
+    // Both cookies, in one `Set-Cookie` array, exactly as login sets them. The
+    // CSRF cookie is derived from the session token rather than stored, so it
+    // rotates whenever the session does — which is the whole reason a rotation
+    // here does not leave a signed-in user unable to submit a form.
+    response.setHeader('Set-Cookie', [
+      serialiseSessionCookie({ value: result.token, maxAgeSeconds: result.cookieMaxAgeSeconds }),
+      serialiseCsrfCookie({
+        value: deriveCsrfToken(result.token),
+        maxAgeSeconds: result.cookieMaxAgeSeconds,
+      }),
+    ]);
+    return { status: 'PASSWORD_CHANGED' };
   }
 }
 

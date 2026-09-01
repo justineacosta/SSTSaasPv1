@@ -15,6 +15,8 @@ import {
 import { EmailVerificationService } from './email-verification.service.js';
 import { LoginService } from './login.service.js';
 import { LogoutService } from './logout.service.js';
+import { PasswordChangeService } from './password-change.service.js';
+import { PasswordResetService } from './password-reset.service.js';
 import { RegistrationService } from './registration.service.js';
 import { SessionDocumentService } from './session-document.service.js';
 import {
@@ -49,7 +51,9 @@ import { type SecretTokenTtlSeconds, TokenService } from './token.service.js';
  * standing for several tasks. `pnpm check:openapi` reported four routes for
  * exactly that long. `AuthController` arrives now that the guard, the CSRF
  * guard, the rate limiter and the boot-time access assertion are all in the
- * pipeline ahead of it, and the same check reports **seven**.
+ * pipeline ahead of it. That check reported **seven** after Task 8, ten after
+ * Task 9's login, logout and session routes, and thirteen after Task 10's
+ * password reset and change.
  *
  * `ENV` and the logger come from the global `ConfigModule`. Neither
  * `PrismaModule` nor `RedisModule` is global — each exports its one token
@@ -143,15 +147,21 @@ import { type SecretTokenTtlSeconds, TokenService } from './token.service.js';
     LoginService,
     LogoutService,
     SessionDocumentService,
+    PasswordResetService,
+    PasswordChangeService,
   ],
   // `SessionRepository` is deliberately NOT exported. It is `SessionService`'s
   // Postgres access, and a consumer holding it could revoke a row without
   // poisoning the cache entry that would go on serving it.
   //
-  // Neither are `AuthMailer`, `RegistrationService` or `EmailVerificationService`:
-  // they exist for this module's own controller, and a consumer elsewhere
-  // holding one could create an account or confirm an address without going
-  // through a rate-limited, audited route.
+  // Neither are `AuthMailer`, `RegistrationService`, `EmailVerificationService`,
+  // `PasswordResetService` or `PasswordChangeService`: they exist for this
+  // module's own controller, and a consumer elsewhere holding one could create
+  // an account, confirm an address or REPLACE A CREDENTIAL without going
+  // through a rate-limited, audited route. The last of those is the sharpest —
+  // both password services write to `Credential` and revoke sessions, and
+  // neither has any business being reachable except through the two endpoints
+  // that carry the rate-limit class and the audit row.
   exports: [PasswordService, BreachCheckService, TokenService, SessionService],
 })
 export class AuthModule {}

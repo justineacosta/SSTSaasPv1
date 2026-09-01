@@ -6,6 +6,167 @@
     "description": "Multi-tenant security testing, penetration-test management, and vulnerability management."
   },
   "paths": {
+    "/api/v1/auth/change-password": {
+      "post": {
+        "operationId": "AuthController_changePassword",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Change your password.",
+        "description": "Requires the current password as well as a session: changing a password from a stolen session without proving the old one is an account-takeover step, not a settings edit. Every other session is signed out and this one is rotated, so `Set-Cookie` carries a new `__Host-session` and `__Host-csrf`. Requires `X-CSRF-Token`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "currentPassword": {
+                    "type": "string",
+                    "minLength": 12,
+                    "maxLength": 256
+                  },
+                  "newPassword": {
+                    "type": "string",
+                    "minLength": 12,
+                    "maxLength": 256
+                  }
+                },
+                "required": [
+                  "currentPassword",
+                  "newPassword"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The password is changed. Every other session is revoked and this one is rotated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "PASSWORD_CHANGED"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The current password is wrong (`INVALID_CREDENTIALS`), or there is no usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`)."
+          },
+          "403": {
+            "description": "Missing or mismatched `X-CSRF-Token` (`CSRF_TOKEN_INVALID`)."
+          },
+          "422": {
+            "description": "The new password appears in a public breach corpus (`PASSWORD_BREACHED`). This check is disabled by default and fails open, so its absence is not a claim about the password."
+          },
+          "429": {
+            "description": "Rate limited: 10 per hour per IP address."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "authenticated"
+        }
+      }
+    },
+    "/api/v1/auth/forgot-password": {
+      "post": {
+        "operationId": "AuthController_forgotPassword",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Ask for a password-reset link.",
+        "description": "Sends a single-use reset link. The response is identical whether or not the address has an account, and whether or not that account has confirmed its address — nothing about which case occurred reaches the caller. An account that has never confirmed its address does receive a link; an administratively locked or disabled one does not.",
+        "requestBody": {
+          "description": "The address is lower-cased and trimmed before use. The schema is strict.",
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "maxLength": 254
+                  }
+                },
+                "required": [
+                  "email"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Accepted. Whether anything was sent is deliberately not reported.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "RESET_REQUESTED"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request was refused as cross-site (`CSRF_TOKEN_INVALID`)."
+          },
+          "429": {
+            "description": "Rate limited: 3 per hour per address and 10 per hour per IP address."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "public"
+        }
+      }
+    },
     "/api/v1/auth/login": {
       "post": {
         "operationId": "AuthController_login",
@@ -304,6 +465,89 @@
           },
           "429": {
             "description": "Rate limited: 3 per hour per address and 10 per hour per IP address."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "public"
+        }
+      }
+    },
+    "/api/v1/auth/reset-password": {
+      "post": {
+        "operationId": "AuthController_resetPassword",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Choose a new password from a reset link.",
+        "description": "Redeems a single-use reset token, replaces the password, and signs every session out — including any the caller is holding. No session is issued: sign in afterwards with the new password. Unknown, expired, already-used and superseded tokens, and a link for an account that is not active, all produce the same refusal.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 12,
+                    "maxLength": 256
+                  }
+                },
+                "required": [
+                  "token",
+                  "password"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The password is replaced and every session is revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "PASSWORD_RESET"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request was refused as cross-site (`CSRF_TOKEN_INVALID`)."
+          },
+          "422": {
+            "description": "The link is not redeemable (`TOKEN_INVALID`) — one code and one message for unknown, expired, already-used, superseded and not-active alike; or the password appears in a public breach corpus (`PASSWORD_BREACHED`), which is checked before the link is spent so a refusal does not cost the link."
+          },
+          "429": {
+            "description": "Rate limited: 20 per hour per IP address."
           },
           "default": {
             "description": "Error. Every error response uses the shared envelope.",
