@@ -133,6 +133,15 @@ export interface IdentityStoreFake {
      * both record.
      */
     replaceCredentialAfterRead: { userId: string; passwordHash: string } | null;
+    /**
+     * Set to make every `credential.updateMany` reject.
+     *
+     * For D8's constraint: a transparent rehash on login must not fail the
+     * login. The user authenticated successfully, and a maintenance write is
+     * not permission to refuse them — so the only way to hold that is to make
+     * the write fail and require the response to be unchanged.
+     */
+    failCredentialUpdate: Error | null;
   };
   /** The `tokenHash` of every token issued through the fake transaction. */
   readonly issuedTokenHashes: string[];
@@ -195,6 +204,7 @@ export function identityStoreFake(): IdentityStoreFake {
     lockRowOnTransaction: null as { userId: string; lockedUntil: Date } | null,
     /** See the interface above. The Task 10 twin of `lockRowOnTransaction`. */
     replaceCredentialAfterRead: null as { userId: string; passwordHash: string } | null,
+    failCredentialUpdate: null as Error | null,
   };
   const liveSessionCounts = new Map<string, number>();
 
@@ -381,6 +391,9 @@ export function identityStoreFake(): IdentityStoreFake {
       },
       updateMany: (args) => {
         calls.push({ name: 'credential.updateMany', args: { userId: args.where.userId } });
+        if (control.failCredentialUpdate !== null) {
+          return Promise.reject(control.failCredentialUpdate);
+        }
         return Promise.resolve(swapCredential(args.where, args.data.passwordHash));
       },
     },

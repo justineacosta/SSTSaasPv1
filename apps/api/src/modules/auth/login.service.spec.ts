@@ -1168,3 +1168,193 @@ describe('a stored credential argon2 cannot read', () => {
     expect(h.lines.filter((entry) => entry.includes('"level":"error"'))).toEqual([]);
   });
 });
+
+/**
+ * D8. THE ADR-0014 CLAUSE TASK 9 SHIPPED THE ENDPOINT WITHOUT.
+ *
+ * ADR-0014 §48 says a credential stored at weaker parameters is rehashed
+ * transparently *"on next successful login"*, and login is the caller that
+ * clause names. `PasswordService.verify` has reported `needsRehash` since Task
+ * 3 and until now **nothing acted on it** — `login.service.ts` carried a
+ * comment saying so. That left carry-forward ruling 24 open by construction:
+ * rehash-on-login is the mechanism that drains the population of old hashes,
+ * and without it raising the Argon2 parameters both opens the timing oracle
+ * ruling 24 describes and never closes it.
+ *
+ * The fixtures below hash at parameters BELOW the service's, which is what
+ * makes `needsRehash` true without any stubbing of `PasswordService`.
+ */
+describe('a successful login rehashes a credential stored at weaker parameters', () => {
+  /** Weaker than `ARGON2` on the memory axis, so `needsRehash` is true. */
+  const WEAKER = { memoryCostKib: 8, timeCost: 1, parallelism: 1 };
+  const STRONGER = { memoryCostKib: 16, timeCost: 2, parallelism: 1 };
+
+  /**
+   * A harness whose service hashes at `STRONGER` while the stored credential
+   * was written at `WEAKER`. Deliberately built from the real
+   * `PasswordService` at two parameter sets rather than by stubbing
+   * `needsRehash`: the thing under test is that the service acts on a real
+   * report, and a stub would make the report true by construction.
+   */
+  function upgradingHarness() {
+    const db = identityStoreFake();
+    const mail = mailerFake();
+    const passwords = new PasswordService(STRONGER);
+    const legacy = new PasswordService(WEAKER);
+    const tokens = new TokenService(db.tokenStore, TTL);
+    const { logger, lines } = captureLogger();
+    const { issuer, issued } = issuerFake();
+    const mailer = new AuthMailer(mail.mailer, ENV, tokens, logger);
+    const service = new LoginService(
+      db.store,
+      passwords,
+      issuer,
+      new PlatformAuditService(),
+      mailer,
+      logger,
+    );
+    return { service, db, mail, passwords, legacy, issued, lines };
+  }
+
+  async function withLegacyCredential(h: ReturnType<typeof upgradingHarness>) {
+    const row = identityUserRow({ emailVerifiedAt: new Date() });
+    h.db.users.set(row.email, row);
+    h.db.users.set(row.id, row);
+    const legacyHash = await h.legacy.hash(PASSWORD);
+    h.db.credentials.set(row.id, legacyHash);
+    return { row, legacyHash };
+  }
+
+  it('reports that the stored hash needs one, at these parameters', async () => {
+    // The fixture's own premise, checked rather than assumed. If `needsRehash`
+    // were false here every assertion below would pass vacuously — which is
+    // carry-forward ruling 58's family, and the reason this test exists.
+    const h = upgradingHarness();
+    const { legacyHash } = await withLegacyCredential(h);
+
+    const verification = await h.passwords.verify(legacyHash, PASSWORD);
+    expect(verification.valid).toBe(true);
+    expect(verification.needsRehash).toBe(true);
+  });
+
+  it('writes a credential the CURRENT parameters are satisfied by', async () => {
+    const h = upgradingHarness();
+    const { row, legacyHash } = await withLegacyCredential(h);
+
+    await h.service.login({ ...COMMAND, email: row.email });
+
+    const stored = h.db.credentials.get(row.id);
+    expect(stored).toBeDefined();
+    expect(stored).not.toBe(legacyHash);
+    const after = await h.passwords.verify(stored ?? null, PASSWORD);
+    expect(after.valid).toBe(true);
+    // The point of the exercise: the same password now verifies with no rehash
+    // owed, so this account has left the old population for good.
+    expect(after.needsRehash).toBe(false);
+  });
+
+  it('writes it under a COMPARE-AND-SWAP on the hash it verified', async () => {
+    // D3 reaches here too. A rehash is a credential write decided from a row
+    // read before a ~40 ms verification, so a password change that committed in
+    // between must not be overwritten by a maintenance write carrying the old
+    // password's digest. Carry-forward ruling 73's shape on a third path.
+    const h = upgradingHarness();
+    const { row } = await withLegacyCredential(h);
+    const changed = await h.passwords.hash('the user changed it mid-flight');
+    h.db.control.replaceCredentialAfterRead = { userId: row.id, passwordHash: changed };
+
+    await h.service.login({ ...COMMAND, email: row.email });
+
+    // The sibling's password survives. Without the predicate the rehash would
+    // reinstate the OLD password's hash and silently undo a password change.
+    expect(h.db.credentials.get(row.id)).toBe(changed);
+  });
+
+  it('does NOT rehash when the stored hash already meets current parameters', async () => {
+    // `needsRehash` is one-directional (carry-forward ruling 29): a hash that is
+    // stronger than current configuration is never downgraded, and one that
+    // matches is left alone. A write on every login would be ~40 ms of Argon2
+    // and a row update for nothing.
+    const { service, db, passwords } = harness();
+    const row = identityUserRow({ emailVerifiedAt: new Date() });
+    db.users.set(row.email, row);
+    db.users.set(row.id, row);
+    const current = await passwords.hash(PASSWORD);
+    db.credentials.set(row.id, current);
+
+    await service.login({ ...COMMAND, email: row.email });
+
+    expect(db.credentials.get(row.id)).toBe(current);
+    expect(names(db)).not.toContain('credential.updateMany');
+  });
+
+  it('does NOT rehash after a FAILED login', async () => {
+    // `needsRehash` is false whenever `valid` is false (ruling 29), so this
+    // holds structurally — asserted because a future refactor that read the
+    // flag before the validity check would rehash a password it just rejected.
+    const h = upgradingHarness();
+    const { row, legacyHash } = await withLegacyCredential(h);
+
+    await expect(
+      h.service.login({ ...COMMAND, email: row.email, password: WRONG }),
+    ).rejects.toThrow(InvalidCredentialsError);
+
+    expect(h.db.credentials.get(row.id)).toBe(legacyHash);
+  });
+
+  it('does not change the login response', async () => {
+    // ADR-0014's constraint. A maintenance write is not permission to alter
+    // what the caller is told.
+    const h = upgradingHarness();
+    const { row } = await withLegacyCredential(h);
+
+    const result = await h.service.login({ ...COMMAND, email: row.email });
+
+    expect(result).toMatchObject({ kind: 'authenticated' });
+  });
+
+  it('does not fail the login when the rehash write throws', async () => {
+    // The other half of ADR-0014's constraint: the user authenticated
+    // successfully, and a maintenance write is not permission to refuse them.
+    const h = upgradingHarness();
+    const { row } = await withLegacyCredential(h);
+    h.db.control.failCredentialUpdate = new Error('credential write failed');
+
+    const result = await h.service.login({ ...COMMAND, email: row.email });
+
+    expect(result).toMatchObject({ kind: 'authenticated' });
+    // It is not silent, either. An operator has to be able to see that the
+    // upgrade path is not draining the old population.
+    expect(h.lines.join('')).toContain('rehash');
+  });
+
+  it('logs no password, hash or fragment of either when it fails', async () => {
+    // Critical security rule 6. The failing write's error message is derived
+    // from values this line must never carry.
+    const h = upgradingHarness();
+    const { row, legacyHash } = await withLegacyCredential(h);
+    h.db.control.failCredentialUpdate = new Error('credential write failed');
+
+    await h.service.login({ ...COMMAND, email: row.email });
+
+    const logged = h.lines.join('');
+    expect(logged).not.toContain(PASSWORD);
+    expect(logged).not.toContain(legacyHash);
+    expect(logged).not.toContain('$argon2id$');
+  });
+
+  it('rehashes on the MFA arm too, because that password was accepted as well', async () => {
+    // The credential was proved correct; whether a second factor is still owed
+    // says nothing about the hash's parameters. Leaving the MFA population
+    // behind would mean ruling 24's oracle stays open for exactly the accounts
+    // that took security seriously enough to enrol.
+    const h = upgradingHarness();
+    const { row, legacyHash } = await withLegacyCredential(h);
+    h.db.confirmedMfaUserIds.add(row.id);
+
+    const result = await h.service.login({ ...COMMAND, email: row.email });
+
+    expect(result).toMatchObject({ kind: 'mfa-required' });
+    expect(h.db.credentials.get(row.id)).not.toBe(legacyHash);
+  });
+});

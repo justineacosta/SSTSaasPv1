@@ -122,10 +122,31 @@ or the password**, and the caller receives the same `INVALID_CREDENTIALS` as any
 Nothing is logged for an address with no account, because a log line there would answer "is this
 address registered?" in a file an operator reads.
 
-**A successful login does not yet rehash a credential stored at weaker parameters.** The
-verification reports that it needs one and nothing acts on it, so the "rehashed transparently on
-next successful login" half of the bullet above is **not implemented**. It is a write on the login
-path and belongs with the task that owns writing to `Credential`.
+**A successful login rehashes a credential stored at weaker parameters, as of Phase 2 Task 10.**
+The "rehashed transparently on next successful login" half of the bullet above was unimplemented
+between Task 3, which made `PasswordService.verify` report `needsRehash`, and Task 10, which made
+login act on it. Three properties of how it is built are worth stating because each is a way this
+mechanism is commonly built wrong:
+
+- **It is a compare-and-swap on the hash the verification ran against.** The write is decided from
+  a value read before a ~40 ms verification, so a password change or reset that committed in
+  between must not be overwritten. Without the predicate this maintenance write would reinstate the
+  old password's digest and **silently undo a password change**. An affected-row count of zero
+  means the credential moved and there is nothing to upgrade; it is not an error.
+- **It never changes the response and never fails the login.** The user authenticated successfully
+  and a maintenance write is not permission to refuse them, so a failure is swallowed — but logged
+  at `warn`, naming the user id and no fragment of the hash or the password. Silence there would
+  make this promise look kept while the residual below stayed wide open.
+- **It runs on the MFA arm too.** The credential was proved correct; whether a second factor is
+  still owed says nothing about the parameters the hash was stored at.
+
+**It closes the third residual above only partially, and the remainder is structural.** Rehashing
+on login is the mechanism that drains the population of hashes stored before a parameter raise, so
+the oracle narrows every time somebody signs in — but an account whose owner never signs in again
+keeps its old hash indefinitely, and nothing in this product can reach it.
+[ADR-0014](../decisions/ADR-0014-argon2id-password-hashing.md) §116 already acknowledges that. The
+residual is therefore **open and shrinking**, not closed, and no document may describe it as
+closed.
 
 ## 3. Sessions
 
