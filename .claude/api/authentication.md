@@ -244,7 +244,7 @@ Authentication endpoints are limited per account **and** per IP
 ([`../security/abuse-prevention.md`](../security/abuse-prevention.md) §1), and fail closed if
 Redis is unavailable — an outage must not become a credential-stuffing window.
 
-The six routes that exist carry:
+The nine routes that exist carry:
 
 | Route | Class | Windows |
 |---|---|---|
@@ -254,8 +254,12 @@ The six routes that exist carry:
 | `POST /auth/login` | `login` | 5 / 15 min per account, 20 / 15 min per IP |
 | `POST /auth/logout` | `generalSession` | 1000/min per principal — **resolves nothing today** |
 | `GET /auth/session` | `generalSession` | as above |
+| `POST /auth/forgot-password` | `passwordReset` | 3/hour per address, 10/hour per IP |
+| `POST /auth/reset-password` | `passwordResetConsume` | 20/hour per IP |
+| `POST /auth/change-password` | `passwordChange` | 10/hour per IP |
 
-**Login is the first route on which a per-account window has ever actually resolved.** The class
+**Login is the first route on which a per-account window has ever actually resolved**, and
+`forgot-password` is the second. The class
 keys its principal on the request body's `email` field, and the three routes above it either
 carry no account in their body or key on it for a different class. The two windows bite
 independently, which is
@@ -332,3 +336,95 @@ routes needed one.
 
 The second row is one code for five outcomes on purpose. Splitting it would tell a caller that a
 token *once existed*, which tells them the address is registered.
+
+## 9. Password reset and password change
+
+```
+POST /api/v1/auth/forgot-password   { email }
+  -> 200 { status: "RESET_REQUESTED" }
+
+POST /api/v1/auth/reset-password    { token, password }
+  -> 200 { status: "PASSWORD_RESET" }
+
+POST /api/v1/auth/change-password   { currentPassword, newPassword }
+  -> 200 { status: "PASSWORD_CHANGED" }   + Set-Cookie: __Host-session, __Host-csrf
+```
+
+**The first two are public; the third is authenticated.** That split decides which cross-site
+mechanism covers each. `CsrfGuard` skips public routes for the reason §3 gives, so
+`forgot-password` and `reset-password` carry `@RefuseCrossSite()` — the header-based refusal, on
+`Sec-Fetch-Site` and `Origin` — and `change-password` carries none, because it is
+cookie-authenticated and the double-submit token has something to bind to. Both halves are
+asserted on the shipped routes rather than on a fixture controller.
+
+**Only `change-password` sets a cookie.** `reset-password` deliberately does not: completing a
+reset revokes **every** session, including any the caller happened to hold, and issuing a fresh
+one would sign in whoever redeemed the link. They sign in afterwards with the password they just
+chose, which is the step that proves they know it. `change-password` replaces both cookies with
+the rotated session's, or clears them when there was nothing left to rotate.
+
+**`forgot-password`'s body is a constant**, in the same way registration's and the resend's are,
+and for the same reason: a field whose value never varies with the account cannot leak whether the
+account exists. An address with no account, one awaiting confirmation, one fully active, and one
+that is administratively locked all produce the same status and the same bytes. Only some of them
+send anything.
+
+**An account that has never confirmed its address does get a link.** This is the opposite of
+`resend-verification`'s rule and it is deliberate: the link is itself the proof of mailbox control,
+the message renders nothing a caller supplied, and refusing would permanently strand anybody who
+registered and then lost their password before confirming. An administratively `LOCKED` or
+`DISABLED` account gets none — a reset is not the route back from an operator's decision, and
+`reset-password` refuses such a link anyway.
+
+**Refusals.**
+
+| Situation | Status | Code |
+|---|---|---|
+| Reset token unknown, expired, already used, superseded, belonging to a non-active account, or lost a concurrent credential write | 422 | `TOKEN_INVALID` |
+| New password found in a public breach corpus | 422 | `PASSWORD_BREACHED` |
+| `change-password` with the wrong current password | 401 | `INVALID_CREDENTIALS` |
+| `change-password` with no or mismatched `X-CSRF-Token` | 403 | `CSRF_TOKEN_INVALID` |
+| `forgot-password` or `reset-password` refused as cross-site | 403 | `CSRF_TOKEN_INVALID` |
+| Over the rate limit | 429 | `RATE_LIMITED`, with `Retry-After` |
+
+The first row is one code for six outcomes on purpose, and it is §8's rule applied to a sharper
+endpoint. Splitting it would tell a caller that a token *once existed*, which tells them the
+address is registered.
+
+**A refusal on `reset-password` never burns the link.** Every one of those six throws inside the
+transaction that consumed the token, so the redemption rolls back and the same link still works —
+which matters most for the non-active case, where a link refused because an account was locked has
+to keep working once an administrator unlocks it. The breach check runs **before** the token is
+spent for the same reason: a 422 must not cost the user their link, particularly for a check that
+is disabled by default and fails open.
+
+**`change-password` refuses with 401 rather than 403, and does not touch the lockout ladder.** It
+is a credential check, so `INVALID_CREDENTIALS` is the same code login gives for the same fact.
+It deliberately does not increment `User.failedLoginCount`: a caller who could lock an account by
+failing here could lock it with a stolen session, and the ladder's `ACCOUNT_LOCKED` refusal would
+then be a distinguishable outcome on an authenticated route. The bound is the rate-limit class
+below; the signal is the `PASSWORD_CHANGE_FAILED` audit row.
+
+**Rate limits.** Two of these classes are new and neither was transcribed from
+[`../security/abuse-prevention.md`](../security/abuse-prevention.md) §1 — that table had a row for
+requesting a reset and none for completing one or for changing a password, so both figures are
+decisions written into it in the same change.
+
+| Route | Class | Windows |
+|---|---|---|
+| `POST /auth/forgot-password` | `passwordReset` | 3/hour per address, 10/hour per IP |
+| `POST /auth/reset-password` | `passwordResetConsume` | 20/hour per IP |
+| `POST /auth/change-password` | `passwordChange` | 10/hour per IP |
+
+`passwordReset` is the **second** class whose per-account window actually resolves, after login's:
+it keys its principal on the request body's `email`. The other two are per IP only, because
+neither body carries an account — `{ token, password }` and `{ currentPassword, newPassword }` —
+and deriving one from the token would mean a database read bought by an unauthenticated caller
+before the limiter has decided anything.
+
+`passwordChange` is the one row in that table that is a security control rather than bookkeeping.
+The endpoint verifies a password, the account is fixed by the session cookie, and the answer is a
+clean 401/200 split, so it is a credential-guessing oracle for anybody holding a stolen session.
+Its per-**principal** window would be the right key and resolves nothing today, because the limiter
+runs before the authentication guard; it is left undeclared rather than declared-and-unresolvable,
+and §1 carries the reasoning.

@@ -366,6 +366,184 @@ describe('POST /auth/login answers identically for a wrong password and an unkno
   });
 });
 
+describe('POST /auth/forgot-password answers identically in every case', () => {
+  /**
+   * D5, AND IT NEEDS NO `requestId` SUBSTITUTION — CHECKED, NOT ASSUMED.
+   *
+   * Carry-forward ruling 77 says an enumeration byte comparison over an ERROR
+   * envelope is not Task 8's comparison, because `errorEnvelopeSchema` carries a
+   * per-request `requestId` that has to be substituted the way the CSP nonce is.
+   * It also says to check which kind of comparison applies rather than assume
+   * either way.
+   *
+   * These are **200s with a constant body** — `forgotPasswordResponseSchema` is
+   * the single literal `{ status: 'RESET_REQUESTED' }` — so they are Task 8's
+   * kind, not Task 9's. The comparison below is therefore over the raw buffer
+   * with no substitution at all, which is the stronger form: nothing in the body
+   * is excused from it. `the response body is a constant` at the bottom of this
+   * file is what holds that premise, and it now covers this endpoint too.
+   */
+  it('is byte-identical for no account, an unverified account and a verified one', async () => {
+    const unknown = `never-registered-${String(Date.now())}@example.test`;
+
+    const unverified = freshAddress();
+    await post('/api/v1/auth/register', { email: unverified, password: PASSWORD });
+
+    const verified = freshAddress();
+    await post('/api/v1/auth/register', { email: verified, password: PASSWORD });
+    await post('/api/v1/auth/verify-email', { token: tokenFromMail(h.sent.at(-1)) });
+
+    // The three fixtures are genuinely in three different states, checked in
+    // the same test rather than assumed — this file's docblock explains why
+    // that guard is what keeps the comparison from passing vacuously.
+    expect(await h.prisma.user.count({ where: { email: unknown } })).toBe(0);
+    expect(
+      (await h.prisma.user.findUniqueOrThrow({ where: { email: unverified } })).emailVerifiedAt,
+    ).toBeNull();
+    expect(
+      (await h.prisma.user.findUniqueOrThrow({ where: { email: verified } })).emailVerifiedAt,
+    ).not.toBeNull();
+
+    const responses = [
+      await post('/api/v1/auth/forgot-password', { email: unknown }),
+      await post('/api/v1/auth/forgot-password', { email: unverified }),
+      await post('/api/v1/auth/forgot-password', { email: verified }),
+    ];
+
+    const [first, ...rest] = responses;
+    if (first === undefined) throw new Error('unreachable');
+    for (const other of rest) {
+      expect(other.status).toBe(first.status);
+      expect(comparableHeaders(other)).toEqual(comparableHeaders(first));
+      // The bytes, with no substitution. See this block's docblock.
+      expect(Buffer.from(other.text)).toEqual(Buffer.from(first.text));
+    }
+    expect(first.status).toBe(200);
+  });
+
+  it('answers the same way for a LOCKED account, which gets no link at all', async () => {
+    // The case that differs most in what the server DOES — a locked account
+    // gets no token and no message — and must differ not at all in what it
+    // says.
+    const locked = freshAddress();
+    await post('/api/v1/auth/register', { email: locked, password: PASSWORD });
+    await h.prisma.user.update({ where: { email: locked }, data: { status: 'LOCKED' } });
+
+    const active = freshAddress();
+    await post('/api/v1/auth/register', { email: active, password: PASSWORD });
+
+    const a = await post('/api/v1/auth/forgot-password', { email: locked });
+    const b = await post('/api/v1/auth/forgot-password', { email: active });
+
+    expect(a.status).toBe(b.status);
+    expect(comparableHeaders(a)).toEqual(comparableHeaders(b));
+    expect(Buffer.from(a.text)).toEqual(Buffer.from(b.text));
+  });
+
+  it('really did take three different paths', async () => {
+    // THE ANTI-VACUITY TEST. Every comparison above would pass identically if
+    // forgot-password had simply stopped finding accounts, or stopped sending
+    // anything at all. The difference between the paths is in the mailbox and
+    // in the audit table, and that is where it is checked — because the wire
+    // deliberately shows nothing.
+    const unverified = freshAddress();
+    await post('/api/v1/auth/register', { email: unverified, password: PASSWORD });
+
+    const locked = freshAddress();
+    await post('/api/v1/auth/register', { email: locked, password: PASSWORD });
+    await h.prisma.user.update({ where: { email: locked }, data: { status: 'DISABLED' } });
+
+    h.sent.length = 0;
+    await post('/api/v1/auth/forgot-password', {
+      email: `never-registered-${String(Date.now())}@example.test`,
+    });
+    expect(h.sent).toEqual([]);
+
+    h.sent.length = 0;
+    await post('/api/v1/auth/forgot-password', { email: locked });
+    expect(h.sent).toEqual([]);
+
+    h.sent.length = 0;
+    await post('/api/v1/auth/forgot-password', { email: unverified });
+    expect(h.sent.map((mail) => mail.templateId)).toEqual(['passwordReset']);
+  });
+
+  it('leaves a trace of the sweep in the audit table, where the wire shows none', async () => {
+    // `security/audit.md` §3, and the reason the row for an unknown address
+    // exists at all: the response is identical for every input by design, so
+    // this table is the only place a distributed sweep is visible afterwards.
+    const before = await h.prisma.platformAuditEvent.count({
+      where: { action: 'PASSWORD_RESET_REQUESTED', resourceId: null },
+    });
+
+    await post('/api/v1/auth/forgot-password', {
+      email: `never-registered-${String(Date.now())}@example.test`,
+    });
+
+    expect(
+      await h.prisma.platformAuditEvent.count({
+        where: { action: 'PASSWORD_RESET_REQUESTED', resourceId: null },
+      }),
+    ).toBe(before + 1);
+  });
+});
+
+describe('POST /auth/reset-password does not distinguish its refusals', () => {
+  /**
+   * The other half of D5, and this one IS Task 9's kind of comparison: these
+   * are error envelopes, so `requestId` is substituted exactly as it is for
+   * login's refusals (carry-forward ruling 77). `code`, `message`, `details`
+   * and `timestamp` all stay inside the comparison.
+   */
+  it('answers a made-up token and a real one for a locked account identically', async () => {
+    const locked = freshAddress();
+    await post('/api/v1/auth/register', { email: locked, password: PASSWORD });
+    await post('/api/v1/auth/forgot-password', { email: locked });
+    const realToken = tokenFromMail(h.sent.at(-1));
+    await h.prisma.user.update({ where: { email: locked }, data: { status: 'LOCKED' } });
+
+    const forReal = await post('/api/v1/auth/reset-password', {
+      token: realToken,
+      password: 'a brand new correct horse battery staple',
+    });
+    const forNonsense = await post('/api/v1/auth/reset-password', {
+      token: 'FIXTURE_a_token_that_was_never_issued_00000',
+      password: 'a brand new correct horse battery staple',
+    });
+
+    expect(forReal.status).toBe(422);
+    expect(forNonsense.status).toBe(forReal.status);
+    expect(comparableHeaders(forNonsense)).toEqual(comparableHeaders(forReal));
+    expect(comparableBody(forNonsense)).toEqual(comparableBody(forReal));
+  });
+
+  it('answers an already-consumed token the same way as an unknown one', async () => {
+    const email = freshAddress();
+    await post('/api/v1/auth/register', { email, password: PASSWORD });
+    await post('/api/v1/auth/forgot-password', { email });
+    const token = tokenFromMail(h.sent.at(-1));
+
+    const first = await post('/api/v1/auth/reset-password', {
+      token,
+      password: 'a brand new correct horse battery staple',
+    });
+    expect(first.status).toBe(200);
+
+    const reused = await post('/api/v1/auth/reset-password', {
+      token,
+      password: 'yet another brand new password',
+    });
+    const unknown = await post('/api/v1/auth/reset-password', {
+      token: 'FIXTURE_a_token_that_was_never_issued_00000',
+      password: 'yet another brand new password',
+    });
+
+    expect(reused.status).toBe(422);
+    expect(comparableHeaders(unknown)).toEqual(comparableHeaders(reused));
+    expect(comparableBody(unknown)).toEqual(comparableBody(reused));
+  });
+});
+
 describe('the response body is a constant', () => {
   it('carries exactly one field, whose value cannot vary with the account', async () => {
     // The structural reason the comparisons above hold: there is no field that
@@ -379,6 +557,13 @@ describe('the response body is a constant', () => {
 
     const resend = await post('/api/v1/auth/resend-verification', { email: freshAddress() });
     expect(resend.body).toEqual({ status: 'VERIFICATION_REQUIRED' });
+
+    // Task 10. `forgotPasswordResponseSchema` is a single literal status too,
+    // which is the premise the byte comparison above rests on — and the reason
+    // that comparison needs no `requestId` substitution while the reset
+    // endpoint's refusals do (carry-forward ruling 77).
+    const forgot = await post('/api/v1/auth/forgot-password', { email: freshAddress() });
+    expect(forgot.body).toEqual({ status: 'RESET_REQUESTED' });
   });
 
   it('returns 200 rather than 201, so the status line is not the oracle', async () => {
