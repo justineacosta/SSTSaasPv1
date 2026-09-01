@@ -7,8 +7,8 @@ import { EMAIL_TEMPLATES } from './emails/registry.js';
 import { TokenService } from './token.service.js';
 
 /**
- * The six messages the registration, verification, login and password endpoints
- * send, and the one place they decide what to do when a send fails.
+ * The messages the registration, verification, login, password and MFA
+ * endpoints send, and the one place they decide what to do when a send fails.
  *
  * ## Every method here is called AFTER the transaction has committed
  *
@@ -229,6 +229,51 @@ export class AuthMailer {
       attemptCount: input.attemptCount,
     });
     await this.deliver('failedLoginBurst', input.to, rendered);
+  }
+
+  /**
+   * `security/authentication.md` §5's "enabling or disabling MFA ... emails the
+   * user", and Task 11 is the first caller either template has ever had.
+   *
+   * **NO `recipientName` PARAMETER, and the signature is the control.** Ruling
+   * 85 closed the display-name channel across the whole registry after three
+   * tasks and five channels, and `renderMfaChanged` accepts no name — the
+   * typecheck is what keeps it closed. Do not add one back.
+   *
+   * The IP stays and is the recipient's own: it is `request.ip`, the socket peer
+   * address with `trust proxy` disabled, and `renderableIpAddress` holds it to
+   * an address shape before it is rendered (ruling 72 — enforce the claim where
+   * the value is rendered, not where you believe it came from).
+   *
+   * **`change` is ours and cannot come from a request.** The two states are
+   * separate template ids rather than one taking an argument, because ruling 47
+   * has the adapter log the template id and nothing from the body — and "MFA was
+   * turned off" is the security-relevant half of the pair.
+   */
+  async sendMfaEnabled(input: { to: string; occurredAt: Date; ip: string | null }): Promise<void> {
+    const rendered = EMAIL_TEMPLATES.mfaEnabled({
+      occurredAt: input.occurredAt,
+      // `?? undefined`, because the template distinguishes "not recorded" from a
+      // value and `null` is this codebase's word for the former everywhere else.
+      ipAddress: input.ip ?? undefined,
+    });
+    await this.deliver('mfaEnabled', input.to, rendered);
+  }
+
+  /**
+   * The one that matters. An attacker who has taken an account turns the second
+   * factor off, and this message is what tells its owner.
+   *
+   * That is also why `AuthMailer` swallowing a send failure (ruling 45) is a
+   * real cost here rather than a tidy default: the signal that would reveal a
+   * takeover is exactly the one that simply never arrives.
+   */
+  async sendMfaDisabled(input: { to: string; occurredAt: Date; ip: string | null }): Promise<void> {
+    const rendered = EMAIL_TEMPLATES.mfaDisabled({
+      occurredAt: input.occurredAt,
+      ipAddress: input.ip ?? undefined,
+    });
+    await this.deliver('mfaDisabled', input.to, rendered);
   }
 
   private async deliver(

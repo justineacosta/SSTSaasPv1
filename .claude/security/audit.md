@@ -77,8 +77,10 @@ denials, and scope rejections are the signal an investigation actually needs.
 
 ## 4. Actions
 
-Auth: `LOGIN`, `LOGIN_FAILED`, `ACCOUNT_LOCKED`, `LOGOUT`, `MFA_ENABLED`, `MFA_DISABLED`,
-`MFA_CHALLENGE_FAILED`, `PASSWORD_CHANGED`, `PASSWORD_CHANGE_FAILED`,
+Auth: `LOGIN`, `LOGIN_FAILED`, `ACCOUNT_LOCKED`, `LOGOUT`, `MFA_ENROLMENT_STARTED`,
+`MFA_ENABLED`, `MFA_DISABLED`, `MFA_RECOVERY_CODES_REGENERATED`, `MFA_RECOVERY_CODE_USED`,
+`MFA_CHALLENGE_SUCCEEDED`, `MFA_CHALLENGE_FAILED`, `MFA_PENDING_SESSION_LOCKED`,
+`PASSWORD_CHANGED`, `PASSWORD_CHANGE_FAILED`,
 `PASSWORD_RESET_REQUESTED`, `PASSWORD_RESET_COMPLETED`, `SESSION_REVOKED`, `USER_REGISTERED`,
 `REGISTRATION_BLOCKED_EXISTING_EMAIL`, `EMAIL_VERIFICATION_RESENT`, `EMAIL_VERIFIED`.
 
@@ -103,6 +105,43 @@ credential for an account an operator deliberately switched off. It is deliberat
 `ACCOUNT_LOCKED`, which has one meaning here — the failed attempt that tripped the *brute-force*
 lock — and reusing it would make an administrative status and a brute-force lock
 indistinguishable in the table.
+
+**Five of the eight MFA names were added by Phase 2 Task 11**, which is the task that built the
+flows. `MFA_ENABLED`, `MFA_DISABLED` and `MFA_CHALLENGE_FAILED` were already in this list and
+predate it; `MFA_ENROLMENT_STARTED`, `MFA_RECOVERY_CODES_REGENERATED`, `MFA_RECOVERY_CODE_USED`,
+`MFA_CHALLENGE_SUCCEEDED` and `MFA_PENDING_SESSION_LOCKED` are new here, added in the same change
+as the code that writes them.
+
+All eight are `PlatformAuditEvent` rows, for the same reason as the login group: enrolment happens
+before any organisation is chosen, and the MFA challenge happens on a `PENDING_MFA` session, which
+by construction has chosen nothing at all.
+
+**The resource split within the group is deliberate.** The five lifecycle rows —
+`MFA_ENROLMENT_STARTED`, `MFA_ENABLED`, `MFA_DISABLED`, `MFA_RECOVERY_CODES_REGENERATED`,
+`MFA_RECOVERY_CODE_USED` — name the **`User`**. What an investigation needs from them is that this
+account's second factor was turned on, or off, or its recovery set reissued; and a disable deletes
+the `MfaFactor` row, so naming that row would leave an event pointing at nothing — the trap
+`LOGOUT` avoids by naming a row that is retained rather than deleted.
+
+The three challenge rows — `MFA_CHALLENGE_SUCCEEDED`, `MFA_CHALLENGE_FAILED`,
+`MFA_PENDING_SESSION_LOCKED` — name the **`Session`**, specifically the `PENDING_MFA` session being
+challenged. That is the row the control acts on, and there is a second reason:
+**`MFA_CHALLENGE_FAILED` is the attempt counter.** §5 of
+[`authentication.md`](authentication.md) locks the pending session after five failures, and the
+count is taken over these rows for one session id under a per-session advisory lock, rather than
+from a column that does not exist on `Session`. A consequence worth stating: the count is per
+pending session, so signing in again starts a fresh five — which is correct, because the thing
+being bounded is guessing against one challenge, and starting over costs the attacker the password
+again.
+
+`MFA_ENROLMENT_STARTED` is written for an enrolment that is never confirmed. An abandoned
+enrolment leaves no other trace — the next attempt replaces the row — and an enrolment somebody
+else began against your account is exactly the event an investigation needs to find afterwards.
+
+On the failure rows the actor is `SYSTEM` with a null `actorId`, for the reason
+`REGISTRATION_BLOCKED_EXISTING_EMAIL` gives below: whoever submitted a wrong code holds a password
+and not a factor, which is precisely the case where naming the account owner would be a false
+statement in a table that cannot be corrected.
 
 `LOGIN`, `LOGIN_FAILED`, `ACCOUNT_LOCKED` and `LOGOUT` are all `PlatformAuditEvent` rows and none
 of them may be an `AuditEvent` ([ADR-0019](../decisions/ADR-0019-platform-audit-event-table.md)):

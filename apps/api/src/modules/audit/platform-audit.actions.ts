@@ -157,6 +157,102 @@ export const PLATFORM_AUDIT_ACTIONS = [
    * named by `resourceId`.
    */
   'PASSWORD_CHANGE_FAILED',
+
+  // --- Task 11: TOTP MFA and recovery codes ---------------------------------
+  //
+  // All eight are `PlatformAuditEvent` rows and none may be an `AuditEvent`
+  // (ruling 62, ADR-0019). Enrolment happens before any organisation is chosen
+  // — `Session.activeOrganizationId` is null for every session this phase can
+  // create — and the MFA challenge happens on a `PENDING_MFA` session, which by
+  // construction has chosen nothing at all.
+  //
+  // **THE RESOURCE SPLIT IS DELIBERATE AND IT IS NOT COSMETIC.** The five
+  // lifecycle rows name the `User`: what an investigation needs from them is
+  // "this account's second factor was turned on, or off, or its recovery set was
+  // reissued", and the `MfaFactor` row itself is deleted by a disable, so naming
+  // it would leave an event pointing at nothing (the trap `LOGOUT` avoids by
+  // naming a row that is retained). The three challenge rows name the
+  // `Session` — specifically the `PENDING_MFA` session being challenged —
+  // because that is the row the control acts on and because
+  // `MFA_CHALLENGE_FAILED` **is the attempt counter**: `mfa-verification.service.ts`
+  // counts these rows for one session id to decide when the fifth failure
+  // revokes it. See that file for why the counter lives in this table rather
+  // than in a new column.
+
+  /**
+   * A user began TOTP enrolment: a secret was generated, encrypted and stored
+   * on an **unconfirmed** `MfaFactor`.
+   *
+   * `actorType` is `USER` — reaching it costs a live session *and* the current
+   * password. Written even though the factor is not yet enabled, because an
+   * enrolment somebody else started against your account is exactly the event
+   * you want to find afterwards, and an abandoned enrolment leaves no other
+   * trace (the row is replaced by the next attempt).
+   */
+  'MFA_ENROLMENT_STARTED',
+  /**
+   * §4's own name, in `security/audit.md` before this task. A code from the
+   * enrolled authenticator was proved and `MfaFactor.confirmedAt` was set. This
+   * is the row that says the account gained a second factor.
+   */
+  'MFA_ENABLED',
+  /**
+   * §4's own name. The factor and every recovery code were deleted, having
+   * required the current password.
+   *
+   * The most security-relevant row in this group: an attacker who has taken an
+   * account turns the second factor off, and this row plus the `mfaDisabled`
+   * notice are what make that visible.
+   */
+  'MFA_DISABLED',
+  /**
+   * The recovery set was thrown away and ten new codes were issued, having
+   * required the current password. Not `MFA_ENABLED` — nothing about the factor
+   * changed — and worth its own name because "my old codes stopped working" is
+   * a support question with exactly one answer.
+   */
+  'MFA_RECOVERY_CODES_REGENERATED',
+  /**
+   * A recovery code was spent to complete a challenge. `metadata.remaining`
+   * carries how many are left, which is the number that decides whether the
+   * user needs to regenerate.
+   *
+   * Separate from `MFA_CHALLENGE_SUCCEEDED` rather than a flag on it: using a
+   * recovery code means the user has lost their authenticator, which is a
+   * different event from an ordinary sign-in and is the one an attacker would
+   * rather you did not notice.
+   */
+  'MFA_RECOVERY_CODE_USED',
+  /**
+   * A correct code promoted a `PENDING_MFA` session to `ACTIVE`.
+   * `actorType` is `USER`: they have now proved both factors.
+   */
+  'MFA_CHALLENGE_SUCCEEDED',
+  /**
+   * §4's own name. A code was submitted against a pending session and refused.
+   *
+   * **This row IS the attempt counter.** `security/authentication.md` §5 locks
+   * the pending session after five failures, and the count is taken over these
+   * rows for one `resourceId` — the pending session — under a per-session
+   * advisory lock. `Session` has no attempt column and this table already holds
+   * the fact, durably and append-only; see `mfa-verification.service.ts`.
+   *
+   * `actorType` is `SYSTEM` with a null actor, following every other failure row
+   * in this list: whoever submitted the wrong code holds a password and not a
+   * factor, which is exactly the case where naming the account owner as the
+   * actor would be a false statement in a table that cannot be corrected.
+   */
+  'MFA_CHALLENGE_FAILED',
+  /**
+   * The fifth failure: the pending session was revoked and the user must sign in
+   * again.
+   *
+   * Written once per lock, on the attempt that trips it, and not on attempts
+   * that arrive afterwards — those find a revoked session and are refused before
+   * anything is written, so the table cannot be grown at will. The same rule
+   * `ACCOUNT_LOCKED` follows one endpoint over.
+   */
+  'MFA_PENDING_SESSION_LOCKED',
 ] as const;
 
 export type PlatformAuditAction = (typeof PLATFORM_AUDIT_ACTIONS)[number];
