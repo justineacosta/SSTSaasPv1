@@ -1,0 +1,43 @@
+-- MfaFactor.lastAcceptedStep — the TOTP replay defence (Phase 2 Task 11, D6).
+--
+-- WHAT IT IS. The RFC 6238 step counter of the most recently accepted code for
+-- this factor. `mfa-verification.service.ts` refuses any code whose step is
+-- less than or equal to it.
+--
+-- WHY IT IS NEEDED, AND WHY THE DRIFT WINDOW IS NOT A SUBSTITUTE.
+-- security/authentication.md §5 accepts steps t-1, t and t+1 for clock drift,
+-- so a single six-digit code stays valid for about ninety seconds. An attacker
+-- who observes one inside that window — over a shoulder, through a phished
+-- form, from a proxy sitting in front of the real site — can present it a
+-- second time and it verifies. The drift window does not defend against this;
+-- it is what creates the window. Nothing else in the shipped design does
+-- either. Storing the last accepted step is the standard answer and it is the
+-- one control the RFC's own security considerations name.
+--
+-- WHY `INTEGER` AND NOT `BIGINT`. At a 30-second step the counter reaches
+-- 2147483647 (int4's ceiling) 64424509410 seconds after the epoch, which is the
+-- year 4011. It is not a bound anyone will meet. `BIGINT` would map through
+-- Prisma to a JavaScript `bigint`, which cannot be compared with a `number`
+-- without an explicit conversion at every site — a footgun in a comparison that
+-- IS a security control, paid for a range nobody needs.
+--
+-- WHY NULLABLE, AND WHY NOT `DEFAULT 0`. A factor that has never accepted a
+-- code has no floor. Zero is a real step counter — 1 January 1970 — so
+-- defaulting to it would state something false about a fresh factor rather than
+-- stating nothing, and every reader would have to know that 0 means "never"
+-- instead of the column saying so. Nullable is also what makes this migration
+-- sound on its own (carry-forward ruling 1): the column is added to a table
+-- that may already hold rows, with no rewrite, no default backfill and no
+-- table lock beyond the catalogue update, and the application treats NULL as
+-- "no code has been accepted yet".
+--
+-- WHY NO UNIQUE INDEX OR CONSTRAINT. The value is not an identity and two
+-- factors routinely hold the same step. What has to be atomic is the
+-- read-check-write, and that is expressed as a conditional UPDATE whose
+-- predicate is this column — Postgres arbitrates row by row, so of two
+-- concurrent requests carrying the same valid code exactly one reports an
+-- affected row. A constraint could not express that and an application-side
+-- SELECT-then-UPDATE would not survive it.
+
+-- AlterTable
+ALTER TABLE "MfaFactor" ADD COLUMN     "lastAcceptedStep" INTEGER;
