@@ -870,3 +870,110 @@ describe('H1 — a login racing a completed reset must not keep a live session',
     expect(probe.status).toBe(200);
   });
 });
+
+describe('M1 — the reset credential predicate, against a real second writer', () => {
+  /**
+   * WHAT THIS PROBE DOES AND, MORE IMPORTANTLY, WHAT IT DOES NOT.
+   *
+   * The review found that deleting the reset's compare-and-swap left all 25
+   * integration tests green: the only thing that saw it was a unit test driving
+   * `identityStoreFake`, and that fake's own docblock pointed at "the parallel
+   * probe in `auth.password.integration.spec.ts`", which covers
+   * `change-password` and not this. Ruling 58's family, in the file that
+   * explains ruling 58.
+   *
+   * **This block puts a real second writer into the reset's window.** The
+   * account's credential is stored at weaker-than-configured parameters, so
+   * every concurrent login rehashes it (D8) — a genuine, committed, competing
+   * write to the same row, not a fake's flag. Measured on this tree, 20 rounds
+   * of one reset against five rehashing logins:
+   *
+   *     predicate present: reset refused (predicate lost) in 3/20 rounds
+   *     predicate deleted: reset refused in 0/20 rounds
+   *
+   * So the predicate is live and reachable, and the branch behind it executes.
+   *
+   * **It is not a deterministic mutation kill, and this docblock will not
+   * pretend otherwise.** The window between the reset's in-transaction
+   * credential read and its write is one statement wide, so whether a competing
+   * commit lands inside it is scheduling. An assertion on the refusal count
+   * would be flaky at roughly one run in twenty-five; this repository has a
+   * standing ruling about not trading determinism for coverage (ruling 33), and
+   * a flaky red is worse than an honest gap.
+   *
+   * What is asserted instead is the invariant that holds on EVERY round and is
+   * the thing a user would notice if the predicate misbehaved: the account is
+   * never left in a state where neither password works, and the reset's status
+   * code always agrees with the credential actually in force. Deleting the
+   * predicate does **not** turn that red — it changes which legitimate outcome
+   * occurs, not whether the end state is coherent — and that is stated here
+   * rather than left for the next reviewer to discover.
+   *
+   * The remaining honest gap is recorded in `fixes.md`.
+   */
+  it('always ends with exactly one working password, agreeing with the reset status', async () => {
+    const ROUNDS = 8;
+    let refused = 0;
+
+    for (let round = 0; round < ROUNDS; round += 1) {
+      const email = await account();
+      const user = await h.prisma.user.findUniqueOrThrow({ where: { email } });
+      // Weaker than anything `.env` configures, so every login below rehashes
+      // and commits a competing write to this exact row.
+      await h.prisma.credential.update({
+        where: { userId: user.id },
+        data: { passwordHash: await weakHash(PASSWORD) },
+      });
+      const token = await resetTokenFor(email);
+
+      await clearRateLimits(h.redis);
+      const [reset] = await Promise.all([
+        request(h.server)
+          .post('/api/v1/auth/reset-password')
+          .send({ token, password: NEW_PASSWORD }),
+        ...Array.from({ length: 5 }, () =>
+          request(h.server).post('/api/v1/auth/login').send({ email, password: PASSWORD }),
+        ),
+      ]);
+
+      // Exactly two outcomes are legitimate, and each pins a different
+      // credential.
+      if (reset?.status === 422) {
+        // The predicate refused: the reset rolled back, so the OLD password is
+        // still the account's and the link was not burned.
+        refused += 1;
+        await clearRateLimits(h.redis);
+        const old = await request(h.server)
+          .post('/api/v1/auth/login')
+          .send({ email, password: PASSWORD });
+        expect(old.status).toBe(200);
+
+        // The link survives a refusal — D4's rollback rule, on the concurrency
+        // branch rather than the account-status one.
+        await clearRateLimits(h.redis);
+        const retry = await request(h.server)
+          .post('/api/v1/auth/reset-password')
+          .send({ token, password: NEW_PASSWORD });
+        expect(retry.status).toBe(200);
+      } else {
+        expect(reset?.status).toBe(200);
+        await clearRateLimits(h.redis);
+        const fresh = await request(h.server)
+          .post('/api/v1/auth/login')
+          .send({ email, password: NEW_PASSWORD });
+        expect(fresh.status).toBe(200);
+
+        await clearRateLimits(h.redis);
+        const old = await request(h.server)
+          .post('/api/v1/auth/login')
+          .send({ email, password: PASSWORD });
+        expect(old.status).toBe(401);
+      }
+    }
+
+    // Not asserted as a number — see the docblock. Reported so a reader of a CI
+    // log can see whether the branch was reached on this run at all.
+    // eslint-disable-next-line no-console
+    console.log(`M1 probe: reset predicate refused in ${String(refused)}/${String(ROUNDS)} rounds`);
+  }, 240_000);
+});
