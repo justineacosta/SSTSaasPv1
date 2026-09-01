@@ -134,12 +134,15 @@ export type LoginResult =
  *   type a code. Task 11 owns the notice on MFA completion, and until it lands
  *   an MFA-enrolled account gets no unfamiliar-session notice at all. No
  *   account can hold a confirmed factor today, so nothing is currently missed.
- * - **No rehash on a successful login.** `PasswordService.verify` reports
- *   `needsRehash` and nothing here acts on it, so a credential stored at
- *   weaker parameters stays there. ADR-0014's "rehashed transparently on next
- *   successful login" is therefore still unimplemented; it is a write on the
- *   login path and belongs with Task 10, which already owns writing to
- *   `Credential`.
+ * # What Task 10 added here, and it is Task 9's debt rather than an inheritance
+ *
+ * **The transparent rehash on a successful login now exists** — see
+ * `rehashCredential`. ADR-0014 §48 names login as the caller, `verify` has
+ * reported `needsRehash` since Task 3, and until Task 10 nothing acted on it.
+ * It partially closes carry-forward ruling 24: it drains the population of
+ * weaker hashes for every account that signs in, and an account that never
+ * signs in again keeps its old hash indefinitely, which ADR-0014 §116 already
+ * acknowledges.
  */
 @Injectable()
 export class LoginService {
@@ -201,7 +204,91 @@ export class LoginService {
       throw new AccountLockedError();
     }
 
-    return this.succeed(user, command);
+    const result = await this.succeed(user, command);
+
+    // D8, AFTER the session exists and after every decision has been made.
+    // ADR-0014 §48's "rehashed transparently on next successful login", which
+    // Task 9 shipped this endpoint without. It runs on BOTH arms of `succeed` —
+    // the credential was proved correct, and whether a second factor is still
+    // owed says nothing about the parameters it was stored at.
+    if (verification.needsRehash && storedHash !== null) {
+      await this.rehashCredential(user.id, storedHash, command.password);
+    }
+
+    return result;
+  }
+
+  /**
+   * D8. Replaces a credential stored at weaker parameters, transparently.
+   *
+   * # What this closes, and what it does not
+   *
+   * ADR-0014 §48 promises the upgrade happens "on next successful login".
+   * `PasswordService.verify` has reported `needsRehash` since Task 3 and
+   * nothing acted on it until now, which left **carry-forward ruling 24 open by
+   * construction**: a pre-raise stored hash verifies at old, cheaper parameters
+   * while an absent account verifies at current ones — measured at 35.9 ms
+   * against 7.7 ms in Task 3 — so raising the parameters opens a timing oracle
+   * pointing the opposite way from the one the dummy hash closes.
+   *
+   * This is the mechanism that **drains** that population, and it is a partial
+   * close, stated plainly: an account whose owner never signs in again keeps
+   * its old hash indefinitely, so the oracle narrows over time rather than
+   * shutting. ADR-0014 §116 already acknowledges that, and nothing here changes
+   * it. The population it does drain is every account that signs in.
+   *
+   * # It is a compare-and-swap, for D3's reason on a third path
+   *
+   * The write is decided from a hash read before a ~40 ms verification, so a
+   * password change or reset that committed in between must not be overwritten.
+   * Without the predicate this maintenance write would **reinstate the old
+   * password's digest and silently undo a password change** — the same shape as
+   * carry-forward ruling 73, on the one path where the write is not the point of
+   * the request. `count: 0` means the credential moved and there is nothing to
+   * upgrade; it is not an error.
+   *
+   * # It never changes the response and never fails the login
+   *
+   * ADR-0014's two constraints. The user authenticated successfully, and a
+   * maintenance write is not permission to refuse them — so every failure is
+   * swallowed and logged. It is logged at `warn` rather than silently, because
+   * an operator who has just raised the parameters needs to be able to see that
+   * the upgrade path is not draining anything; a silent failure here would make
+   * ADR-0014's promise look kept while ruling 24's oracle stayed wide open.
+   *
+   * The line names the user id and **no fragment of the hash or the password**
+   * (critical security rule 6). The thrown error's text can derive from neither:
+   * this is a Prisma write failure, not an argon2 parse failure — but the
+   * binding is kept narrow anyway, because that distinction is one refactor
+   * away from being wrong.
+   */
+  private async rehashCredential(
+    userId: string,
+    verifiedHash: string,
+    password: string,
+  ): Promise<void> {
+    try {
+      const passwordHash = await this.passwords.hash(password);
+      const { count } = await this.store.credential.updateMany({
+        where: { userId, passwordHash: verifiedHash },
+        data: { passwordHash },
+      });
+      if (count === 0) {
+        // The credential moved under us — a change or reset committed while
+        // this login was verifying. Not an error, and not something to retry:
+        // whatever is stored now was written by a request that had a better
+        // claim to it, and it was written at current parameters anyway.
+        this.logger.debug(
+          { userId },
+          'credential rehash skipped: the stored credential changed during this login',
+        );
+      }
+    } catch (error) {
+      this.logger.warn(
+        { userId, err: error },
+        'credential rehash on login failed; this account keeps its weaker stored parameters',
+      );
+    }
   }
 
   /**
