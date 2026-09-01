@@ -83,6 +83,80 @@ export const PLATFORM_AUDIT_ACTIONS = [
    * not the user: the user is unchanged, and the session row is what moved.
    */
   'LOGOUT',
+
+  // --- Task 10: password reset and password change --------------------------
+  //
+  // All four are `PlatformAuditEvent` rows and none may be an `AuditEvent`
+  // (ruling 62, ADR-0019). A reset is requested by somebody who is not signed
+  // in at all and completed by somebody who has chosen no organisation, so
+  // there is no `organizationId` to satisfy `AuditEvent`'s NOT NULL column —
+  // and its RLS policy *refuses* the insert rather than merely rejecting the
+  // column, measured twice in Task 8.
+
+  /**
+   * Somebody asked for a password-reset link.
+   *
+   * **Written for an address with NO account too**, with a null `resourceId`
+   * and no address anywhere in the metadata — the same shape and the same
+   * reasoning as `LOGIN_FAILED`'s unknown-address row. `forgot-password`
+   * answers `RESET_REQUESTED` for every input by design, so without this row a
+   * distributed sweep across addresses that are not customers leaves no trace
+   * at all: the wire response is identical for every request in it.
+   *
+   * The address is deliberately absent from the metadata. `ip` and `requestId`
+   * already carry the forensic signal that matters — "this address asked for a
+   * reset at N addresses that do not exist" — and an append-only table is the
+   * worst place to learn the email address of somebody who is not a customer.
+   * Precedent: the rate limiter hashes the address before it becomes a key.
+   *
+   * `actorType` is `SYSTEM` with a null `actorId` even when the account exists.
+   * The endpoint is unauthenticated, so the caller may be anybody, and naming
+   * the account owner as the actor would be a false statement in a table that
+   * cannot be corrected.
+   */
+  'PASSWORD_RESET_REQUESTED',
+  /**
+   * A reset link was redeemed and the credential was replaced.
+   *
+   * `actorType` is `USER`: redeeming requires a 256-bit secret delivered to the
+   * account's own mailbox, which is the strongest evidence this endpoint can
+   * have. `metadata.liveSessionsAtWrite` records how many sessions existed at
+   * the moment the new hash committed — see `password-reset.service.ts` for
+   * why that is the number recorded rather than the revocation's own count, and
+   * why one row per revoked session would let an unauthenticated caller size
+   * the table.
+   */
+  'PASSWORD_RESET_COMPLETED',
+  /**
+   * An authenticated user changed their own password, having proved the
+   * current one.
+   *
+   * `actorType` is `USER`: they presented a live session cookie, the CSRF token
+   * derived from it, and the existing password.
+   */
+  'PASSWORD_CHANGED',
+  /**
+   * A password change was refused because the CURRENT password was wrong.
+   *
+   * **Not in `security/audit.md` §4 before this task** — the other three were —
+   * so it is added to the document in the same change, exactly as Task 9 added
+   * `ACCOUNT_LOCKED`. `audit.md` §3 requires denials to be audited, and Task 9's
+   * M2 was this same gap one endpoint over: a denial that produced a refusal
+   * and zero rows.
+   *
+   * It is the sharper signal of the two. Reaching it costs a **live session**,
+   * so unlike a failed login it cannot be produced by an anonymous caller at
+   * will — and somebody holding a session who cannot produce the password is
+   * either the account owner mistyping or a session thief probing. An
+   * investigation needs to be able to tell those apart afterwards, and the
+   * `actorId`, `ip` and `requestId` on this row are what let it.
+   *
+   * `actorType` is `SYSTEM` with a null `actorId`, following every other
+   * failure row in this list: the session holder is not necessarily the account
+   * owner, and that is the entire reason the row is interesting. The account is
+   * named by `resourceId`.
+   */
+  'PASSWORD_CHANGE_FAILED',
 ] as const;
 
 export type PlatformAuditAction = (typeof PLATFORM_AUDIT_ACTIONS)[number];

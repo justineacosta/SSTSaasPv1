@@ -78,8 +78,8 @@ denials, and scope rejections are the signal an investigation actually needs.
 ## 4. Actions
 
 Auth: `LOGIN`, `LOGIN_FAILED`, `ACCOUNT_LOCKED`, `LOGOUT`, `MFA_ENABLED`, `MFA_DISABLED`,
-`MFA_CHALLENGE_FAILED`, `PASSWORD_CHANGED`, `PASSWORD_RESET_REQUESTED`,
-`PASSWORD_RESET_COMPLETED`, `SESSION_REVOKED`, `USER_REGISTERED`,
+`MFA_CHALLENGE_FAILED`, `PASSWORD_CHANGED`, `PASSWORD_CHANGE_FAILED`,
+`PASSWORD_RESET_REQUESTED`, `PASSWORD_RESET_COMPLETED`, `SESSION_REVOKED`, `USER_REGISTERED`,
 `REGISTRATION_BLOCKED_EXISTING_EMAIL`, `EMAIL_VERIFICATION_RESENT`, `EMAIL_VERIFIED`.
 
 The three registration and verification names were added in Phase 2 Task 8. Until then this list
@@ -120,6 +120,34 @@ without this row a distributed account-enumeration sweep would leave **no trace 
 wire response is the same for every request in it. The row names the existing account as the
 `resourceId` and records no actor, because an unauthenticated caller who typed somebody else's
 address is not that person.
+
+`PASSWORD_CHANGE_FAILED` was added in Phase 2 Task 10, and it is the only one of that task's four
+names this list did not already have. It records a password change refused because the **current**
+password was wrong, which §3's "failures and denials are audited" requires and which nothing
+produced before. It is the sharper of the two credential-failure rows: reaching it costs a live
+session, so unlike `LOGIN_FAILED` an anonymous caller cannot produce it at will, and somebody
+holding a session who cannot produce the password is either the account owner mistyping or a
+session thief probing. The row's `actorId` is null and its `actorType` is `SYSTEM`, for the same
+reason every other failure row here records no actor — the session holder is not necessarily the
+account owner, and that is precisely why the row is worth having. The account is named by
+`resourceId`.
+
+`PASSWORD_RESET_REQUESTED` is written for an address with **no account** as well, with a null
+`resourceId` and **no address anywhere in the metadata**. `forgot-password` answers
+`RESET_REQUESTED` for every input by design (§7 of [`authentication.md`](authentication.md)), so
+this row is the only trace a distributed sweep leaves; and the address is omitted for the same
+reason `LOGIN_FAILED` omits it — `ip` and `requestId` already carry the signal that matters, and
+an append-only table is the worst place to record the email address of somebody who is not a
+customer. Its actor is `SYSTEM` with a null `actorId` even when the account exists, because the
+endpoint is unauthenticated and the caller may be anybody.
+
+`PASSWORD_RESET_COMPLETED` and `PASSWORD_CHANGED` both name the `User` and both carry
+`liveSessionsAtWrite` in their metadata: the number of sessions that existed at the instant the
+new credential committed. That number rather than one row per revoked session, because an
+unauthenticated caller can trigger a reset and a row per session would let them size the table;
+and that number rather than the revocation's own count, because the revocation happens after the
+transaction the audit row lives in — see §2, and `security/authentication.md` §6 for why the
+credential must be written before anything is revoked.
 
 Org and access: `ORGANIZATION_CREATED/UPDATED/DELETED/SUSPENDED`, `MEMBER_INVITED`,
 `INVITATION_ACCEPTED/REVOKED`, `MEMBER_REMOVED`, `ROLE_CHANGED`, `ROLE_CREATED/UPDATED/DELETED`,
