@@ -145,7 +145,7 @@ and not a factor, which is precisely the case where naming the account owner wou
 statement in a table that cannot be corrected.
 
 `LOGIN`, `LOGIN_FAILED`, `ACCOUNT_LOCKED` and `LOGOUT` are all `PlatformAuditEvent` rows and none
-of them may be an `AuditEvent` ([ADR-0019](../decisions/ADR-0019-platform-audit-event-table.md)):
+of them may be an `AuditEvent` ([ADR-0019](../decisions/ADR-0019-platform-audit-events.md)):
 a login happens before any organisation is chosen, and `AuditEvent`'s row-level security policy
 refuses an insert that carries none. `LOGOUT`'s `resourceId` is the **`Session`** that was
 revoked, not the user — the user is unchanged by a logout and the session row is what moved;
