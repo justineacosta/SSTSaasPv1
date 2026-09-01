@@ -53,6 +53,40 @@ const httpUrl = z
     });
   });
 
+/**
+ * The AES-256-GCM key `MfaFactor.secretEncrypted` is encrypted with, base64.
+ *
+ * **The length is checked HERE rather than at first use**, and that is the
+ * whole reason this is a named schema instead of `z.string().min(1)`. A 31-byte
+ * key passes every plausible per-field rule and then throws `Invalid key
+ * length` out of `createCipheriv` — a native-module error naming no variable —
+ * at the moment a user scans a QR code. A misconfigured key must fail the
+ * process, not the first person who enrols.
+ *
+ * `params.rule` rather than a message, for `httpUrl`'s reason above:
+ * `describeIssue` in `load-env.ts` never reads `issue.message`, only rule
+ * parameters authored in this repository. That is also what keeps the key
+ * itself out of the error text — this is the one field in this file whose value
+ * *is* a credential, and `env.spec.ts` asserts it on this rule specifically
+ * rather than relying on the general property.
+ */
+const MFA_SECRET_KEY_BYTES = 32;
+
+const mfaSecretEncryptionKey = z.string().superRefine((value, ctx) => {
+  // `Buffer.from(x, 'base64')` never throws — it decodes what it can and drops
+  // the rest — so a non-base64 value arrives here as a short buffer and is
+  // refused by the length rule below rather than by a parse failure. Stated
+  // because "it must have thrown" is the assumption that would leave a
+  // three-byte key running the product.
+  if (Buffer.from(value, 'base64').length === MFA_SECRET_KEY_BYTES) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    params: {
+      rule: `must be base64 for exactly ${String(MFA_SECRET_KEY_BYTES)} bytes (AES-256-GCM); generate one with: openssl rand -base64 32`,
+    },
+  });
+});
+
 export const sharedEnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']),
   // APP_ENV is deliberately separate from NODE_ENV: staging and production both
@@ -211,6 +245,26 @@ const apiEnvObject = sharedEnvSchema.extend({
   // revocation docblock in `session.service.ts` — shorter narrows that window
   // at the cost of more Postgres reads; longer widens it.
   SESSION_CACHE_TTL_SECONDS: z.coerce.number().int().min(1).default(60),
+
+  // MFA ---------------------------------------------------------------------
+  //
+  // API-only, for the fourth time and the same reason: the web app never
+  // encrypts, decrypts or verifies anything, and a variable on
+  // `sharedEnvSchema` is one every web deploy must define in order to boot.
+  //
+  // THE ONE VARIABLE IN THIS FILE WITH NO DEFAULT, AND THAT IS DELIBERATE.
+  // Every other API variable carries one so nothing existing has to change to
+  // keep booting. A default here would be a **shipped encryption key** — the
+  // same defect as a shipped password, and worse in one respect: nobody would
+  // ever discover it, because the product would work perfectly. `.env.example`
+  // carries an obviously-fake local placeholder and the command to generate a
+  // real one.
+  //
+  // `MfaFactor.secretEncrypted` is the only field in Phase 2 that is encrypted
+  // rather than hashed, because verifying a TOTP code means recomputing it
+  // (`schema.prisma`). This is the key it is encrypted with: AES-256-GCM, so
+  // exactly 32 bytes, supplied base64.
+  MFA_SECRET_ENCRYPTION_KEY: mfaSecretEncryptionKey,
 });
 
 /**

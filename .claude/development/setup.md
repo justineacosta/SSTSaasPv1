@@ -138,6 +138,16 @@ startup** with a message naming the variable, rather than failing mysteriously l
 consequence worth knowing: a server already running when a new variable is added keeps its
 launch-time environment, so it fails validation until you restart it.
 
+**One variable has no default, and it is the only one: `MFA_SECRET_ENCRYPTION_KEY`.** It is the
+AES-256-GCM key that encrypts `MfaFactor.secretEncrypted`, added by Phase 2 Task 11. Every other
+API variable carries a default so an existing environment keeps booting; a default here would be
+a shipped encryption key, which is the same defect as a shipped password and harder to notice
+because the product would work perfectly. The consequence is practical: **an existing `.env`
+predating Task 11 will not boot the API until this line is added**, and `cp .env.example .env` is
+the shortest fix. The value must be base64 for exactly 32 bytes — any other decoded length is
+refused at boot naming the variable, rather than throwing `Invalid key length` out of a native
+module at the first user who enrols. Generate one with `openssl rand -base64 32`.
+
 One variable is not obvious from its name. **`E2E_PORT` (3100) is the port the Playwright
 suite starts its own server on, and it is deliberately not `WEB_PORT`.**
 `apps/web/playwright.config.ts` keeps `reuseExistingServer` so consecutive local runs do not

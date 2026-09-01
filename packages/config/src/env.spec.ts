@@ -28,6 +28,11 @@ const validApi = {
   MAIL_HOST: 'localhost',
   MAIL_PORT: '1025',
   MAIL_FROM: 'Sentinel <no-reply@sentinel.local>',
+  // 32 bytes of a repeated byte: the right LENGTH, and deliberately not the
+  // right shape for a secret scanner to flag (`pnpm check:secrets` refuses a
+  // high-entropy literal in a committed file). Every test below that needs a
+  // wrong key builds one explicitly.
+  MFA_SECRET_ENCRYPTION_KEY: Buffer.alloc(32, 0x2a).toString('base64'),
 };
 
 describe('loadEnv', () => {
@@ -658,5 +663,78 @@ describe('session lifetime configuration', () => {
     expect(Object.keys(sharedEnvSchema.shape).filter((key) => key.startsWith('SESSION_'))).toEqual(
       [],
     );
+  });
+});
+
+/**
+ * D2. THE TOTP SECRET ENCRYPTION KEY IS REFUSED AT CONFIG LOAD, NOT AT FIRST USE.
+ *
+ * A key of the wrong decoded length is a misconfiguration that must fail the
+ * process, not the first user who enrols. `createCipheriv` with a 31-byte key
+ * throws `Invalid key length` from a native module at the moment somebody
+ * scans a QR code — a message naming no variable, on a request the user cannot
+ * retry into success.
+ *
+ * There is deliberately **no default**. Every other variable in this file
+ * carries one so nothing existing has to change to keep booting; a default here
+ * would be a shipped encryption key, which is the same defect as a shipped
+ * password. `.env.example` carries an obviously-fake local placeholder and the
+ * command to generate a real one.
+ */
+describe('MFA secret encryption key', () => {
+  const keyOf = (bytes: number): string => Buffer.alloc(bytes, 0x2a).toString('base64');
+
+  it('accepts a base64 value that decodes to exactly 32 bytes', () => {
+    const env = loadEnv(apiEnvSchema, { ...validApi, MFA_SECRET_ENCRYPTION_KEY: keyOf(32) });
+    expect(Buffer.from(env.MFA_SECRET_ENCRYPTION_KEY, 'base64')).toHaveLength(32);
+  });
+
+  it('is required, and its absence names the variable', () => {
+    const { MFA_SECRET_ENCRYPTION_KEY, ...incomplete } = validApi;
+    expect(MFA_SECRET_ENCRYPTION_KEY).toBeDefined();
+    try {
+      loadEnv(apiEnvSchema, incomplete);
+      expect.unreachable('a missing encryption key must refuse the boot');
+    } catch (error) {
+      expect((error as EnvValidationError).variables).toContain('MFA_SECRET_ENCRYPTION_KEY');
+    }
+  });
+
+  it.each([16, 24, 31, 33, 64])('refuses a key that decodes to %i bytes', (bytes) => {
+    try {
+      loadEnv(apiEnvSchema, { ...validApi, MFA_SECRET_ENCRYPTION_KEY: keyOf(bytes) });
+      expect.unreachable('a wrong-length key must refuse the boot');
+    } catch (error) {
+      const err = error as EnvValidationError;
+      expect(err.variables).toContain('MFA_SECRET_ENCRYPTION_KEY');
+      expect(err.message).toContain('32 bytes');
+    }
+  });
+
+  it('refuses a value that is not base64 at all', () => {
+    try {
+      loadEnv(apiEnvSchema, { ...validApi, MFA_SECRET_ENCRYPTION_KEY: 'not base64 !!!' });
+      expect.unreachable('a non-base64 key must refuse the boot');
+    } catch (error) {
+      expect((error as EnvValidationError).variables).toContain('MFA_SECRET_ENCRYPTION_KEY');
+    }
+  });
+
+  it('never puts the key in the error it raises', () => {
+    // The one field in this schema whose value IS a key. `describeIssue` reads
+    // only authored rule parameters, and this asserts that on the rule that
+    // reads this field rather than trusting the general property.
+    const secretish = Buffer.alloc(31, 0x2a).toString('base64');
+    try {
+      loadEnv(apiEnvSchema, { ...validApi, MFA_SECRET_ENCRYPTION_KEY: secretish });
+      expect.unreachable('a wrong-length key must refuse the boot');
+    } catch (error) {
+      expect((error as EnvValidationError).message).not.toContain(secretish);
+    }
+  });
+
+  it('is kept off the schema the web app boots with', () => {
+    expect(Object.keys(webEnvSchema.shape)).not.toContain('MFA_SECRET_ENCRYPTION_KEY');
+    expect(Object.keys(sharedEnvSchema.shape)).not.toContain('MFA_SECRET_ENCRYPTION_KEY');
   });
 });
