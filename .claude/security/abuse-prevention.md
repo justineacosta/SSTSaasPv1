@@ -81,7 +81,9 @@ stuffing.
 |---|---|
 | Login | 5 / 15 min per account, 20 / 15 min per IP — **live on `POST /auth/login` since Task 9** |
 | Registration | 3 / hour per IP |
-| Password reset | 3 / hour per address, 10 / hour per IP |
+| Password reset request | 3 / hour per address, 10 / hour per IP |
+| Password reset submit | 20 / hour per IP |
+| Password change | 10 / hour per IP |
 | Email verification resend | 3 / hour per account, 10 / hour per IP |
 | Email verification submit | 30 / hour per IP |
 | Invitations | 50 / day per organisation |
@@ -165,6 +167,42 @@ recorded that way because the figure is a decision and not a quotation. Three no
   is infeasible at any rate this table could express. What 30 / hour bounds is unmetered
   database writes from an unauthenticated endpoint: each submission runs a conditional `UPDATE`
   inside a transaction.
+
+**Two more rows were added by Phase 2 Task 10 on the same terms** — password reset submit and
+password change. §1 had a row for *requesting* a reset and none for completing one or for
+changing a password, so both figures are decisions taken in `rate-limit.config.ts` and written
+here in the same change, not quotations.
+
+`Password reset submit` — `passwordResetConsume`, 20 / hour per IP, fail closed — is
+`emailVerificationConsume`'s twin and differs from it in one respect that sets the figure. Both
+are per IP only, because the body (`{ token, password }`) carries no account and deriving one
+from the token would mean a database read bought by an unauthenticated caller *before* the
+limiter has decided anything. Both are unrelated to guessing the token, which is 32 random
+bytes. What differs is the unit of work bought: this endpoint pays a full **Argon2id hash** of
+the submitted password on every request — ADR-0014 targets ~250 ms of it — where verify-email
+pays only a transaction. Twenty is the lower figure for that reason, and still generous for an
+act a real user performs once.
+
+`Password change` — `passwordChange`, 10 / hour per IP, fail closed — is the one row in this
+table that is a **security control rather than bookkeeping**, and the reasoning matters more than
+the number:
+
+- The endpoint verifies the caller's **current** password, so it is a credential-guessing oracle
+  for anyone holding a stolen session. The account is already fixed by the session cookie, the
+  answer is a clean 401/200 split, and none of it touches `User.failedLoginCount` or the lockout
+  ladder — those live on the login path, and this endpoint reaches neither.
+- Without a class of its own the route would fall to `generalSession`: 1000/min, fail-open, and
+  resolving nothing. That is a thousand password guesses a minute against a known account with no
+  lock, no notice and no log line.
+- **The per-principal half would be the right key and resolves nothing today.** The account being
+  guessed at is the session's owner, which is exactly the scope this limit wants — but the limiter
+  runs before the authentication guard (`architecture/backend.md` §3), so an `'authenticated'`
+  source resolves on no request. It is left **undeclared** rather than declared-and-unresolvable,
+  because a declared scope that never resolves beside a per-IP scope that does is the silent miss
+  this section already documents twice. It is named here instead, and it is a second reason to
+  want the early-per-IP / late-per-principal split this section says is owed.
+- Ten per hour is deliberately much tighter than either reset figure. A password change is a rare,
+  deliberate act with no legitimate high-volume case behind a shared egress address.
 
 ## 2. Quotas and concurrency
 

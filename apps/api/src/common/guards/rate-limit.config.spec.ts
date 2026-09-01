@@ -35,6 +35,13 @@ describe('RATE_LIMIT_CLASSES', () => {
       'passwordReset',
       'emailVerificationResend',
       'emailVerificationConsume',
+      // Task 10's two. `passwordResetConsume` is an unauthenticated write
+      // channel that pays an Argon2id hash per request; `passwordChange`
+      // verifies a password and is therefore a credential-guessing oracle for
+      // anyone holding a stolen session. Neither may become unbounded because
+      // Redis is unreachable.
+      'passwordResetConsume',
+      'passwordChange',
     ] as const) {
       expect(RATE_LIMIT_CLASSES[name].failMode, name).toBe('closed');
     }
@@ -84,6 +91,36 @@ describe('RATE_LIMIT_CLASSES', () => {
     const consume: RateLimitClassConfig = RATE_LIMIT_CLASSES.emailVerificationConsume;
     expect(consume.perPrincipal).toBeUndefined();
     expect(consume.perOrganization).toBeUndefined();
+    // Task 10's two rows. Neither was transcribed from §1's table: §1 had a
+    // line for requesting a reset and none for completing one or for changing a
+    // password, so both figures are DECISIONS made in this codebase and written
+    // into that document in the same change. These assertions are what keep the
+    // figures and the document in step from here on.
+    expect(RATE_LIMIT_CLASSES.passwordResetConsume.perIp).toEqual({
+      limit: 20,
+      windowSeconds: 3600,
+    });
+    // Per IP ONLY, and for `emailVerificationConsume`'s reason exactly:
+    // `resetPasswordRequestSchema` is `{ token, password }`, so there is no
+    // account in the body to key a per-account window on. Deriving one from the
+    // token would mean a database read bought by an unauthenticated caller
+    // BEFORE the limiter has decided anything, which is the thing the limiter
+    // runs first to prevent.
+    const resetConsume: RateLimitClassConfig = RATE_LIMIT_CLASSES.passwordResetConsume;
+    expect(resetConsume.perPrincipal).toBeUndefined();
+    expect(resetConsume.perOrganization).toBeUndefined();
+
+    expect(RATE_LIMIT_CLASSES.passwordChange.perIp).toEqual({ limit: 10, windowSeconds: 3600 });
+    // Per IP only, and this one is a control rather than bookkeeping — see the
+    // class's own docblock. The per-PRINCIPAL half would be the right key and
+    // resolves nothing today, because the limiter runs before the
+    // authentication guard (`architecture/backend.md` §3). Declaring it anyway
+    // would be carry-forward ruling 55's defect deliberately: an unresolvable
+    // scope that nothing reports at the default log level.
+    const change: RateLimitClassConfig = RATE_LIMIT_CLASSES.passwordChange;
+    expect(change.perPrincipal).toBeUndefined();
+    expect(change.perOrganization).toBeUndefined();
+
     expect(RATE_LIMIT_CLASSES.invitations.perOrganization).toEqual({
       limit: 50,
       windowSeconds: 86_400,
@@ -129,6 +166,11 @@ describe('RATE_LIMIT_CLASSES', () => {
       'registration',
       'passwordReset',
       'emailVerificationResend',
+      // Task 10's two are unauthenticated as far as the limiter is concerned —
+      // `passwordChange` sits behind `@AuthenticatedOnly()` but the limiter runs
+      // ahead of the guard, so per-IP is the only bound either of them has.
+      'passwordResetConsume',
+      'passwordChange',
     ] as const) {
       expect(RATE_LIMIT_CLASSES[name].perIp, `${name} must declare a per-IP bound`).toBeDefined();
     }
