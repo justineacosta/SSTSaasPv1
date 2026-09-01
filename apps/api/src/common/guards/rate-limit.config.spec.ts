@@ -42,6 +42,12 @@ describe('RATE_LIMIT_CLASSES', () => {
       // Redis is unreachable.
       'passwordResetConsume',
       'passwordChange',
+      // Task 11's two. `mfaVerify` checks a six-digit secret, and
+      // `mfaManagement` verifies the current password on three of its four
+      // routes — including the one that turns the second factor OFF. An outage
+      // must not open a window for either.
+      'mfaVerify',
+      'mfaManagement',
     ] as const) {
       expect(RATE_LIMIT_CLASSES[name].failMode, name).toBe('closed');
     }
@@ -121,6 +127,25 @@ describe('RATE_LIMIT_CLASSES', () => {
     expect(change.perPrincipal).toBeUndefined();
     expect(change.perOrganization).toBeUndefined();
 
+    // Task 11's two, and both are decisions written into §1 in the same change
+    // rather than quotations from it — §1 had no MFA row at all.
+    expect(RATE_LIMIT_CLASSES.mfaVerify.perIp).toEqual({ limit: 60, windowSeconds: 3600 });
+    expect(RATE_LIMIT_CLASSES.mfaManagement.perIp).toEqual({ limit: 10, windowSeconds: 3600 });
+    // Per IP only on BOTH, and for two different reasons that land in the same
+    // place. `mfa/verify` is unauthenticated and its body is
+    // `{ pendingToken, code }`, so there is no account to key on and resolving
+    // one from the token would be a database read bought before the limiter
+    // decides. The four management routes DO have a principal, and it resolves
+    // nothing: the limiter runs before the authentication guard
+    // (`architecture/backend.md` §3), so declaring `perPrincipal` would be
+    // carry-forward ruling 55's defect deliberately.
+    for (const name of ['mfaVerify', 'mfaManagement'] as const) {
+      const config: RateLimitClassConfig = RATE_LIMIT_CLASSES[name];
+      expect(config.perPrincipal, name).toBeUndefined();
+      expect(config.perOrganization, name).toBeUndefined();
+      expect(config.failMode, name).toBe('closed');
+    }
+
     expect(RATE_LIMIT_CLASSES.invitations.perOrganization).toEqual({
       limit: 50,
       windowSeconds: 86_400,
@@ -171,6 +196,12 @@ describe('RATE_LIMIT_CLASSES', () => {
       // ahead of the guard, so per-IP is the only bound either of them has.
       'passwordResetConsume',
       'passwordChange',
+      // Task 11's two. `mfaVerify` checks a six-digit secret, and
+      // `mfaManagement` verifies the current password on three of its four
+      // routes — including the one that turns the second factor OFF. An outage
+      // must not open a window for either.
+      'mfaVerify',
+      'mfaManagement',
     ] as const) {
       expect(RATE_LIMIT_CLASSES[name].perIp, `${name} must declare a per-IP bound`).toBeDefined();
     }

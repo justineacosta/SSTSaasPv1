@@ -206,6 +206,78 @@ export const RATE_LIMIT_CLASSES = {
    * account whose session somebody has stolen.
    */
   passwordChange: { perIp: { limit: 10, windowSeconds: 3600 }, failMode: 'closed' },
+  /**
+   * Submitting an MFA code — `POST /api/v1/auth/mfa/verify`.
+   *
+   * ADDED IN TASK 11, AND A DECISION RATHER THAN A TRANSCRIPTION. §1's table has
+   * no MFA row at all, so the figure below is chosen here and written into that
+   * document in the same change, exactly as Task 8 did for
+   * `emailVerificationConsume` and Task 10 for the two beside it.
+   *
+   * **This is a control, not bookkeeping.** The endpoint checks a **six-digit**
+   * secret. `security/authentication.md` §5's five-failure lock is the primary
+   * bound and it is per pending session, which means a caller who is willing to
+   * re-authenticate gets a fresh five each time — so the ladder alone bounds
+   * guessing at 5 per login rather than absolutely. This class is what bounds
+   * the outer loop.
+   *
+   * **60/hour per IP.** The arithmetic is worth writing down, because six digits
+   * is a small space: a million codes, ±1 drift so three are live at any
+   * instant, which is a 3-in-10^6 chance per guess. At 60 attempts an hour that
+   * is about one expected success every 630 years from one address, and the
+   * five-failure lock means each cycle also costs a fresh login (itself 5 / 15
+   * min per account). The figure is generous for a real user — a mistyped code,
+   * a phone whose clock has drifted, a second device — and tight enough that the
+   * product of the two controls is not a guessing channel.
+   *
+   * **Per IP only, because there is no account in the body to key on.** The body
+   * is `{ pendingToken, code }`. Deriving a principal from the pending token
+   * would mean a Redis or Postgres read bought by an unauthenticated caller
+   * *before* the limiter has decided anything, which is what the limiter runs
+   * first to prevent — the same reasoning `emailVerificationConsume` and
+   * `passwordResetConsume` record.
+   *
+   * Fail closed with the rest of the authentication classes: a Redis outage must
+   * not become a window for guessing a second factor.
+   */
+  mfaVerify: { perIp: { limit: 60, windowSeconds: 3600 }, failMode: 'closed' },
+  /**
+   * The four authenticated MFA management routes — `POST /auth/mfa/enroll`,
+   * `/confirm`, `/disable` and `/recovery-codes`.
+   *
+   * ADDED IN TASK 11. One class for the four rather than four classes, because
+   * three of them verify the caller's **current password** and are therefore the
+   * same oracle `passwordChange` is: the account is already fixed by the session
+   * cookie, the answer is a clean 401/200 split, and none of it touches
+   * `User.failedLoginCount` or the lockout ladder, which live on the login path.
+   * `/confirm` carries no password and is grouped with them anyway — it is
+   * reachable only in the window between an enrolment and its confirmation, and
+   * a separate class for it would be a row in this table that says nothing new.
+   *
+   * **10/hour per IP, matching `passwordChange` deliberately.** Its comment
+   * above carries the reasoning and the numbers, and this class copies both
+   * rather than inventing a second answer to the same question: enrolling,
+   * confirming, disabling and regenerating are all rare, deliberate acts with no
+   * legitimate high-volume case behind a shared egress address, and each is a
+   * password-guessing oracle at exactly the same strength.
+   *
+   * **`perPrincipal: 'authenticated'` IS DELIBERATELY NOT DECLARED**, and this
+   * is the third class in this file to say so. The account being guessed at is
+   * the session's owner, which is exactly the scope this limit wants — but the
+   * limiter runs *before* the authentication guard by design
+   * (`architecture/backend.md` §3), so an `'authenticated'` source resolves on no
+   * request that reaches here. Declaring it would reproduce carry-forward ruling
+   * 55's defect deliberately: an unresolvable scope, skipped in silence because
+   * the per-IP scope did resolve, on a route whose headers would then advertise
+   * a limit that is not applied. It is left undeclared and named here, and it is
+   * one more reason to want the early-per-IP / late-per-principal split that
+   * rulings 55, 59 and 90 already ask for.
+   *
+   * Fail closed. An outage must not open a window in which a stolen session can
+   * guess a password, and it certainly must not open one in which a second
+   * factor can be turned off at will.
+   */
+  mfaManagement: { perIp: { limit: 10, windowSeconds: 3600 }, failMode: 'closed' },
   emailVerificationResend: {
     perPrincipal: { limit: 3, windowSeconds: 3600 },
     // §1's table names only the per-account figure, but §1's opening sentence

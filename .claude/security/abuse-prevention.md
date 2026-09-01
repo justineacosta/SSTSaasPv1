@@ -86,6 +86,8 @@ stuffing.
 | Password change | 10 / hour per IP |
 | Email verification resend | 3 / hour per account, 10 / hour per IP |
 | Email verification submit | 30 / hour per IP |
+| MFA verification | 60 / hour per IP |
+| MFA management (enrol, confirm, disable, regenerate) | 10 / hour per IP |
 | Invitations | 50 / day per organisation |
 | Scan creation | Per plan (`maxScansPerMonth`), plus 10 / min burst |
 | Evidence upload | 100 / hour per organisation |
@@ -211,6 +213,41 @@ the number:
   want the early-per-IP / late-per-principal split this section says is owed.
 - Ten per hour is deliberately much tighter than either reset figure. A password change is a rare,
   deliberate act with no legitimate high-volume case behind a shared egress address.
+
+**Two more rows were added by Phase 2 Task 11, and §1 previously had NO MFA row at all** — not a
+figure omitted from the table, an absence. Both are therefore decisions taken in
+`rate-limit.config.ts` and written here in the same change, on the same terms as Task 8's and
+Task 10's.
+
+`MFA verification` — `mfaVerify`, 60 / hour per IP, fail closed — bounds the outer loop around a
+**six-digit** secret.
+[`authentication.md`](authentication.md) §5's five-failure lock is the primary bound and it is
+**per pending session**, so a caller willing to re-authenticate gets a fresh five each time; the
+ladder alone bounds guessing at five per login rather than absolutely. The arithmetic behind 60:
+a million codes, ±1 drift so three are live at any instant, which is 3 in 10^6 per guess — about
+one expected success every 630 years from one address at this rate, with each cycle of five also
+costing a fresh login (itself 5 / 15 min per account). It is generous for a real user with a
+mistyped code, a drifted phone clock or a second device.
+
+Per IP only. The body is `{ pendingToken, code }` and carries no account; resolving one from the
+pending token would mean a Redis or Postgres read bought by an unauthenticated caller *before* the
+limiter has decided anything, which is the same reasoning the two consume rows above record.
+
+`MFA management` — `mfaManagement`, 10 / hour per IP, fail closed — covers all four authenticated
+routes (`enroll`, `confirm`, `disable`, `recovery-codes`) with one class. Three of them verify the
+caller's **current password**, so they are the same credential-guessing oracle `passwordChange` is,
+at the same strength: the account is fixed by the session cookie, the answer is a clean 401/200
+split, and nothing on those paths touches `User.failedLoginCount` or the lockout ladder. The figure
+matches `passwordChange` deliberately rather than inventing a second answer to the same question.
+`confirm` carries no password and is grouped anyway — it is reachable only between an enrolment and
+its confirmation, and a class of its own would say nothing new.
+
+**Neither declares `perPrincipal`, and that is the third time this section has had to say why.**
+The account is the session's owner on the management routes, which is exactly the scope the limit
+wants — and the limiter runs before the authentication guard, so an `'authenticated'` source
+resolves on no request that reaches them. Declared-and-unresolvable beside a per-IP scope that does
+resolve is the silent miss this section documents twice already. It is a third reason to want the
+early-per-IP / late-per-principal split named at the top of this section.
 
 ## 2. Quotas and concurrency
 

@@ -156,15 +156,76 @@ export const loginResponseSchema = z.discriminatedUnion('mfaRequired', [
  * handler saw it, which is precisely when a user is least able to work around
  * it. The bound is a sanity bound, not a format.
  *
- * MFA *enrolment* — start, confirm, disable, regenerate — has no contract in
- * this file on purpose. `api/authentication.md` documents none of it, and
- * Task 11 owns those shapes; inventing them here would pin a guess into the
- * committed OpenAPI document before the endpoint exists.
+ * MFA *enrolment* — start, confirm, disable, regenerate — is the four schemas
+ * below, added by Task 11 along with the routes that publish them.
  */
+export const mfaCodeSchema = z.string().trim().min(1).max(64);
+
 export const mfaVerifyRequestSchema = z
-  .object({ pendingToken: opaqueTokenSchema, code: z.string().trim().min(1).max(64) })
+  .object({ pendingToken: opaqueTokenSchema, code: mfaCodeSchema })
   .strict();
 export const mfaVerifyResponseSchema = statusResponseSchema('AUTHENTICATED');
+
+/**
+ * ENROLMENT AND DISABLING BOTH REQUIRE THE CURRENT PASSWORD, AND THE FIELD IS
+ * THE CONTRACT SAYING SO.
+ *
+ * `security/authentication.md` §5. Turning a second factor off from a stolen
+ * session without proving the password is an account-takeover step, not a
+ * settings edit — the same argument `changePasswordRequestSchema` carries, and
+ * it applies at least as hard here because the whole point of the factor is to
+ * survive a stolen password.
+ *
+ * Enrolment requires it too, for the mirrored reason: somebody holding a stolen
+ * session who can enrol their OWN authenticator has locked the real owner out
+ * of their account rather than merely read it.
+ *
+ * `passwordSchema` rather than a looser string, matching
+ * `changePasswordRequestSchema.currentPassword`. It is a bound on what a caller
+ * may submit at an endpoint that pays an Argon2id verification for it, not a
+ * claim about what the stored password is.
+ */
+export const mfaEnrollRequestSchema = z.object({ password: passwordSchema }).strict();
+
+/**
+ * SHOWN EXACTLY ONCE, AND NEVER RETRIEVABLE.
+ *
+ * `secret` is the base32 the user may type into an authenticator by hand;
+ * `otpauthUri` is what a QR code encodes. Both carry the same secret and it is
+ * returned by this response and by nothing else — there is no endpoint that can
+ * read it back, because `MfaFactor.secretEncrypted` exists to be recomputed
+ * against, not to be shown twice.
+ *
+ * The QR **image** is the frontend's (Task 17). Rendering it server-side would
+ * mean the secret travelling as a picture, which is harder to keep out of a log
+ * and impossible to type in by hand when a camera will not focus.
+ */
+export const mfaEnrollResponseSchema = z.object({
+  secret: z.string().min(1),
+  otpauthUri: z.string().min(1),
+});
+
+/** Confirmation proves one code from the authenticator that was just enrolled. */
+export const mfaConfirmRequestSchema = z.object({ code: mfaCodeSchema }).strict();
+
+/**
+ * The ten recovery codes, shown once at confirmation and once at regeneration.
+ *
+ * A fixed-length tuple is deliberately NOT used. Ten is a policy figure that
+ * lives in `recovery-codes.service.ts`, and pinning it into the wire contract
+ * would make changing it a breaking API change under `conventions.md` §8 for no
+ * benefit a client can use.
+ */
+export const mfaRecoveryCodesResponseSchema = z.object({
+  recoveryCodes: z.array(z.string().min(1)),
+});
+
+export const mfaDisableRequestSchema = z.object({ password: passwordSchema }).strict();
+export const mfaDisableResponseSchema = statusResponseSchema('MFA_DISABLED');
+
+export const mfaRegenerateRecoveryCodesRequestSchema = z
+  .object({ password: passwordSchema })
+  .strict();
 
 /**
  * Logout takes no body and returns 204. The schema exists so that a body with
@@ -246,6 +307,15 @@ export type LoginRequest = z.infer<typeof loginRequestSchema>;
 export type LoginResponse = z.infer<typeof loginResponseSchema>;
 export type MfaVerifyRequest = z.infer<typeof mfaVerifyRequestSchema>;
 export type MfaVerifyResponse = z.infer<typeof mfaVerifyResponseSchema>;
+export type MfaEnrollRequest = z.infer<typeof mfaEnrollRequestSchema>;
+export type MfaEnrollResponse = z.infer<typeof mfaEnrollResponseSchema>;
+export type MfaConfirmRequest = z.infer<typeof mfaConfirmRequestSchema>;
+export type MfaRecoveryCodesResponse = z.infer<typeof mfaRecoveryCodesResponseSchema>;
+export type MfaDisableRequest = z.infer<typeof mfaDisableRequestSchema>;
+export type MfaDisableResponse = z.infer<typeof mfaDisableResponseSchema>;
+export type MfaRegenerateRecoveryCodesRequest = z.infer<
+  typeof mfaRegenerateRecoveryCodesRequestSchema
+>;
 export type LogoutRequest = z.infer<typeof logoutRequestSchema>;
 export type SessionOrganization = z.infer<typeof sessionOrganizationSchema>;
 export type SessionResponse = z.infer<typeof sessionResponseSchema>;
