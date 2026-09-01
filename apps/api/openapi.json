@@ -325,6 +325,417 @@
         }
       }
     },
+    "/api/v1/auth/mfa/confirm": {
+      "post": {
+        "operationId": "AuthController_mfaConfirm",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Confirm two-factor enrolment.",
+        "description": "Proves one code from the authenticator just enrolled and switches the factor on. Returns ten single-use recovery codes, shown once and never retrievable — regenerate them if they are lost. The confirming code is spent, so it cannot be replayed at `mfa/verify` inside its drift window. Requires `X-CSRF-Token`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": [
+                  "code"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "MFA is on. The ten recovery codes are in the body and shown once.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "recoveryCodes": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  },
+                  "required": [
+                    "recoveryCodes"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The code is not valid (`MFA_INVALID`), or no usable session."
+          },
+          "403": {
+            "description": "Missing or mismatched `X-CSRF-Token` (`CSRF_TOKEN_INVALID`)."
+          },
+          "409": {
+            "description": "A confirmed factor already exists (`DUPLICATE_RESOURCE`)."
+          },
+          "422": {
+            "description": "There is no enrolment in progress (`INVALID_STATE_TRANSITION`). Call `mfa/enroll` first."
+          },
+          "429": {
+            "description": "Rate limited: 10 per hour per IP address."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "authenticated"
+        }
+      }
+    },
+    "/api/v1/auth/mfa/disable": {
+      "post": {
+        "operationId": "AuthController_mfaDisable",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Turn two-factor authentication off.",
+        "description": "Deletes the factor and every recovery code, and emails the account owner. Requires the current password. Existing sessions are NOT signed out: the caller has proved the password, and the notice is what makes a takeover visible. Requires `X-CSRF-Token`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "password": {
+                    "type": "string",
+                    "minLength": 12,
+                    "maxLength": 256
+                  }
+                },
+                "required": [
+                  "password"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "MFA is off and the owner has been notified.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "MFA_DISABLED"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The password is wrong (`INVALID_CREDENTIALS`), or there is no usable session."
+          },
+          "403": {
+            "description": "Missing or mismatched `X-CSRF-Token` (`CSRF_TOKEN_INVALID`)."
+          },
+          "422": {
+            "description": "MFA is not switched on for this account (`INVALID_STATE_TRANSITION`)."
+          },
+          "429": {
+            "description": "Rate limited: 10 per hour per IP address."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "authenticated"
+        }
+      }
+    },
+    "/api/v1/auth/mfa/enroll": {
+      "post": {
+        "operationId": "AuthController_mfaEnroll",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Start two-factor enrolment.",
+        "description": "Generates a TOTP secret, stores it encrypted against an UNCONFIRMED factor, and returns it once. Nothing is enabled until `mfa/confirm` proves a code, and an enrolment that is abandoned leaves the account exactly as it was — starting again replaces it. Requires the current password: enrolling an authenticator from a stolen session locks the owner out rather than merely reading their data. Requires `X-CSRF-Token`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "password": {
+                    "type": "string",
+                    "minLength": 12,
+                    "maxLength": 256
+                  }
+                },
+                "required": [
+                  "password"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The secret and its `otpauth://` URI, shown once. No endpoint can read them back.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "secret": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "otpauthUri": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "secret",
+                    "otpauthUri"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The password is wrong (`INVALID_CREDENTIALS`), or there is no usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`)."
+          },
+          "403": {
+            "description": "Missing or mismatched `X-CSRF-Token` (`CSRF_TOKEN_INVALID`)."
+          },
+          "409": {
+            "description": "A confirmed factor already exists (`DUPLICATE_RESOURCE`). Disable it first; replacing a working factor without proving a code is an account-takeover step."
+          },
+          "429": {
+            "description": "Rate limited: 10 per hour per IP address."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "authenticated"
+        }
+      }
+    },
+    "/api/v1/auth/mfa/recovery-codes": {
+      "post": {
+        "operationId": "AuthController_mfaRecoveryCodes",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Reissue your recovery codes.",
+        "description": "Deletes every existing recovery code, used or not, and issues ten new ones — shown once. Requires the current password. The factor itself is unchanged. Requires `X-CSRF-Token`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "password": {
+                    "type": "string",
+                    "minLength": 12,
+                    "maxLength": 256
+                  }
+                },
+                "required": [
+                  "password"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ten new recovery codes, shown once. Every previous code is now dead.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "recoveryCodes": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  },
+                  "required": [
+                    "recoveryCodes"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The password is wrong (`INVALID_CREDENTIALS`), or there is no usable session."
+          },
+          "403": {
+            "description": "Missing or mismatched `X-CSRF-Token` (`CSRF_TOKEN_INVALID`)."
+          },
+          "422": {
+            "description": "MFA is not switched on for this account (`INVALID_STATE_TRANSITION`)."
+          },
+          "429": {
+            "description": "Rate limited: 10 per hour per IP address."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "authenticated"
+        }
+      }
+    },
+    "/api/v1/auth/mfa/verify": {
+      "post": {
+        "operationId": "AuthController_mfaVerify",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Complete two-factor authentication.",
+        "description": "Exchanges the `pendingToken` from a login that required MFA for a full session. `code` accepts a six-digit code from the authenticator app OR one of the ten recovery codes; a recovery code is single-use. A code that has already been accepted is refused even inside its drift window. Five failures revoke the pending session and the user must sign in again.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "pendingToken": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  "code": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": [
+                  "pendingToken",
+                  "code"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated. `Set-Cookie` carries `__Host-session` and `__Host-csrf`, and the pending session is revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "AUTHENTICATED"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The code or the pending token is not valid (`MFA_INVALID`). One code and one message for an unknown, expired, revoked or locked pending token, a wrong code, a replayed code, a spent recovery code, and a promotion refused because the account password was replaced."
+          },
+          "403": {
+            "description": "The request was refused as cross-site (`CSRF_TOKEN_INVALID`)."
+          },
+          "429": {
+            "description": "Rate limited: 60 per hour per IP address."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "public"
+        }
+      }
+    },
     "/api/v1/auth/register": {
       "post": {
         "operationId": "AuthController_register",
@@ -1074,6 +1485,7 @@
                   "SESSION_EXPIRED",
                   "MFA_REQUIRED",
                   "MFA_INVALID",
+                  "MFA_ENROLMENT_REQUIRED",
                   "EMAIL_NOT_VERIFIED",
                   "ACCOUNT_LOCKED",
                   "INVALID_API_KEY",

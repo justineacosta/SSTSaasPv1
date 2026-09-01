@@ -72,6 +72,18 @@ describe('MfaEnrolmentGuard', () => {
     guarded(): void {}
   }
 
+  /**
+   * The handler FUNCTION, fetched dynamically off the prototype.
+   *
+   * `target.exempt` would read the method without calling it, which
+   * `@typescript-eslint/unbound-method` refuses — and the guard needs the exact
+   * function object, because `@AllowWithoutMfaEnrolment()` defines its metadata
+   * on that object and `Reflector.get(key, handler)` looks it up there.
+   */
+  function handlerOf(prototype: object, name: string): (...args: never[]) => unknown {
+    return Reflect.get(prototype, name) as (...args: never[]) => unknown;
+  }
+
   function contextFor(
     handler: (...args: never[]) => unknown,
     target: unknown,
@@ -100,17 +112,25 @@ describe('MfaEnrolmentGuard', () => {
 
   it('refuses a guarded handler for a member who must enrol', async () => {
     const { guard } = guardWith({ requireMfa: true, hasConfirmedFactor: false });
-    const target = new ExemptTarget();
     await expect(
-      guard.canActivate(contextFor(target.guarded, ExemptTarget, { userId: 'usr_1', sessionId: 's' })),
+      guard.canActivate(
+        contextFor(handlerOf(ExemptTarget.prototype, 'guarded'), ExemptTarget, {
+          userId: 'usr_1',
+          sessionId: 's',
+        }),
+      ),
     ).rejects.toBeInstanceOf(MfaEnrolmentRequiredError);
   });
 
   it('admits the same member on a handler carrying the exemption', async () => {
     const { guard } = guardWith({ requireMfa: true, hasConfirmedFactor: false });
-    const target = new ExemptTarget();
     await expect(
-      guard.canActivate(contextFor(target.exempt, ExemptTarget, { userId: 'usr_1', sessionId: 's' })),
+      guard.canActivate(
+        contextFor(handlerOf(ExemptTarget.prototype, 'exempt'), ExemptTarget, {
+          userId: 'usr_1',
+          sessionId: 's',
+        }),
+      ),
     ).resolves.toBe(true);
   });
 
@@ -119,10 +139,14 @@ describe('MfaEnrolmentGuard', () => {
     // none cannot be subject to one, and asking would be a database read on
     // every request that could not change the answer.
     const { guard, lookup } = guardWith({ requireMfa: true, hasConfirmedFactor: false });
-    const target = new ExemptTarget();
     await expect(
       guard.canActivate(
-        contextFor(target.guarded, ExemptTarget, { userId: 'usr_1', sessionId: 's' }, null),
+        contextFor(
+          handlerOf(ExemptTarget.prototype, 'guarded'),
+          ExemptTarget,
+          { userId: 'usr_1', sessionId: 's' },
+          null,
+        ),
       ),
     ).resolves.toBe(true);
     expect(lookup).not.toHaveBeenCalled();
@@ -133,8 +157,9 @@ describe('MfaEnrolmentGuard', () => {
     // admitted; a second opinion here would be a second place for the
     // authentication rule to live.
     const { guard, lookup } = guardWith({ requireMfa: true, hasConfirmedFactor: false });
-    const target = new ExemptTarget();
-    await expect(guard.canActivate(contextFor(target.guarded, ExemptTarget))).resolves.toBe(true);
+    await expect(
+      guard.canActivate(contextFor(handlerOf(ExemptTarget.prototype, 'guarded'), ExemptTarget)),
+    ).resolves.toBe(true);
     expect(lookup).not.toHaveBeenCalled();
   });
 
@@ -161,9 +186,13 @@ describe('MfaEnrolmentGuard', () => {
     Reflect.defineMetadata(ALLOW_WITHOUT_MFA_ENROLMENT_KEY, true, ClassLevel);
 
     const { guard } = guardWith({ requireMfa: true, hasConfirmedFactor: false });
-    const target = new ClassLevel();
     await expect(
-      guard.canActivate(contextFor(target.handler, ClassLevel, { userId: 'usr_1', sessionId: 's' })),
+      guard.canActivate(
+        contextFor(handlerOf(ClassLevel.prototype, 'handler'), ClassLevel, {
+          userId: 'usr_1',
+          sessionId: 's',
+        }),
+      ),
     ).rejects.toBeInstanceOf(MfaEnrolmentRequiredError);
   });
 
@@ -175,9 +204,13 @@ describe('MfaEnrolmentGuard', () => {
     class Derived extends AnnotatedBase {}
 
     const { guard } = guardWith({ requireMfa: true, hasConfirmedFactor: false });
-    const target = new Derived();
     await expect(
-      guard.canActivate(contextFor(target.handler, Derived, { userId: 'usr_1', sessionId: 's' })),
+      guard.canActivate(
+        contextFor(handlerOf(Derived.prototype, 'handler'), Derived, {
+          userId: 'usr_1',
+          sessionId: 's',
+        }),
+      ),
     ).rejects.toBeInstanceOf(MfaEnrolmentRequiredError);
   });
 });
@@ -209,8 +242,19 @@ describe('MfaEnrolmentRequiredError', () => {
  * the guard in the pipeline.
  */
 describe('the guard is registered nowhere, which is what makes it enforce nothing', () => {
+  /**
+   * The module's CODE, with comments stripped.
+   *
+   * Both modules deliberately *mention* the guard and its token in prose —
+   * `auth.module.ts` says beside the key it does provide that it does not
+   * provide this one — and a raw text search would read that documentation as
+   * the thing it documents the absence of. Stripping comments is what makes the
+   * assertion about wiring rather than about wording.
+   */
   const read = (relative: string): string =>
-    readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8');
+    readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
 
   it('is named in no Nest module', () => {
     for (const module of ['./auth.module.ts', '../../app.module.ts']) {

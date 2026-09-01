@@ -80,6 +80,7 @@ denials, and scope rejections are the signal an investigation actually needs.
 Auth: `LOGIN`, `LOGIN_FAILED`, `ACCOUNT_LOCKED`, `LOGOUT`, `MFA_ENROLMENT_STARTED`,
 `MFA_ENABLED`, `MFA_DISABLED`, `MFA_RECOVERY_CODES_REGENERATED`, `MFA_RECOVERY_CODE_USED`,
 `MFA_CHALLENGE_SUCCEEDED`, `MFA_CHALLENGE_FAILED`, `MFA_PENDING_SESSION_LOCKED`,
+`MFA_MANAGEMENT_DENIED`,
 `PASSWORD_CHANGED`, `PASSWORD_CHANGE_FAILED`,
 `PASSWORD_RESET_REQUESTED`, `PASSWORD_RESET_COMPLETED`, `SESSION_REVOKED`, `USER_REGISTERED`,
 `REGISTRATION_BLOCKED_EXISTING_EMAIL`, `EMAIL_VERIFICATION_RESENT`, `EMAIL_VERIFIED`.
@@ -106,19 +107,19 @@ credential for an account an operator deliberately switched off. It is deliberat
 lock — and reusing it would make an administrative status and a brute-force lock
 indistinguishable in the table.
 
-**Five of the eight MFA names were added by Phase 2 Task 11**, which is the task that built the
+**Six of the nine MFA names were added by Phase 2 Task 11**, which is the task that built the
 flows. `MFA_ENABLED`, `MFA_DISABLED` and `MFA_CHALLENGE_FAILED` were already in this list and
 predate it; `MFA_ENROLMENT_STARTED`, `MFA_RECOVERY_CODES_REGENERATED`, `MFA_RECOVERY_CODE_USED`,
-`MFA_CHALLENGE_SUCCEEDED` and `MFA_PENDING_SESSION_LOCKED` are new here, added in the same change
-as the code that writes them.
+`MFA_CHALLENGE_SUCCEEDED`, `MFA_PENDING_SESSION_LOCKED` and `MFA_MANAGEMENT_DENIED` are new here,
+added in the same change as the code that writes them.
 
-All eight are `PlatformAuditEvent` rows, for the same reason as the login group: enrolment happens
+All nine are `PlatformAuditEvent` rows, for the same reason as the login group: enrolment happens
 before any organisation is chosen, and the MFA challenge happens on a `PENDING_MFA` session, which
 by construction has chosen nothing at all.
 
-**The resource split within the group is deliberate.** The five lifecycle rows —
+**The resource split within the group is deliberate.** The six account rows —
 `MFA_ENROLMENT_STARTED`, `MFA_ENABLED`, `MFA_DISABLED`, `MFA_RECOVERY_CODES_REGENERATED`,
-`MFA_RECOVERY_CODE_USED` — name the **`User`**. What an investigation needs from them is that this
+`MFA_RECOVERY_CODE_USED` and `MFA_MANAGEMENT_DENIED` — name the **`User`**. What an investigation needs from them is that this
 account's second factor was turned on, or off, or its recovery set reissued; and a disable deletes
 the `MfaFactor` row, so naming that row would leave an event pointing at nothing — the trap
 `LOGOUT` avoids by naming a row that is retained rather than deleted.

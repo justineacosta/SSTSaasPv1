@@ -14,9 +14,12 @@ import {
 } from './active-organization.store.js';
 import { EmailVerificationService } from './email-verification.service.js';
 import { LoginService } from './login.service.js';
+import { MfaEnrolmentService } from './mfa-enrolment.service.js';
+import { MfaVerificationService } from './mfa-verification.service.js';
 import { LogoutService } from './logout.service.js';
 import { PasswordChangeService } from './password-change.service.js';
 import { PasswordResetService } from './password-reset.service.js';
+import { RecoveryCodesService } from './recovery-codes.service.js';
 import { RegistrationService } from './registration.service.js';
 import { SessionDocumentService } from './session-document.service.js';
 import {
@@ -24,6 +27,7 @@ import {
   ARGON2_PARAMETERS,
   BREACH_CHECK_OPTIONS,
   HIBP_RANGE_TRANSPORT,
+  MFA_SECRET_KEY,
   SECRET_TOKEN_TTL_SECONDS,
   SESSION_CACHE,
   SESSION_POLICY,
@@ -116,6 +120,22 @@ import { type SecretTokenTtlSeconds, TokenService } from './token.service.js';
         cacheTtlSeconds: env.SESSION_CACHE_TTL_SECONDS,
       }),
     },
+    {
+      // THE ONE PLACE THE ENCRYPTION KEY IS DECODED. D2.
+      //
+      // Provided as bytes rather than as the base64 string, so no consumer has
+      // to remember to decode it and no consumer can pass the wrong thing to
+      // `createCipheriv`. A wrong-length value cannot reach here at all:
+      // `apiEnvSchema` refuses the boot naming the variable, which is the whole
+      // point of checking the length at config load rather than at first use.
+      //
+      // **`MfaEnrolmentGuard`'s `MFA_ENROLMENT_POLICY` is deliberately NOT
+      // provided beside this** — D8's mechanism is registered nowhere, and
+      // `require-mfa.spec.ts` asserts that against this file.
+      provide: MFA_SECRET_KEY,
+      inject: [ENV],
+      useFactory: (env: ApiEnv): Buffer => Buffer.from(env.MFA_SECRET_ENCRYPTION_KEY, 'base64'),
+    },
     // The port, so `SessionService` cannot reach an ioredis client directly.
     { provide: SESSION_CACHE, useClass: RedisSessionCache },
     {
@@ -149,6 +169,9 @@ import { type SecretTokenTtlSeconds, TokenService } from './token.service.js';
     SessionDocumentService,
     PasswordResetService,
     PasswordChangeService,
+    RecoveryCodesService,
+    MfaEnrolmentService,
+    MfaVerificationService,
   ],
   // `SessionRepository` is deliberately NOT exported. It is `SessionService`'s
   // Postgres access, and a consumer holding it could revoke a row without
@@ -162,6 +185,12 @@ import { type SecretTokenTtlSeconds, TokenService } from './token.service.js';
   // both password services write to `Credential` and revoke sessions, and
   // neither has any business being reachable except through the two endpoints
   // that carry the rate-limit class and the audit row.
+  //
+  // Nor are the two MFA services or `RecoveryCodesService`, and the argument is
+  // sharper still: a consumer holding `MfaEnrolmentService` could DISABLE a
+  // second factor without going through the route that demands the current
+  // password, and a consumer holding `MfaVerificationService` could promote a
+  // pending session without the rate limit or the five-attempt lock.
   exports: [PasswordService, BreachCheckService, TokenService, SessionService],
 })
 export class AuthModule {}

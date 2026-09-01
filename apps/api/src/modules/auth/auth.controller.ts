@@ -13,6 +13,24 @@ import {
   type LoginResponse,
   loginRequestSchema,
   loginResponseSchema,
+  type MfaConfirmRequest,
+  mfaConfirmRequestSchema,
+  type MfaDisableRequest,
+  type MfaDisableResponse,
+  mfaDisableRequestSchema,
+  mfaDisableResponseSchema,
+  type MfaEnrollRequest,
+  type MfaEnrollResponse,
+  mfaEnrollRequestSchema,
+  mfaEnrollResponseSchema,
+  type MfaRecoveryCodesResponse,
+  mfaRecoveryCodesResponseSchema,
+  type MfaRegenerateRecoveryCodesRequest,
+  mfaRegenerateRecoveryCodesRequestSchema,
+  type MfaVerifyRequest,
+  type MfaVerifyResponse,
+  mfaVerifyRequestSchema,
+  mfaVerifyResponseSchema,
   type LogoutRequest,
   logoutRequestSchema,
   type RegisterRequest,
@@ -35,7 +53,11 @@ import {
   verifyEmailResponseSchema,
 } from '@sentinel/contracts';
 import type { Request, Response } from 'express';
-import { AuthenticatedOnly, Public } from '../../common/decorators/access.decorator.js';
+import {
+  AllowPendingMfa,
+  AuthenticatedOnly,
+  Public,
+} from '../../common/decorators/access.decorator.js';
 import { RefuseCrossSite } from '../../common/decorators/cross-site.decorator.js';
 import { ApiDoc } from '../../common/decorators/openapi.decorator.js';
 import { RateLimit } from '../../common/decorators/rate-limit.decorator.js';
@@ -50,6 +72,8 @@ import { deriveCsrfToken } from './csrf-token.js';
 import { EmailVerificationService } from './email-verification.service.js';
 import { LoginService } from './login.service.js';
 import { LogoutService } from './logout.service.js';
+import { MfaEnrolmentService } from './mfa-enrolment.service.js';
+import { MfaVerificationService } from './mfa-verification.service.js';
 import { PasswordChangeService } from './password-change.service.js';
 import { PasswordResetService } from './password-reset.service.js';
 import { RegistrationService } from './registration.service.js';
@@ -57,16 +81,39 @@ import { requestContextOf } from './request-context.js';
 import { SessionDocumentService } from './session-document.service.js';
 
 /**
- * THE NINE ROUTES ON THIS CONTROLLER.
+ * THE FOURTEEN ROUTES ON THIS CONTROLLER.
  *
- * Nine here, **thirteen in the product** — the health probes and the OpenAPI
- * document itself make up the difference, and `pnpm check:openapi` counts all
- * of them. Task 8 shipped `/register`, `/verify-email` and
+ * Fourteen here, **eighteen in the product** — the health probes and the
+ * OpenAPI document itself make up the difference, and `pnpm check:openapi`
+ * counts all of them. Task 8 shipped `/register`, `/verify-email` and
  * `/resend-verification` and took that total from four to seven; Task 9 added
- * `/login`, `/logout` and `/session` and took it to ten; Task 10 adds
- * `/forgot-password`, `/reset-password` and `/change-password` and takes it to
- * thirteen. (L6: the heading previously said "the six routes this product
- * publishes", which contradicted the sentence below it.)
+ * `/login`, `/logout` and `/session` and took it to ten; Task 10 added
+ * `/forgot-password`, `/reset-password` and `/change-password` and took it to
+ * thirteen; Task 11 adds the five under `/mfa` and takes it to eighteen. (L6:
+ * the heading previously said "the six routes this product publishes", which
+ * contradicted the sentence below it.)
+ *
+ * # `mfa/verify` is `@Public()` AND `@AllowPendingMfa()`, and that pair is D4
+ *
+ * `@Public()` because **no session cookie authenticates it**: the login MFA arm
+ * sets no cookie at all (ADR-0018), the pending token travels in the body, and
+ * `AuthenticationGuard` reads the cookie. A route declaring
+ * `@AuthenticatedOnly()` would be refused with 401 `UNAUTHENTICATED` for every
+ * caller, because there is nothing in the cookie jar for the guard to resolve.
+ * The credential this route consumes is one the handler resolves itself, which
+ * is what `@Public()` means here — not "unauthenticated" but "not authenticated
+ * by the ambient session".
+ *
+ * `@AllowPendingMfa()` is carried **as well**, and it enforces nothing on a
+ * public route: the guard exits at the `@Public()` check before it ever looks
+ * for this metadata. It is declared because carry-forward ruling 61 makes it
+ * handler-level-only metadata whose whole purpose is this endpoint, because
+ * `access.decorator.ts` says "Task 11 builds the endpoint that carries it", and
+ * because the day this route stops being public — a delivery change that put
+ * the pending token in a cookie — the decorator that makes it reachable must
+ * already be on the handler rather than being remembered. It is documentation
+ * that the typechecker keeps honest, not a control; this task's report says so
+ * rather than leaving a reader to infer that it is doing work.
  *
  * # The Task 8 three are `@Public()`, and therefore NOT CSRF-covered
  *
@@ -115,6 +162,8 @@ export class AuthController {
     @Inject(SessionDocumentService) private readonly sessionDocument: SessionDocumentService,
     @Inject(PasswordResetService) private readonly passwordResets: PasswordResetService,
     @Inject(PasswordChangeService) private readonly passwordChanges: PasswordChangeService,
+    @Inject(MfaEnrolmentService) private readonly mfaEnrolment: MfaEnrolmentService,
+    @Inject(MfaVerificationService) private readonly mfaVerification: MfaVerificationService,
   ) {}
 
   /**
@@ -687,6 +736,296 @@ export class AuthController {
       }),
     ]);
     return { status: 'PASSWORD_CHANGED' };
+  }
+
+  /**
+   * Completes MFA and exchanges a pending session for a full one.
+   *
+   * `@Public()` and `@AllowPendingMfa()` — see the class docblock for why both,
+   * and why neither is `@AuthenticatedOnly()`.
+   *
+   * `mfaVerify`: 60/hour per IP, fail closed — a class added by this task,
+   * because `security/abuse-prevention.md` §1 had no MFA row at all. Per IP
+   * only: the body is `{ pendingToken, code }` and carries no account, and
+   * resolving one from the token would be a database read bought by an
+   * unauthenticated caller before the limiter decides anything —
+   * `passwordResetConsume`'s exact reasoning.
+   *
+   * `@RefuseCrossSite()` rather than CSRF, like `login`: the request carries no
+   * session cookie, so a double-submit token has nothing to bind to
+   * (carry-forward ruling 56).
+   *
+   * **The response sets both cookies**, which is the point of the route: the
+   * pending session is rotated into an `ACTIVE` one, so the token the caller
+   * held before the promotion cannot be used after it.
+   */
+  @Public()
+  @AllowPendingMfa()
+  @RefuseCrossSite()
+  @RateLimit('mfaVerify')
+  @ApiDoc({
+    summary: 'Complete two-factor authentication.',
+    description:
+      'Exchanges the `pendingToken` from a login that required MFA for a full session. `code` ' +
+      'accepts a six-digit code from the authenticator app OR one of the ten recovery codes; ' +
+      'a recovery code is single-use. A code that has already been accepted is refused even ' +
+      'inside its drift window. Five failures revoke the pending session and the user must ' +
+      'sign in again.',
+    requestBody: { schema: mfaVerifyRequestSchema },
+    responses: [
+      {
+        status: 200,
+        description:
+          'Authenticated. `Set-Cookie` carries `__Host-session` and `__Host-csrf`, and the ' +
+          'pending session is revoked.',
+        schema: mfaVerifyResponseSchema,
+      },
+      {
+        status: 401,
+        description:
+          'The code or the pending token is not valid (`MFA_INVALID`). One code and one ' +
+          'message for an unknown, expired, revoked or locked pending token, a wrong code, a ' +
+          'replayed code, a spent recovery code, and a promotion refused because the account ' +
+          'password was replaced.',
+      },
+      {
+        status: 403,
+        description: 'The request was refused as cross-site (`CSRF_TOKEN_INVALID`).',
+      },
+      { status: 429, description: 'Rate limited: 60 per hour per IP address.' },
+    ],
+  })
+  @HttpCode(200)
+  @Post('mfa/verify')
+  async mfaVerify(
+    @Body(new ZodValidationPipe(mfaVerifyRequestSchema)) body: MfaVerifyRequest,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<MfaVerifyResponse> {
+    const result = await this.mfaVerification.verify({
+      pendingToken: body.pendingToken,
+      code: body.code,
+      ...requestContextOf(request),
+    });
+
+    // Both cookies, in one `Set-Cookie` array, exactly as login sets them.
+    response.setHeader('Set-Cookie', [
+      serialiseSessionCookie({ value: result.token, maxAgeSeconds: result.cookieMaxAgeSeconds }),
+      serialiseCsrfCookie({
+        value: deriveCsrfToken(result.token),
+        maxAgeSeconds: result.cookieMaxAgeSeconds,
+      }),
+    ]);
+    return { status: 'AUTHENTICATED' };
+  }
+
+  /**
+   * Starts TOTP enrolment and returns the secret exactly once.
+   *
+   * `mfaManagement`: 10/hour per IP, fail closed — one class for the four MFA
+   * management routes, matching `passwordChange`'s figure because three of them
+   * verify the current password and are the same oracle at the same strength.
+   * The per-principal half would be the right key and resolves nothing today
+   * (carry-forward ruling 55); `rate-limit.config.ts` carries the argument.
+   *
+   * **`CsrfGuard` governs this route**, so it carries no `@RefuseCrossSite()`:
+   * it is cookie-authenticated, so the double-submit token has something to
+   * bind to.
+   */
+  @AuthenticatedOnly()
+  @RateLimit('mfaManagement')
+  @ApiDoc({
+    summary: 'Start two-factor enrolment.',
+    description:
+      'Generates a TOTP secret, stores it encrypted against an UNCONFIRMED factor, and returns ' +
+      'it once. Nothing is enabled until `mfa/confirm` proves a code, and an enrolment that is ' +
+      'abandoned leaves the account exactly as it was — starting again replaces it. Requires ' +
+      'the current password: enrolling an authenticator from a stolen session locks the owner ' +
+      'out rather than merely reading their data. Requires `X-CSRF-Token`.',
+    requestBody: { schema: mfaEnrollRequestSchema },
+    responses: [
+      {
+        status: 200,
+        description:
+          'The secret and its `otpauth://` URI, shown once. No endpoint can read them back.',
+        schema: mfaEnrollResponseSchema,
+      },
+      {
+        status: 401,
+        description:
+          'The password is wrong (`INVALID_CREDENTIALS`), or there is no usable session ' +
+          '(`UNAUTHENTICATED` or `SESSION_EXPIRED`).',
+      },
+      { status: 403, description: 'Missing or mismatched `X-CSRF-Token` (`CSRF_TOKEN_INVALID`).' },
+      {
+        status: 409,
+        description:
+          'A confirmed factor already exists (`DUPLICATE_RESOURCE`). Disable it first; ' +
+          'replacing a working factor without proving a code is an account-takeover step.',
+      },
+      { status: 429, description: 'Rate limited: 10 per hour per IP address.' },
+    ],
+  })
+  @HttpCode(200)
+  @Post('mfa/enroll')
+  async mfaEnroll(
+    @Body(new ZodValidationPipe(mfaEnrollRequestSchema)) body: MfaEnrollRequest,
+    @Req() request: Request,
+  ): Promise<MfaEnrollResponse> {
+    return this.mfaEnrolment.enroll({
+      ...principalOf(request),
+      password: body.password,
+      ...requestContextOf(request),
+    });
+  }
+
+  /**
+   * Proves one code, enables the factor, and returns the ten recovery codes.
+   *
+   * **No password**, unlike the other three management routes: this is
+   * reachable only in the window an enrolment opened, and that enrolment cost
+   * the password already.
+   */
+  @AuthenticatedOnly()
+  @RateLimit('mfaManagement')
+  @ApiDoc({
+    summary: 'Confirm two-factor enrolment.',
+    description:
+      'Proves one code from the authenticator just enrolled and switches the factor on. ' +
+      'Returns ten single-use recovery codes, shown once and never retrievable — regenerate ' +
+      'them if they are lost. The confirming code is spent, so it cannot be replayed at ' +
+      '`mfa/verify` inside its drift window. Requires `X-CSRF-Token`.',
+    requestBody: { schema: mfaConfirmRequestSchema },
+    responses: [
+      {
+        status: 200,
+        description: 'MFA is on. The ten recovery codes are in the body and shown once.',
+        schema: mfaRecoveryCodesResponseSchema,
+      },
+      { status: 401, description: 'The code is not valid (`MFA_INVALID`), or no usable session.' },
+      { status: 403, description: 'Missing or mismatched `X-CSRF-Token` (`CSRF_TOKEN_INVALID`).' },
+      { status: 409, description: 'A confirmed factor already exists (`DUPLICATE_RESOURCE`).' },
+      {
+        status: 422,
+        description:
+          'There is no enrolment in progress (`INVALID_STATE_TRANSITION`). Call `mfa/enroll` ' +
+          'first.',
+      },
+      { status: 429, description: 'Rate limited: 10 per hour per IP address.' },
+    ],
+  })
+  @HttpCode(200)
+  @Post('mfa/confirm')
+  async mfaConfirm(
+    @Body(new ZodValidationPipe(mfaConfirmRequestSchema)) body: MfaConfirmRequest,
+    @Req() request: Request,
+  ): Promise<MfaRecoveryCodesResponse> {
+    return this.mfaEnrolment.confirm({
+      ...principalOf(request),
+      code: body.code,
+      ...requestContextOf(request),
+    });
+  }
+
+  /**
+   * Turns the factor off, having required the current password.
+   *
+   * `security/authentication.md` §5. Disabling without a password check is an
+   * obvious account-takeover step from a stolen session — it removes the only
+   * control that survives a stolen password.
+   *
+   * **Sessions are deliberately not revoked**, and the notice is what covers
+   * the takeover case; `mfa-enrolment.service.ts` carries the argument.
+   */
+  @AuthenticatedOnly()
+  @RateLimit('mfaManagement')
+  @ApiDoc({
+    summary: 'Turn two-factor authentication off.',
+    description:
+      'Deletes the factor and every recovery code, and emails the account owner. Requires the ' +
+      'current password. Existing sessions are NOT signed out: the caller has proved the ' +
+      'password, and the notice is what makes a takeover visible. Requires `X-CSRF-Token`.',
+    requestBody: { schema: mfaDisableRequestSchema },
+    responses: [
+      {
+        status: 200,
+        description: 'MFA is off and the owner has been notified.',
+        schema: mfaDisableResponseSchema,
+      },
+      {
+        status: 401,
+        description:
+          'The password is wrong (`INVALID_CREDENTIALS`), or there is no usable session.',
+      },
+      { status: 403, description: 'Missing or mismatched `X-CSRF-Token` (`CSRF_TOKEN_INVALID`).' },
+      {
+        status: 422,
+        description: 'MFA is not switched on for this account (`INVALID_STATE_TRANSITION`).',
+      },
+      { status: 429, description: 'Rate limited: 10 per hour per IP address.' },
+    ],
+  })
+  @HttpCode(200)
+  @Post('mfa/disable')
+  async mfaDisable(
+    @Body(new ZodValidationPipe(mfaDisableRequestSchema)) body: MfaDisableRequest,
+    @Req() request: Request,
+  ): Promise<MfaDisableResponse> {
+    await this.mfaEnrolment.disable({
+      ...principalOf(request),
+      password: body.password,
+      ...requestContextOf(request),
+    });
+    return { status: 'MFA_DISABLED' };
+  }
+
+  /**
+   * Throws the recovery set away and issues ten new ones.
+   *
+   * Requires the current password: this invalidates the ten codes the owner
+   * printed, so from a stolen session it is a way to make the account's
+   * break-glass credential be one the attacker holds.
+   */
+  @AuthenticatedOnly()
+  @RateLimit('mfaManagement')
+  @ApiDoc({
+    summary: 'Reissue your recovery codes.',
+    description:
+      'Deletes every existing recovery code, used or not, and issues ten new ones — shown ' +
+      'once. Requires the current password. The factor itself is unchanged. Requires ' +
+      '`X-CSRF-Token`.',
+    requestBody: { schema: mfaRegenerateRecoveryCodesRequestSchema },
+    responses: [
+      {
+        status: 200,
+        description: 'Ten new recovery codes, shown once. Every previous code is now dead.',
+        schema: mfaRecoveryCodesResponseSchema,
+      },
+      {
+        status: 401,
+        description:
+          'The password is wrong (`INVALID_CREDENTIALS`), or there is no usable session.',
+      },
+      { status: 403, description: 'Missing or mismatched `X-CSRF-Token` (`CSRF_TOKEN_INVALID`).' },
+      {
+        status: 422,
+        description: 'MFA is not switched on for this account (`INVALID_STATE_TRANSITION`).',
+      },
+      { status: 429, description: 'Rate limited: 10 per hour per IP address.' },
+    ],
+  })
+  @HttpCode(200)
+  @Post('mfa/recovery-codes')
+  async mfaRecoveryCodes(
+    @Body(new ZodValidationPipe(mfaRegenerateRecoveryCodesRequestSchema))
+    body: MfaRegenerateRecoveryCodesRequest,
+    @Req() request: Request,
+  ): Promise<MfaRecoveryCodesResponse> {
+    return this.mfaEnrolment.regenerateRecoveryCodes({
+      ...principalOf(request),
+      password: body.password,
+      ...requestContextOf(request),
+    });
   }
 }
 
