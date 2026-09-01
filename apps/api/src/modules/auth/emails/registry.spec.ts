@@ -74,9 +74,16 @@ interface AttackerStrings {
    */
   readonly name: string;
   /**
-   * The display name of the **member sending an invitation**, which is a
-   * different person from the recipient and is chosen by somebody who is
-   * authenticated inside the organisation. `invitation` renders it, escaped.
+   * The display name of the **member sending an invitation** — a different
+   * person from the recipient, chosen by somebody authenticated inside the
+   * organisation, and still a stored `User.name`.
+   *
+   * **M2: `invitation` used to render this, and that was ruling 70's fifth
+   * channel.** It reached the TEXT part of a message carrying a live token
+   * link, where mail clients autolink a bare URL — the same rendering that made
+   * Task 8's H1 and Task 9's H2. The field is gone from `InvitationInput`, so
+   * like `name` above it is now consumed by nothing and the whole-registry
+   * block below asserts its absence structurally.
    */
   readonly inviterName: string;
   readonly organizationName: string;
@@ -131,14 +138,23 @@ const NAMELESS_TEMPLATE_IDS = [
  * The one template that still renders a string somebody else chose, and
  * therefore the only one the escaping assertion has anything to say about.
  *
- * `invitation` renders `inviterName` and `organizationName`. Both are chosen by
- * an **authenticated member of the organisation doing the inviting**, not by an
- * anonymous caller who guessed an address, and the recipient of the message is
- * the person that member deliberately named. Ruling 70's rule is about a
- * display name attached to the RECIPIENT's own account — the value an attacker
- * seeds by registering the victim's address first — and an invitation has no
- * such field: its recipient may have no `User` row at all. Task 15 owns the
- * endpoint; the escaping assertion is what holds it here until then.
+ * **After M2 it renders exactly one such field: `organizationName`.**
+ * `inviterName` is gone — it was a stored `User.name` reaching the text part of
+ * a live-link message, which is ruling 70's fifth channel and is closed
+ * structurally.
+ *
+ * `organizationName` is a genuinely different case and is kept deliberately. An
+ * invitation that does not name the organisation is useless; the value belongs
+ * to an **accountable tenant** rather than to an anonymous registrant who typed
+ * somebody else's address, since creating an organisation requires an
+ * authenticated verified account and the name is visible to every member.
+ *
+ * **It is not a closed case, and this list is not a claim that it is.** A tenant
+ * who puts a URL in their organisation name gets it autolinked in the text part
+ * of every invitation they send. That residual is pinned from both sides by
+ * `the organisation name residual` below, so closing it turns a test red, and
+ * it **binds Task 13** (which creates organisations and owns whatever the name
+ * is constrained to) **and Task 15** (which ships the endpoint that sends this).
  */
 const ATTACKER_STRING_TEMPLATE_IDS = ['invitation'] as const satisfies readonly EmailTemplateId[];
 
@@ -181,9 +197,13 @@ const CASES: Record<EmailTemplateId, (s: AttackerStrings) => RenderedEmail> = {
       token: TOKEN,
       ttlSeconds: 3_600,
     }),
+  // NO `inviterName`. M2: it was a stored `User.name` rendered into the text
+  // part of a message carrying a live token link, and the type no longer has a
+  // field for it. `s.inviterName` is therefore consumed by nothing, which is
+  // what makes the whole-registry ruling-70 block a structural assertion for it
+  // exactly as it is for `s.name`.
   invitation: (s) =>
     EMAIL_TEMPLATES.invitation({
-      inviterName: s.inviterName,
       organizationName: s.organizationName,
       webBaseUrl: BASE_URL,
       token: TOKEN,
@@ -332,11 +352,21 @@ describe.each(IDS)('template %s under ruling 70', (id) => {
     // this reachable, and then it goes red. What the block earns as it stands
     // is that the property is written down over the registry rather than over a
     // list somebody has to remember to extend.
-    const email = CASES[id]({ ...BENIGN, name: XSS_WITH_URL });
+    // BOTH stored `User.name` values, and M2 is why `inviterName` is here.
+    // The recipient's name was the only one this payload carried until the fix
+    // round, so the one template that actually rendered a stored display name —
+    // `invitation`, into the TEXT part of a message carrying a live token link —
+    // was the one template the payload was never run at.
+    const email = CASES[id]({
+      ...BENIGN,
+      name: XSS_WITH_URL,
+      inviterName: XSS_WITH_URL,
+    });
     for (const part of [email.subject, email.html, email.text]) {
       expect(part).not.toContain('steal()');
       expect(part).not.toContain(INJECTED_URL);
       expect(part).not.toContain('Ada Lovelace');
+      expect(part).not.toContain('Grace Hopper');
     }
   });
 });
@@ -690,6 +720,15 @@ describe.each(NOTICE_TEMPLATE_IDS)('notice %s renders no device string', (id) =>
  * name could travel through, and the carve-out has nothing left to describe.
  * What is below runs over `NOTICE_TEMPLATE_IDS` itself — the exported list, not
  * a filtered copy of it — so a notice added later cannot be omitted from it.
+ *
+ * **P5, and it is a correction to this docblock's own earlier wording.** It
+ * said the test ran "OVER THE WHOLE REGISTRY, WITH NO EXEMPT LIST". It does
+ * not: it runs over the notices, and the token-link templates are covered by
+ * the block below it. That mattered rather than being pedantry — the sentence
+ * was the reason nobody noticed that `invitation`, the one template rendering a
+ * stored display name, was in neither block's payload (M2). The two blocks
+ * together now cover every member of the registry, and this sentence says which
+ * covers what.
  */
 describe.each(NOTICE_TEMPLATE_IDS)('notice %s under ruling 70 prescribed payload', (id) => {
   it('renders no link when EVERY caller-supplied field it accepts is a URL', () => {
@@ -720,13 +759,22 @@ describe.each(NOTICE_TEMPLATE_IDS)('notice %s under ruling 70 prescribed payload
  */
 describe.each(TOKEN_LINK_TEMPLATE_IDS)('token-link %s under ruling 70 prescribed payload', (id) => {
   it('contains exactly one link, the one this code built', () => {
-    // The payload is hostile in the two fields ruling 70 is about — the
-    // recipient's stored display name and the request IP — and benign in the
-    // two the invitation legitimately renders about somebody else. This is not
-    // an exempt list of template ids: the same payload goes to all three, and
-    // for `emailVerification` and `passwordReset` it IS every caller-supplied
-    // field they accept, because after Task 10 neither accepts anything else.
-    const email = CASES[id]({ ...BENIGN, name: XSS_WITH_URL, ipAddress: XSS_WITH_URL });
+    // The payload is hostile in every field ruling 70 is about — BOTH stored
+    // `User.name` values and the request IP — and benign only in
+    // `organizationName`, which is the one field of the one template that is
+    // deliberately still rendered. See `ATTACKER_STRING_TEMPLATE_IDS` for why
+    // that is a different case, and `the organisation name residual` below for
+    // the test that pins it from both sides.
+    //
+    // `inviterName` joined this payload in the fix round. Leaving it out is
+    // what let M2 ship: the only template that rendered a stored display name
+    // was the only template no ruling-70 payload was ever run at.
+    const email = CASES[id]({
+      ...BENIGN,
+      name: XSS_WITH_URL,
+      inviterName: XSS_WITH_URL,
+      ipAddress: XSS_WITH_URL,
+    });
     for (const part of [email.html, email.text]) {
       const urls = part.match(/https?:\/\/[^\s"'<>]+/g) ?? [];
       expect(urls.length).toBeGreaterThan(0);
@@ -740,6 +788,46 @@ describe.each(TOKEN_LINK_TEMPLATE_IDS)('token-link %s under ruling 70 prescribed
     // derive it, and it would still fail if `INJECTED_URL` moved to `BASE_URL`.
     expect(email.text).not.toContain(INJECTED_URL);
     expect(email.subject).not.toContain(INJECTED_URL);
+  });
+});
+
+/**
+ * THE ORGANISATION NAME RESIDUAL, PINNED FROM BOTH SIDES.
+ *
+ * This is the shape the display-name residual was pinned in before Task 10
+ * closed it, and it is here for the same reason: a residual that lives only in
+ * prose is one nobody re-decides. One test asserts that everything else the
+ * invitation accepts is harmless; the other asserts that `organizationName`
+ * **does** still reach the body as given, so the day somebody constrains it this
+ * block goes red and has to be deleted deliberately rather than adjusted.
+ *
+ * It is **not** an endorsement. It binds Task 13, which creates organisations,
+ * and Task 15, which ships the endpoint that sends this message.
+ */
+describe('the organisation name residual', () => {
+  it('renders no link from any field EXCEPT the organisation name', () => {
+    const email = CASES.invitation({
+      ...BENIGN,
+      name: XSS_WITH_URL,
+      inviterName: XSS_WITH_URL,
+      ipAddress: XSS_WITH_URL,
+    });
+    for (const part of [email.subject, email.html, email.text]) {
+      expect(part).not.toContain(INJECTED_URL);
+      expect(part).not.toContain('steal()');
+    }
+  });
+
+  it('DOES render an organisation name that is a URL — owned by Tasks 13 and 15', () => {
+    // NOT an endorsement, and not a test to adjust. It records the exact shape
+    // of what is left. A tenant who puts a URL in their organisation name gets
+    // it autolinked in the text part of every invitation they send.
+    const email = CASES.invitation({ ...BENIGN, organizationName: XSS_WITH_URL });
+    expect(email.text).toContain(INJECTED_URL);
+    // The html part escapes it, so the danger is the text part specifically —
+    // which is exactly where M2's finding lived.
+    expect(email.html).not.toContain('<script>');
+    expect(email.html).toContain('&lt;script&gt;');
   });
 });
 
