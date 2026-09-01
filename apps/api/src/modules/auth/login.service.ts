@@ -212,10 +212,17 @@ export class LoginService {
     }
 
     // The credential facts travel INTO `succeed` rather than being acted on
-    // afterwards, and that reordering is H1's. The rehash (D8) rewrites the
-    // stored hash, and the post-issue check `succeed` now performs compares
-    // against the hash in force — so the two have to happen in a known order,
-    // in one place, or a rehashing login revokes itself. See `succeed`.
+    // afterwards, and that reordering is H1's: the post-issue check compares
+    // against the hash in force, so the rehash (D8) and the check have to
+    // happen in a known order and in one place.
+    //
+    // **What that ordering buys is one Argon2id verification, not correctness**
+    // — NEW-1, and the sentence here used to claim otherwise ("or a rehashing
+    // login revokes itself"). It does not: `credentialStillCurrent` does not
+    // stop at the byte comparison, and a rehash of the same password re-verifies
+    // and stands. Defeating this plumbing was measured to leave 564 unit and 31
+    // integration tests green, including the test named for the trap. The byte
+    // comparison is a fast path; the re-verify below it is the control.
     return this.succeed(user, command, {
       verifiedHash: storedHash,
       needsRehash: verification.needsRehash,
