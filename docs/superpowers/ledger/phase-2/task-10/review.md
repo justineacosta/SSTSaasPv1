@@ -230,3 +230,262 @@ session, which is what keeps this Medium rather than High — but a stolen sessi
 premise the endpoint's own docblock argues from. Per-account throttling here needs neither the
 ladder nor `ACCOUNT_LOCKED`: a 429 keyed on the resolved principal would do it, and it is the same
 owed limiter stage rulings 55 and 59 already want.
+
+### L1 (Low) — `ownSessionRotated: true` is written before the rotation is attempted, and can be false
+
+`password-change.service.ts` spends a paragraph explaining why `liveSessionsAtWrite` is not called
+`sessionsRevoked` — *"a tidier name would be a false statement in an append-only table"* — and then
+writes `ownSessionRotated: true` **inside the same transaction**, before `sessions.rotate()` is
+called. `rotate` returns `null` when the caller's session was concurrently revoked, and the service
+has a shipped test for exactly that case.
+
+**Measured.** I added one `console.log` to the existing test `reports no token when the caller
+session was concurrently revoked`, ran it, and reverted:
+
+```
+AUDIT METADATA = [{"liveSessionsAtWrite":0,"ownSessionRotated":true}]
+```
+
+Nothing was rotated. The append-only row says it was. It is a boolean predicting a step that has
+not run yet — precisely the shape the same file rejects two fields earlier. Nothing asserts the
+field in either lane, so this is invisible to the suite. Cost: one false fact in the table an
+investigation reads, in the rarest and most interesting case.
+
+### L2 (Low) — the unit lane cannot honestly evaluate the mutation "delete the predicate"
+
+`identityStoreFake`'s `swapCredential` compares `stored !== where.passwordHash`. With the predicate
+removed from a call site, `where.passwordHash` is `undefined` and the fake returns `count: 0` —
+where real Postgres would update the row. So the mutation makes every credential write **refuse**
+rather than **succeed twice**.
+
+**Measured.** Deleting the reset's predicate turned **7** unit tests red in
+`password-reset.service.spec.ts`, and none of them was `refuses when the credential moved under
+it`; the concurrency test passed, because it expects a refusal and got one for the wrong reason.
+That is ruling 66's trap in a new place: before believing a red, check which failure it is
+observing.
+
+This is not a defect in shipped code. It is a hazard for the next round: an implementer or reviewer
+running the obvious mutation against the unit lane will see a satisfying wall of red that proves
+nothing about concurrency. The honest unit-lane mutation is "re-read the credential inside the
+transaction and predicate on that", which turns exactly the one concurrency test red on all three
+sites — that is the form I used, and all three bit.
+
+### L3 (Low) — `reset-password` pays the breach check and a full Argon2id hash before it validates the token
+
+`PasswordResetService.reset` runs `breachCheck.isBreached`, then `passwords.hash` (~40 ms here,
+ADR-0014 targets ~250 ms in production), and only then opens the transaction that consumes the
+token. So a caller submitting a token that was never issued still buys a full Argon2id hash, and an
+outbound HIBP request when the check is enabled.
+
+The ordering is deliberate and the *reason* is good (a 422 must not cost the user their link), and
+`rate-limit.config.ts` explicitly reasons about the unit of work when setting 20/hour per IP — so
+this is considered, not overlooked. What is not written down anywhere is that the expensive half is
+bought **before** any authentication of the input, which is what makes the per-IP figure the whole
+control. Worth a sentence in `abuse-prevention.md` §1 beside the figure.
+
+### L4 (Low) — "a reset for a user with no `Credential` row SETS a password" is defensible today and is an SSO bypass tomorrow, and only the first half is written down
+
+The implementer names this decision and its cost as "one branch to reverse". The direction of the
+risk is not named. A `User` with no `Credential` row is, by the code comment's own account, what an
+SSO-only account will look like when Phase 11 lands. Allowing an emailed link to *create* a
+password credential on such an account means email possession becomes a second authentication path
+on an account an operator may have deliberately restricted to an identity provider. That is not a
+one-branch preference; it is a policy question Phase 11 has to answer, and the comment currently
+reads as though the only cost of the other choice is stranding somebody.
+
+### L5 (Low) — a completed reset proves mailbox control and does not record it
+
+`reset()` writes the credential, counts sessions, audits and revokes. It does not touch
+`emailVerifiedAt`. An account that registered, never confirmed, and then completed a reset has
+demonstrably proved mailbox control — that is the stated justification for sending it a link at all
+— and is still `emailVerifiedAt: null` afterwards, so it goes on being excluded from the things
+verification gates (the unfamiliar-sign-in notice, for one). Either behaviour is arguable; neither
+is written down.
+
+### L6 (Low) — `audit.md` §4 describes `liveSessionsAtWrite` incorrectly for the change row
+
+`.claude/security/audit.md` §4 says both rows carry *"the number of sessions that existed at the
+instant the new credential committed"*. On the reset path that is exactly right. On the change path
+the query is `{ userId, revokedAt: null, id: { not: command.sessionId } }` — the caller's own
+session is excluded, deliberately, with a test pinning it (`counts the OTHER sessions, excluding
+the one being rotated`). The document is off by one for that row, and the field carries the same
+name in both. The code is right and the document is wrong.
+
+### L7 (Low) — a completed reset does not clear `lockedUntil`
+
+The ladder's temporary lock is `User.lockedUntil` and is independent of `User.status`, so an
+account that is `ACTIVE` but currently locked receives a reset link (D4 only refuses non-`ACTIVE`
+statuses), completes the reset, and then still cannot sign in: `login` reaches
+`isLocked(user.lockedUntil, now)` before it looks at anything else and answers `ACCOUNT_LOCKED`
+with the correct new password. The behaviour is self-resolving within the lock window and the
+refusal message no longer promises that a reset helps (ruling 76 removed that), so this is a Low —
+but no document states which of the two remedies actually applies to which kind of lock.
+
+---
+
+## False or unsupported sentences in prose
+
+Separated from the code defects above, per the brief.
+
+### P1 — `password-reset.service.ts:342-344` asserts in code that H1 does not exist
+
+```
+// AFTER THE COMMIT, AND THAT ORDERING IS D2. The new hash is durable before
+// a single session is revoked, so there is no window in which the old
+// password can mint a session that the revocation has already passed over.
+```
+
+Written by this task, in this task's own new file, and measured false by this task in the same
+sitting. The implementer found the residual, wrote it into `security/authentication.md` §6 and into
+the integration test's docblock, and left the flat contradiction standing in the service. This is
+ruling 11's propagation shape with the propagation already inside one commit range.
+
+### P2 — `security/authentication.md` §6 under-reports H1 by a factor of five
+
+> Measured through the real application: five old-password logins fired alongside a reset left
+> **one live session** behind.
+
+Re-measured: **five of five, in five consecutive rounds** (and 3–4 of 5 with `rememberMe: true`).
+The sentence is doing load-bearing work — it is what makes the residual sound like a narrow
+straggler rather than "every login in flight survives" — and it is the only figure any reader will
+have. The paragraph beside it, *"under write-then-revoke it is only a login whose verification
+straddles the few milliseconds between the commit and the revocation"*, is the same understatement
+restated: the straddle interval is one Argon2id verification wide, not a few milliseconds, and it
+grows with the security parameter.
+
+### P3 — `session.service.ts:695` still carries the original overstatement, uncorrected and unmarked
+
+> A password change must write the new hash **before** calling this, so that a racing login cannot
+> mint a session with the old credential once this call has finished. Task 10 owns that ordering
+
+`git diff cfc0cb7..HEAD -- apps/api/src/modules/auth/session.service.ts` is **empty**. Task 10 is
+the task that owned this ordering, discovered the sentence was wrong, and did not touch the file
+that says it. Ruling 53 set the precedent for a claim that cannot be edited in place — carry the
+correction elsewhere *and name the pointer at the site*. Nothing at this site points anywhere.
+Carry-forward ruling 51 carries the same overstatement in `progress.md` and should move with it.
+
+### P4 — `api/authentication.md` §9 states the revocation without the residual
+
+> completing a reset revokes **every** session, including any the caller happened to hold
+
+True of every session that exists when the credential commits, and untrue as a flat statement (H1).
+`security/authentication.md` §6 carries the qualification and this document does not point at it.
+The same sentence appears in the `reset-password` controller docblock and in the OpenAPI
+`description` shipped to clients — *"replaces the password, and signs every session out"* — which
+is the one copy of it a customer reads.
+
+### P5 — `registry.spec.ts`: "OVER THE WHOLE REGISTRY, WITH NO EXEMPT LIST"
+
+The block under that heading iterates `NOTICE_TEMPLATE_IDS`, and `ATTACKER_STRING_TEMPLATE_IDS` is
+an exempt list with one member. See M2. The implementer's report is more accurate than the code
+comment here: report §"Things in the brief I found false or incomplete" item 4 says plainly that
+the prescribed test "is not literally satisfiable in one shape". That is right, and the correct
+conclusion was to run the hostile payload at `invitation` in the token-link block, not to leave it
+the only template never attacked.
+
+### P6 — `identity-fakes.ts`: the integration probe it names does not cover the reset
+
+> `auth.password.integration.spec.ts`'s parallel probe owns that against real Postgres
+
+True for `change-password`, false for `reset-password`. See M1.
+
+### P7 — carry-forward ruling 70: "the invitation, which already names nobody"
+
+Pre-existing rather than this task's, but Task 10 is the task that closes ruling 70 and therefore
+the last moment anyone would have checked it. `renderInvitation` names the inviter. See M2.
+
+### Checked and found sound
+
+These were candidates and did not survive contact with the tree, and I am recording them so nobody
+re-opens them:
+
+- **The implementer's finding 1** (the concurrent change probe that was green for the wrong reason)
+  reproduces exactly as described. Deleting the change predicate now turns
+  `LETS EXACTLY ONE OF TWO PARALLEL CHANGES COMMIT` red.
+- **`reset-password` sets no cookie** is not merely a docblock claim: `expect(setCookies(response))
+  .toEqual([])` pins it, and adding a `Set-Cookie` to the handler turns that test red (measured).
+- **Ruling 64** is satisfied — the three new handlers, their rate-limit classes, their access kind
+  and their `@RefuseCrossSite()` state are asserted on the real controller with an exhaustiveness
+  test.
+- **Rotation on change** is fully covered: the successor is live, the caller's pre-rotation cookie
+  answers 401, the other session answers 401, and the CSRF cookie is re-derived.
+- **Every ruling number cited by a line this task added checks out.** `git diff cfc0cb7..HEAD |
+  grep '^+'` cites rulings 3, 6, 9, 11, 21, 22, 24, 28, 29, 31, 37, 44, 45, 51, 55, 56, 58, 59, 62,
+  64, 65, 68, 70, 71, 72, 73, 74, 75, 77 and 78 — thirty of them. I opened every one in
+  `progress.md`, and each says what the citing comment says it says. That is a first for this range:
+  ruling 11 exists because a phrase attributed to a document that contained no such string reached
+  a comment, and nothing of that kind is here. The two false sentences I did find (P1, P6) are
+  claims the author made in their own words, not misquotations.
+- **Enumeration.** `forgot-password`'s byte comparison covers unknown / unverified / verified /
+  `LOCKED`, with an anti-vacuity test proving the three paths really differ in the mailbox and the
+  audit table. `reset-password`'s refusals are compared with the `requestId` substituted (ruling 77
+  applied correctly, and the choice between the two comparison kinds is argued rather than
+  assumed). The paths not compared are `expired` and `superseded`, which share the `consumed ===
+  null` branch with `unknown`, and a user row with no `Credential` — none of which reaches a
+  different code or message. I found no enumeration path the comparison misses.
+
+---
+
+## Verification I ran
+
+Every row re-run on this tree, exit code captured outside a pipe. All eleven reproduce the
+implementer's evidence table exactly.
+
+| Command | Exit | Output |
+|---|---|---|
+| `pnpm format:check` | 0 | `All matched files use Prettier code style!` |
+| `pnpm lint` | 0 | 14 tasks successful |
+| `pnpm typecheck` | 0 | 14 tasks successful |
+| `pnpm test` | 0 | **83 files, 1348 tests** |
+| `pnpm check:specs` | 0 | 102 spec files, each claimed by exactly one project |
+| `pnpm test:integration` | 0 | **19 files, 317 tests**, 145 s |
+| `pnpm build` | 0 | 8 tasks successful |
+| `pnpm check:openapi` | 0 | `routes: 13`, byte-identical |
+| `pnpm check:registry` | 0 | 15 models, 3 tenant-owned, 1 tenant root, 11 deliberately global |
+| `pnpm check:secrets` | 0 | 388 tracked files |
+| `docker compose ps` | 0 | four services `Up (healthy)` |
+
+`git diff --stat cfc0cb7..HEAD` is **empty** for `apps/web`, `packages/ui` and
+`packages/db/prisma/migrations`, so the missing `test:e2e` row and the "no migration" claim are
+both correct.
+
+### Mutations
+
+Rows marked *reproduced* are the implementer's, re-applied and re-reverted by me.
+
+| | Mutation | Result | |
+|---|---|---|---|
+| A | render `ipAddress` raw | RED ×12 in `registry.spec.ts` | reproduced |
+| B | remove the reset's revocation | RED ×4 | reproduced |
+| C | defeat the reset CAS by re-reading inside the transaction | RED ×1 — `refuses when the credential moved under it` | reproduced |
+| D | drop `exceptSessionId` on change | RED ×1 | reproduced |
+| E | remove the denial audit row | RED ×1 | reproduced |
+| F | defeat the rehash CAS by re-reading | RED ×1 — `writes it under a COMPARE-AND-SWAP on the hash it verified` | reproduced |
+| G | make the rehash rethrow | RED ×2 | reproduced |
+| H | delete the change CAS predicate entirely | **RED** — `LETS EXACTLY ONE OF TWO PARALLEL CHANGES COMMIT` | reproduced post-fix |
+| **C2** | **delete the reset CAS predicate entirely** | **integration GREEN 25/25**; unit RED ×7, none of them the concurrency test | **new — M1, L2** |
+| H2 | defeat the change CAS by re-reading inside the transaction | unit RED ×1, integration GREEN | new |
+| I | make `reset-password` set a `Set-Cookie` | integration RED | new — the no-cookie decision is pinned |
+| J | racing-login probe: 5 old-password logins in one `Promise.all` with a reset | 25 of 25 sessions survived, all authenticating | **new — H1** |
+| K | racing-login probe against `change-password` | 0 of 16 survived | new — timing, not structure |
+
+The tree was restored after every mutation. `git status --porcelain` is empty apart from this file.
+
+---
+
+## What I could not check
+
+- **The timing figures in `security/authentication.md` §6** (25 samples per case, 11.4 / 11.7 /
+  14.1 ms medians). I did not re-run the measurement. They remain the implementer's claim; the
+  qualitative point they support — that the ranges overlap where the resend's did not, and that an
+  in-memory mailer understates the production gap — is sound on inspection of the code path.
+- **`pnpm test:e2e`.** Not run. Correctly has no row: the `apps/web` and `packages/ui` diffs are
+  empty, which I verified.
+- **Whether `organizationName` can inject an SMTP header through the invitation subject line.** The
+  subject is `You have been invited to ${organizationName} on Sentinel` and the registry's subject
+  test asserts only `length > 0`. Not exercised, because nothing sends this message; it belongs
+  with M2 in Task 15.
+- **Production Argon2id cost.** The ~250 ms figure I use in H1's window argument is ADR-0014's
+  target, not something I measured. The harness runs at reduced parameters.
+- **Behaviour under a real SMTP relay.** The harness mailer is in-memory, so nothing here observes
+  what a send failure or a slow relay does to any of these paths.
