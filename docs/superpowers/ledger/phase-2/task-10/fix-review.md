@@ -407,3 +407,102 @@ update on a marker row, or a Redis `INCR`-style once-per-window key — and add 
 **M3 verdict: CLOSED WITH A CAVEAT.** The row the review asked to be filled in *is* filled in: the
 owner is now told, the ladder is untouched, the response does not vary, and the count is consecutive
 and read from the real audit table. What is not true is the "once per burst" guarantee.
+
+---
+
+## M1 — OPEN, and I judge the limit acceptable while the ruling cited for it is wrong
+
+**What was built is real.** The probe now puts a genuine committed second writer into the reset's
+window: the account's credential is seeded at `m=8,t=1,p=1` so every concurrent login rehashes it.
+That is a real competing `UPDATE` on the same row, not a fake's flag, and it is a strictly better
+control than what `review.md` found. `identity-fakes.ts`'s false claim (P6) is corrected precisely,
+and it now says which half of the coverage exists and which does not.
+
+**The gap is real too, and it is reported honestly.** I reproduced the shape of the problem: I fired
+one `reset-password` against five rehashing logins and could not force the reset's predicate to lose
+on demand either. Across my own six rounds it lost in **zero** of them:
+
+```
+P-F
+ROUND 0..5: reset=200 liveRows=0 auth=0 old=401 new=200
+```
+
+which is consistent with the implementer's reported 3-in-20 and confirms the honest characterisation:
+the branch is reachable, at a rate that is scheduling rather than logic. The committed probe asserts
+what holds every round — one working password, the status code agreeing with it, and the link
+surviving a refusal — and its own docblock states that deleting the predicate does not turn that red.
+That is the right disclosure and it is the shape `review.md` asked for everywhere else.
+
+**Verdict: OPEN**, at Medium, unchanged from `review.md`'s grade. The disposition's second half —
+"delete the predicate and paste the red output" — was not delivered and cannot be, and the fix round
+says so plainly rather than faking it, which is the correct behaviour under the brief's last rule.
+But the finding as `review.md` stated it is *"the reset's compare-and-swap is asserted only by a
+fake; deleting it leaves all 25 integration tests green"*, and deleting it still leaves the
+integration lane green. Nothing observes the predicate. The improvement is that the branch is now
+exercised and the gap is now written down instead of contradicted.
+
+**What I would accept as closing it**, since "prove it with a probe" has now failed twice: widen the
+window deliberately in a test-only seam — a `$queryRaw('SELECT pg_sleep(...)')` or an injected delay
+between the reset's in-transaction credential read and its write, driven only from the spec — so the
+competing writer lands inside it deterministically. That is not a flaky assertion; it is making the
+interleaving a fixture rather than a coin flip, which is what `LETS EXACTLY ONE OF TWO PARALLEL
+CHANGES COMMIT` already achieves for the change path by accident of its slower pre-transaction phase.
+
+### NEW-4 (Low) — the argument for leaving it open cites a ruling that says something else
+
+Both `fixes.md` §3 and, more seriously, the **committed** docblock in
+`auth.password.integration.spec.ts` say:
+
+> this repository has a standing ruling about not trading determinism for coverage (**ruling 33**),
+> and a flaky red is worse than an honest gap
+
+**Ruling 33 says nothing of the kind.** Its full text in `progress.md`:
+
+> 33. **The integration suite runs sequentially, and that is load-bearing.** `fileParallelism:
+>     false` in `vitest.workspace.ts` had never been in force … Two suites share the
+>     `ratelimit:login:*` namespace on the one compose Redis … **Do not restore parallelism without
+>     namespacing the shared services first** …
+
+It is about test-runner parallelism and shared compose services. The proposition actually being
+invoked belongs to **ruling 22** — *"real parameters buy CI flake risk rather than proof"*, whose
+own closing sentence is *"A decision can be right while the reason written beside it is false, and
+the false reason is still a defect."*
+
+This is ruling 11's class: a ruling number attached to a claim the ruling does not make, reaching a
+code comment. The previous reviewer checked all thirty citations in the previous range and reported
+that every one held — *"That is a first for this range"*. This round broke the streak with one.
+
+**The other nine citations added this round all check out**, opened individually in `progress.md`:
+
+| cited | at | holds? |
+|---|---|---|
+| 44 | `password-change.service.ts` — mail after the commit | ✓ |
+| 51 | `session.service.ts` — carries the same overstatement | ✓ (51's last sentence *is* the overstatement) |
+| 53 | `fixes.md` P3 row — "correction carried at the site" | loose (53's precedent is for a source that *cannot* be edited; this one was edited in place) but not false |
+| 55, 59 | the owed per-principal limiter stage | ✓ |
+| 58 | fixtures all on one side of the branch | ✓ |
+| 70 | the display-name channel | ✓ |
+| 73 | a write decided from a pre-hash read | ✓ |
+| 78 | the burst notice's send inside the request, third endpoint | ✓ |
+
+### NEW-5 (Low) — L3's cross-reference names a document sentence that was never written
+
+`password-reset.service.ts` now says, of the breach check and hash paid before the token is
+validated:
+
+> `security/abuse-prevention.md` §1 carries the same sentence beside the figure, so whoever tunes it
+> can see what it is holding.
+
+and `fixes.md`'s L3 row says the consequence was written "at the site **and beside the figure in
+`abuse-prevention.md` §1**".
+
+**Measured:** `git diff --stat 2df56b7..5a6de21 -- .claude/` lists three files —
+`api/authentication.md`, `security/audit.md`, `security/authentication.md`. **`abuse-prevention.md`
+was not touched by this round.** Its `passwordResetConsume` paragraph does say the endpoint "pays a
+full **Argon2id hash** of the submitted password on every request", which is why this is a Low and
+not a fabrication — but it does not say the expensive work is bought *before the token is validated*,
+which is the whole of L3, nor that the per-IP figure is therefore the only control in front of it.
+The reader the sentence is written for — "whoever tunes it" — does not learn the thing at the figure.
+`review.md`'s L3 asked for exactly that sentence, "beside the figure".
+
+**L3 verdict: PARTIALLY FIXED.** The site half is done well; the document half is claimed and absent.
