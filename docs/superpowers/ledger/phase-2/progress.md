@@ -950,8 +950,10 @@ the general defence and it is cheap: when a document states a count, compute the
 has a TOTP step-boundary race, **outside Task 13's range**, which the reviewer hit once and which
 passed in three subsequent full runs here. It is not a Task 13 regression.
 
-**Branching.** `feat/phase-2-task-13-organizations`, cut from `main` at `1310604`. Eleven commits,
-`6f879e8` → `0fc2b5c`. **Pushed: no. CI: not run. Merged: no.** Task 14 branches from whatever
+**Branching.** `feat/phase-2-task-13-organizations`, cut from `main` at `1310604`. **Twelve
+commits** (`git rev-list --count 1310604..HEAD`), `6f879e8` → `a0773a1`, the last being this status
+change itself — which is why the count written before it said eleven. **Pushed: no. CI: not run.
+Merged: no.** Task 14 branches from whatever
 `main` is when it starts — pull first, and do not start until Task 13 is merged, or it will be built
 on a `main` without the organisation routes.
 
