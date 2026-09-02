@@ -141,10 +141,17 @@ Fixed in `.claude/api/authorization.md` and `.claude/security/authorization.md`.
 
 **The stale "no shipped route declares `@RequirePermission()`" sentence was in more places than
 either party found.** The report disclosed 3 (all in `roadmap.md`); the review found 2 more and said
-5. The orchestrator's sweep found **11 sites** across code and documents, including four rows of
+5; **the orchestrator then wrote "eleven", from memory of the files it had edited, and that was
+wrong too.** Counted mechanically instead — one `git grep` for the sentence family over `.claude/`
+and `apps/api/src/` at `1310604` — it is **fourteen lines across nine files**, plus a tenth
+(`auth-harness.ts`) whose wording escaped that grep. Among them were four rows of
 `architecture/backend.md`'s pipeline table that neither the implementer nor the reviewer opened —
 Tenant resolve, Authorize, Email verified and MFA enrolment, each asserting a state Task 13 had
 falsified. All are corrected. The `roadmap.md` sites are corrected in the status change itself.
+
+**Three parties stated this count and all three were wrong; the grep was right the first time.**
+That is ruling 108 demonstrating itself on the very finding that produced it, and it is the reason
+the ruling says *compute*, not *check carefully*.
 
 Also corrected: `audit.actions.ts`'s "All four actions above" (the file holds three — the same
 miscount `security/audit.md` carried, twenty-one lines below the constant it miscounts); the matrix
