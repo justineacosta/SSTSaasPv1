@@ -27,6 +27,7 @@ re-litigated every six months by someone who cannot see why the obvious option w
 | [0017](ADR-0017-cors-allowlist-with-credentials.md) | The browser reaches the API directly, under an explicit CORS allowlist with credentials | Accepted |
 | [0018](ADR-0018-pending-mfa-session-row.md) | The pending MFA credential is a `Session` row in `PENDING_MFA` status, not a Redis-only token | Accepted |
 | [0019](ADR-0019-platform-audit-events.md) | Actions with no organisation are audited in a separate `PlatformAuditEvent` table | Accepted |
+| [0020](ADR-0020-cross-organisation-membership-lookup.md) | The caller's own organisation list is read through one `SECURITY DEFINER` function owned by a dedicated `BYPASSRLS` role | Accepted |
 
 **0018 was claimed out of order and is now written.** It was reserved for the pending-MFA
 credential decision while Phase 2 Task 9 shipped that credential provisionally; Phase 2 Task 11
