@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { createUnscopedPrismaClient } from './unscoped.js';
 import { newId } from './id.js';
+import { seedReferenceData } from './seed.js';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -176,6 +177,165 @@ describe('migrations', () => {
       ).rejects.toThrow();
     } finally {
       await app.$disconnect();
+    }
+  });
+});
+
+/**
+ * ADR-0020's containment argument, asserted rather than described.
+ *
+ * The ADR's consequences say this in as many words: "the migration integration
+ * spec must assert `rolbypassrls = true` and `rolcanlogin = false` on
+ * `sentinel_org_lookup` and that `EXECUTE` is granted to `sentinel_app` and
+ * revoked from `PUBLIC`. Without those assertions this ADR's whole argument
+ * rests on a role attribute nothing checks."
+ *
+ * It is checked here rather than in `apps/api` because the properties are
+ * properties of the migrated database, not of any code that calls it — and
+ * because `20260902083622_organization_lookup_function` is the only place they
+ * are established. The application-side proof that the *lookup* obeys them
+ * lives in `apps/api/src/modules/organizations/organizations.integration.spec.ts`,
+ * which drives the endpoint over `sentinel_app`.
+ */
+describe('ADR-0020: user_organizations(text)', () => {
+  it('sentinel_org_lookup can bypass row-level security and cannot log in', async () => {
+    const admin = createUnscopedPrismaClient(container.getConnectionUri());
+    try {
+      const rows = await admin.$queryRaw<
+        { rolsuper: boolean; rolbypassrls: boolean; rolcanlogin: boolean; rolinherit: boolean }[]
+      >`
+        SELECT rolsuper, rolbypassrls, rolcanlogin, rolinherit
+        FROM pg_roles WHERE rolname = 'sentinel_org_lookup'
+      `;
+      // Asserted before the field reads so a role that does not exist fails
+      // here rather than as four `undefined`s that are not `true`.
+      expect(rows).toHaveLength(1);
+      // THE ATTRIBUTE THE WHOLE DECISION RESTS ON. Without it the definer
+      // function is still bound by FORCE ROW LEVEL SECURITY and returns zero
+      // rows — measured, and recorded in the migration's own comment.
+      expect(rows[0]?.rolbypassrls).toBe(true);
+      // Nothing connects as it. The bypass is a property of one function, not
+      // a credential anybody holds.
+      expect(rows[0]?.rolcanlogin).toBe(false);
+      // Not a superuser: BYPASSRLS is the only elevated attribute it carries.
+      expect(rows[0]?.rolsuper).toBe(false);
+      // NOINHERIT, so a role granted membership of it does not pick the bypass
+      // up implicitly — only by an explicit SET ROLE.
+      expect(rows[0]?.rolinherit).toBe(false);
+    } finally {
+      await admin.$disconnect();
+    }
+  });
+
+  it('is a SECURITY DEFINER function owned by that role with a pinned search_path', async () => {
+    const admin = createUnscopedPrismaClient(container.getConnectionUri());
+    try {
+      const rows = await admin.$queryRaw<
+        { prosecdef: boolean; owner: string; proconfig: string[] | null }[]
+      >`
+        SELECT p.prosecdef, pg_get_userbyid(p.proowner) AS owner, p.proconfig
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.proname = 'user_organizations'
+      `;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.prosecdef).toBe(true);
+      expect(rows[0]?.owner).toBe('sentinel_org_lookup');
+      // `SET search_path = public` closes the standard SECURITY DEFINER hijack,
+      // where a caller creates a shadowing object in a schema earlier on the
+      // path. It is load-bearing, not decoration, so it is pinned.
+      expect(rows[0]?.proconfig).toEqual(['search_path=public']);
+    } finally {
+      await admin.$disconnect();
+    }
+  });
+
+  it('grants EXECUTE to sentinel_app and revokes it from PUBLIC', async () => {
+    const admin = createUnscopedPrismaClient(container.getConnectionUri());
+    try {
+      const rows = await admin.$queryRaw<{ app: boolean; anyone: boolean }[]>`
+        SELECT has_function_privilege('sentinel_app', 'public.user_organizations(text)', 'EXECUTE')
+                 AS app,
+               has_function_privilege('public', 'public.user_organizations(text)', 'EXECUTE')
+                 AS anyone
+      `;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.app).toBe(true);
+      // Postgres grants EXECUTE to PUBLIC on every new function by default, so
+      // the REVOKE is what makes the grant above mean anything at all.
+      expect(rows[0]?.anyone).toBe(false);
+    } finally {
+      await admin.$disconnect();
+    }
+  });
+
+  it('returns a user’s organisations to sentinel_app across tenants, where a direct read returns none', async () => {
+    const admin = createUnscopedPrismaClient(container.getConnectionUri());
+    const app = createUnscopedPrismaClient(sentinelAppUrl(container));
+    try {
+      await seedReferenceData(admin);
+      const role = await admin.role.findUniqueOrThrow({
+        where: { key: 'OWNER' },
+        select: { id: true },
+      });
+      const userId = newId('usr');
+      await admin.user.create({ data: { id: userId, email: `adr20-${userId}@example.test` } });
+
+      // Two organisations, and a third the user was REMOVED from.
+      //
+      // ARRANGED TO LOSE, per carry-forward ruling 100: the removed membership
+      // is written FIRST and the live ones after, so a function body that had
+      // dropped `deletedAt IS NULL` / `status = 'ACTIVE'` would return the
+      // removed organisation at the head of the result rather than at the tail,
+      // where an assertion on the first row would miss it. The assertion below
+      // is on the whole set, which is stronger still.
+      const removed = newId('org');
+      const first = newId('org');
+      const second = newId('org');
+      for (const [id, slug] of [
+        [removed, 'adr20-removed'],
+        [first, 'adr20-first'],
+        [second, 'adr20-second'],
+      ] as const) {
+        await admin.organization.create({
+          data: { id, slug: `${slug}-${userId}`, name: slug },
+        });
+      }
+      await admin.membership.create({
+        data: {
+          id: newId('mbr'),
+          organizationId: removed,
+          userId,
+          roleId: role.id,
+          // Ruling 10: `status` and `deletedAt` are one fact, and the CHECK
+          // constraint refuses a `REMOVED` row that is not soft-deleted.
+          status: 'REMOVED',
+          deletedAt: new Date(),
+        },
+      });
+      for (const organizationId of [first, second]) {
+        await admin.membership.create({
+          data: { id: newId('mbr'), organizationId, userId, roleId: role.id, status: 'ACTIVE' },
+        });
+      }
+
+      // THE MEASUREMENT ADR-0020 TURNS ON, as the role the API really uses.
+      // `sentinel_app` reading `Membership` directly, with no tenant context,
+      // sees nothing — this is the naive implementation, and it is empty.
+      const direct = await app.$queryRaw<{ id: string }[]>`
+        SELECT m.id FROM "Membership" m WHERE m."userId" = ${userId}
+      `;
+      expect(direct).toEqual([]);
+
+      // The same role, through the function, sees both live memberships and
+      // not the removed one.
+      const viaFunction = await app.$queryRaw<{ id: string; slug: string }[]>`
+        SELECT id, slug FROM user_organizations(${userId})
+      `;
+      expect(viaFunction.map((row) => row.id).sort()).toEqual([first, second].sort());
+    } finally {
+      await app.$disconnect();
+      await admin.$disconnect();
     }
   });
 });
