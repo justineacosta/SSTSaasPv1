@@ -927,9 +927,68 @@ Full reasoning in [`task-10/review.md`](task-10/review.md),
     itself finished while `main` does not contain it, and the next task branches from the wrong
     base — which is precisely what Tasks 13–15's chaining warnings exist to prevent.
 
+### From the Task 13 residual sweep
+
+115. **`REVOKE ... FROM PUBLIC` cannot fail, so a migration that only revokes proves nothing.**
+    PostgreSQL does not error when a role that is neither the database owner nor a superuser
+    issues it — it emits `WARNING: no privileges could be revoked` and **succeeds**. Measured with
+    the migration's own `DO` block run verbatim as a non-owner against a scratch database under
+    `ON_ERROR_STOP=1`: privilege `t` → `t`, exit **0**. On a managed Postgres whose migration role
+    does not own the database — the deployment where the control matters most — the migration
+    reports success having changed nothing, and every document asserting the privilege is revoked
+    becomes false at once. **Any migration whose whole purpose is a privilege change must re-read
+    the privilege and `RAISE` if it survived.** Cost if wrong: a security control everybody
+    believes is applied and which is not.
+
+116. **An assertion placed after a stricter one can never fail, and a comment claiming otherwise
+    is worse than no comment.** `migration.integration.spec.ts` asserted the exact `search_path`
+    value and *then* asserted the rule — `pg_temp` present, and last — with a comment saying the
+    rule assertions would fail "with a message naming the actual rule rather than an equality
+    mismatch". Exactly inverted: any mutation breaking the rule also breaks the equality above it,
+    the test stops there, and the rule assertions never execute. ADR-0021 had nominated that shape
+    as "the pattern to copy". **Order assertions weakest-first, and ask what value would make each
+    one the one that fails.**
+
+117. **A claim inherited from a subagent's report is still your claim.** The Task 13 implementer
+    reported that `MFA_ENROLMENT_REQUIRED` "has a reachable producer for the first time"; the
+    orchestrator propagated it into `roadmap.md`, `architecture/backend.md` and a spec docblock.
+    It is false — nothing writes `Organization.requireMfa`, which defaults to `false` and is
+    deliberately absent from the update contract (ruling 15) — and **three other `.claude/`
+    documents said so correctly at the time**, so the single source of truth was the one that was
+    wrong. Task 13 supplied one of the guard's two preconditions, not both. **Verify a report's
+    factual claims before promoting them into a document, especially the ones that sound like
+    progress.**
+
+118. **A count without its pattern is a number, not a measurement.** Ruling 108 one level up. The
+    stale-sentence count was recorded as "fourteen lines across nine files" with no grep written
+    beside it; a reviewer using a broader pattern derived 21 lines across 11 files, and neither
+    figure could be checked against the other. The same sweep then missed `app.module.ts` — a file
+    it had itself edited — and, while writing the correction, claimed `generalSession` governed
+    seven routes and listed six, when a `grep -rn "@RateLimit('generalSession')"` returns **eight**.
+    **Write the command beside the number, every time.**
+
 ## Pause state
 
-**2026-09-03 — Task 13 merged to `main`. Task 14 started: branch cut, brief written, no code yet.**
+**2026-09-03 — Task 13 and its residual sweep both merged to `main`. Task 14 started: branch cut,
+brief written, no code yet.**
+
+**The six open Task 13 items are all closed or settled, and merged as PR #26** (rebase,
+2026-09-02 18:29:10Z, merge commit `730ac83`). CI green three times, every conclusion read from the
+run rather than a watcher: `33666832762` (push), `33666879564` (pull request) and `33667495207`
+(push on `main`), all `completed / success` with all eighteen substantive stages confirmed to have
+executed. `git diff 79a97d0 origin/main` is empty. Both remote feature branches are deleted;
+`git ls-remote --heads origin` returns `main` alone.
+
+What that sweep closed: `TEMPORARY` revoked from `PUBLIC` (two migrations — one revokes, one
+verifies, because the revoke alone cannot fail); the TOTP step-boundary flake, which was a real
+defect rather than infrastructure noise; the authorization matrix's blindness to a single guarded
+route being downgraded; `meta.total` settled as a recorded decision; the stale remote branch; and
+the Task 13 fix round, which had never been reviewed.
+
+**Its review found four more Mediums, three of them defects in the sweep itself** — rulings 115–118.
+The worst was M1: the `REVOKE TEMPORARY` migration could not fail, because PostgreSQL warns rather
+than errors when a non-owner issues `REVOKE ... FROM PUBLIC`. **The review of that fix round has
+not itself been reviewed**, which is the same open end Tasks 10–13 all carried.
 
 **Task 13 is merged.** PR #25, rebase, 2026-09-02 16:28:42Z, merge commit `f9664e2`, and `main`
 now contains the organisation routes. CI green three times with every conclusion read from the
