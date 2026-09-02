@@ -703,12 +703,10 @@ Task 11 shipped **TOTP MFA and recovery codes**. `pnpm check:openapi` reports **
 13. A person can enrol an authenticator, confirm it, complete a second factor at login, spend a
 recovery code, regenerate the set, and turn MFA off — three of those requiring the current password.
 
-**THE ONE THING THAT MUST HAPPEN BEFORE ANYTHING ELSE TOUCHES THE DATABASE.** Task 11 generated
-`20260901185059_mfa_factor_last_accepted_step` with `--create-only` and **did not apply it**, per
-the plan's §5. The development database's `_prisma_migrations` still ends at `20260828051500`. The
-whole integration suite is green over a column that database does not have, because
-`postgres-harness.ts` replays migrations into a fresh container. **The operator reviews the SQL and
-runs `pnpm db:migrate`.** The SQL is quoted in full in [task-11/report.md](task-11/report.md).
+**The migration is applied.** `20260901185059_mfa_factor_last_accepted_step` was generated with
+`--create-only` per the plan's §5, reviewed by the operator on 2026-09-02, and applied then —
+`_prisma_migrations` ends there and `MfaFactor.lastAcceptedStep` exists as `integer`. No drift, no
+working-tree change. The SQL is quoted in full in [task-11/report.md](task-11/report.md).
 
 **The High was H1 and it was measured.** Two concurrent regenerations left twenty live recovery
 codes from two `200 OK` responses, and the consumer's unordered `take: 10` made ten of the twenty
@@ -743,15 +741,19 @@ notice throttling (ruling 79); the racing-login equivalent for member removal (r
 `Organization.name`'s absent length cap (ruling 86, Task 13); and ruling 24's dormant-account
 rehash half.
 
-**Branching. Task 11 is NOT merged.** It sits on `feat/phase-2-task-11`, cut from `main` at
-`cc81494`, never pushed. Task 10's PR #19 pattern applies when it is: rebase, CI green on a Linux
-runner first, and expect the `Failed to connect to Reaper` Testcontainers flake — infrastructure,
-not a test, and a re-run of the failed job alone was green last time.
+**Branching. Task 11 is merged.** PR #21, rebased onto `main` on 2026-09-02 and the branch
+deleted, with CI green on a Linux runner before the merge — runs `33587016061` (branch head) and
+`33587041645` (pull request), both `success` at ~5m, with every stage confirmed to have executed
+rather than inferred from the conclusion. The `Failed to connect to Reaper` flake that hit PR #19
+did not recur, which does not mean it is fixed — it is a Ryuk startup failure on the runner and it
+will come back. **Task 12 branches from whatever `main` is when you start** — pull first; do not cut
+from a commit named in this file.
 
 **The fix round has not itself been reviewed.** Every change in it was measured with the mutation
 re-run and pasted, but that is the author checking their own work — the same status Task 10's last
 three commits carried into Task 11, where its reviewer was told it could treat them as unexamined.
 
-**Next action:** the operator reviews and applies the migration; then Task 12 — tenant resolution
-and the authorization guard, which the plan puts in the **orchestrator** column rather than a
-subagent's, because it is where the security model becomes real.
+**Next action:** Task 12 — tenant resolution and the authorization guard, which the plan puts in
+the **orchestrator** column rather than a subagent's, because it is where the security model becomes
+real. Fold commit `7540279` — Task 11's unreviewed fix round — into that task's review, the way Task
+11's reviewer was handed Task 10's unexamined commits.
