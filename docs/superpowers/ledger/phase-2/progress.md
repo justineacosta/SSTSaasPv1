@@ -22,7 +22,7 @@ Branch: `feat/phase-2-identity`
 | 10 | Password reset | chained with 9 | **Done** — [brief](task-10/brief.md) · [report](task-10/report.md) · [review](task-10/review.md) · [dispositions](task-10/fix-brief.md) · [fixes](task-10/fixes.md) · [fix review](task-10/fix-review.md) |
 | 11 | TOTP MFA and recovery codes | subagent | **Done** — [brief](task-11/brief.md) · [report](task-11/report.md) · [review](task-11/review.md) · [dispositions](task-11/fix-brief.md) · [fixes](task-11/fixes.md) |
 | 12 | Tenant resolution and the authorization guard | orchestrator | **Done** — [report](task-12/report.md) · [review-brief](task-12/review-brief.md) · [review](task-12/review.md) · [fixes](task-12/fixes.md) |
-| **A** | **Checkpoint — verify, push, CI green, status recorded** | orchestrator | **Done** — CI green on `4db9dd6`, run `33603114204`, all eighteen stages confirmed executed. **Not merged.** |
+| **A** | **Checkpoint — verify, push, CI green, status recorded** | orchestrator | **Done** — CI green, merged as PR #23 on 2026-09-02. |
 | 13 | Organisations and organisation switching | chained 13→15 | Not started |
 | 14 | Memberships, roles, last-owner invariant | chained 13→15 | Not started |
 | 15 | Invitations | chained 13→15 | Not started |
@@ -884,9 +884,15 @@ independently; all eleven command rows held, and four prose claims did not.
 confirmed to have executed rather than inferred from the conclusion. The first run
 (`33602860564`) was cancelled by a later push and the watcher exited 0 on it anyway — ruling 105.
 
-**The branch is NOT merged**, and that is the one thing standing between here and Task 13. `main`
-is at `a0b2963` and does not contain the authorization pipeline; the plan has Tasks 13–15 branch
-from `main`, so starting one now would build on a base without tenant resolution.
+**Task 12 is merged.** PR #23, rebased onto `main` on 2026-09-02 and the branch deleted, with CI
+green on a Linux runner before the merge: runs `33603114204` (`4db9dd6`), `33603722257` (the
+branch head) and `33604298215` (the pull request), all `success`, every stage confirmed to have
+executed rather than inferred from the conclusion. The rebase rewrote the SHAs, so those runs name
+commits that no longer exist — `git diff 0e91856 49a871c` is empty, and the merge started a
+further run on `main`.
+
+**Tasks 13–15 branch from whatever `main` is when they start — pull first**; do not cut from a
+commit named in this file.
 
 **The fix round has not itself been reviewed** — the same status Task 10's and Task 11's carried.
 Every change in it was measured with the mutation re-run and pasted, but that is the author
@@ -899,6 +905,6 @@ NOT MERGED.** Tasks 13–15 branch from whatever `main` is when they start — p
 from a commit named in this file, and do not start Task 13 until Task 12 is merged, or it will be
 built on a `main` that does not contain the authorization pipeline.
 
-**Next action:** push and get CI green, then Task 13 — organisations and organisation switching, chained 13→15. Task 13 is where
+**Next action:** Task 13 — organisations and organisation switching, chained 13→15. Task 13 is where
 `Session.activeOrganizationId` first gets written, which is the moment every control Task 12
 built starts executing on a real request. Ruling 93 is the one to read first.
