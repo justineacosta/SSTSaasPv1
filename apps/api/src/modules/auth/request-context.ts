@@ -1,3 +1,4 @@
+import { assertUserPrincipal } from '@sentinel/contracts';
 import type { Request } from 'express';
 
 /**
@@ -41,4 +42,36 @@ export function requestContextOf(request: Request): AuthRequestContext {
     userAgent: typeof userAgent === 'string' ? userAgent.slice(0, USER_AGENT_MAX_LENGTH) : null,
     requestId: request.id ?? null,
   };
+}
+
+/**
+ * The authenticated caller, or a loud failure.
+ *
+ * `AuthenticationGuard` sets `request.principal` on every non-public route, so
+ * `undefined` here is unreachable in a booted application — the boot-time
+ * access assertion refuses to start on a route that declares nothing. It
+ * **throws** rather than coalescing to an anonymous default, for the reason
+ * `assertUserPrincipal`'s own docblock gives: a privileged path reachable by
+ * omission is only safe if reaching it is loud. A `?? { userId: '', sessionId:
+ * '' }` here would revoke session `''` and answer a session document for user
+ * `''`.
+ *
+ * `assertUserPrincipal` is what refuses the `apiKey` arm, which Phase 2 cannot
+ * construct.
+ *
+ * **It lives here rather than in `auth.controller.ts`, where it was written.**
+ * Task 13 gives it a second caller — `OrganizationsController`, whose every
+ * route needs the caller's own user id and must not read one from the request
+ * (ADR-0020, carry-forward ruling 9) — and a second private copy of a function
+ * that decides who the caller is is the shape two answers to that question
+ * start from.
+ */
+export function principalOf(request: Request): { userId: string; sessionId: string } {
+  const principal = request.principal;
+  if (principal === undefined) {
+    throw new Error(
+      'Reached an authenticated handler with no principal on the request. AuthenticationGuard did not run.',
+    );
+  }
+  return assertUserPrincipal(principal);
 }

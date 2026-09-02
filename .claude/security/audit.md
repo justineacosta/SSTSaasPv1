@@ -194,9 +194,21 @@ and that number rather than the revocation's own count, because the revocation h
 transaction the audit row lives in — see §2, and `security/authentication.md` §6 for why the
 credential must be written before anything is revoked.
 
-Org and access: `ORGANIZATION_CREATED/UPDATED/DELETED/SUSPENDED`, `MEMBER_INVITED`,
-`INVITATION_ACCEPTED/REVOKED`, `MEMBER_REMOVED`, `ROLE_CHANGED`, `ROLE_CREATED/UPDATED/DELETED`,
-`PERMISSION_DENIED`.
+Org and access: `ORGANIZATION_CREATED/UPDATED/DELETED/SUSPENDED`, `ORGANIZATION_SWITCHED`,
+`MEMBER_INVITED`, `INVITATION_ACCEPTED/REVOKED`, `MEMBER_REMOVED`, `ROLE_CHANGED`,
+`ROLE_CREATED/UPDATED/DELETED`, `PERMISSION_DENIED`.
+
+`ORGANIZATION_SWITCHED` was added to this list by Phase 2 Task 13, in the same change as the
+endpoint that writes it, exactly as Task 9 added `ACCOUNT_LOCKED` and Task 10
+`PASSWORD_CHANGE_FAILED`. It records that a member pointed their session at this organisation
+and had it rotated, and it is written into the organisation being switched **to** — which is
+where a reader asking "who started acting here, and when" will look. Without it, an
+organisation's own log begins mid-sentence with whatever the member touched first.
+
+The four names an `AuditEvent` row may carry today are `ORGANIZATION_CREATED`,
+`ORGANIZATION_UPDATED`, `ORGANIZATION_DELETED` and `ORGANIZATION_SWITCHED`
+(`apps/api/src/modules/audit/audit.actions.ts`). Every other name in this section is either a
+`PlatformAuditEvent` name with a producer, or a name in the taxonomy with no producer yet.
 
 Domain: `PROJECT_*`, `ASSET_CREATED/UPDATED/DELETED`, `ASSET_OWNERSHIP_VERIFIED`,
 `ASSET_OWNERSHIP_EXPIRED`, `SCOPE_CHANGED`, `SCAN_CREATED/STARTED/CANCELLED/COMPLETED/FAILED`,

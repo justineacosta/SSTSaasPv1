@@ -1,6 +1,5 @@
 import { Body, Controller, Get, HttpCode, Inject, Post, Req, Res } from '@nestjs/common';
 import {
-  assertUserPrincipal,
   type ChangePasswordRequest,
   type ChangePasswordResponse,
   changePasswordRequestSchema,
@@ -77,7 +76,7 @@ import { MfaVerificationService } from './mfa-verification.service.js';
 import { PasswordChangeService } from './password-change.service.js';
 import { PasswordResetService } from './password-reset.service.js';
 import { RegistrationService } from './registration.service.js';
-import { requestContextOf } from './request-context.js';
+import { principalOf, requestContextOf } from './request-context.js';
 import { SessionDocumentService } from './session-document.service.js';
 
 /**
@@ -1035,29 +1034,4 @@ export class AuthController {
       ...requestContextOf(request),
     });
   }
-}
-
-/**
- * The authenticated caller, or a loud failure.
- *
- * `AuthenticationGuard` sets `request.principal` on every non-public route, so
- * `undefined` here is unreachable in a booted application — the boot-time
- * access assertion refuses to start on a route that declares nothing, and both
- * handlers above declare `@AuthenticatedOnly()`. It **throws** rather than
- * coalescing to an anonymous default, for the reason `assertUserPrincipal`'s own
- * docblock gives: a privileged path reachable by omission is only safe if
- * reaching it is loud. A `?? { userId: '', sessionId: '' }` here would revoke
- * session `''` and answer a session document for user `''`.
- *
- * `assertUserPrincipal` is what refuses the `apiKey` arm, which Phase 2 cannot
- * construct and Task 12 will have to decide about.
- */
-function principalOf(request: Request): { userId: string; sessionId: string } {
-  const principal = request.principal;
-  if (principal === undefined) {
-    throw new Error(
-      'Reached an authenticated handler with no principal on the request. AuthenticationGuard did not run.',
-    );
-  }
-  return assertUserPrincipal(principal);
 }
