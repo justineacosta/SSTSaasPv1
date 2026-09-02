@@ -867,7 +867,7 @@ Full reasoning in [`task-10/review.md`](task-10/review.md),
     "no shipped route declares `@RequirePermission()`" sentence was reported as being in 3 places,
     then 5, and the orchestrator then said 11 from memory — a `git grep` over `.claude/` and
     `apps/api/src/` at `1310604` returns **fourteen lines across nine files**, plus a tenth whose
-    wording escaped the grep. Three parties stated that count and all three were wrong. Every
+    wording escaped the grep. The pattern is recorded because the number is meaningless without it and a later reviewer derived 21 lines across 11 files from a broader one: `no shipped route declares|no shipped endpoint declares|No endpoint in this API declares|No route in this API declares|no shipped route is guarded`, case-insensitive, over `.claude/` and `apps/api/src/`. **A count without its pattern is not a measurement, it is a number** — which is ruling 108's own lesson applied one level up. Three parties stated that count and all three were wrong. Every
     instance that was caught was caught by extracting or grepping; every instance had survived being
     read. **Reading a list and agreeing with it is not verification**, and neither is remembering
     which files you edited.

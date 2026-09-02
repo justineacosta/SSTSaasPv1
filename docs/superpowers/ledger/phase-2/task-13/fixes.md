@@ -144,7 +144,7 @@ either party found.** The report disclosed 3 (all in `roadmap.md`); the review f
 5; **the orchestrator then wrote "eleven", from memory of the files it had edited, and that was
 wrong too.** Counted mechanically instead — one `git grep` for the sentence family over `.claude/`
 and `apps/api/src/` at `1310604` — it is **fourteen lines across nine files**, plus a tenth
-(`auth-harness.ts`) whose wording escaped that grep. Among them were four rows of
+(`auth-harness.ts`) whose wording escaped that grep. The pattern is recorded because the number is meaningless without it and a later reviewer derived 21 lines across 11 files from a broader one: `no shipped route declares|no shipped endpoint declares|No endpoint in this API declares|No route in this API declares|no shipped route is guarded`, case-insensitive, over `.claude/` and `apps/api/src/`. **A count without its pattern is not a measurement, it is a number** — which is ruling 108's own lesson applied one level up. Among them were four rows of
 `architecture/backend.md`'s pipeline table that neither the implementer nor the reviewer opened —
 Tenant resolve, Authorize, Email verified and MFA enrolment, each asserting a state Task 13 had
 falsified. All are corrected. The `roadmap.md` sites are corrected in the status change itself.

@@ -92,9 +92,13 @@ enrolment, authorize, entitlement. Three of those were built in earlier tasks an
 deliberately registered nowhere — `EmailVerifiedGuard` (Task 8) and `MfaEnrolmentGuard`
 (Task 11) — or are new stubs — `EntitlementGuard`, which admits every request and exists so
 that layer 6's *position* is a recorded decision rather than one made by whoever adds a
-guard in Phase 10. **All three govern zero routes**: no handler carries
-`@RequireVerifiedEmail()`, no organisation can be created to set `requireMfa`, and there is
-deliberately no `@RequireEntitlement` decorator at all.
+guard in Phase 10. **Two of the three still govern zero routes, and one no longer does.**
+`POST /api/v1/organizations` carries `@RequireVerifiedEmail()` as of Task 13, so
+`EmailVerifiedGuard` governs one route. `MfaEnrolmentGuard` still refuses nobody — organisations
+can be created now, but nothing writes `Organization.requireMfa`, which defaults to `false` and is
+deliberately absent from the update contract (ruling 15). And there is still deliberately no
+`@RequireEntitlement` decorator at all. This paragraph said all three governed nothing until
+2026-09-03.
 
 The OpenAPI document is generated from the route inventory and the Zod contracts, served at
 `/api/v1/openapi.json`, and committed as `apps/api/openapi.json`; a test asserts the committed
@@ -2000,7 +2004,11 @@ all eighteen shipped routes were `@Public()` or `@AuthenticatedOnly()`, so layer
 request and had an opinion about none of them. Three routes now declare a permission; `switch-org`
 is the first writer of `Session.activeOrganizationId`, which is what makes tenant resolution and the
 MFA gate evaluate rather than short-circuit; and `POST /organizations` is the first handler to carry
-`@RequireVerifiedEmail()`. `MFA_ENROLMENT_REQUIRED` has a reachable producer for the first time.
+`@RequireVerifiedEmail()`. **`MFA_ENROLMENT_REQUIRED` still has no producer**, and the Task 13
+report's claim that it gained one — repeated here and in `architecture/backend.md` until
+2026-09-03 — was false: nothing writes `Organization.requireMfa`, which defaults to `false` and is
+deliberately absent from the update contract (ruling 15). Task 13 supplied one of the guard's two
+preconditions, not both.
 
 **A cross-organisation read needed a decision, and it produced two ADRs.**
 [ADR-0020](../decisions/ADR-0020-cross-organisation-membership-lookup.md) put "which organisations

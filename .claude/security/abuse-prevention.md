@@ -11,8 +11,15 @@
 > `POST /api/v1/auth/verify-email`, and `emailVerificationResend` on
 > `POST /api/v1/auth/resend-verification`. All three are per-IP-resolvable on an unauthenticated
 > request, and `emailVerificationResend`'s per-account half resolves from the body's `email`
-> field. Every other class in the table below still governs nothing, because the endpoints that
-> would carry it do not exist.
+> field. **`generalSession` governs eight routes**, each carrying `@RateLimit('generalSession')`
+> explicitly rather than by default: the five organisation routes, `POST /api/v1/auth/switch-org`,
+> `POST /api/v1/auth/logout` and `GET /api/v1/auth/session`. Six of the eight arrived with Task 13;
+> the logout and session routes predate it. Counted from
+> `grep -rn "@RateLimit('generalSession')" apps/api/src --include=*.ts`, because the first version
+> of this sentence said "seven" and then listed six — carry-forward ruling 108, on the same day it
+> was written. Every other class in the table below still governs nothing, because the endpoints
+> that would carry it do not exist. This banner said that of every class but the first three until
+> 2026-09-03.
 >
 > **The per-principal gap of §1 below is unchanged by that.** No route carries a class keyed on
 > `principalSource: 'authenticated'`, and if one did the limiter would still resolve nothing —

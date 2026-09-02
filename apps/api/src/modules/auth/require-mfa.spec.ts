@@ -34,7 +34,11 @@ import {
  * nothing wrote `Session.activeOrganizationId`, and no organisation could be
  * created to set `requireMfa` in the first place. Task 13 shipped both the
  * endpoint that creates an organisation and the first routes that declare a
- * permission, so `MFA_ENROLMENT_REQUIRED` now has a reachable producer. The
+ * permission — but `MFA_ENROLMENT_REQUIRED` STILL HAS NO PRODUCER, because
+ * nothing writes `Organization.requireMfa`. It defaults to `false` and the
+ * update contract deliberately omits it (carry-forward ruling 15). Task 13
+ * supplied one of the guard's two preconditions and not the other, and the
+ * sentence here claiming otherwise was false until 2026-09-03. The
  * early exit is unchanged and is still what keeps a member with no factor able
  * to reach their own enrolment, session document and logout.
  *

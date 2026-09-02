@@ -171,7 +171,10 @@ import { OpenApiModule } from './openapi/openapi.module.js';
     { provide: APP_GUARD, useClass: EmailVerifiedGuard },
     { provide: APP_GUARD, useClass: MfaEnrolmentGuard },
     // **Authorize**, layer 4 of `security/authorization.md` §2. Acts only on a
-    // route declaring `@RequirePermission()`, which no shipped route does yet.
+    // route declaring `@RequirePermission()`, which three shipped routes now do
+    // — `GET`, `PATCH` and `DELETE /api/v1/organizations/:id`, as of Task 13.
+    // This comment read "which no shipped route does yet" until 2026-09-03,
+    // having survived two sweeps of that exact sentence in this very file.
     { provide: APP_GUARD, useClass: AuthorizationGuard },
     // **Entitlement last**, layer 6, a Phase 10 stub that admits every request.
     // Its position is the decision it exists to record: 402 after 403, so a
