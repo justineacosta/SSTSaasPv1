@@ -252,7 +252,7 @@ export function renderPasswordChanged(context: NoticeOccurrenceContext): Rendere
  * that matters — an attacker who has taken an account turns the second factor
  * off, and this message is what tells its owner.
  */
-export type MfaChange = 'enabled' | 'disabled';
+export type MfaChange = 'enabled' | 'disabled' | 'recoveryCodesRegenerated';
 
 const MFA_COPY: Readonly<Record<MfaChange, { subject: string; body: readonly string[] }>> = {
   enabled: {
@@ -267,6 +267,22 @@ const MFA_COPY: Readonly<Record<MfaChange, { subject: string; body: readonly str
     body: [
       'Two-factor authentication has been switched off for your Sentinel account. Your account is now protected by its password alone.',
       'Any recovery codes issued previously no longer work.',
+    ],
+  },
+  // REVIEW M4. The eighth template, and the reason it exists is that
+  // regeneration was the ONLY MFA state change that told the owner nothing.
+  // Enabling, disabling and a challenge from a new device all send mail;
+  // regenerating silently destroys the credential the owner is holding on
+  // paper, which is precisely why an attacker with a stolen session and the
+  // password would choose it. The implementer deferred this on ruling 43 — that
+  // adding a template is a registry change nobody owns — and ruling 43 is the
+  // argument FOR closing it here rather than against: a gap owned by no task is
+  // a gap that never closes.
+  recoveryCodesRegenerated: {
+    subject: 'New recovery codes were generated for your Sentinel account',
+    body: [
+      'A new set of recovery codes was generated for your Sentinel account. The codes you had before no longer work.',
+      'If you did not do this, your password may be known to someone else. Change it now and regenerate your recovery codes again.',
     ],
   },
 };
@@ -305,6 +321,10 @@ export function renderMfaEnabled(context: NoticeOccurrenceContext): RenderedEmai
 
 export function renderMfaDisabled(context: NoticeOccurrenceContext): RenderedEmail {
   return renderMfaChanged({ ...context, change: 'disabled' });
+}
+
+export function renderMfaRecoveryCodesRegenerated(context: NoticeOccurrenceContext): RenderedEmail {
+  return renderMfaChanged({ ...context, change: 'recoveryCodesRegenerated' });
 }
 
 /**

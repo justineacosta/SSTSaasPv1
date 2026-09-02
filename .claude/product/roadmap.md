@@ -14,7 +14,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Not Implemented** — Tasks 1–10 of 18 done 2026-08-31 (schema, migrations, registry, wire contracts, password hashing, the breach check, single-use secret tokens, the mailer with nine templates, the session service, the authentication stage with CSRF and CORS, registration with email verification, login/logout/session with per-account lockout, and password reset and change); the API publishes **13 routes** and a person can register, confirm an address, sign in, read their own session, change or reset a password and sign out, but **nothing authorises anybody** — `GET /auth/session` returns an empty permission set until Task 12, and there is no screen until Task 16 |
+| 2 | Identity | **Not Implemented** — Tasks 1–11 of 18 done 2026-09-02 (schema, migrations, registry, wire contracts, password hashing, the breach check, single-use secret tokens, the mailer with **ten** templates, the session service, the authentication stage with CSRF and CORS, registration with email verification, login/logout/session with per-account lockout, password reset and change, and TOTP MFA with recovery codes); the API publishes **18 routes** and a person can register, confirm an address, sign in, complete a second factor, enrol or disable MFA, change or reset a password and sign out, but **nothing authorises anybody** — `GET /auth/session` returns an empty permission set until Task 12, and there is no screen until Task 16. Task 11 is on an unmerged branch and **leaves one migration generated but unapplied**, awaiting the operator's SQL review |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -1545,6 +1545,88 @@ files — and was green on a re-run of the failed job alone.
 All findings and dispositions:
 [`docs/superpowers/ledger/phase-2/task-10/`](../../docs/superpowers/ledger/phase-2/task-10/).
 
+**Task 11 evidence, 2026-09-02 at the branch head after the fix round**, on
+`feat/phase-2-task-11`, not merged. Every command re-run by the orchestrator on the finished tree
+rather than taken from the implementer's report, exit codes captured outside a pipe.
+
+| Command | Exit | What it proves |
+|---|---|---|
+| `pnpm format:check` | 0 | Prettier style across the workspace. |
+| `pnpm lint` | 0 | 14 tasks. |
+| `pnpm typecheck` | 0 | 14 tasks. The types compile — and nothing about behaviour. |
+| `pnpm test` | 0 | **88 files / 1513 tests**, up from 83 / 1363 at Task 10. |
+| `pnpm check:specs` | 0 | 108 spec files, each claimed by exactly one Vitest project. |
+| `pnpm check:secrets` | 0 | 404 tracked files, no credential-shaped literal — the new encryption key included. |
+| `pnpm test:integration` | 0 | **20 files / 354 tests** against real Postgres 16. |
+| `pnpm build` | 0 | 8 tasks. |
+| `pnpm check:openapi` | 0 | Byte-identical at **18 routes**, up from 13: the five MFA routes are published. |
+| `pnpm check:registry` | 0 | 15 models, unchanged — Task 11 added a **column**, not a table. |
+| `docker compose ps` | 0 | postgres, redis, minio, mailpit all `Up (healthy)`. |
+
+`pnpm test:e2e` has **no row**: `git diff --stat main..HEAD -- apps/web packages/ui` is empty.
+
+**What Task 11 delivered.** TOTP per RFC 6238 — 30-second step, ±1 drift, six digits — proved
+against the RFC's own Appendix B vectors across all three algorithms with genuinely distinct
+20/32/64-byte seeds, not its own round trip; base32 against RFC 4648 §10. A server-generated secret
+encrypted with AES-256-GCM under a new API-only key, returned once as base32 and an `otpauth://`
+URI and readable back by no endpoint. Ten Argon2id-hashed single-use recovery codes. Five routes:
+`enroll`, `confirm`, `verify`, `disable` and `recovery-codes`, three of them requiring the current
+password. A replay defence — the accepted TOTP step, stored, so a code cannot be reused inside its
+own ±1 window — which is a control §5 did not previously name. The pending session is promoted by
+rotation carrying `mfaCompletedAt`, refused if the credential moved underneath it, and locked after
+five failures.
+
+**ONE MIGRATION IS OPEN AND UNAPPLIED, AND IT NEEDS THE OPERATOR.**
+`20260901185059_mfa_factor_last_accepted_step` adds `MfaFactor.lastAcceptedStep`. It was generated
+with `--create-only` and deliberately **not** run: plan §5 requires the operator to review a
+migration's SQL before it touches a database. Integration tests replay it into a fresh
+Testcontainer, so the whole suite is green over a column the development database does not have —
+`_prisma_migrations` there still ends at `20260828051500`. **`pnpm db:migrate` is owed before
+anything else touches that database.**
+
+**The review found one High and it was measured, not argued.** Two concurrent
+`POST /auth/mfa/recovery-codes` left **twenty** live recovery codes from two `200 OK` responses,
+and the consumer's unordered `take: 10` then made ten of the twenty codes the owner was shown
+permanently unusable — the break-glass credential, half dead, discoverable only on the day the
+phone is lost. Concurrent enrolment answered **500** on the same read-check-write shape. Both are
+closed by a per-user advisory lock, the device this module already used one file over. The
+concurrency discipline the task was briefed on had been applied to the three places the brief named
+and to none of the places it did not.
+
+**The guard test for that High was itself not good enough, and measuring it is what showed it.**
+Written as a single race it reproduced the defect in two runs out of three against the unlocked
+code — a guard that misses a High one time in three goes green on the regression that brings it
+back. Rewritten to five rounds asserting the invariant after each, it is 3 of 3. That is
+carry-forward ruling 88 a second time.
+
+**Eight false or unsupported sentences**, three of them inside files that are themselves security
+controls: a rate-limit justification off by a factor of 1000 (0.63 years, not 630, from one
+address), a `security/authentication.md` §5 bullet marked **Built** claiming an incremental key
+rotation that does not exist — rotating the key today would make every enrolled factor
+undecryptable, silently, because `mfa/verify` answers the ordinary `MFA_INVALID` — and a comment
+claiming a refusal path was indistinguishable when it is byte-identical but not time-identical
+(3 ms against 370 ms, measured). One originated in the orchestrator's own brief and reached two
+committed artefacts; one was introduced by the orchestrator's re-verification **in the same commit
+that falsified it**. All corrected.
+
+**Still deferred and enforcing nothing:** `Organization.requireMfa`. The guard is written and
+registered in no module — Task 12 places it — and a spec strips comments before asserting its
+absence, so the claim cannot pass vacuously. **Owed and named:** the promoted session takes the
+ordinary 7-day lifetime even when the user ticked "remember me", because login discards
+`rememberMe` on the pending arm and `rotate` inherits what the row carries; closing it needs a
+`Session` column or a `rotate` parameter. Incremental key rotation is a decision with an ADR in it
+that nobody owns.
+
+**ADR-0018 is written** — the pending MFA credential is a `Session` row in `PENDING_MFA` status —
+and was committed before the code it justifies, which is the plan's rule and not the usual outcome.
+
+All findings and dispositions:
+[`docs/superpowers/ledger/phase-2/task-11/`](../../docs/superpowers/ledger/phase-2/task-11/).
+
+**The fix round has not itself been reviewed**, the same status Task 10's last three commits
+carried: each change was measured with the mutation re-run and pasted, but that is the author
+checking their own work.
+
 **Checkpoint A falls after Task 12** — the identity API enforced end to end with no UI. At that
 point the branch is pushed, CI must be green on a Linux runner, and this file gets an evidence
 table moving Phase 2 to **Partially Implemented** with the gap named: no authentication UI, so the
@@ -1593,7 +1675,7 @@ checkpoint exists to close it.
 | Password breach check | Real HIBP k-anonymity client, env-flagged, off in test, **fails open** | 0015, owed by Task 3 |
 | Email delivery | Mailer port with an SMTP adapter against Mailpit; Resend deferred to the first staging deploy | 0016, **written** in Task 5 |
 | Web↔API credentials | Explicit CORS allowlist with `credentials: true`, not a Next-side proxy | 0017, owed by Task 7 |
-| Pending MFA credential | A `Session` row in `PENDING_MFA` status, not a Redis-only token | 0018, owed by Task 11 |
+| Pending MFA credential | A `Session` row in `PENDING_MFA` status, not a Redis-only token | 0018, **written** in Task 11 |
 | Journey UI scope | Full — register, verify, login, MFA, reset, org switcher, `/settings/security`. The exit criterion says E2E, and there is no E2E without screens | — |
 
 **Both Phase 1 residuals landed in Task 1 on 2026-08-25**, and one of them turned out to be

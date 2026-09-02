@@ -276,6 +276,28 @@ export class AuthMailer {
     await this.deliver('mfaDisabled', input.to, rendered);
   }
 
+  /**
+   * REVIEW M4. The other one that matters, and it did not exist until the fix
+   * round.
+   *
+   * Regeneration destroys the recovery codes the owner may be holding on paper
+   * and shows nothing on any screen they visit. It is the quietest way for
+   * somebody with a stolen session and the password to make the account's
+   * break-glass credential one they hold — and until this message existed it
+   * was the only MFA state change that told the owner nothing at all.
+   */
+  async sendMfaRecoveryCodesRegenerated(input: {
+    to: string;
+    occurredAt: Date;
+    ip: string | null;
+  }): Promise<void> {
+    const rendered = EMAIL_TEMPLATES.mfaRecoveryCodesRegenerated({
+      occurredAt: input.occurredAt,
+      ipAddress: input.ip ?? undefined,
+    });
+    await this.deliver('mfaRecoveryCodesRegenerated', input.to, rendered);
+  }
+
   private async deliver(
     templateId: string,
     to: string,

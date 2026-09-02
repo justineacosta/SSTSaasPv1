@@ -36,9 +36,12 @@ import { TOTP_PRODUCTION, stepAt, totpCode } from './totp.js';
  *   password reset. Every one of those passes over a broken implementation if
  *   it is written sequentially.
  * - **Ruling 87's sharpening.** Two concurrent requests must differ only in the
- *   property under test. The replay probes use ONE pending session, so the
- *   loser is refused by the replay predicate rather than by an authentication
- *   guard that got there first.
+ *   property under test. The replay probes use TWO pending sessions, one per
+ *   request, so the loser is refused by the replay predicate rather than by a
+ *   pending session the sibling had already spent — a single shared session
+ *   would let the promotion, not the replay defence, decide the race. Review
+ *   L2: this paragraph said "ONE", which is the opposite of both the code and
+ *   the reason.
  * - **The credential race (D4)**, with survivors measured both with the check
  *   disabled and with it enabled, because ruling 83 exists precisely because a
  *   fix was explained with the wrong mechanism named and the control doing the
@@ -46,8 +49,13 @@ import { TOTP_PRODUCTION, stepAt, totpCode } from './totp.js';
  * - **The audit rows against a real append-only table**, and their ABSENCE when
  *   a transaction rolled back.
  * - **`GET /auth/session` with a pending token**, which `api/authentication.md`
- *   §2 has promised answers 401 `MFA_REQUIRED` since Phase 2 Task 7 and which
- *   nothing has ever tested.
+ *   §2 has promised answers 401 `MFA_REQUIRED` since Phase 2 Task 7. Review L1:
+ *   this file used to claim nothing had ever tested that, and Task 9 had —
+ *   `auth.login.integration.spec.ts`'s "the pending session cannot reach GET
+ *   /auth/session" presents the token as a session cookie, and
+ *   `authentication.integration.spec.ts` asserts the same property at the guard
+ *   layer. What is new here is only the coverage from the far side of a
+ *   completed challenge.
  */
 
 const PASSWORD = 'correct horse battery staple';
@@ -179,10 +187,25 @@ const codeFor = (secret: Buffer, atMs = Date.now()): string =>
 const nextCodeFor = (secret: Buffer): string =>
   totpCode(secret, stepAt(Date.now(), TOTP_PRODUCTION.stepSeconds) + 1, TOTP_PRODUCTION);
 
-/** Enrols and confirms MFA through the real endpoints, returning the recovery codes. */
-async function enableMfa(
-  email: string,
-): Promise<{ secret: Buffer; recoveryCodes: string[]; signed: Signed }> {
+/**
+ * Enrols and confirms MFA through the real endpoints, returning the recovery
+ * codes **and the exact six digits that were confirmed**.
+ *
+ * **Review L4 — returning `confirmingCode` is what makes the replay test
+ * deterministic.** A caller that wanted the confirming code used to recompute
+ * `codeFor(secret)` after this helper returned, which re-reads the clock: if the
+ * thirty-second step rolled over in between, the "replay" was a code for step
+ * `N+1`, which the server legitimately accepts, and a test asserting 401 went
+ * red. Observed once in four runs. The code is captured here, on the near side
+ * of the rollover, so the assertion is about the replay defence and never about
+ * where the wall clock happened to be.
+ */
+async function enableMfa(email: string): Promise<{
+  secret: Buffer;
+  recoveryCodes: string[];
+  signed: Signed;
+  confirmingCode: string;
+}> {
   const signed = await signIn(email);
   await clearRateLimits(h.redis);
 
@@ -194,17 +217,19 @@ async function enableMfa(
   expect(enrolled.status).toBe(200);
 
   const secret = await secretFor(email);
+  const confirmingCode = codeFor(secret);
   const confirmed = await request(h.server)
     .post('/api/v1/auth/mfa/confirm')
     .set('Cookie', signed.cookie)
     .set('X-CSRF-Token', signed.csrf)
-    .send({ code: codeFor(secret) });
+    .send({ code: confirmingCode });
   expect(confirmed.status).toBe(200);
 
   return {
     secret,
     recoveryCodes: (confirmed.body as { recoveryCodes: string[] }).recoveryCodes,
     signed,
+    confirmingCode,
   };
 }
 
@@ -371,6 +396,40 @@ describe('POST /auth/mfa/enroll', () => {
     );
     // Exactly one factor row: the abandoned one was replaced, not accumulated.
     expect(await h.prisma.mfaFactor.count({ where: { userId } })).toBe(1);
+  });
+
+  /**
+   * REVIEW M1. Ruling 7 moved to the concurrent path.
+   *
+   * Both transactions found no unconfirmed factor to delete, and the loser's
+   * `create` raised P2002 against `@@unique([userId, type])` with nothing
+   * catching it — measured as `statuses=[500,200]` with an `INTERNAL_ERROR`
+   * envelope, from an ordinary double-click on an authenticated route.
+   */
+  it('two concurrent enrolments never answer 500, and leave exactly one factor', async () => {
+    const email = await account();
+    const signed = await signIn(email);
+    const userId = await userIdOf(email);
+    await clearRateLimits(h.redis);
+
+    const enroll = () =>
+      request(h.server)
+        .post('/api/v1/auth/mfa/enroll')
+        .set('Cookie', signed.cookie)
+        .set('X-CSRF-Token', signed.csrf)
+        .send({ password: PASSWORD });
+
+    const [first, second] = await Promise.all([enroll(), enroll()]);
+
+    // Asserted as "no 5xx" rather than as a pair of exact codes: both serialise
+    // and both may legitimately answer 200, since neither factor is confirmed
+    // and replacing an unconfirmed one is what ruling 7's fix does.
+    expect(first.status).toBeLessThan(500);
+    expect(second.status).toBeLessThan(500);
+    expect(await h.prisma.mfaFactor.count({ where: { userId } })).toBe(1);
+    expect(await h.prisma.mfaFactor.count({ where: { userId, confirmedAt: { not: null } } })).toBe(
+      0,
+    );
   });
 });
 
@@ -553,8 +612,7 @@ describe('POST /auth/mfa/verify — the replay defence (D6)', () => {
     // wrote the step, so `mfa/verify` must refuse them for the rest of the
     // window even though they are still arithmetically valid.
     const email = await account();
-    const { secret } = await enableMfa(email);
-    const confirmingCode = codeFor(secret);
+    const { secret, confirmingCode } = await enableMfa(email);
 
     const pendingToken = await pendingLogin(email);
     await clearRateLimits(h.redis);
@@ -977,6 +1035,73 @@ describe('POST /auth/mfa/recovery-codes', () => {
       operation: 'REGENERATE_RECOVERY_CODES',
       reason: 'WRONG_PASSWORD',
     });
+  });
+
+  /**
+   * REVIEW H1. TWO REQUESTS MEANS TWO CONCURRENT REQUESTS — ruling 74, and
+   * ruling 84 which is ruling 74 recurring inside a fix round.
+   *
+   * Before the per-user advisory lock this measured `statuses=[200,200]` with
+   * **twenty** live rows, and the consumer's `take: 10` then refused ten of the
+   * twenty codes the API had just handed the account owner. The last code of
+   * each returned set is verified rather than the first, because with no
+   * `orderBy` the planner decided which half worked and the first code of one
+   * set could pass by luck.
+   */
+  it('two concurrent regenerations leave exactly one live set, and every code it returned works', async () => {
+    const email = await account();
+    const { signed } = await enableMfa(email);
+    const userId = await userIdOf(email);
+    await clearRateLimits(h.redis);
+
+    const regenerate = () =>
+      request(h.server)
+        .post('/api/v1/auth/mfa/recovery-codes')
+        .set('Cookie', signed.cookie)
+        .set('X-CSRF-Token', signed.csrf)
+        .send({ password: PASSWORD });
+
+    // FIVE ROUNDS, AND THE ROUNDS ARE NOT PADDING. Carry-forward ruling 88: over
+    // HTTP the destructive interleaving is a distribution, not a determinism.
+    // Measured against the unlocked code, one round reproduced the defect in
+    // roughly two runs out of three — a guard that misses a High one time in
+    // three is a guard that goes green on the regression that reintroduces it.
+    // The invariant is asserted after EVERY round, which is the shape ruling 88
+    // asks for: assert what must hold every time, not what happened once.
+    let lastSurvivingSet: string[] = [];
+    for (let round = 0; round < 5; round += 1) {
+      await clearRateLimits(h.redis);
+      const [first, second] = await Promise.all([regenerate(), regenerate()]);
+
+      // Both are legitimate requests from an authenticated owner, so both may
+      // answer 200. What must not happen is both SETS surviving.
+      expect([first.status, second.status]).toEqual([200, 200]);
+      expect(await h.prisma.recoveryCode.count({ where: { userId, usedAt: null } })).toBe(10);
+
+      lastSurvivingSet = [
+        ...(first.body as { recoveryCodes: string[] }).recoveryCodes,
+        ...(second.body as { recoveryCodes: string[] }).recoveryCodes,
+      ];
+    }
+
+    // And the surviving set is wholly usable. The LAST code of each candidate
+    // rather than the first: with no `orderBy` on the consumer (review L6) the
+    // planner chose which ten of twenty rows worked, and a first code could
+    // pass by luck while the tenth did not.
+    let accepted = 0;
+    for (const code of [lastSurvivingSet[9], lastSurvivingSet[19]]) {
+      const pendingToken = await pendingLogin(email);
+      await clearRateLimits(h.redis);
+      const attempt = await request(h.server)
+        .post('/api/v1/auth/mfa/verify')
+        .send({ pendingToken, code: code ?? '' });
+      if (attempt.status === 200) accepted += 1;
+    }
+
+    // Exactly one of the two printouts is real, and it is real all the way to
+    // its tenth code. The defect this was written for is the state where BOTH
+    // responses were 200 and NEITHER printout was wholly usable.
+    expect(accepted).toBe(1);
   });
 });
 

@@ -96,7 +96,7 @@ export class MfaEnrolmentService {
 
     const user = await this.store.user.findUnique({
       where: { id: command.userId },
-      select: { id: true, email: true, emailVerifiedAt: true },
+      select: { email: true },
     });
     // Unreachable behind the authentication guard, which resolved a session
     // whose `userId` has a `Cascade` foreign key to this row. Handled rather
@@ -107,7 +107,21 @@ export class MfaEnrolmentService {
     const sealed = encryptMfaSecret(this.secretKey, secret);
     const factorId = newId('mfa');
 
-    await this.store.$transaction(async (tx: MfaTransaction) => {
+    const created = await this.store.$transaction(async (tx: MfaTransaction) => {
+      await this.lockUser(tx, command.userId);
+
+      // M1. THE CONFIRMED-FACTOR CHECK, AGAIN, INSIDE THE LOCK. The one above
+      // runs before the transaction opens and is therefore advisory: a sibling
+      // request can confirm a factor between that read and this write. Without
+      // this second read the `create` below would raise P2002 against
+      // `@@unique([userId, type])` and answer 500, which is the defect the lock
+      // was added for wearing a different sequence.
+      const confirmed = await tx.mfaFactor.findFirst({
+        where: { userId: command.userId, type: 'TOTP', confirmedAt: { not: null } },
+        select: { id: true },
+      });
+      if (confirmed !== null) return false;
+
       // RULING 7. Delete-then-create rather than upsert, and the predicate is
       // `confirmedAt: null` so the statement CANNOT express replacing a
       // confirmed factor. `count: 0` is the ordinary case — a first enrolment —
@@ -143,7 +157,14 @@ export class MfaEnrolmentService {
         userAgent: command.userAgent,
         requestId: command.requestId,
       });
+      return true;
     });
+
+    // The sibling confirmed a factor while this request was in flight. The same
+    // refusal the pre-transaction check raises, because it is the same fact:
+    // this account already has MFA and re-enrolling over it without proving a
+    // code is an account-takeover step (D3).
+    if (!created) throw new MfaAlreadyEnabledError();
 
     return {
       // Unpadded base32, which is what a user types in by hand when a camera
@@ -188,6 +209,8 @@ export class MfaEnrolmentService {
     const now = new Date();
 
     const enabled = await this.store.$transaction(async (tx: MfaTransaction) => {
+      await this.lockUser(tx, command.userId);
+
       // `confirmedAt: null` in the predicate. A second confirmation of a factor
       // somebody else already confirmed reports `count: 0` and is refused,
       // rather than silently reissuing recovery codes for it.
@@ -227,7 +250,7 @@ export class MfaEnrolmentService {
 
       const user = await tx.user.findUnique({
         where: { id: command.userId },
-        select: { id: true, email: true, emailVerifiedAt: true },
+        select: { email: true },
       });
       return { email: user?.email ?? null };
     });
@@ -271,6 +294,8 @@ export class MfaEnrolmentService {
 
     const now = new Date();
     const disabled = await this.store.$transaction(async (tx: MfaTransaction) => {
+      await this.lockUser(tx, command.userId);
+
       const { count } = await tx.mfaFactor.deleteMany({ where: { userId: command.userId } });
       // A sibling disable committed while this one was verifying the password.
       // The end state the caller asked for is the end state they have, but
@@ -294,7 +319,7 @@ export class MfaEnrolmentService {
 
       const user = await tx.user.findUnique({
         where: { id: command.userId },
-        select: { id: true, email: true, emailVerifiedAt: true },
+        select: { email: true },
       });
       return { email: user?.email ?? null };
     });
@@ -314,11 +339,15 @@ export class MfaEnrolmentService {
    * a way to make the account's break-glass credential be one the attacker
    * holds.
    *
-   * **No email.** `security/authentication.md` §5 requires a notice for
-   * enabling and disabling and names none for regeneration, and there is no
-   * template for it — adding an eighth notice is a Task 5 registry change with
-   * its own assertions to satisfy (ruling 43). Recorded in this task's report as
-   * a gap rather than quietly filled with the wrong template.
+   * **It emails the owner, and review M4 is why.** This shipped without a
+   * notice, deferred on ruling 43 — adding an eighth template is a registry
+   * change with its own assertions. The reviewer sized that wrong and was
+   * right to: of MFA's four state changes this is the only one that destroys a
+   * credential the owner is holding on paper, and the only one an attacker
+   * would prefer *because* it is silent. Disabling sends mail and visibly
+   * changes the next login; regeneration changed nothing the owner could see
+   * until the day they needed a code. Ruling 43 records that no task owns the
+   * eighth template, which is the state in which a gap like this never closes.
    */
   async regenerateRecoveryCodes(
     command: AuthRequestContext & { userId: string; password: string },
@@ -331,7 +360,12 @@ export class MfaEnrolmentService {
     const codes = this.recoveryCodes.generate();
     const hashes = await this.recoveryCodes.hashAll(codes);
 
-    await this.store.$transaction(async (tx: MfaTransaction) => {
+    const regenerated = await this.store.$transaction(async (tx: MfaTransaction) => {
+      // H1. Without this lock two concurrent regenerations each deleted a set
+      // the other could not see and inserted their own, leaving TWENTY live
+      // codes of which the consumer's `take: 10` could only ever reach ten.
+      await this.lockUser(tx, command.userId);
+
       // Delete the whole set and issue ten, in one transaction (D7). A partial
       // failure that left the old set deleted and the new one unwritten would
       // leave a user with a factor and no way back in if they lost it.
@@ -354,7 +388,23 @@ export class MfaEnrolmentService {
         userAgent: command.userAgent,
         requestId: command.requestId,
       });
+
+      const user = await tx.user.findUnique({
+        where: { id: command.userId },
+        select: { email: true },
+      });
+      return { email: user?.email ?? null };
     });
+
+    // RULING 44: after the commit, never inside it. Ruling 85: no display name,
+    // and the signature has no parameter for one.
+    if (regenerated.email !== null) {
+      await this.mailer.sendMfaRecoveryCodesRegenerated({
+        to: regenerated.email,
+        occurredAt: new Date(),
+        ip: command.ip,
+      });
+    }
 
     return { recoveryCodes: codes };
   }
@@ -414,6 +464,46 @@ export class MfaEnrolmentService {
     // The same 401 `login` and `change-password` give. It is not
     // `MfaInvalidError`: nothing about a factor was wrong, the password was.
     throw new InvalidCredentialsError();
+  }
+
+  /**
+   * Serialises this user's MFA write paths against one another.
+   *
+   * **Review H1 and M1 — the two write paths nobody thought to race.** Every
+   * mutation in this service is a read-check-write across two statements, which
+   * is the shape carry-forward rulings 74 and 84 record, and the fix round for
+   * those two rulings closed it at `mfa-verification.service.ts`'s failure
+   * counter and at the recovery-code spend while leaving it open one method
+   * away. Prisma runs interactive transactions at Postgres READ COMMITTED, so a
+   * concurrent transaction's `deleteMany` takes its snapshot before this one's
+   * `INSERT`s are visible: it deletes rows it can see, waits on nothing, and
+   * writes its own. Both commit.
+   *
+   * What that produced, measured on the shipped code before this lock existed:
+   *
+   * - **`regenerateRecoveryCodes`** left the account holding **twenty** live
+   *   recovery codes from two `200 OK` responses, and `mfa/verify`'s consumer
+   *   reads with `take: 10`, so ten of the twenty codes the owner was shown
+   *   could never verify. The break-glass credential, half dead, discoverable
+   *   only on the day the phone is lost.
+   * - **`enroll`** raced itself into `@@unique([userId, type])`: both
+   *   transactions found no unconfirmed factor to delete and the loser's
+   *   `create` raised P2002, which nothing here catches, so an ordinary
+   *   double-click answered **500 INTERNAL_ERROR** on an authenticated route.
+   *
+   * `pg_advisory_xact_lock` keyed on the user is the same device this module
+   * already uses one file over, keyed on the pending session. READ COMMITTED
+   * takes a fresh snapshot per statement, so a transaction that waits sees what
+   * it waited for. The lock is taken as the **first statement inside** each
+   * transaction and released by the commit, so no path can hold it across the
+   * Argon2 work — every caller hashes before it opens the transaction.
+   *
+   * Keyed on the user rather than the factor because `enroll` races over a row
+   * that does not exist yet, and a lock keyed on something not yet created
+   * cannot serialise its creation.
+   */
+  private async lockUser(tx: MfaTransaction, userId: string): Promise<void> {
+    await tx.$queryRaw`SELECT 1 AS locked FROM (SELECT pg_advisory_xact_lock(hashtext(${`mfa:user:${userId}`}))) AS lock_taken`;
   }
 
   private async factorFor(userId: string) {

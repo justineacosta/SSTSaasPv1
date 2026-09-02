@@ -20,7 +20,7 @@ Branch: `feat/phase-2-identity`
 | 8 | Registration and email verification | subagent (fix round: orchestrator) | **Done** — [brief](task-08/brief.md) · [report](task-08/report.md) · [review](task-08/review.md) · [dispositions](task-08/fix-brief.md) · [fixes](task-08/fixes.md) |
 | 9 | Login, logout, session endpoint, lockout | chained with 10 | **Done** — [brief](task-09/brief.md) · [report](task-09/report.md) · [review](task-09/review.md) · [dispositions](task-09/fix-brief.md) · [fixes](task-09/fixes.md) · [fix review](task-09/fix-review.md) |
 | 10 | Password reset | chained with 9 | **Done** — [brief](task-10/brief.md) · [report](task-10/report.md) · [review](task-10/review.md) · [dispositions](task-10/fix-brief.md) · [fixes](task-10/fixes.md) · [fix review](task-10/fix-review.md) |
-| 11 | TOTP MFA and recovery codes | subagent | Not started |
+| 11 | TOTP MFA and recovery codes | subagent | **Done** — [brief](task-11/brief.md) · [report](task-11/report.md) · [review](task-11/review.md) · [dispositions](task-11/fix-brief.md) · [fixes](task-11/fixes.md) |
 | 12 | Tenant resolution and the authorization guard | orchestrator | Not started |
 | **A** | **Checkpoint — verify, push, CI green, status recorded** | orchestrator | Not reached |
 | 13 | Organisations and organisation switching | chained 13→15 | Not started |
@@ -696,76 +696,62 @@ Full reasoning in [`task-10/review.md`](task-10/review.md),
 
 ## Pause state
 
-**2026-08-31 — Task 10 complete and verified; Task 11 is next. Checkpoint A is two tasks away.**
+**2026-09-02 — Task 11 complete, reviewed and fixed; Task 12 is next. Checkpoint A is one task
+away, and it is the last one before this phase gets a recorded status.**
 
-Task 10 shipped **password reset and password change**. `pnpm check:openapi` reports **13** routes.
-A person can now ask for a reset link, redeem it, or change their password while signed in — and
-every one of those paths revokes the sessions it should.
+Task 11 shipped **TOTP MFA and recovery codes**. `pnpm check:openapi` reports **18** routes, up from
+13. A person can enrol an authenticator, confirm it, complete a second factor at login, spend a
+recovery code, regenerate the set, and turn MFA off — three of those requiring the current password.
 
-**Ruling 70 is closed for the recipient's display name** (ruling 85), after three tasks and five
-channels. No template accepts a `recipientName`; the typecheck is the control. The fifth channel —
-`invitation`'s **inviter** name, in the text part of a message carrying a live token link — was
-found by this task's reviewer, in the registry Task 10 had just declared closed. A sixth,
-`organizationName`, is characterised rather than closed and **binds Task 13** (ruling 86).
+**THE ONE THING THAT MUST HAPPEN BEFORE ANYTHING ELSE TOUCHES THE DATABASE.** Task 11 generated
+`20260901185059_mfa_factor_last_accepted_step` with `--create-only` and **did not apply it**, per
+the plan's §5. The development database's `_prisma_migrations` still ends at `20260828051500`. The
+whole integration suite is green over a column that database does not have, because
+`postgres-harness.ts` replays migrations into a fresh container. **The operator reviews the SQL and
+runs `pnpm db:migrate`.** The SQL is quoted in full in [task-11/report.md](task-11/report.md).
 
-**The High was H1 and it was measured, not argued.** A login racing a completed reset kept a fully
-privileged session minted with the **old** password: 25 of 25 survivors across five rounds, up to 30
-days each, on the endpoint that exists to evict exactly that party. Writing the hash before revoking
-narrows the window and does not close it, which corrects **ruling 51**. Closed on the login path
-(ruling 82), verified independently by the second reviewer at **0 survivors** against 16 with the
-check disabled.
+**The High was H1 and it was measured.** Two concurrent regenerations left twenty live recovery
+codes from two `200 OK` responses, and the consumer's unordered `take: 10` made ten of the twenty
+the owner was shown permanently unusable. Concurrent enrolment answered 500. Both closed by a
+per-user `pg_advisory_xact_lock` — the device this module already used one file over, keyed on the
+pending session instead of the user.
 
-**The second review found what a first review would not have.** 2 Medium and 3 Low of its own, all
-closed: the sentence explaining H1's fix named the wrong mechanism and the control doing the real
-work had no test at all (ruling 83); the burst notice's "once per burst" guarantee was defeated by
-concurrency — **ruling 74 recurring inside the fix round for a finding whose dispositions cite ruling
-74** (ruling 84); a residual pinned so loosely that two independent mutations left it green; a ruling
-number cited for a proposition it does not contain; and a document sentence claimed by the code and
-absent from the diff.
+**Ruling 88 fired twice, and the second time was on the fix itself.** H1's guard, written as one
+race, reproduced the defect in only two runs out of three against the unlocked code. Rewritten to
+five rounds asserting the invariant after each round, it is 3 of 3. A guard that misses a High one
+time in three is a guard that goes green on the regression that reintroduces it — measure the guard,
+not just the fix.
 
-**Three orchestrator claims were measured false by the agents.** D2's ordering guarantee (quoted from
-`session.service.ts`'s own docblock, so it was false in the codebase before the brief repeated it);
-D9's atomically-countable revocation; and D5's ruling-77 note, right about `forgot-password` and
-incomplete about `reset-password`'s error envelopes. A brief is not evidence.
+**Eight false sentences, three inside security controls**, and the two worth carrying: a rate-limit
+comment and `abuse-prevention.md` §1 both said "one expected success every 630 years" where the
+same premises give **0.63 years**; and `security/authentication.md` §5 marked incremental MFA key
+rotation **Built** when the process holds one key and rotating it would make every enrolled factor
+undecryptable *silently*, because `mfa/verify` answers the ordinary `MFA_INVALID`. One false
+sentence originated in the orchestrator's brief and reached two committed artefacts; one was
+introduced by the orchestrator's own re-verification **in the same commit that falsified it**.
 
-**Verified by the orchestrator on the finished tree**, every command re-run rather than taken from a
-report, exit codes captured outside a pipe: all eleven exit 0. `pnpm test` 83 files / **1363**,
-`pnpm test:integration` 19 / **325**, `check:openapi` **13 routes**, `check:registry` 15 models,
-compose stack `Up (healthy)`. `pnpm test:e2e` has **no row**: `apps/web` and `packages/ui` diffs are
-empty. **No migration was opened.**
+**Task 12 inherits.** `Organization.requireMfa`'s guard is written and **registered in no module** —
+Task 12 places it in the pipeline, and a spec that strips comments before searching asserts it is
+absent today. `MFA_ENROLMENT_REQUIRED` has no producer. `@RequirePermission()` is still metadata no
+guard enforces, which is Task 12's whole subject.
 
-**The last three fix commits are the least-examined code on this branch.** The fix round's own fixes
-were reviewed by a second fresh agent; the orchestrator's fixes for *that* review's five findings
-were not reviewed by anybody. Each was written test-first with the mutation re-run and pasted, but
-that is the author checking their own work. **Task 11's reviewer may treat `6bc88e4` and `a339e9b` as
-unexamined.**
+**Still owed, and none of it Task 11's to close:** the promoted session takes the ordinary 7-day
+lifetime even when "remember me" was ticked (login discards `rememberMe` on the pending arm and
+`rotate` inherits the row's value — needs a `Session` column or a `rotate` parameter); incremental
+MFA key rotation, which is an ADR nobody owns; ruling 55's per-principal limiter stage; per-account
+notice throttling (ruling 79); the racing-login equivalent for member removal (ruling 82, Task 14);
+`Organization.name`'s absent length cap (ruling 86, Task 13); and ruling 24's dormant-account
+rehash half.
 
-**Branching. Task 10 is merged.** PR #19, rebased onto `main` on 2026-09-01 and the branch deleted,
-with CI green on a Linux runner before the merge — runs `33541294585` (branch head) and
-`33541330475` (pull request), both `success`. **The pull-request run failed once and was re-run**,
-and the cause is worth knowing because it will recur: `Failed to connect to Reaper` in
-`packages/db/src/tenant-transaction.integration.spec.ts`, which is Testcontainers' Ryuk cleanup
-container failing to start on the runner — infrastructure, not a test, and the other run on the same
-commit passed all 19 files. Re-running the failed job alone was green. **Task 11 branches from
-whatever `main` is when you start** — pull first; do not cut from a commit named in this file.
+**Branching. Task 11 is NOT merged.** It sits on `feat/phase-2-task-11`, cut from `main` at
+`cc81494`, never pushed. Task 10's PR #19 pattern applies when it is: rebase, CI green on a Linux
+runner first, and expect the `Failed to connect to Reaper` Testcontainers flake — infrastructure,
+not a test, and a re-run of the failed job alone was green last time.
 
-**Next action:** Task 11 — TOTP MFA and recovery codes, a fresh implementer subagent per the plan's
-mode table, reviewer fresh as always.
+**The fix round has not itself been reviewed.** Every change in it was measured with the mutation
+re-run and pasted, but that is the author checking their own work — the same status Task 10's last
+three commits carried into Task 11, where its reviewer was told it could treat them as unexamined.
 
-Task 11 inherits: **ADR-0018 is reserved for it and is owed** — the pending-MFA credential shape
-Task 9 shipped provisionally (ruling 81), a `PENDING_MFA` session token returned in the body with no
-cookie and no route that can reach it. **Ruling 7**: an unconfirmed `MfaFactor` occupies the
-`(userId, type)` unique slot, so an abandoned enrolment blocks re-enrolment with P2002 — upsert or
-delete-then-create. **Ruling 8**: `MfaFactor.secretKeyVersion` exists and nothing writes it.
-**Ruling 9**: the user-owned tables have no RLS, so a handler taking a `userId` must prove the caller
-is that user. **Ruling 50**: a `PENDING_MFA` → `ACTIVE` rotation must carry its `mfaCompletedAt`.
-**Rulings 82 and 83**: MFA completion issues a session and must make it conditional on the credential
-state the same way login now does. **Ruling 85**: `mfaEnabled` and `mfaDisabled` now take no display
-name — do not add one back. And the new-device notice is **not sent on the MFA arm** of login, which
-Task 9 recorded and Task 11 owns.
-
-**Still owed, none of it Task 10's:** ruling 55's per-principal limiter stage (now with ruling 90 as
-a second reason to want it), per-account notice throttling (ruling 79), the racing-login equivalent
-for member removal (ruling 82, Task 14), `Organization.name`'s absent length cap (ruling 86, Task
-13), and ruling 24's remaining half — the rehash drains weak hashes for accounts that sign in, and
-dormant accounts keep theirs indefinitely, which ADR-0014 §116 already acknowledges.
+**Next action:** the operator reviews and applies the migration; then Task 12 — tenant resolution
+and the authorization guard, which the plan puts in the **orchestrator** column rather than a
+subagent's, because it is where the security model becomes real.

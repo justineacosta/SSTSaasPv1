@@ -261,11 +261,20 @@ bodies and errors.
   and it is the only field in this phase that is. It is returned **once**, by `mfa/enroll`, as
   base32 and as an `otpauth://` URI; no endpoint can read it back. The QR **image** is the
   frontend's (Phase 2 Task 17); the API returns the URI.
-- **Built.** `MfaFactor.secretKeyVersion` is written explicitly on every row, so key rotation
-  is incremental and resumable rather than an all-or-nothing re-encryption. A row whose column
-  and envelope disagree about the version is **refused**, not guessed at: that state means a
-  re-encryption wrote one and not the other, and guessing decrypts with the wrong key and hands
-  back bytes that look like a secret.
+- **Partly built, and the distinction matters operationally.** `MfaFactor.secretKeyVersion` is
+  written explicitly on every row, which is the *precondition* for an incremental, resumable key
+  rotation — without it a rotation could not tell, part way through, which rows were on which key.
+  **The rotation itself is not built.** The process holds exactly one key, `CURRENT_MFA_SECRET_KEY_VERSION`
+  is the literal `1`, and a row naming any other version is refused. **Rotating
+  `MFA_SECRET_ENCRYPTION_KEY` today would make every enrolled factor undecryptable**, and it would
+  fail quietly in the worst way: `mfa/verify` catches the decryption failure and answers the
+  ordinary `MFA_INVALID`, which is by design indistinguishable from a wrong code, while recovery
+  codes keep working because they are Argon2id-hashed and key-independent. An operator would see a
+  partial outage with nothing naming the cause. Building the key-map lookup is a decision with an
+  ADR in it and no task owns it yet.
+  A row whose column and envelope disagree about the version is **refused**, not guessed at: that
+  state means a re-encryption wrote one and not the other, and guessing decrypts with the wrong key
+  and hands back bytes that look like a secret.
 - **Built.** The factor is **only persisted as enabled after the user proves one correct
   code**. `confirmedAt IS NOT NULL` is the only test for "this user has MFA" anywhere in the
   codebase; counting rows is the wrong query. An abandoned enrolment leaves an unconfirmed row

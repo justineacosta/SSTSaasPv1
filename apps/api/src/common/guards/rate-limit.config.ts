@@ -221,14 +221,25 @@ export const RATE_LIMIT_CLASSES = {
    * guessing at 5 per login rather than absolutely. This class is what bounds
    * the outer loop.
    *
-   * **60/hour per IP.** The arithmetic is worth writing down, because six digits
-   * is a small space: a million codes, ±1 drift so three are live at any
-   * instant, which is a 3-in-10^6 chance per guess. At 60 attempts an hour that
-   * is about one expected success every 630 years from one address, and the
-   * five-failure lock means each cycle also costs a fresh login (itself 5 / 15
-   * min per account). The figure is generous for a real user — a mistyped code,
-   * a phone whose clock has drifted, a second device — and tight enough that the
-   * product of the two controls is not a guessing channel.
+   * **60/hour per IP, and the arithmetic below was wrong by a factor of 1000
+   * until review M5 divided it out.** Six digits is a small space: a million
+   * codes, ±1 drift so three are live at any instant, which is a 3-in-10^6
+   * chance per guess — about 333,333 expected guesses. At 60 an hour that is
+   * 5,556 hours, or **0.63 years** from a single address. Not 630. Ten
+   * addresses is under a month and a modest botnet is hours, so **the per-IP
+   * figure is not the control**; it is the outer loop.
+   *
+   * **What actually bounds this is per-account, one endpoint up.** Reaching this
+   * route at all costs a `PENDING_MFA` session, and minting one costs a
+   * successful login, which `login` above limits to 5 per 15 minutes keyed on
+   * the email address. Five logins an hour times five attempts each caps an
+   * account near 100 attempts/hour however many addresses the attacker owns —
+   * roughly 3,333 hours, about 4.6 months — and every attempt writes an
+   * `MFA_CHALLENGE_FAILED` row, so the guessing is loud. That is a defensible
+   * posture; the 630-year sentence described a different and imaginary one, and
+   * the cost of leaving it standing was a future reader concluding there was
+   * enormous headroom here. The figure is generous for a real user — a mistyped
+   * code, a phone whose clock has drifted, a second device.
    *
    * **Per IP only, because there is no account in the body to key on.** The body
    * is `{ pendingToken, code }`. Deriving a principal from the pending token
