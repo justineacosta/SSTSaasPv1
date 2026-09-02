@@ -13,18 +13,25 @@ import {
 } from './require-mfa.js';
 
 /**
- * D8. THE MECHANISM IS BUILT HERE AND WIRED NOWHERE, AND EVERY ASSERTION BELOW
- * IS ABOUT A DECISION RATHER THAN ABOUT AN ENFORCEMENT.
+ * D8, AS OF TASK 12: THE MECHANISM IS BUILT HERE AND NOW REGISTERED, AND WHAT
+ * IT GOVERNS IS STILL NOTHING.
  *
  * `security/authentication.md` §5 requires a member of an organisation with
  * `requireMfa` to be forced into enrolment **on every request, not only at
- * login**. That check needs tenant resolution and organisation membership,
- * which is Task 12 and does not exist. So this file proves what the rule
- * decides; it does not and cannot prove that anything applies it.
+ * login**. Task 11 built the rule and left it wired nowhere; Task 12 placed it
+ * in `app.module.ts` as a global guard and provided the lookup its constructor
+ * asks for, so the check now runs on every authenticated request.
  *
- * The last test in this file is the one that keeps that honest: it asserts the
- * guard is registered in no module. When Task 12 places it, that test is what
- * must be changed, deliberately, by the person placing it.
+ * **It refuses nothing, for a reason that is about data and not about wiring.**
+ * The guard exits early when the request names no organisation, and nothing in
+ * Phase 2 writes `Session.activeOrganizationId` until Task 13 — so its policy
+ * lookup is not reached on any request this phase can produce, and no
+ * organisation can be created to set `requireMfa` in the first place. Nothing
+ * may record `MFA_ENROLMENT_REQUIRED` as a refusal any caller can receive.
+ *
+ * The last describe block in this file is what keeps that honest in the other
+ * direction: it asserts the registration exists, so removing it is a failing
+ * test rather than a silent loss of the control.
  */
 describe('requireMfaDecision', () => {
   const base = {
@@ -241,30 +248,32 @@ describe('MfaEnrolmentRequiredError', () => {
  * **Task 12 is what changes this test**, deliberately, by the hand that places
  * the guard in the pipeline.
  */
-describe('the guard is registered nowhere, which is what makes it enforce nothing', () => {
+describe('the guard is registered, and its lookup is provided', () => {
   /**
    * The module's CODE, with comments stripped.
    *
-   * Both modules deliberately *mention* the guard and its token in prose —
-   * `auth.module.ts` says beside the key it does provide that it does not
-   * provide this one — and a raw text search would read that documentation as
-   * the thing it documents the absence of. Stripping comments is what makes the
-   * assertion about wiring rather than about wording.
+   * Modules deliberately *mention* the guard and its token in prose, and a raw
+   * text search would read that documentation as the wiring it describes.
+   * Stripping comments is what makes the assertion about wiring rather than
+   * about wording — and it is what keeps this test honest in the new direction
+   * too: a comment saying "registered in `app.module.ts`" would otherwise
+   * satisfy it.
    */
   const read = (relative: string): string =>
     readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/^\s*\/\/.*$/gm, '');
 
-  it('is named in no Nest module', () => {
-    for (const module of ['./auth.module.ts', '../../app.module.ts']) {
-      expect(read(module)).not.toContain('MfaEnrolmentGuard');
-    }
+  it('is registered as a global guard in app.module.ts', () => {
+    expect(read('../../app.module.ts')).toContain('MfaEnrolmentGuard');
   });
 
-  it('asks for a DI token no module provides', () => {
-    for (const module of ['./auth.module.ts', '../../app.module.ts']) {
-      expect(read(module)).not.toContain('MFA_ENROLMENT_POLICY');
-    }
+  it('has its DI token provided, so registering it cannot fail at boot', () => {
+    // The token is declared in `auth.tokens.ts` and provided in
+    // `roles.module.ts`, where the tenant-scoped query it needs already lives.
+    // A guard registered without its lookup fails at boot naming the token —
+    // loudly, which is the right failure — but it fails, so this is the half of
+    // the pair that keeps the application startable.
+    expect(read('../roles/roles.module.ts')).toContain('MFA_ENROLMENT_POLICY');
   });
 });

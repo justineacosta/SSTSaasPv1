@@ -23,8 +23,13 @@ declare module 'express' {
      * `architecture/backend.md` §3 the limiter runs *before* this guard, so a
      * value written here has already missed its only reader. Writing it anyway
      * would make `generalSession`'s per-principal limit look wired while
-     * resolving nothing on every request. `organizationId` is Task 12's, which
-     * owns tenant resolution.
+     * resolving nothing on every request. **That is still true after Task 12**:
+     * `request.activeOrganizationId`, which this guard now does set, is a
+     * different field with a different reader that runs *after* it, and it must
+     * never be assigned to `request.organizationId` to "wire up" the limiter's
+     * per-organisation scope — that scope is unresolvable for the same ordering
+     * reason as `perPrincipal`, and pretending otherwise is carry-forward
+     * ruling 55 exactly.
      */
     principal?: UserPrincipal;
   }
@@ -47,6 +52,22 @@ interface ResolvedIdentity {
   readonly id: string;
   readonly userId: string;
   readonly status: 'PENDING_MFA' | 'ACTIVE';
+  /**
+   * A FACT ABOUT THE CREDENTIAL, NOT A RESOLVED TENANT — and the distinction is
+   * what keeps §1's two stages separate while this guard reads the column.
+   *
+   * `Session.activeOrganizationId` says which organisation the cookie is
+   * *pointed at*. It says nothing about whether the holder is a member of it,
+   * whether that membership is active, whether the organisation is suspended,
+   * or what they may do there. All four of those are `TenantContextGuard`'s and
+   * none of them is decided here — this guard still ends with a `UserPrincipal`
+   * carrying no organisation, exactly as Task 7 left it.
+   *
+   * Read here rather than by a second `resolve` call in the next guard because
+   * the alternative is two session resolutions per request — two cache reads,
+   * and a window in which they disagree.
+   */
+  readonly activeOrganizationId: string | null;
 }
 
 /**
@@ -176,6 +197,12 @@ export class AuthenticationGuard implements CanActivate {
     }
 
     request.principal = { kind: 'user', userId: identity.userId, sessionId: identity.id };
+    // Set on a PENDING_MFA session too, and deliberately. `MfaEnrolmentGuard`
+    // and `TenantContextGuard` both read it, and both run behind the pending
+    // check above — a pending session reaches neither except on the one route
+    // that carries `@AllowPendingMfa()`, where an organisation the caller
+    // cannot act in yet is still the organisation the credential names.
+    request.activeOrganizationId = identity.activeOrganizationId;
     return true;
   }
 
