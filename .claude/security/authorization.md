@@ -2,7 +2,7 @@
 
 > **Status: Partially Implemented (Phase 2, Tasks 12 and 13).** The pipeline is built, every
 > layer below can deny, and **as of Task 13 it governs shipped endpoints**: `GET`, `PATCH` and `DELETE /api/v1/organizations/:id`, carrying `organization.read`,
-`organization.update` and `organization.delete`. Task 13 also ships
+> `organization.update` and `organization.delete`. Task 13 also ships
 > `POST /api/v1/auth/switch-org`, the only writer of `Session.activeOrganizationId` — which is
 > what makes layers 2 and 3 evaluate at all, since they short-circuit while that column is
 > NULL. The layers are proved against those routes over the `sentinel_app` role, and still
@@ -61,8 +61,10 @@ value handles its absence.
 — never a path parameter, never a header, never a body field, per
 `architecture/overview.md` §4. A request-supplied organisation id would make tenant
 selection an input, and every membership check downstream a check on something the caller
-chose. **Nothing writes that column until Task 13**, so in production today the guard
-short-circuits before its query on every request.
+chose. **Task 13 shipped the only writer of that column**, `POST /api/v1/auth/switch-org`, which
+verifies an active membership and rotates the session before setting it. Before that nothing wrote
+it and the guard short-circuited before its query on every request; it now runs the query for any
+session that has switched, and still short-circuits for one that has not.
 
 ## 3. Permission model
 
@@ -160,7 +162,7 @@ route and asserts each carries an explicit access declaration.
 >
 > **Three shipped routes declare a permission as of Task 13, and the guard governs them.**
 > `GET`, `PATCH` and `DELETE /api/v1/organizations/:id`, carrying `organization.read`,
-`organization.update` and `organization.delete`. The guard was registered
+> `organization.update` and `organization.delete`. The guard was registered
 > globally in Task 12 precisely so that they were governed from the moment they were written
 > rather than from the moment somebody remembered to add a guard, and that is what happened:
 > no change to the guard was needed to bring them under it.
@@ -242,11 +244,14 @@ endpoint is therefore covered the moment it is written.
 
 Two limits, stated because the tick would otherwise imply more than it proves:
 
-- **The 403 and cross-tenant-404 arms run over zero shipped routes**, because no endpoint
-  declares `@RequirePermission()` yet. What the matrix proves about the shipped API is that
-  every non-public route refuses an unauthenticated caller and that no route escapes
-  classification. The arms themselves are exercised in
-  `authorization.integration.spec.ts` against real seeded rows.
+- **The 403 and cross-tenant-404 arms run over three shipped routes as of Task 13** — `GET`,
+  `PATCH` and `DELETE /api/v1/organizations/{id}`, the first endpoints in this product to declare
+  a permission. Before Task 13 they ran over none, and the sentence here said so. One limit
+  survives and is worth keeping in view: the matrix fails when the guarded set becomes *empty*,
+  but it cannot detect a *single* route being downgraded to `@AuthenticatedOnly()`, because such a
+  route simply leaves the set it iterates. That case is covered instead by the per-route access
+  table in `organizations.controller.spec.ts` and by the scoped 403 arm — measured, by downgrading
+  each guarded route in turn and confirming what went red.
 - **It drives the application as `sentinel_app`, not as the schema owner.** The default
   integration harness connects as a superuser that bypasses row-level security, under which
   an authorization suite proves that Postgres has policies rather than that this code obeys

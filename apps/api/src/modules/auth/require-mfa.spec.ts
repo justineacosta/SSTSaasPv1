@@ -28,12 +28,15 @@ import {
  * in `app.module.ts` as a global guard and provided the lookup its constructor
  * asks for, so the check now runs on every authenticated request.
  *
- * **It refuses nothing, for a reason that is about data and not about wiring.**
- * The guard exits early when the request names no organisation, and nothing in
- * Phase 2 writes `Session.activeOrganizationId` until Task 13 — so its policy
- * lookup is not reached on any request this phase can produce, and no
- * organisation can be created to set `requireMfa` in the first place. Nothing
- * may record `MFA_ENROLMENT_REQUIRED` as a refusal any caller can receive.
+ * **It can refuse as of Task 13, and this paragraph said the opposite until
+ * then.** Through Task 12 the guard refused nobody for a reason about data
+ * rather than wiring: it exits early when the request names no organisation,
+ * nothing wrote `Session.activeOrganizationId`, and no organisation could be
+ * created to set `requireMfa` in the first place. Task 13 shipped both the
+ * endpoint that creates an organisation and the first routes that declare a
+ * permission, so `MFA_ENROLMENT_REQUIRED` now has a reachable producer. The
+ * early exit is unchanged and is still what keeps a member with no factor able
+ * to reach their own enrolment, session document and logout.
  *
  * The last describe block in this file is what keeps that honest in the other
  * direction: it asserts the registration exists, so removing it is a failing

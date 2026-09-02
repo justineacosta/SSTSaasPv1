@@ -4,7 +4,7 @@
 > `@RequirePermission()` is evaluated; §3's status codes are produced by
 > `TenantContextGuard` and `AuthorizationGuard`; §4's envelope is what a 403 actually
 > carries. **Three shipped endpoints declare a permission** as of Task 13 — `GET`, `PATCH` and `DELETE /api/v1/organizations/:id`, carrying `organization.read`,
-`organization.update` and `organization.delete` — so §3's rows are reachable by a caller for the
+> `organization.update` and `organization.delete` — so §3's rows are reachable by a caller for the
 > first time. The sentence this banner carried through Task 12, "no shipped endpoint declares
 > a permission", is what changed. Tasks 14 and 15 add the membership and invitation routes.
 > `@RequireEntitlement` in §1's example does not exist (Phase 10). §5's project-scoped

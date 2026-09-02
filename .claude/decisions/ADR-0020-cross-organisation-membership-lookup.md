@@ -1,6 +1,6 @@
 # ADR-0020: The caller's own organisation list is read through one `SECURITY DEFINER` function owned by a dedicated `BYPASSRLS` role
 
-**Status:** Accepted · **Date:** 2026-09-02
+**Status:** Superseded by [ADR-0021](ADR-0021-definer-search-path-pins-pg-temp-last.md) · **Date:** 2026-09-02
 
 ## Context
 

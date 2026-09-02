@@ -87,8 +87,11 @@ let counter = 0;
  * session already pointed at that organisation.
  *
  * The same fixture `authorization.integration.spec.ts` uses, and for the same
- * reason: nothing writes `Session.activeOrganizationId` until Task 13, so the
- * column is set directly through the owner client. Seeded by the owner because
+ * reason: the column is set directly through the owner client so that a role's
+ * arms can be exercised without driving `switch-org` first, which would make
+ * every case here depend on another endpoint's correctness. Before Task 13 the
+ * reason was stronger — nothing wrote the column at all — and this comment said
+ * that. Seeded by the owner because
  * `sentinel_app` cannot write outside a tenant transaction; the application
  * under test still connects as `sentinel_app`.
  */
@@ -267,19 +270,50 @@ function substitutePathParameters(path: string, actor: Actor): string {
  * compares against — not the CSRF cookie. See `csrf.guard.ts` on why that is a
  * deliberate strengthening of double-submit.
  */
+/**
+ * A minimal body that the route's own schema accepts, for the routes that
+ * require one.
+ *
+ * **Why this has to exist at all.** Guards run before `ZodValidationPipe`, so an
+ * empty body is correct for arms 1 and 2 — a refusal that depends on a
+ * credential cannot depend on the body. It is NOT correct for arm 3, whose
+ * subject is `assertPathIsActiveTenant`, a check inside the handler and
+ * therefore *after* validation. Task 13's review, M3: with an empty body,
+ * `PATCH /api/v1/organizations/:id` answers 400 from the pipe and arm 3 records
+ * a route as exercised whose tenant check never ran.
+ *
+ * Deliberately a registry with a loud default rather than a schema-driven
+ * generator. The matrix cannot synthesise a valid body for an arbitrary schema,
+ * and a generator that produced *almost* valid bodies would fail in exactly the
+ * silent way this file exists to prevent. An empty object is the default because
+ * most routes take no body; arm 3 turns an unexpected 400 into a failure naming
+ * this map, so a future route needing an entry cannot pass by accident.
+ */
+function bodyFor(route: RegisteredRoute): Record<string, unknown> {
+  switch (`${route.method} ${route.path}`) {
+    case 'PATCH /api/v1/organizations/:id':
+      // `updateOrganizationRequestSchema` rejects `{}` by design — an empty
+      // patch is a request that cannot be satisfied or refused meaningfully.
+      return { name: 'Matrix probe' };
+    default:
+      return {};
+  }
+}
+
 async function callAs(route: RegisteredRoute, actor: Actor): Promise<request.Response> {
   await clearRateLimits(harness.redis);
   const path = substitutePathParameters(route.path, actor);
+  const body = bodyFor(route);
   const call = (() => {
     switch (route.method) {
       case 'GET':
         return request(server).get(path);
       case 'POST':
-        return request(server).post(path).send({});
+        return request(server).post(path).send(body);
       case 'PUT':
-        return request(server).put(path).send({});
+        return request(server).put(path).send(body);
       case 'PATCH':
-        return request(server).patch(path).send({});
+        return request(server).patch(path).send(body);
       case 'DELETE':
         return request(server).delete(path);
       default:
@@ -383,14 +417,19 @@ function rolesFor(permission: Permission): {
 
 describe('every permission-guarded route runs all four arms', () => {
   /**
-   * THE FOUR ARMS THE EXIT CRITERION NAMES:
+   * THE FOUR ARMS THE EXIT CRITERION NAMES (this test guards arms 2-4):
    * unauthenticated → 401; authenticated without the permission → 403;
    * authenticated in a different tenant → 404; correct permission → success.
    *
-   * **The set is empty today** — no shipped route declares `@RequirePermission()`,
-   * and `there are none yet` below states that rather than letting a green tick
-   * imply coverage. But the arms are now *written*, so the day Task 13 ships a
-   * guarded endpoint every one of them runs against it with no edit here.
+   * **The set is no longer empty.** Task 13 shipped the first three guarded
+   * routes — `GET`, `PATCH` and `DELETE /api/v1/organizations/:id` — so every
+   * arm below runs against real endpoints, which is what the arms were written
+   * ahead of time for. This docblock said the opposite until Task 13's review
+   * caught it: it still claimed the set was empty, still named a test called
+   * `there are none yet` that no longer exists, and still described Task 13 in
+   * the future tense, fifteen lines above a test asserting the set is *not*
+   * empty. A comment that survives the change it predicted is worse than no
+   * comment, because it reads as current.
    *
    * The success arm asserts **not 401, not 403, not 404** rather than a 2xx. A
    * guarded `POST` reached with an empty body is a 400 from the validation
@@ -479,12 +518,42 @@ describe('every permission-guarded route runs all four arms', () => {
     const failures: string[] = [];
     for (const route of routes) {
       if (route.access?.kind !== 'permission') continue;
-      // An OWNER of their own organisation, whose session has been pointed at
-      // somebody else's. A real credential, a real organisation, no membership
-      // — which is the cross-tenant case §6 requires be indistinguishable from
-      // absence.
+      // THE STRANGER MUST BE A REAL MEMBER OF THE ORGANISATION THEIR SESSION
+      // POINTS AT, OR THIS ARM NEVER REACHES A HANDLER.
+      //
+      // Task 13's review, M3. The first version of this arm pointed the
+      // stranger's session at an organisation they had no membership in, so
+      // `TenantContextGuard` resolved `not-a-member` and answered 404 before
+      // any handler ran. The arm passed, the coverage assertion recorded it as
+      // exercised, and the path-id substitution below — the thing it exists to
+      // probe — was never evaluated by anything. Proved by deleting
+      // `assertPathIsActiveTenant` outright: five unit and five integration
+      // tests went red across all three guarded routes, and this file stayed
+      // green.
+      //
+      // With a membership in `other`, the guard resolves, the permission check
+      // passes, and the ONLY thing wrong with the request is that the path
+      // names a different organisation from the one the session is acting in.
+      // That is the case §6 requires be indistinguishable from absence, and it
+      // is the one that generalises to every future resource whose handler
+      // compares a path id against the resolved tenant.
       const stranger = await member({ role: 'OWNER' });
       const other = await member({ role: 'OWNER' });
+      const ownerRole = await harness.prisma.role.findUniqueOrThrow({
+        where: { key: 'OWNER' },
+        select: { id: true },
+      });
+      await harness.prisma.membership.create({
+        data: {
+          id: newId('mbr'),
+          organizationId: other.organizationId,
+          userId: stranger.userId,
+          roleId: ownerRole.id,
+          status: 'ACTIVE',
+          deletedAt: null,
+        },
+        select: { id: true },
+      });
       await harness.prisma.session.updateMany({
         where: { userId: stranger.userId },
         data: { activeOrganizationId: other.organizationId },
@@ -496,7 +565,16 @@ describe('every permission-guarded route runs all four arms', () => {
       // consulted membership at all.
       const response = await callAs(route, stranger);
       ran(route, 'other-tenant');
-      if (response.status !== 404) {
+      if (response.status === 400) {
+        // The pipe rejected the body, so the handler — and with it the
+        // path-versus-tenant check this arm exists to probe — never ran. This
+        // is the silent pass M3 found, made loud.
+        failures.push(
+          `${key(route)} answered 400 cross-tenant: the request body was rejected before the ` +
+            'handler ran, so this arm proved nothing. Add a valid minimal body for it to ' +
+            'bodyFor() rather than leaving the tenant check unexercised.',
+        );
+      } else if (response.status !== 404) {
         failures.push(
           `${key(route)} answered ${String(response.status)} cross-tenant, expected 404`,
         );

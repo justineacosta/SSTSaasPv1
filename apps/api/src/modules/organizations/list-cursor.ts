@@ -58,8 +58,30 @@ export function encodeListCursor(cursor: ListCursor): string {
  *
  * The `createdAt` is validated by round-tripping it through `Date`, not by a
  * regular expression: what has to be true is that Postgres can compare it as a
- * `timestamptz`, and an ISO string that `Date` refuses is one Postgres would
- * refuse too — with a 500 rather than a 400, from inside the query.
+ * `timestamptz`.
+ *
+ * **AND THE RE-SERIALISATION BELOW IS THE HALF THAT MAKES THAT TRUE.** The
+ * first version of this function validated with `Date` and then passed the
+ * *original string* to the query, on the reasoning that "an ISO string that
+ * `Date` refuses is one Postgres would refuse too". The converse is what
+ * mattered and it is false: the two parsers disagree, and `Date` is the more
+ * permissive. Measured, Task 13's review:
+ *
+ *     JS   new Date('2026')            -> Thu Jan 01 2026 (valid)
+ *     PG   SELECT '2026'::timestamptz
+ *          ERROR:  invalid input syntax for type timestamp with time zone: "2026"
+ *
+ * So `{"createdAt":"2026","id":"x"}`, base64url-encoded, passed this check and
+ * then failed inside the query — a 500 for a malformed client input that
+ * `api/errors.md` says is a 400, reached through a path this docblock claimed
+ * was closed.
+ *
+ * Returning `new Date(createdAt).toISOString()` means the value handed to
+ * Postgres is one **this code produced**, in a format Postgres is known to
+ * accept, rather than one the client chose that merely survived a laxer parser.
+ * The general rule, which is the reason this is worth ten lines: when two
+ * parsers must agree, do not validate with one and pass the input to the other
+ * — validate with one and pass *its output* to the other.
  */
 export function decodeListCursor(encoded: string): ListCursor {
   const refuse = (): never => {
@@ -83,7 +105,11 @@ export function decodeListCursor(encoded: string): ListCursor {
   const createdAt = candidate['createdAt'];
   const id = candidate['id'];
   if (typeof createdAt !== 'string' || typeof id !== 'string') return refuse();
-  if (Number.isNaN(new Date(createdAt).getTime())) return refuse();
+  const parsedDate = new Date(createdAt);
+  if (Number.isNaN(parsedDate.getTime())) return refuse();
 
-  return { createdAt, id };
+  // Not `createdAt`. See the docblock: the string the client sent is replaced
+  // by the one this code derived from it, so the query never receives a value
+  // only `Date` was willing to accept.
+  return { createdAt: parsedDate.toISOString(), id };
 }

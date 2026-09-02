@@ -130,8 +130,10 @@ import { OpenApiModule } from './openapi/openapi.module.js';
     // own session and sign out, and both of those are `@AuthenticatedOnly()`.
     //
     // It performs **no query at all** unless `Session.activeOrganizationId` is
-    // non-null, which nothing in Phase 2 writes until Task 13. So the cost of
-    // this row today is one `if` per authenticated request.
+    // non-null. Task 13 shipped the first writer of that column
+    // (`POST /api/v1/auth/switch-org`), so the query is now real for a session
+    // that has switched, and the cost is still one `if` for a session that has
+    // not.
     { provide: APP_GUARD, useClass: TenantContextGuard },
     // **CSRF after authenticate**, so it runs on a request whose credential has
     // already been established, and so an unauthenticated caller gets 401

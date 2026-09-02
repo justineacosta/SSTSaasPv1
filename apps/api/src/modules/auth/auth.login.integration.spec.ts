@@ -944,11 +944,13 @@ describe('GET /auth/session', () => {
   });
 
   it('resolves a real organisation when the session names one', async () => {
-    // THE NON-NULL ARM, WHICH NO SESSION THIS PHASE CAN CREATE WOULD REACH.
-    // Nothing writes `Session.activeOrganizationId` until Task 13, so the
-    // column is set here directly — an unexercised lookup is one Task 13 has to
-    // discover is missing, and it would discover it as a `null` that looks
-    // exactly like "no organisation chosen".
+    // THE NON-NULL ARM. Through Task 12 no session this phase could create
+    // would reach it, because nothing wrote `Session.activeOrganizationId`;
+    // Task 13's `switch-org` is now the writer. The column is still set here
+    // directly, so that this file tests the lookup rather than the switch
+    // endpoint — it was written before that endpoint existed precisely so the
+    // lookup could not ship unexercised, returning a `null` that looks exactly
+    // like "no organisation chosen".
     const email = await account();
     const signedIn = await login({ email, password: PASSWORD });
     const sessionToken = valueOf(cookieNamed(signedIn, SESSION_COOKIE_NAME) ?? '');

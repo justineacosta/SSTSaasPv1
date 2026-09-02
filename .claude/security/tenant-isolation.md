@@ -184,7 +184,21 @@ function body. What contains it:
   later migration is invisible to it until somebody grants it deliberately.
 - **`sentinel_app` is unchanged.** The measurement above stays true after the migration; the
   role gains `EXECUTE` on one function, and `EXECUTE` is revoked from `PUBLIC`.
-- **`SET search_path = public`** closes the standard definer hijack.
+- **`SET search_path = public, pg_temp`** — `pg_temp` present and **last** — closes the standard
+  definer hijack. The function shipped with `SET search_path = public`, and that did **not** close
+  it: Postgres searches the temporary schema first for relation names unless `pg_temp` is listed
+  explicitly, and `sentinel_app` holds `TEMPORARY`, so a temp table named `"Membership"` was
+  measured shadowing the real one and returning a real `Organization` row for a user with no
+  membership. Corrected by migration `20260902130000_organization_lookup_search_path`;
+  [ADR-0021](../decisions/ADR-0021-definer-search-path-pins-pg-temp-last.md) supersedes ADR-0020
+  and carries the transcript.
+
+**Residual, recorded rather than fixed:** `sentinel_app` still holds `TEMPORARY` on the database,
+which is PostgreSQL's default grant to `PUBLIC`. Revoking it would be defence in depth against the
+whole class rather than this instance, and it is a database-wide privilege change owed to a
+deployment hardening pass. The instance is closed; the mechanism is not. **Any future
+`SECURITY DEFINER` object must pin `pg_temp` last**, and the assertion to copy is the one in
+`migration.integration.spec.ts` that pins the *rule* — present, and last — not only the value.
 
 The role attributes and grants are asserted in `packages/db/src/migration.integration.spec.ts`
 rather than only described here, because ADR-0020's containment argument otherwise rests on a

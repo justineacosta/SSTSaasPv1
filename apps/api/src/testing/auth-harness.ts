@@ -115,11 +115,13 @@ export interface AuthHarnessOptions {
   /**
    * Extra controllers compiled into the **real** `AppModule`.
    *
-   * For proving a guard that no shipped route exercises yet. Task 12's
-   * authorization guard is the case it exists for: no endpoint in this API
-   * declares `@RequirePermission()` until Task 13, so the only way to run the
-   * real guard array, in the real order, against real rows is to add a route
-   * that does. Everything except the endpoint stays production.
+   * For proving a guard on arms no shipped route exercises. Task 12's
+   * authorization guard is the case it exists for: no endpoint declared
+   * `@RequirePermission()` before Task 13, so the only way to run the real
+   * guard array, in the real order, against real rows was to add a route that
+   * did. Task 13 shipped three such endpoints, and this option remains the way
+   * to reach role and permission combinations they do not express.
+   * Everything except the endpoint stays production.
    *
    * `buildGuardedApp` in `routing-app.ts` is the unit-lane equivalent and
    * assembles a *minimal* application; this one assembles the whole graph, so a
