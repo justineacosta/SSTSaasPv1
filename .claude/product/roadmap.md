@@ -8,13 +8,13 @@ code was written.
 Status vocabulary (specification §79): **Implemented** / **Partially Implemented** /
 **Not Implemented** / **Blocked**.
 
-## Current state — 2026-08-26
+## Current state — 2026-09-02
 
 | Phase | Scope | Status |
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Not Implemented** — Tasks 1–11 of 18 done 2026-09-02 (schema, migrations, registry, wire contracts, password hashing, the breach check, single-use secret tokens, the mailer with **ten** templates, the session service, the authentication stage with CSRF and CORS, registration with email verification, login/logout/session with per-account lockout, password reset and change, and TOTP MFA with recovery codes); the API publishes **18 routes** and a person can register, confirm an address, sign in, complete a second factor, enrol or disable MFA, change or reset a password and sign out, but **nothing authorises anybody** — `GET /auth/session` returns an empty permission set until Task 12, and there is no screen until Task 16. Tasks 1–11 are all merged to `main`, most recently Task 11 as PR #21 on 2026-09-02 |
+| 2 | Identity | **Partially Implemented** — Tasks 1–12 of 18 done 2026-09-02, **Checkpoint A reached**. The identity API is built and the authorization pipeline is enforced end to end: a request is rate-limited, authenticated against an opaque server-side session, CSRF-checked, resolved to a tenant, and authorized against a permission the route declares — and every one of those stages can deny. **No authentication UI exists, so the E2E journey exit criterion is unmet and the phase is not complete.** The second gap is smaller and must not be glossed: **no shipped route declares `@RequirePermission()`**, so layers 2–4 govern zero production endpoints today — Tasks 13–15 ship the first. Evidence table under Phase 2 below |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -74,12 +74,25 @@ The boot-time assertion that every route declares its access is now built: a rou
 neither `@Public()` nor `@RequirePermission()` refuses startup with an error naming every
 offender, and the inventory it checks is cross-checked against Express's own router on each
 boot so it cannot pass by inspecting nothing. `@Public()` is therefore load-bearing today.
-**`@RequirePermission()` is still metadata no guard *enforces*** — the authorization guard
-is Task 12 — so declaring a permission records an intention, it does not enforce one. As
-of Task 7 three things do *read* that metadata key: the authentication guard, the route
-inventory and the OpenAPI generator. The earlier wording, "metadata no guard reads", was
-literally false, and the distinction is the one Task 6 had to make about `PENDING_MFA`
-being recorded but unenforced.
+
+**`@RequirePermission()` is evaluated as of Task 12**, by `AuthorizationGuard`, registered
+globally. The sentence this paragraph carried from Task 7 to Task 11 — "metadata no guard
+enforces" — is no longer true. **What is still true, and is the sentence that replaces it:
+no shipped route declares a permission.** All eighteen Phase 2 routes are `@Public()` or
+`@AuthenticatedOnly()`, so the guard runs on every request and has an opinion about none of
+them. Tasks 13–15 ship the first guarded endpoints, and the guard is registered globally
+precisely so that they are governed from the moment they are written rather than from the
+moment somebody remembers to add a guard.
+
+**Nine global guards now, up from four**, in the order `app.module.spec.ts` asserts: rate
+limit, authenticate, tenant resolve, CSRF, cross-site refusal, email verified, MFA
+enrolment, authorize, entitlement. Three of those were built in earlier tasks and
+deliberately registered nowhere — `EmailVerifiedGuard` (Task 8) and `MfaEnrolmentGuard`
+(Task 11) — or are new stubs — `EntitlementGuard`, which admits every request and exists so
+that layer 6's *position* is a recorded decision rather than one made by whoever adds a
+guard in Phase 10. **All three govern zero routes**: no handler carries
+`@RequireVerifiedEmail()`, no organisation can be created to set `requireMfa`, and there is
+deliberately no `@RequireEntitlement` decorator at all.
 
 The OpenAPI document is generated from the route inventory and the Zod contracts, served at
 `/api/v1/openapi.json`, and committed as `apps/api/openapi.json`; a test asserts the committed
@@ -599,18 +612,21 @@ else is needed, and re-verifying Phase 1 is not part of it:
 4. The plan's section for **your task only**, plus the previous task's ledger entry at
    `docs/superpowers/ledger/phase-2/task-NN/`.
 
-**Status is Not Implemented and Tasks 1–9 do not change that.** The tables identity needs exist
-and are proven to migrate, the wire contracts those endpoints validate against exist, a password can
-be hashed and a breached one detected, and **as of Task 9 six endpoints are live** — a person can
-register an account, confirm their email address, sign in, read their own session document and sign
-out. The session service Task 6 built now has a caller that issues a cookie, and `logout` is the
-first cookie-authenticated route `CsrfGuard` actually governs. But **nothing authorises anybody**:
-`GET /auth/session` returns `permissions: []` because role assignment does not exist until Task 12,
-no request is refused for want of a permission, and `apps/web`'s `(auth)` route group still holds a
-layout with no routes under it, so no screen reaches any of this until Task 16. **Not one of the
-three exit criteria above is met**: there is no E2E journey, no authorization matrix test, and
-revocation is proved by integration tests rather than by the journey the criterion names. Per the
-plan, the status moves to **Partially Implemented** at Checkpoint A, after Task 12.
+**Status is Partially Implemented as of Task 12 — Checkpoint A, recorded below with its evidence
+table.** Eighteen endpoints are live: a person can register, confirm an address, sign in, complete
+a second factor, enrol or disable MFA, change or reset a password, read their own session document
+and sign out. The authorization pipeline is built and every one of its nine guard stages can deny.
+
+**Two gaps, and neither is a detail.** There is **no authentication UI** — `apps/web`'s `(auth)`
+route group still holds a layout with no routes under it — so the E2E journey exit criterion is
+unmet and cannot be met before Task 18. And **no shipped route declares `@RequirePermission()`**,
+so the authorization guard runs on every request and has an opinion about none of them; Tasks 13–15
+ship the first guarded endpoints. `GET /auth/session` returns `permissions: []` for every session
+that exists, now because nothing writes `Session.activeOrganizationId` until Task 13 rather than
+because nothing computes a permission set.
+
+**One of the three exit criteria is met, one is met in a narrower sense than it reads, one is
+unmet** — the table in the Checkpoint A section below states each of them rather than implying it.
 
 **The `check:openapi` reports 4 routes below are dated evidence and stay as they are.** Each was
 correct for the commit it describes. `check:openapi` reported **7** from Task 8 and reports **10**
@@ -1639,11 +1655,153 @@ The `Failed to connect to Reaper` Testcontainers flake that hit PR #19 did not r
 carried: each change was measured with the mutation re-run and pasted, but that is the author
 checking their own work. Commit `7540279` is the one Task 12's reviewer may treat as unexamined.
 
-**Checkpoint A falls after Task 12** — the identity API enforced end to end with no UI. At that
-point the branch is pushed, CI must be green on a Linux runner, and this file gets an evidence
-table moving Phase 2 to **Partially Implemented** with the gap named: no authentication UI, so the
-E2E journey criterion is unmet. Twelve tasks is the largest unrecorded window in the plan and the
-checkpoint exists to close it.
+---
+
+## Checkpoint A — 2026-09-02 at commit `543cf0c`, one bullet short
+
+**Phase 2 moves to Partially Implemented here**, with the gap named precisely:
+*the identity API is built and the authorization pipeline is enforced end to end; no
+authentication UI exists, so the E2E journey exit criterion is unmet and the phase is not
+complete.*
+
+**The checkpoint itself is not fully discharged, and the status is recorded anyway.** Its
+second bullet requires the branch pushed and a **green CI run on a Linux runner, cited by run
+ID**. The branch `feat/phase-2-task-12-authorization` is **not pushed** and no CI run exists.
+Everything below is local evidence on a Windows workstation. The status moves now rather than
+after CI because the whole point of the checkpoint is that the window between building
+something and recording it is when a session ends unexpectedly — but **nothing here may be
+read as "CI is green"**, and the ledger's Task 12 entry carries the same sentence.
+
+**Task 12 has also not been reviewed.** The plan requires a fresh adversarial reviewer for
+every task in every mode; this one was built by the orchestrator, so nobody has checked it but
+its author. The same is true of commit `7540279`, Task 11's fix round.
+
+### Evidence
+
+Every command below was run by the orchestrator on the finished tree at commit `543cf0c`,
+with the exit code captured outside a pipe (`out=$(pnpm <cmd> 2>&1); code=$?`), because `$?`
+after a pipe reports the last stage's status and not the command's.
+
+| Command | Exit | What it proves — and no more |
+|---|---|---|
+| `pnpm format:check` | 0 | Prettier style across the workspace. |
+| `pnpm lint` | 0 | 14 tasks. ESLint clean, including the tenant-scoping and no-raw-hex rules. |
+| `pnpm typecheck` | 0 | 14 tasks. The types compile — and nothing about behaviour. |
+| `pnpm test` | 0 | **91 files / 1553 tests**, up from 88 / 1513 at Task 11. |
+| `pnpm check:specs` | 0 | **113 spec files**, each claimed by exactly one Vitest project — no spec runs nothing while printing green. |
+| `pnpm test:integration` | 0 | **22 files / 380 tests** against real Postgres 16, up from 20 / 354. |
+| `pnpm build` | 0 | 8 tasks. |
+| `pnpm check:openapi` | 0 | `apps/api/openapi.json` byte-identical to what the contracts generate, still **18 routes**. **Task 12 shipped no endpoint**, which is the point. |
+| `pnpm check:registry` | 0 | 15 models, 3 tenant-owned, 1 tenant root, 11 deliberately global — unchanged, correctly: Task 12 added no table and no migration. |
+| `pnpm test:e2e` | 0 | 5 passed against a Playwright-owned production build. **It proves only that the Phase 1 smoke specs still pass** — there is no authentication screen for it to exercise. |
+| `docker compose ps` | 0 | postgres, redis, minio, mailpit all `Up (healthy)`. |
+| CI on a Linux runner | **not run** | The branch is unpushed. This row is here because a missing row is easier to miss than a stated absence. |
+| `prisma migrate deploy` against a **fresh empty database** | 0 | All migrations replay from empty onto a clean `postgres:16-alpine` seeded only with `infra/docker/postgres/init/01-app-role.sql`, ending at `20260901185059_mfa_factor_last_accepted_step`. **The `sentinel_app` role must pre-exist** — without the init script the run fails at `20260820121229_row_level_security` with `role "sentinel_app" does not exist`, which is worth knowing before a first deploy. |
+
+### What the three Phase 2 exit criteria actually stand at
+
+Stated as their real state rather than implied, per the plan's Checkpoint A instruction.
+
+| Exit criterion | State |
+|---|---|
+| Sessions revoke immediately | **Met and proven** (Task 6). Tombstone plus a Lua compare-and-set, covered by integration tests against real Redis and Postgres. The residual is recorded and unchanged: Redis unreachable *at the moment of revocation* leaves a warm entry serving until `SESSION_CACHE_TTL_SECONDS`. |
+| The authorization matrix passes for every existing endpoint | **Met, and "every existing endpoint" is a much smaller set than it sounds.** The generated matrix runs over the live route inventory and fails on any route it did not exercise. But **no existing endpoint declares a permission**, so what it proves about the shipped API is that every non-public route refuses an unauthenticated caller and that no route escapes classification. The 403 and cross-tenant-404 arms run over fixture routes and real seeded rows, not over production endpoints. |
+| The full authentication journey passes E2E | **Unmet.** There is no authentication UI — `apps/web`'s `(auth)` route group still holds a layout with no routes under it. Cannot be met before Task 18. |
+
+### What Task 12 built
+
+**The six layers of `security/authorization.md` §2, in order, each able to deny and none able
+to override a denial.** `TenantContextGuard` owns membership (404) and organisation state
+(403 `ORGANIZATION_SUSPENDED`); `AuthorizationGuard` owns the permission check (403
+`PERMISSION_DENIED`); resource scope stays structural through the tenant-scoped client;
+`EntitlementGuard` is a Phase 10 stub that admits everything and exists so that layer 6's
+*position* — last, so 402 can never precede 403 — is a recorded decision. Authentication was
+already Task 7's.
+
+**Tenant resolution reads `Session.activeOrganizationId` and nothing else** — never a path
+parameter, never a header, never a body field. **It denies only on a route declaring a
+permission.** An `@AuthenticatedOnly()` route proceeds with no tenant resolved, so a member
+who has just been removed from their only organisation can still read their own session
+document and sign out rather than holding a valid credential that no endpoint will answer.
+
+**There is no permission cache, and that is a deliberate departure from the plan.** The plan
+asked for one "invalidated on write, not on a timer". A cache satisfies
+`permissions.md` invariant 4 only for as long as every future writer remembers to invalidate
+it, and Task 14's role change and Task 15's invitation acceptance are both unwritten. Reading
+the membership, its role and the seeded grants on every request makes the invariant
+structural instead: there is nothing to invalidate. **The operator took this decision on
+2026-09-02**, presented against the cache as the alternative. Cost: one indexed statement pair
+inside one tenant transaction, paid only when the session names an organisation — which today
+is never. Adding a cache later is additive.
+
+**`GET /auth/session` reports a real permission set.** It is `[]` on every session that
+exists, because the set is empty exactly when no tenant resolved and nothing writes
+`activeOrganizationId` until Task 13. **The response has not changed; only the reason for it
+has**, and an empty array in a captured response is not evidence that resolution ran.
+
+**Three guards written in earlier tasks and registered nowhere are now registered.**
+`EmailVerifiedGuard` (Task 8) and `MfaEnrolmentGuard` (Task 11, whose spec asserted its own
+absence) are in the pipeline, and `MFA_ENROLMENT_POLICY` — the token Task 11 declared with
+"nothing provides this" — is provided. **Both still govern zero routes.** No handler carries
+`@RequireVerifiedEmail()`, and no organisation can be created to set `requireMfa`. The two
+specs that asserted their absence now assert the registration *plus* the absence of any
+decorated handler, so the day one is applied a test says so.
+
+### The tests, and the mutations run to prove they bite
+
+A passing suite is not evidence that a suite would fail. Five mutations were applied to the
+finished tree and re-run:
+
+| Mutation | Result |
+|---|---|
+| `withTenantTransaction` removed from the tenant resolver | **9 of 18** integration assertions red. This is carry-forward ruling 75 discharged: under the schema-owner harness the same mutation is invisible, because RLS cannot bite for a superuser. |
+| Membership and organisation-state layers swapped | 1 unit + 1 integration assertion red — a non-member of a suspended organisation must hear the membership answer, not the suspension. |
+| `AuthorizationGuard` stops denying | 4 assertions red. |
+| The matrix skips one route | The coverage assertion red. **This is the inversion**: an endpoint with no matrix coverage fails the test rather than being silently skipped. |
+| A route gains `@RequireVerifiedEmail()` | 1 assertion red — the "governs no shipped route" claim is held by a test, not by a sentence. |
+
+**`authorization.integration.spec.ts` drives the application as `sentinel_app`**, the
+least-privileged role the API process really connects as, not as the harness's default schema
+owner. Carry-forward ruling 75 named Task 12 as the task it binds hardest, and the first
+mutation above is the measurement that shows why.
+
+**One defect was found by the whole-lane run and not by the file on its own.** The matrix
+passed in isolation and reported `POST /auth/mfa/enroll answered 429, expected 401` under
+`pnpm test:integration`: the rate limiter runs before authentication by design, so a spent
+window pre-empts the 401, and carry-forward ruling 33's shared compose Redis is what spends
+it. Fixed by clearing the windows per request. **Running a new spec on its own is not running
+it.**
+
+### What Task 12 deliberately did not do
+
+- **No `GET /api/v1/roles` endpoint.** The plan lists `modules/roles/*` under both Task 12 and
+  Task 14, and the endpoint is named explicitly in **Task 14**. Task 12's `modules/roles/`
+  holds the tenant resolver and the MFA policy lookup, and no controller.
+- **No `@RequireEntitlement()` decorator.** Phase 10 ships the decorator and its evaluation in
+  one change. A decorator routes could carry while nothing evaluated it is exactly the state
+  `@RequirePermission()` was in for five tasks, and it was misread as enforcement at least
+  once.
+- **No audit event on a denial.** `security/audit.md` §4 lists `PERMISSION_DENIED` as an
+  action and CLAUDE.md rule 10 requires security-relevant actions to be audited. A row per
+  refusal is an unbounded write an unauthenticated-adjacent caller can drive, so it needs
+  throttling that does not exist. **Owed, and it belongs with Phase 3's `/audit-logs`.**
+- **No ADR.** Judged: the no-cache decision is significant but cheap to reverse — adding a
+  cache is additive — and the layer order is `security/authorization.md` §2's, already
+  decided. Both are recorded in the documents they belong to and pinned by tests. If the
+  operator disagrees, the ADR to write is "the effective permission set is read per request".
+
+### Still owed, and none of it Task 12's to close
+
+Unchanged from Task 11 unless noted: the promoted session takes the ordinary 7-day lifetime
+even when "remember me" was ticked; incremental MFA key rotation, an ADR nobody owns; ruling
+55's per-principal limiter stage — **and note that `request.organizationId`, the limiter's
+per-organisation scope, is still unresolvable for the same ordering reason and must not be
+wired from Task 12's field**; per-account notice throttling (ruling 79); the racing-login
+equivalent for member removal (ruling 82, Task 14); `Organization.name`'s absent length cap
+(ruling 86, Task 13); ruling 24's dormant-account rehash half. **New from Task 12:** the
+denial audit event above.
+
+---
 
 **How Phase 2 is executed, decided by the operator on 2026-08-24** and binding on every task
 (protocol in the plan's *Execution protocol* section):
