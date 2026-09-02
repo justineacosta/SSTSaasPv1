@@ -38,11 +38,29 @@ export interface OpenApiRequestBody {
   readonly content: Record<string, { readonly schema: Record<string, unknown> }>;
 }
 
+/**
+ * One templated path segment, as OpenAPI describes it.
+ *
+ * `required: true` always: a path parameter is part of the path, and an
+ * optional one is a different path. `schema` is a bare string because every
+ * identifier this API puts in a path is one — narrowing it to the contract's
+ * `organizationIdSchema` would need the generator to know which parameter
+ * belongs to which resource, which is a mapping nothing maintains.
+ */
+export interface OpenApiPathParameter {
+  readonly name: string;
+  readonly in: 'path';
+  readonly required: true;
+  readonly description: string;
+  readonly schema: { readonly type: 'string' };
+}
+
 export interface OpenApiOperation {
   readonly operationId: string;
   readonly tags: readonly string[];
   readonly summary?: string;
   readonly description?: string;
+  readonly parameters?: readonly OpenApiPathParameter[];
   readonly requestBody?: OpenApiRequestBody;
   readonly responses: Record<string, OpenApiResponse>;
   /**
@@ -97,12 +115,51 @@ function responsesFor(route: RegisteredRoute): Record<string, OpenApiResponse> {
   return responses;
 }
 
+/**
+ * EXPRESS PATH SYNTAX IS NOT OPENAPI PATH SYNTAX, AND UNTIL TASK 13 NOTHING
+ * NOTICED.
+ *
+ * The route inventory holds paths exactly as Express registered them, which is
+ * what makes `assertEveryRouteDeclaresAccess` able to compare the two — so
+ * `:id` is correct there and must stay. OpenAPI templates the same segment as
+ * `{id}`, and a document publishing `/api/v1/organizations/:id` describes a
+ * literal path with a colon in it: a generated client would request
+ * `/organizations/%3Aid` and every validator would report an undeclared
+ * parameter.
+ *
+ * Phase 1 shipped only health probes and Phase 2's first eighteen routes take
+ * no path parameter, so the generator was never asked to render one and the gap
+ * was invisible rather than accepted. The three `:id` routes of Task 13 are the
+ * first, which is why this is here and not earlier.
+ */
+const OPENAPI_PATH_PARAMETER = /:([A-Za-z0-9_]+)/g;
+
+export function toOpenApiPath(expressPath: string): string {
+  return expressPath.replace(OPENAPI_PATH_PARAMETER, '{$1}');
+}
+
+export function pathParametersOf(expressPath: string): OpenApiPathParameter[] {
+  return [...expressPath.matchAll(OPENAPI_PATH_PARAMETER)].map((match) => ({
+    // `match[1]` is the capture group, which the regular expression guarantees
+    // for every match. The `?? ''` is unreachable and exists because
+    // `noUncheckedIndexedAccess` types it as possibly undefined; an empty name
+    // would fail validation loudly rather than silently naming nothing.
+    name: match[1] ?? '',
+    in: 'path' as const,
+    required: true as const,
+    description: 'Path parameter.',
+    schema: { type: 'string' as const },
+  }));
+}
+
 function operationFor(route: RegisteredRoute): OpenApiOperation {
+  const parameters = pathParametersOf(route.path);
   return {
     operationId: `${route.controller}_${route.handler}`,
     tags: [route.controller.replace(/Controller$/, '')],
     ...(route.doc === undefined ? {} : { summary: route.doc.summary }),
     ...(route.doc?.description === undefined ? {} : { description: route.doc.description }),
+    ...(parameters.length === 0 ? {} : { parameters }),
     ...(route.doc?.requestBody === undefined
       ? {}
       : {
@@ -174,7 +231,9 @@ export function buildOpenApiDocument(routes: readonly RegisteredRoute[]): OpenAp
   for (const route of sorted) {
     const operation = operationFor(route);
     operations.push(operation);
-    const item = (paths[route.path] ??= {});
+    // The OpenAPI rendering of the path, not the Express one. See
+    // `toOpenApiPath`.
+    const item = (paths[toOpenApiPath(route.path)] ??= {});
     item[route.method.toLowerCase()] = operation;
   }
   assertUniqueOperationIds(operations);

@@ -18,6 +18,7 @@ import { RedisModule } from './infrastructure/redis/redis.module.js';
 import { StorageModule } from './infrastructure/storage/storage.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { HealthModule } from './modules/health/health.module.js';
+import { OrganizationsModule } from './modules/organizations/organizations.module.js';
 import { ENV } from './infrastructure/tokens.js';
 import { OpenApiModule } from './openapi/openapi.module.js';
 
@@ -59,6 +60,14 @@ import { OpenApiModule } from './openapi/openapi.module.js';
     // `MfaEnrolmentGuard` are both declared below and both need a token this
     // module provides. See `roles.module.ts`.
     RolesModule,
+    // Task 13. The first module whose routes declare `@RequirePermission()`,
+    // which is what makes layers 2-4 of `security/authorization.md` §2 govern a
+    // shipped endpoint rather than only a fixture controller. It is imported
+    // after `AuthModule` and `RolesModule` because it depends on neither and
+    // both provide guard collaborators the pipeline needs before any of its
+    // routes can be reached; module order in this array does not decide guard
+    // order, which is the `providers` array below.
+    OrganizationsModule,
     HealthModule,
     OpenApiModule,
   ],

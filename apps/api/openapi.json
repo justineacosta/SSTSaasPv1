@@ -1108,6 +1108,167 @@
         }
       }
     },
+    "/api/v1/auth/switch-org": {
+      "post": {
+        "operationId": "AuthController_switchOrganization",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Switch the active organisation.",
+        "description": "Points the current session at another organisation the caller is an ACTIVE member of, **rotating the session** as it does — `security/authentication.md` §3 requires a rotation on any privilege change, and changing organisation changes the effective permission set. Both cookies are replaced; the previous session token stops working immediately. The response is the same document `GET /api/v1/auth/session` returns, now describing the organisation just switched to, and its `permissions` array is populated. Switching to an organisation the caller is not an active member of is **404**, not 403 — the same answer an organisation that does not exist gets, so neither confirms the other. A suspended organisation the caller does belong to is 403 `ORGANIZATION_SUSPENDED`, matching what every guarded route would answer afterwards. Requires `X-CSRF-Token`.",
+        "requestBody": {
+          "description": "The organisation to switch to. The schema is strict.",
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "organizationId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "organizationId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The new session context.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "userId": {
+                      "type": "string"
+                    },
+                    "activeOrganization": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "slug": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "slug",
+                        "name"
+                      ],
+                      "additionalProperties": false,
+                      "nullable": true
+                    },
+                    "permissions": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "organization.read",
+                          "organization.update",
+                          "organization.delete",
+                          "organization.manage_members",
+                          "organization.manage_roles",
+                          "project.read",
+                          "project.create",
+                          "project.update",
+                          "project.delete",
+                          "asset.read",
+                          "asset.create",
+                          "asset.update",
+                          "asset.delete",
+                          "asset.verify_ownership",
+                          "scope.read",
+                          "scope.update",
+                          "scan.read",
+                          "scan.create",
+                          "scan.cancel",
+                          "scan.create_aggressive",
+                          "finding.read",
+                          "finding.create",
+                          "finding.update",
+                          "finding.triage",
+                          "finding.accept_risk",
+                          "finding.delete",
+                          "evidence.read",
+                          "evidence.upload",
+                          "evidence.delete",
+                          "engagement.read",
+                          "engagement.create",
+                          "engagement.update",
+                          "engagement.delete",
+                          "report.read",
+                          "report.create",
+                          "report.download",
+                          "apikey.read",
+                          "apikey.create",
+                          "apikey.revoke",
+                          "webhook.read",
+                          "webhook.create",
+                          "webhook.update",
+                          "webhook.delete",
+                          "integration.read",
+                          "integration.manage",
+                          "notification.manage",
+                          "audit.read",
+                          "billing.read",
+                          "billing.manage"
+                        ]
+                      }
+                    },
+                    "entitlements": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    }
+                  },
+                  "required": [
+                    "userId",
+                    "activeOrganization",
+                    "permissions",
+                    "entitlements"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body did not validate (`VALIDATION_ERROR`, `UNKNOWN_FIELD`)."
+          },
+          "401": {
+            "description": "No usable session, or the session was revoked between the membership check and the rotation (`UNAUTHENTICATED`, `SESSION_EXPIRED`)."
+          },
+          "403": {
+            "description": "The organisation is suspended (`ORGANIZATION_SUSPENDED`), or a CSRF failure."
+          },
+          "404": {
+            "description": "No ACTIVE membership in that organisation (`RESOURCE_NOT_FOUND`)."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "authenticated"
+        }
+      }
+    },
     "/api/v1/auth/verify-email": {
       "post": {
         "operationId": "AuthController_verifyEmail",
@@ -1206,6 +1367,496 @@
         },
         "x-sentinel-access": {
           "kind": "public"
+        }
+      }
+    },
+    "/api/v1/organizations": {
+      "get": {
+        "operationId": "OrganizationsController_list",
+        "tags": [
+          "Organizations"
+        ],
+        "summary": "List the organisations you belong to.",
+        "description": "The organisations in which the caller holds an `ACTIVE`, non-removed membership, newest first. Not permission-guarded, because the question is about a user and about no organisation — a permission is always (user, organisation, permission). Cursor paginated: `limit` defaults to 50 and is **clamped** to 100 rather than rejected, and `pagination.limit` echoes the limit that was applied. `pagination.nextCursor` is opaque and its encoding is not part of this contract; a cursor this endpoint did not issue is a 400. Suspended organisations are listed — membership is what this answers, not entitlement to act.",
+        "responses": {
+          "200": {
+            "description": "One page of organisations.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "slug": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "ACTIVE",
+                              "SUSPENDED",
+                              "TERMINATED"
+                            ]
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "slug",
+                          "name",
+                          "status",
+                          "createdAt",
+                          "updatedAt"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "pagination": {
+                      "type": "object",
+                      "properties": {
+                        "nextCursor": {
+                          "type": "string",
+                          "nullable": true
+                        },
+                        "hasMore": {
+                          "type": "boolean"
+                        },
+                        "limit": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 100
+                        }
+                      },
+                      "required": [
+                        "nextCursor",
+                        "hasMore",
+                        "limit"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "total"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "pagination"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The query did not validate, or the cursor was malformed."
+          },
+          "401": {
+            "description": "No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`)."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "authenticated"
+        }
+      },
+      "post": {
+        "operationId": "OrganizationsController_create",
+        "tags": [
+          "Organizations"
+        ],
+        "summary": "Create an organisation.",
+        "description": "Creates the organisation, the caller as its `OWNER`, and an `ORGANIZATION_CREATED` audit event, in one transaction. Requires a **verified** email address: an account that has signed in but not confirmed its address is refused with 403 `EMAIL_NOT_VERIFIED`. The slug must be unique across the whole product and is normalised to lower case before it is checked; a collision answers 409 `DUPLICATE_RESOURCE`. Creating an organisation does not switch into it — the session still names whatever organisation it named before, and `POST /api/v1/auth/switch-org` is what changes that. Requires `X-CSRF-Token`.",
+        "requestBody": {
+          "description": "The slug is trimmed and lower-cased, and must be 3–63 characters of lowercase letters, digits and single hyphens. The schema is strict, so an unknown key is a 400.",
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "slug": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 63,
+                    "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                  }
+                },
+                "required": [
+                  "name",
+                  "slug"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The new organisation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "slug": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ACTIVE",
+                        "SUSPENDED",
+                        "TERMINATED"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "slug",
+                    "name",
+                    "status",
+                    "createdAt",
+                    "updatedAt"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body did not validate (`VALIDATION_ERROR`, `UNKNOWN_FIELD`)."
+          },
+          "401": {
+            "description": "No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`)."
+          },
+          "403": {
+            "description": "Address not verified (`EMAIL_NOT_VERIFIED`), or a CSRF failure (`CSRF_TOKEN_INVALID`)."
+          },
+          "409": {
+            "description": "The slug is already taken (`DUPLICATE_RESOURCE`)."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "authenticated"
+        }
+      }
+    },
+    "/api/v1/organizations/{id}": {
+      "delete": {
+        "operationId": "OrganizationsController_remove",
+        "tags": [
+          "Organizations"
+        ],
+        "summary": "Delete one organisation.",
+        "description": "Deletes the organisation the session is currently acting in. **In this version it always answers 409.** `AuditEvent.organizationId` is `ON DELETE RESTRICT`, and every organisation created through this API carries an `ORGANIZATION_CREATED` event from the transaction that created it — so the database refuses the deletion while that history exists, which is the intended Phase 2 behaviour rather than a defect. Audit history is not discarded to satisfy a delete request; purging an organisation and its records is a platform-administration operation in a later phase. Path id handling is the same as the read above, and the 404 arm is checked first: a caller naming somebody else's organisation learns nothing about whether it exists. Requires `X-CSRF-Token`.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Path parameter.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted. Unreachable for any organisation this API created."
+          },
+          "401": {
+            "description": "No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`)."
+          },
+          "403": {
+            "description": "The role lacks `organization.delete`, the organisation is suspended, or a CSRF failure."
+          },
+          "404": {
+            "description": "The path id is not the session's active organisation (`RESOURCE_NOT_FOUND`)."
+          },
+          "409": {
+            "description": "The organisation has an audit history (`INVALID_STATE_TRANSITION`)."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "permission",
+          "permission": "organization.delete"
+        }
+      },
+      "get": {
+        "operationId": "OrganizationsController_read",
+        "tags": [
+          "Organizations"
+        ],
+        "summary": "Read one organisation.",
+        "description": "Returns the organisation the session is currently acting in. The `:id` in the path is checked **against** the session's active organisation rather than used to select one: any other id answers 404, including an id that does not exist, one belonging to another tenant, and one belonging to an organisation the caller is a member of but is not currently acting in. Switch with `POST /api/v1/auth/switch-org` first. 404 rather than 403 for the cross-tenant case, because a 403 would confirm the resource exists.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Path parameter.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The organisation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "slug": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ACTIVE",
+                        "SUSPENDED",
+                        "TERMINATED"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "slug",
+                    "name",
+                    "status",
+                    "createdAt",
+                    "updatedAt"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`)."
+          },
+          "403": {
+            "description": "The role lacks `organization.read`, or the organisation is suspended."
+          },
+          "404": {
+            "description": "The path id is not the session's active organisation (`RESOURCE_NOT_FOUND`)."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "permission",
+          "permission": "organization.read"
+        }
+      },
+      "patch": {
+        "operationId": "OrganizationsController_update",
+        "tags": [
+          "Organizations"
+        ],
+        "summary": "Update one organisation.",
+        "description": "Patches the organisation the session is currently acting in, and writes an `ORGANIZATION_UPDATED` audit event in the same transaction with the before and after values. The name is the only patchable field in this version: `slug` is deliberately absent because it appears in URLs customers have bookmarked, and `requireMfa` and `enforcedEmailDomain` are absent because nothing would read them yet. An empty patch is a 400 — answering 200 to a no-op teaches a client that its update worked. Path id handling is the same as the read above. Requires `X-CSRF-Token`.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Path parameter.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "At least one field. The schema is strict and refuses `{}`.",
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated organisation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "slug": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ACTIVE",
+                        "SUSPENDED",
+                        "TERMINATED"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "slug",
+                    "name",
+                    "status",
+                    "createdAt",
+                    "updatedAt"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body did not validate, or was empty."
+          },
+          "401": {
+            "description": "No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`)."
+          },
+          "403": {
+            "description": "The role lacks `organization.update`, the organisation is suspended, or a CSRF failure."
+          },
+          "404": {
+            "description": "The path id is not the session's active organisation (`RESOURCE_NOT_FOUND`)."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "permission",
+          "permission": "organization.update"
         }
       }
     },

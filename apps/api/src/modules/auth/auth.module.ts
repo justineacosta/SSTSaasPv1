@@ -17,6 +17,7 @@ import { LoginService } from './login.service.js';
 import { MfaEnrolmentService } from './mfa-enrolment.service.js';
 import { MfaVerificationService } from './mfa-verification.service.js';
 import { LogoutService } from './logout.service.js';
+import { OrganizationSwitchService } from './organization-switch.service.js';
 import { PasswordChangeService } from './password-change.service.js';
 import { PasswordResetService } from './password-reset.service.js';
 import { RecoveryCodesService } from './recovery-codes.service.js';
@@ -56,8 +57,10 @@ import { type SecretTokenTtlSeconds, TokenService } from './token.service.js';
  * exactly that long. `AuthController` arrives now that the guard, the CSRF
  * guard, the rate limiter and the boot-time access assertion are all in the
  * pipeline ahead of it. That check reported **seven** after Task 8, ten after
- * Task 9's login, logout and session routes, and thirteen after Task 10's
- * password reset and change.
+ * Task 9's login, logout and session routes, thirteen after Task 10's password
+ * reset and change, and eighteen after Task 11's five MFA routes. Task 13 adds
+ * `POST /auth/switch-org` here and four organisation routes elsewhere, taking
+ * it to twenty-four.
  *
  * `ENV` and the logger come from the global `ConfigModule`. Neither
  * `PrismaModule` nor `RedisModule` is global — each exports its one token
@@ -172,6 +175,7 @@ import { type SecretTokenTtlSeconds, TokenService } from './token.service.js';
     RecoveryCodesService,
     MfaEnrolmentService,
     MfaVerificationService,
+    OrganizationSwitchService,
   ],
   // `SessionRepository` is deliberately NOT exported. It is `SessionService`'s
   // Postgres access, and a consumer holding it could revoke a row without
@@ -191,6 +195,13 @@ import { type SecretTokenTtlSeconds, TokenService } from './token.service.js';
   // second factor without going through the route that demands the current
   // password, and a consumer holding `MfaVerificationService` could promote a
   // pending session without the rate limit or the five-attempt lock.
+  //
+  // `OrganizationSwitchService` is not exported either, and the argument is the
+  // same one the paragraph above makes about the MFA services: a consumer
+  // holding it could rotate a session into another organisation without the
+  // route's CSRF guard, its rate-limit class or its audit row — and the whole
+  // point of that service is that it is the only thing in this codebase that
+  // writes `Session.activeOrganizationId`.
   exports: [PasswordService, BreachCheckService, TokenService, SessionService],
 })
 export class AuthModule {}
