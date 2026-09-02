@@ -983,7 +983,7 @@
           "Auth"
         ],
         "summary": "Describe the current session.",
-        "description": "The document the permission-aware frontend reads and nothing else. `permissions` is currently always empty: role assignment does not exist yet, so the effective permission set genuinely is empty rather than unavailable. `entitlements` is an open object and is currently always empty — billing arrives in a later phase. `activeOrganization` is null until an organisation has been chosen. The session identifier is deliberately absent.",
+        "description": "The document the permission-aware frontend reads and nothing else. `permissions` is the effective permission set for the session's active organisation, and is empty whenever there is no active organisation, no active membership in it, or the organisation is suspended. `entitlements` is an open object and is currently always empty — billing arrives in a later phase. `activeOrganization` is null until an organisation has been chosen. The session identifier is deliberately absent.",
         "responses": {
           "200": {
             "description": "The session document.",

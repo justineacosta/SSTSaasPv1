@@ -484,21 +484,24 @@ export class AuthController {
    * `generalSession`, and the same sentence applies as on `logout`: it resolves
    * nothing today.
    *
-   * **`permissions` is `[]` and that is the truth, not a stub.** There is no
-   * role-assignment machinery until Task 12 and nothing anywhere computes an
-   * effective permission set, so inventing a value would be a lie the frontend
-   * would believe and act on. `session-document.service.ts` carries the full
-   * argument, and its spec asserts the empty array so a future edit has to come
-   * past it.
+   * **`permissions` is now the set `TenantContextGuard` resolved, and it is
+   * still `[]` on every session that exists.** Task 12 replaced the hard-coded
+   * empty array with the real effective set; the set is empty exactly when no
+   * tenant resolved, and nothing writes `Session.activeOrganizationId` until
+   * Task 13, so no caller can yet observe a non-empty one. The response has not
+   * changed — only the reason for it. `session-document.service.ts` carries the
+   * full argument, and its spec now pins both directions: empty with no tenant,
+   * populated with one.
    */
   @AuthenticatedOnly()
   @RateLimit('generalSession')
   @ApiDoc({
     summary: 'Describe the current session.',
     description:
-      'The document the permission-aware frontend reads and nothing else. `permissions` is ' +
-      'currently always empty: role assignment does not exist yet, so the effective permission ' +
-      'set genuinely is empty rather than unavailable. `entitlements` is an open object and is ' +
+      'The document the permission-aware frontend reads and nothing else. `permissions` is the ' +
+      "effective permission set for the session's active organisation, and is empty whenever " +
+      'there is no active organisation, no active membership in it, or the organisation is ' +
+      'suspended. `entitlements` is an open object and is ' +
       'currently always empty — billing arrives in a later phase. `activeOrganization` is null ' +
       'until an organisation has been chosen. The session identifier is deliberately absent.',
     responses: [
@@ -508,7 +511,11 @@ export class AuthController {
   })
   @Get('session')
   async session(@Req() request: Request): Promise<SessionResponse> {
-    return this.sessionDocument.forPrincipal(principalOf(request));
+    // `request.tenant`, not `@Ctx()`. That decorator throws when the tenant is
+    // absent, which is right for a `@RequirePermission()` handler and wrong
+    // here: this route is `@AuthenticatedOnly()` and its whole job is to answer
+    // a caller who may have no organisation at all.
+    return this.sessionDocument.forPrincipal(principalOf(request), request.tenant);
   }
 
   /**

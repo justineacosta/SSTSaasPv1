@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import type { Server } from 'node:http';
+import type { Type } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import { type PostgresHarness, startPostgresHarness } from '@sentinel/db/testing';
@@ -84,7 +85,51 @@ export interface AuthHarness {
   stop(): Promise<void>;
 }
 
-export async function startAuthHarness(): Promise<AuthHarness> {
+export interface AuthHarnessOptions {
+  /**
+   * WHICH POSTGRES ROLE THE APPLICATION UNDER TEST CONNECTS AS.
+   *
+   * `'owner'` (the default, and what every suite before Task 12 uses) binds
+   * `PRISMA` to the schema owner. That role is a superuser and **bypasses
+   * row-level security**, which is carry-forward ruling 75: a spec that
+   * replaced `withTenantTransaction(...)` with a direct client call left both
+   * lanes green, because the whole application under integration test was
+   * connecting as the container superuser and no policy could bite.
+   *
+   * `'app'` binds it to `sentinel_app` — the least-privileged role the API
+   * process actually connects as in production, and the one every RLS policy
+   * applies to. **A spec asserting a property that only RLS provides must use
+   * it**, or it is asserting that Postgres has policies rather than that this
+   * code obeys them.
+   *
+   * The default is `'owner'` rather than the safer value on purpose: switching
+   * every existing suite to `'app'` in this task would change what a dozen
+   * specs are testing in a change nobody reviewed for that. New suites choose
+   * deliberately; `authorization.integration.spec.ts` chooses `'app'` and says
+   * why.
+   *
+   * `harness.prisma` is the owner client either way, because fixtures have to
+   * be seeded by a role that can write them.
+   */
+  readonly connectAs?: 'owner' | 'app';
+  /**
+   * Extra controllers compiled into the **real** `AppModule`.
+   *
+   * For proving a guard that no shipped route exercises yet. Task 12's
+   * authorization guard is the case it exists for: no endpoint in this API
+   * declares `@RequirePermission()` until Task 13, so the only way to run the
+   * real guard array, in the real order, against real rows is to add a route
+   * that does. Everything except the endpoint stays production.
+   *
+   * `buildGuardedApp` in `routing-app.ts` is the unit-lane equivalent and
+   * assembles a *minimal* application; this one assembles the whole graph, so a
+   * guard that depends on a provider nobody registered fails here rather than
+   * being stubbed past.
+   */
+  readonly controllers?: readonly Type[];
+}
+
+export async function startAuthHarness(options: AuthHarnessOptions = {}): Promise<AuthHarness> {
   process.env.NODE_ENV = 'test';
   process.env.APP_ENV = 'test';
 
@@ -99,9 +144,12 @@ export async function startAuthHarness(): Promise<AuthHarness> {
     },
   };
 
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+  const moduleRef = await Test.createTestingModule({
+    imports: [AppModule],
+    controllers: [...(options.controllers ?? [])],
+  })
     .overrideProvider(PRISMA)
-    .useValue(prisma)
+    .useValue(options.connectAs === 'app' ? appPrisma : prisma)
     .overrideProvider(MAILER)
     .useValue(recordingMailer)
     .compile();

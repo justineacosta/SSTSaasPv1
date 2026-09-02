@@ -28,4 +28,9 @@ export {
 } from './datamodel.js';
 export type { DatamodelEnum, DatamodelModel, DatamodelRelation } from './datamodel.js';
 export { computeSchemaHash, decideSchemaStaleness, normaliseSchema } from './schema-hash.js';
+// Exported for `pnpm db:seed` and for integration specs that need the system
+// roles and their grants present before they can assert anything about
+// authorization. It seeds REFERENCE data only — never a tenant, never a user —
+// so exposing it cannot be used to fabricate a populated product.
+export { seedReferenceData } from './seed.js';
 export type { SchemaStaleness } from './schema-hash.js';

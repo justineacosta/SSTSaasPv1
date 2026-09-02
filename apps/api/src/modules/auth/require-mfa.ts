@@ -6,27 +6,31 @@ import { DomainError } from '../../common/errors/domain-error.js';
 import { MFA_ENROLMENT_POLICY } from './auth.tokens.js';
 
 /**
- * D8. `Organization.requireMfa`, AS A MECHANISM THAT IS REGISTERED NOWHERE.
+ * D8. `Organization.requireMfa`, PLACED IN THE PIPELINE BY TASK 12 AND
+ * REFUSING NOBODY.
  *
  * # What this file is, and what it is not
  *
  * `security/authentication.md` §5 requires that a member of an organisation
  * with `requireMfa` be forced into enrolment "before any other action ...
  * enforced server-side on every request, not only at login". Every word of that
- * is a decision this file makes correctly, and **nothing applies it**.
+ * is a decision this file makes correctly.
  *
- * The check needs two things Task 11 does not have: tenant resolution (which
+ * The check needed two things Task 11 did not have: tenant resolution (which
  * organisation is this request acting in?) and organisation membership (is this
- * user a member of it, and does it require MFA?). Both are Task 12. The phase
- * plan is explicit — *"The guard is written here; Task 12 places it in the
- * pipeline"* — and this docblock says so because the alternative is a control
- * that reads as live in every document that mentions it.
+ * user a member of it, and does it require MFA?). Both were Task 12's, and both
+ * now exist — `MfaEnrolmentGuard` is registered as a global guard in
+ * `app.module.ts`, ahead of `AuthorizationGuard` so that a member with no
+ * factor hears this rather than `PERMISSION_DENIED`, and `MFA_ENROLMENT_POLICY`
+ * is provided in `roles.module.ts` where the tenant-scoped query lives.
  *
- * **Nothing in `AuthModule` or `AppModule` provides or registers
- * `MfaEnrolmentGuard`, and `require-mfa.spec.ts` asserts that.** Task 12 is
- * what changes that test, deliberately, by the hand that places the guard.
- * `@RequirePermission()` has the same status and `roadmap.md` describes it the
- * same way: metadata no guard enforces.
+ * **AND IT REFUSES NOBODY, WHICH IS A FACT ABOUT DATA RATHER THAN ABOUT
+ * WIRING.** The guard returns early when the request names no organisation, and
+ * nothing in Phase 2 writes `Session.activeOrganizationId` — Task 13 does — so
+ * the policy lookup below is not reached on any request this phase can produce.
+ * There is also no way to create an organisation yet, so no row can carry
+ * `requireMfa = true`. `MFA_ENROLMENT_REQUIRED` therefore still has no producer
+ * a caller can reach, and nothing may describe it as one until Task 13.
  *
  * # The exemption is not a convenience, it is what stops the rule bricking the
  * account
@@ -107,10 +111,11 @@ export function requireMfaDecision(input: RequireMfaInput): RequireMfaDecision {
  * "Does this organisation require MFA, and has this member confirmed a factor?"
  *
  * A port rather than a Prisma client, for the reason every other narrow port in
- * this module gives, plus one specific to this file: the query behind it is
- * **Task 12's**, because it needs organisation membership under tenant scoping,
- * and guessing its shape here would pin a guess into the module that has to
- * implement it. Nothing provides `MFA_ENROLMENT_POLICY` today.
+ * this module gives, plus one specific to this file: the query behind it needs
+ * organisation membership under tenant scoping, which was Task 12's, and
+ * guessing its shape here would have pinned a guess into the module that had to
+ * implement it. `MFA_ENROLMENT_POLICY` is now provided in `roles.module.ts`, by
+ * `mfaEnrolmentPolicy` in `tenant-resolver.store.ts`.
  */
 export interface MfaEnrolmentPolicy {
   (input: { userId: string; organizationId: string }): Promise<{

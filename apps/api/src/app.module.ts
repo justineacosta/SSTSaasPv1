@@ -2,9 +2,15 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD, DiscoveryModule } from '@nestjs/core';
 import type { ApiEnv } from '@sentinel/config';
 import { AuthenticationGuard } from './common/guards/authentication.guard.js';
+import { AuthorizationGuard } from './common/guards/authorization.guard.js';
 import { CrossSiteGuard, WEB_ORIGIN } from './common/guards/cross-site.guard.js';
 import { CsrfGuard } from './common/guards/csrf.guard.js';
+import { EmailVerifiedGuard } from './common/guards/email-verified.guard.js';
+import { EntitlementGuard } from './common/guards/entitlement.guard.js';
 import { RateLimitGuard } from './common/guards/rate-limit.guard.js';
+import { TenantContextGuard } from './common/guards/tenant-context.js';
+import { MfaEnrolmentGuard } from './modules/auth/require-mfa.js';
+import { RolesModule } from './modules/roles/roles.module.js';
 import { ConfigModule } from './infrastructure/config/config.module.js';
 import { MailModule } from './infrastructure/mail/mail.module.js';
 import { PrismaModule } from './infrastructure/prisma/prisma.module.js';
@@ -48,6 +54,11 @@ import { OpenApiModule } from './openapi/openapi.module.js';
     // loudly here rather than at the first send, six tasks later.
     MailModule,
     AuthModule,
+    // `@Global()`, and imported here because an `APP_GUARD`'s dependencies are
+    // resolved from the module that declares it. `TenantContextGuard` and
+    // `MfaEnrolmentGuard` are both declared below and both need a token this
+    // module provides. See `roles.module.ts`.
+    RolesModule,
     HealthModule,
     OpenApiModule,
   ],
@@ -101,6 +112,18 @@ import { OpenApiModule } from './openapi/openapi.module.js';
     // stage is the real fix and is not this task's. No warn was invented here to
     // make the old sentence true: an accurate record of the gap is the fix.
     { provide: APP_GUARD, useClass: AuthenticationGuard },
+    // **Tenant resolve, immediately after authenticate**, which is the row
+    // `architecture/backend.md` §3's table has held since Phase 0 and the first
+    // time anything has occupied it. It resolves on every authenticated route
+    // and denies only on one declaring a permission — `tenant-context.ts` gives
+    // the argument, and it is the same one `require-mfa.ts` makes about its
+    // exemption: a member who was just removed must still be able to read their
+    // own session and sign out, and both of those are `@AuthenticatedOnly()`.
+    //
+    // It performs **no query at all** unless `Session.activeOrganizationId` is
+    // non-null, which nothing in Phase 2 writes until Task 13. So the cost of
+    // this row today is one `if` per authenticated request.
+    { provide: APP_GUARD, useClass: TenantContextGuard },
     // **CSRF after authenticate**, so it runs on a request whose credential has
     // already been established, and so an unauthenticated caller gets 401
     // rather than 403 — one refusal, describing the first thing that was wrong.
@@ -115,6 +138,35 @@ import { OpenApiModule } from './openapi/openapi.module.js';
     // because a caller whose credential or CSRF token is wrong should hear
     // about that first.
     { provide: APP_GUARD, useClass: CrossSiteGuard },
+    // **The two account- and organisation-level gates, after the two
+    // forgery checks and before authorization.** Both read the database, and a
+    // cross-site forged request should be refused by a header comparison rather
+    // than pay for two reads on its way to the same 403.
+    //
+    // Before authorization because `security/authentication.md` §5 says a
+    // member of an organisation that requires MFA is forced into enrolment
+    // "before any other action": a caller with no factor must hear
+    // `MFA_ENROLMENT_REQUIRED` and not `PERMISSION_DENIED`, which would send
+    // them to ask an owner for a permission that would not have helped.
+    //
+    // **Each governs zero routes today, and both are registered anyway.** No
+    // handler carries `@RequireVerifiedEmail()` (Task 13 applies the first) and
+    // no organisation can be created to set `requireMfa` (also Task 13). What
+    // registration buys is that the day a route carries the decorator, it is
+    // governed — rather than the day somebody remembers to add the guard.
+    // `MfaEnrolmentGuard` in particular was written in Task 11 and left
+    // deliberately unregistered, with a spec asserting its absence; this is the
+    // hand the plan named to place it.
+    { provide: APP_GUARD, useClass: EmailVerifiedGuard },
+    { provide: APP_GUARD, useClass: MfaEnrolmentGuard },
+    // **Authorize**, layer 4 of `security/authorization.md` §2. Acts only on a
+    // route declaring `@RequirePermission()`, which no shipped route does yet.
+    { provide: APP_GUARD, useClass: AuthorizationGuard },
+    // **Entitlement last**, layer 6, a Phase 10 stub that admits every request.
+    // Its position is the decision it exists to record: 402 after 403, so a
+    // caller who was never permitted the action does not learn what the
+    // organisation's plan includes. See `entitlement.guard.ts`.
+    { provide: APP_GUARD, useClass: EntitlementGuard },
   ],
 })
 export class AppModule {}

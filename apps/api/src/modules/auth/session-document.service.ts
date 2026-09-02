@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { SessionResponse } from '@sentinel/contracts';
+import type { SessionResponse, TenantContext } from '@sentinel/contracts';
 import { ACTIVE_ORGANIZATION_LOOKUP } from './auth.tokens.js';
 import type { ActiveOrganizationLookup } from './active-organization.store.js';
 import { SessionRepository } from './session.repository.js';
@@ -22,12 +22,28 @@ export interface ActiveOrganizationSource {
  * `GET /api/v1/auth/session` — the document the permission-aware frontend reads
  * and nothing else.
  *
- * # `permissions` IS GENUINELY EMPTY, AND THAT IS NOT A PLACEHOLDER
+ * # `permissions` IS NOW REAL, AND IT IS STILL EMPTY ON EVERY SESSION THAT EXISTS
  *
- * D8. There is no role-assignment machinery until Task 12: `Membership.roleId`
- * exists, `PERMISSIONS` exists, `@RequirePermission()` exists as metadata no
- * guard reads, and **nothing anywhere computes an effective permission set**.
- * The honest value today is `[]`, and it is what this returns.
+ * Task 12 replaced the hard-coded `[]` with the set `TenantContextGuard`
+ * resolved for this request. The value is no longer a stub — and it is still
+ * `[]` for every session this phase can create, because the set is empty
+ * exactly when no tenant resolved, and nothing writes
+ * `Session.activeOrganizationId` until Task 13. **The observable behaviour of
+ * this endpoint has not changed; what changed is why.** A reader of this file,
+ * or of a captured response, must not take an empty array as evidence that
+ * resolution ran and found nothing.
+ *
+ * It is read off `request.tenant` rather than recomputed. The guard has already
+ * done the query, and a second one here could disagree with the answer the same
+ * request was authorised against.
+ *
+ * An unresolved tenant reports `[]` — not an error, and not a partial set. That
+ * covers all three of "no organisation chosen", "not a member" and
+ * "organisation suspended", and the last is the one worth stating: a member of
+ * a suspended organisation may do nothing in it, so an *effective* permission
+ * set of nothing is the accurate report rather than a diminished one. This
+ * endpoint is `@AuthenticatedOnly()`, so none of the three refuses the request
+ * — the caller still gets their own session document.
  *
  * Inventing a placeholder — `['project.read']`, or a wildcard — would be a lie
  * the frontend would believe and act on, and `api/conventions.md`'s contract
@@ -71,7 +87,19 @@ export class SessionDocumentService {
     @Inject(ACTIVE_ORGANIZATION_LOOKUP) private readonly organizations: ActiveOrganizationLookup,
   ) {}
 
-  async forPrincipal(principal: { userId: string; sessionId: string }): Promise<SessionResponse> {
+  /**
+   * `tenant` is what `TenantContextGuard` resolved for this request, or
+   * `undefined` when it resolved nothing.
+   *
+   * A parameter rather than a second lookup, and required rather than optional:
+   * `exactOptionalPropertyTypes` aside, a caller that may omit it is a caller
+   * who can silently report an empty permission set for a member who has one.
+   * The controller passes `request.tenant` and there is nothing else to pass.
+   */
+  async forPrincipal(
+    principal: { userId: string; sessionId: string },
+    tenant: TenantContext | undefined,
+  ): Promise<SessionResponse> {
     const session = await this.sessions.findById(principal.sessionId);
     const organizationId = session?.activeOrganizationId ?? null;
 
@@ -79,10 +107,10 @@ export class SessionDocumentService {
       userId: principal.userId,
       activeOrganization:
         organizationId === null ? null : await this.organizations.find(organizationId),
-      // See the class docblock. NOT a placeholder, and not to be filled with a
-      // guess: Task 12 owns computing this from the caller's `Membership` and
-      // `Role`, and until then the effective permission set really is empty.
-      permissions: [],
+      // Sorted, because `permissions` is a set and a response is a sequence:
+      // an unstable order would make two identical documents differ, which
+      // breaks byte comparison in tests and cache validation in clients.
+      permissions: tenant === undefined ? [] : [...tenant.permissions].sort(),
       // Phase 5. An open record, so filling it is additive.
       entitlements: {},
     };

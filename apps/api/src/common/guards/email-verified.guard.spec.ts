@@ -1,5 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import type { Server } from 'node:http';
+import { globSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   Controller,
   Get,
@@ -245,12 +249,24 @@ describe('a route with no gate', () => {
 });
 
 describe('what this guard governs today', () => {
-  it('is registered in no module — Task 13 owns applying it', async () => {
-    // RULING F, AS AN ASSERTION RATHER THAN A SENTENCE. Every test above runs
-    // against controllers that exist nowhere in the product. If a later task
-    // registers this guard globally without also applying the decorator to a
-    // real route, this goes red and the claim in `authentication.md` §6 gets
-    // revisited instead of quietly becoming false.
+  /**
+   * RULING F, AS TWO ASSERTIONS RATHER THAN A SENTENCE.
+   *
+   * Task 12 registered this guard globally, so the first half of ruling F is
+   * now false and is replaced rather than deleted. What it was protecting is
+   * unchanged and is the second assertion: **no route carries
+   * `@RequireVerifiedEmail()`**, so the guard returns early on every request in
+   * the product and `EMAIL_NOT_VERIFIED` still has no producer a caller can
+   * reach. `security/authentication.md` §6's claim stays unmet until Task 13
+   * applies the decorator, and this is what goes red on the day it does —
+   * forcing the document to be revisited rather than quietly becoming true by
+   * accident.
+   *
+   * Registered without a single route carrying the decorator is deliberate: the
+   * alternative is Task 13 having to remember both halves, and a guard that is
+   * absent from the pipeline is the half nobody notices is missing.
+   */
+  it('is registered as a global guard, so a decorated route is governed at once', async () => {
     const { AppModule } = await import('../../app.module.js');
     const providers = (Reflect.getMetadata('providers', AppModule) ?? []) as {
       provide?: unknown;
@@ -259,6 +275,37 @@ describe('what this guard governs today', () => {
     const guards = providers
       .filter((provider) => provider.provide === APP_GUARD)
       .map((provider) => provider.useClass);
-    expect(guards).not.toContain(EmailVerifiedGuard);
+    expect(guards).toContain(EmailVerifiedGuard);
+  });
+
+  it('governs no shipped route, because no handler carries @RequireVerifiedEmail()', () => {
+    // Asserted against the CONTROLLER FILES, with comments stripped, rather
+    // than by booting the application: the boot needs Postgres, Redis and a
+    // validated environment, none of which this property depends on, and a
+    // check that needs the world is a check somebody moves to a lane that does
+    // not run. Comment-stripping is `require-mfa.spec.ts`'s technique and it is
+    // here for the same reason — this file's own docblocks name the decorator
+    // repeatedly, and a raw search would read the documentation as the thing it
+    // documents the absence of.
+    // `../..` from `src/common/guards/` is `src/`, which is what the pattern is
+    // relative to. The `toBeGreaterThan(0)` below is not decoration: the first
+    // version of this test globbed the wrong directory, found nothing, and
+    // would have reported "no route carries the decorator" forever.
+    // `node:fs`'s globSync has no `absolute` option — it returns paths relative
+    // to `cwd` — so they are joined by hand rather than read from the process's
+    // working directory, which differs between a whole-suite run and a single-file one.
+    const root = fileURLToPath(new URL('../..', import.meta.url));
+    const controllers = globSync('**/*.controller.ts', { cwd: root }).map((relative) =>
+      join(root, relative),
+    );
+    expect(controllers.length).toBeGreaterThan(0);
+
+    const decorated = controllers.filter((file) =>
+      readFileSync(file, 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '')
+        .includes('@RequireVerifiedEmail('),
+    );
+    expect(decorated).toEqual([]);
   });
 });

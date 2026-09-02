@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sessionResponseSchema } from '@sentinel/contracts';
+import { sessionResponseSchema, type Permission } from '@sentinel/contracts';
 import type { ActiveOrganizationLookup } from './active-organization.store.js';
 import {
   type ActiveOrganizationSource,
@@ -53,7 +53,7 @@ describe('SessionDocumentService.forPrincipal', () => {
     // Parsing the real output through it here means a field this service adds
     // by hand cannot reach a client without the schema learning about it first.
     const { service } = harness();
-    const document = await service.forPrincipal(PRINCIPAL);
+    const document = await service.forPrincipal(PRINCIPAL, undefined);
     expect(sessionResponseSchema.parse(document)).toEqual(document);
   });
 
@@ -62,7 +62,7 @@ describe('SessionDocumentService.forPrincipal', () => {
     // identifier has no business being readable by a script running in the
     // page, and a client that has one will eventually put it in a URL.
     const { service } = harness();
-    const document = await service.forPrincipal(PRINCIPAL);
+    const document = await service.forPrincipal(PRINCIPAL, undefined);
     expect(document.userId).toBe(PRINCIPAL.userId);
     expect(Object.keys(document).sort()).toEqual([
       'activeOrganization',
@@ -72,18 +72,45 @@ describe('SessionDocumentService.forPrincipal', () => {
     ]);
   });
 
-  it('reports an EMPTY permission set, because today there genuinely is one', async () => {
-    // D8. There is no role-assignment machinery until Task 12 and nothing
-    // anywhere computes an effective permission set. A placeholder here would
-    // be a lie the frontend would act on. This assertion is what a future edit
-    // has to come past.
+  it('reports an EMPTY permission set when no tenant resolved', async () => {
+    // Which is every session Phase 2 can create: nothing writes
+    // `Session.activeOrganizationId` until Task 13, so `TenantContextGuard`
+    // resolves nothing and passes `undefined`. Empty is the accurate report and
+    // the fail-closed direction, not a placeholder.
     const { service } = harness();
-    expect((await service.forPrincipal(PRINCIPAL)).permissions).toEqual([]);
+    expect((await service.forPrincipal(PRINCIPAL, undefined)).permissions).toEqual([]);
+  });
+
+  it('reports the resolved permission set when a tenant DID resolve', async () => {
+    // The other half, and the one that makes the assertion above non-vacuous.
+    // Before Task 12 this service returned `[]` unconditionally, so a test of
+    // the empty case alone could not tell a real computation from a constant.
+    const { service } = harness();
+    const document = await service.forPrincipal(PRINCIPAL, {
+      organizationId: ORGANIZATION.id,
+      membershipId: 'mbr_01J000000000000000000001',
+      roleKey: 'AUDITOR',
+      permissions: new Set<Permission>(['audit.read', 'organization.read']),
+    });
+    expect(document.permissions).toEqual(['audit.read', 'organization.read']);
+  });
+
+  it('sorts the permission set, because a response is a sequence and a Set is not', async () => {
+    // An unstable order makes two identical documents differ, which breaks byte
+    // comparison in tests and cache validation in clients.
+    const { service } = harness();
+    const document = await service.forPrincipal(PRINCIPAL, {
+      organizationId: ORGANIZATION.id,
+      membershipId: 'mbr_01J000000000000000000001',
+      roleKey: 'AUDITOR',
+      permissions: new Set<Permission>(['organization.read', 'audit.read']),
+    });
+    expect(document.permissions).toEqual(['audit.read', 'organization.read']);
   });
 
   it('reports empty entitlements, because billing is Phase 5', async () => {
     const { service } = harness();
-    expect((await service.forPrincipal(PRINCIPAL)).entitlements).toEqual({});
+    expect((await service.forPrincipal(PRINCIPAL, undefined)).entitlements).toEqual({});
   });
 
   it('reports a null organisation and does NOT ask, when the session names none', async () => {
@@ -92,7 +119,7 @@ describe('SessionDocumentService.forPrincipal', () => {
     // the lookup opens a transaction, and opening one to look up `null` would
     // put a database round trip on every `GET /auth/session` in the product.
     const { service, asked } = harness({ activeOrganizationId: null });
-    const document = await service.forPrincipal(PRINCIPAL);
+    const document = await service.forPrincipal(PRINCIPAL, undefined);
 
     expect(document.activeOrganization).toBeNull();
     expect(asked).toEqual([`session:${PRINCIPAL.sessionId}`]);
@@ -100,7 +127,7 @@ describe('SessionDocumentService.forPrincipal', () => {
 
   it('resolves the organisation for real when the session names one', async () => {
     const { service, asked } = harness({ activeOrganizationId: ORGANIZATION.id });
-    const document = await service.forPrincipal(PRINCIPAL);
+    const document = await service.forPrincipal(PRINCIPAL, undefined);
 
     expect(document.activeOrganization).toEqual(ORGANIZATION);
     expect(asked).toEqual([`session:${PRINCIPAL.sessionId}`, `organization:${ORGANIZATION.id}`]);
@@ -113,7 +140,7 @@ describe('SessionDocumentService.forPrincipal', () => {
     // organisation that has gone would sign them out of a product they are
     // still entitled to use. Task 13 owns clearing the stale column.
     const { service } = harness({ activeOrganizationId: 'org_01M0T74WZZFY9T2QS56RGF3GQ8' });
-    expect((await service.forPrincipal(PRINCIPAL)).activeOrganization).toBeNull();
+    expect((await service.forPrincipal(PRINCIPAL, undefined)).activeOrganization).toBeNull();
   });
 
   it('reports null when the session row itself has vanished', async () => {
@@ -121,6 +148,6 @@ describe('SessionDocumentService.forPrincipal', () => {
     // Handled rather than left to throw on a property of `null`, because the
     // failure would be a 500 on a request that is otherwise fine.
     const { service } = harness({ sessionMissing: true });
-    expect((await service.forPrincipal(PRINCIPAL)).activeOrganization).toBeNull();
+    expect((await service.forPrincipal(PRINCIPAL, undefined)).activeOrganization).toBeNull();
   });
 });
