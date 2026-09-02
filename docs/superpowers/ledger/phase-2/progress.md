@@ -22,7 +22,7 @@ Branch: `feat/phase-2-identity`
 | 10 | Password reset | chained with 9 | **Done** — [brief](task-10/brief.md) · [report](task-10/report.md) · [review](task-10/review.md) · [dispositions](task-10/fix-brief.md) · [fixes](task-10/fixes.md) · [fix review](task-10/fix-review.md) |
 | 11 | TOTP MFA and recovery codes | subagent | **Done** — [brief](task-11/brief.md) · [report](task-11/report.md) · [review](task-11/review.md) · [dispositions](task-11/fix-brief.md) · [fixes](task-11/fixes.md) |
 | 12 | Tenant resolution and the authorization guard | orchestrator | **Done** — [report](task-12/report.md) · [review-brief](task-12/review-brief.md) · [review](task-12/review.md) · [fixes](task-12/fixes.md) |
-| **A** | **Checkpoint — verify, push, CI green, status recorded** | orchestrator | **Verified, recorded, pushed.** CI run `33602860564` — check its conclusion before starting Task 13 |
+| **A** | **Checkpoint — verify, push, CI green, status recorded** | orchestrator | **Done** — CI green on `4db9dd6`, run `33603114204`, all eighteen stages confirmed executed. **Not merged.** |
 | 13 | Organisations and organisation switching | chained 13→15 | Not started |
 | 14 | Memberships, roles, last-owner invariant | chained 13→15 | Not started |
 | 15 | Invitations | chained 13→15 | Not started |
@@ -821,6 +821,23 @@ Full reasoning in [`task-10/review.md`](task-10/review.md),
     make it true** if they reproduce the method: this is the first claim in the phase that was
     verified by a second pair of eyes and still wrong.
 
+105. **`gh run watch --exit-status` exits 0 on a CANCELLED run.** Measured. Run `33602860564`
+    was cancelled by GitHub's concurrency group the moment a second push started a higher-priority
+    run on the same branch; the watcher printed
+    `Canceling since a higher priority waiting request ... exists` and
+    `The operation was canceled`, and then **exited 0**. Reading the exit code alone would have
+    recorded a cancelled run as a green one — and this phase's Checkpoint A asks for exactly that
+    claim, cited by run ID.
+
+    Two rules follow. **Read a CI run's `conclusion` field, never the watcher's exit status** —
+    `gh run view <id> --json status,conclusion`. And **pushing again cancels the run in flight**,
+    so the run ID worth citing is the one on the final commit, not the first one started.
+
+    This is the third instance in this task of the same shape: a wrapper's exit code reported
+    success for work that did not happen (the `$TMPDIR` redirect in report.md §1), a test suite
+    reported success for guards that never ran (ruling 91), and now a watcher reported success for
+    a run that was cancelled. **An exit code is a claim about a process, not about a result.**
+
 ## Pause state
 
 **2026-09-02 — Task 12 built and NOT reviewed. Checkpoint A recorded, one bullet short. Tasks
@@ -863,11 +880,13 @@ commit `7540279` (Task 11's fix round, previously unreviewed). **1 High, 7 Mediu
 seven Mediums are closed. The reviewer re-ran every mutation and every evidence-table number
 independently; all eleven command rows held, and four prose claims did not.
 
-**The branch is pushed and CI is running: run `33602860564`** on `feat/phase-2-task-12-authorization`,
-started 2026-09-02. Checkpoint A's second bullet asks for a green Linux run cited by run ID. **Do
-not read this line as "CI is green"** — check the run's conclusion, and confirm every stage
-executed rather than inferring it from the conclusion, which is the discipline Task 11's merge
-followed.
+**CI is green: run `33603114204`** on `4db9dd6`, `completed / success`, all eighteen stages
+confirmed to have executed rather than inferred from the conclusion. The first run
+(`33602860564`) was cancelled by a later push and the watcher exited 0 on it anyway — ruling 105.
+
+**The branch is NOT merged**, and that is the one thing standing between here and Task 13. `main`
+is at `a0b2963` and does not contain the authorization pipeline; the plan has Tasks 13–15 branch
+from `main`, so starting one now would build on a base without tenant resolution.
 
 **The fix round has not itself been reviewed** — the same status Task 10's and Task 11's carried.
 Every change in it was measured with the mutation re-run and pasted, but that is the author

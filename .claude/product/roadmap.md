@@ -1657,21 +1657,21 @@ checking their own work. Commit `7540279` is the one Task 12's reviewer may trea
 
 ---
 
-## Checkpoint A — 2026-09-02, reviewed and fixed, one bullet short
+## Checkpoint A — 2026-09-02, reviewed, fixed, and CI green
 
 **Phase 2 moves to Partially Implemented here**, with the gap named precisely:
 *the identity API is built and the authorization pipeline is enforced end to end; no
 authentication UI exists, so the E2E journey exit criterion is unmet and the phase is not
 complete.*
 
-**The checkpoint itself is not fully discharged, and the status is recorded anyway.** Its
-second bullet requires the branch pushed and a **green CI run on a Linux runner, cited by run
-ID**. The branch `feat/phase-2-task-12-authorization` was pushed on 2026-09-02 and **CI run
-`33602860564` was started**; the evidence table below is local, from a Windows workstation, and
-**nothing here may be read as "CI is green"** — that requires the run's own conclusion, with every
-stage confirmed to have executed rather than inferred from it. The branch is **not merged**. The
-status moves before CI rather than after because the whole point of the checkpoint is that the
-window between building something and recording it is when a session ends unexpectedly.
+**Both of the checkpoint's first two bullets are now discharged.** The branch was pushed on
+2026-09-02 and **CI run `33603114204` concluded `success` on a Linux runner**, with all eighteen
+stages confirmed to have executed rather than inferred from the conclusion. Everything else in the
+evidence table is local, from a Windows workstation.
+
+**The branch is not merged.** `main` is still at `a0b2963` and does not contain the authorization
+pipeline, so Tasks 13–15 must not be started until it is — the plan has them branch from `main`,
+and a Task 13 cut from the current one would build on a base without tenant resolution.
 
 **Task 12 was reviewed on 2026-09-02** by a fresh adversarial reviewer, which also took commit
 `7540279` — Task 11's fix round, previously unreviewed. **1 High, 7 Mediums, 8 Lows.** All eight
@@ -1703,7 +1703,7 @@ and were **independently re-run by the reviewer**, every row holding.
 | `pnpm check:secrets` | 0 | No credential-shaped literal in a committed file. |
 | `pnpm test:e2e` | 0 | 5 passed against a Playwright-owned production build. **It proves only that the Phase 1 smoke specs still pass** — there is no authentication screen for it to exercise. |
 | `docker compose ps` | 0 | postgres, redis, minio, mailpit all `Up (healthy)`. |
-| CI on a Linux runner | **started, conclusion not recorded here** | Run `33602860564`, pushed 2026-09-02. This row is here because a missing row is easier to miss than a stated absence — and it stays until somebody reads the conclusion and writes it down. |
+| CI on a Linux runner | **0** | Run **`33603114204`** on `4db9dd6`, `completed / success`, read from the run's `conclusion` field rather than a watcher's exit status. **All eighteen stages confirmed to have executed** — install, format, lint, typecheck, unit, spec-project coverage, credential literals, compose stack, integration, build, OpenAPI diff, registry, Playwright install, e2e — with only the two failure-only steps skipped, correctly. The first run (`33602860564`) was **cancelled** by a later push and `gh run watch --exit-status` exited 0 on it anyway: ruling 105. |
 | `prisma migrate deploy` against a **fresh empty database** | 0 | All migrations replay from empty onto a clean `postgres:16-alpine` seeded only with `infra/docker/postgres/init/01-app-role.sql`, ending at `20260901185059_mfa_factor_last_accepted_step`. **The `sentinel_app` role must pre-exist** — without the init script the run fails at `20260820121229_row_level_security` with `role "sentinel_app" does not exist`, which is worth knowing before a first deploy. |
 
 ### What the three Phase 2 exit criteria actually stand at
