@@ -182,9 +182,9 @@ describe('the verified-email gate', () => {
   });
 
   it('is declared on exactly one handler, so the count cannot drift', () => {
-    expect(ROUTES.filter((route) => route.requiresVerifiedEmail).map((route) => route.handler)).toEqual([
-      'create',
-    ]);
+    expect(
+      ROUTES.filter((route) => route.requiresVerifiedEmail).map((route) => route.handler),
+    ).toEqual(['create']);
   });
 });
 
@@ -232,7 +232,9 @@ describe('the controller as a whole', () => {
     // purpose (its failure direction is refusing too much), so a class-level
     // one would work — and would quietly gate all five routes, including the
     // read a member with a since-reset address still needs.
-    expect(Reflect.getMetadata(REQUIRE_VERIFIED_EMAIL_KEY, OrganizationsController)).toBeUndefined();
+    expect(
+      Reflect.getMetadata(REQUIRE_VERIFIED_EMAIL_KEY, OrganizationsController),
+    ).toBeUndefined();
     expect(Reflect.getMetadata(REFUSE_CROSS_SITE_KEY, OrganizationsController)).toBeUndefined();
     expect(Reflect.getMetadata(ALLOW_PENDING_MFA_KEY, OrganizationsController)).toBeUndefined();
   });

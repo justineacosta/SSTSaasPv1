@@ -1,4 +1,16 @@
-import { Body, Controller, Delete, Get, HttpCode, Inject, Param, Patch, Post, Query, Req } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Inject,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Req,
+} from '@nestjs/common';
 import {
   type CreateOrganizationRequest,
   createOrganizationRequestSchema,
@@ -13,10 +25,7 @@ import {
   updateOrganizationRequestSchema,
 } from '@sentinel/contracts';
 import type { Request } from 'express';
-import {
-  AuthenticatedOnly,
-  RequirePermission,
-} from '../../common/decorators/access.decorator.js';
+import { AuthenticatedOnly, RequirePermission } from '../../common/decorators/access.decorator.js';
 import { Ctx } from '../../common/decorators/ctx.decorator.js';
 import { RequireVerifiedEmail } from '../../common/decorators/email-verified.decorator.js';
 import { ApiDoc } from '../../common/decorators/openapi.decorator.js';
@@ -83,9 +92,7 @@ import { OrganizationService } from './organization.service.js';
  */
 @Controller({ path: 'organizations', version: '1' })
 export class OrganizationsController {
-  constructor(
-    @Inject(OrganizationService) private readonly organizations: OrganizationService,
-  ) {}
+  constructor(@Inject(OrganizationService) private readonly organizations: OrganizationService) {}
 
   /**
    * Creates an organisation, the caller's `OWNER` membership in it, and the
@@ -119,9 +126,16 @@ export class OrganizationsController {
     },
     responses: [
       { status: 201, description: 'The new organisation.', schema: organizationResponseSchema },
-      { status: 400, description: 'The body did not validate (`VALIDATION_ERROR`, `UNKNOWN_FIELD`).' },
+      {
+        status: 400,
+        description: 'The body did not validate (`VALIDATION_ERROR`, `UNKNOWN_FIELD`).',
+      },
       { status: 401, description: 'No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`).' },
-      { status: 403, description: 'Address not verified (`EMAIL_NOT_VERIFIED`), or a CSRF failure (`CSRF_TOKEN_INVALID`).' },
+      {
+        status: 403,
+        description:
+          'Address not verified (`EMAIL_NOT_VERIFIED`), or a CSRF failure (`CSRF_TOKEN_INVALID`).',
+      },
       { status: 409, description: 'The slug is already taken (`DUPLICATE_RESOURCE`).' },
     ],
   })
@@ -162,7 +176,11 @@ export class OrganizationsController {
       '400. Suspended organisations are listed — membership is what this answers, not ' +
       'entitlement to act.',
     responses: [
-      { status: 200, description: 'One page of organisations.', schema: organizationCollectionSchema },
+      {
+        status: 200,
+        description: 'One page of organisations.',
+        schema: organizationCollectionSchema,
+      },
       { status: 400, description: 'The query did not validate, or the cursor was malformed.' },
       { status: 401, description: 'No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`).' },
     ],
@@ -192,16 +210,22 @@ export class OrganizationsController {
     summary: 'Read one organisation.',
     description:
       'Returns the organisation the session is currently acting in. The `:id` in the path is ' +
-      'checked **against** the session\'s active organisation rather than used to select one: ' +
+      "checked **against** the session's active organisation rather than used to select one: " +
       'any other id answers 404, including an id that does not exist, one belonging to another ' +
-      "tenant, and one belonging to an organisation the caller is a member of but is not " +
+      'tenant, and one belonging to an organisation the caller is a member of but is not ' +
       'currently acting in. Switch with `POST /api/v1/auth/switch-org` first. 404 rather than ' +
       '403 for the cross-tenant case, because a 403 would confirm the resource exists.',
     responses: [
       { status: 200, description: 'The organisation.', schema: organizationResponseSchema },
       { status: 401, description: 'No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`).' },
-      { status: 403, description: 'The role lacks `organization.read`, or the organisation is suspended.' },
-      { status: 404, description: 'The path id is not the session\'s active organisation (`RESOURCE_NOT_FOUND`).' },
+      {
+        status: 403,
+        description: 'The role lacks `organization.read`, or the organisation is suspended.',
+      },
+      {
+        status: 404,
+        description: "The path id is not the session's active organisation (`RESOURCE_NOT_FOUND`).",
+      },
     ],
   })
   @Get(':id')
@@ -238,8 +262,15 @@ export class OrganizationsController {
       { status: 200, description: 'The updated organisation.', schema: organizationResponseSchema },
       { status: 400, description: 'The body did not validate, or was empty.' },
       { status: 401, description: 'No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`).' },
-      { status: 403, description: 'The role lacks `organization.update`, the organisation is suspended, or a CSRF failure.' },
-      { status: 404, description: 'The path id is not the session\'s active organisation (`RESOURCE_NOT_FOUND`).' },
+      {
+        status: 403,
+        description:
+          'The role lacks `organization.update`, the organisation is suspended, or a CSRF failure.',
+      },
+      {
+        status: 404,
+        description: "The path id is not the session's active organisation (`RESOURCE_NOT_FOUND`).",
+      },
     ],
   })
   @Patch(':id')
@@ -277,14 +308,24 @@ export class OrganizationsController {
       'exists, which is the intended Phase 2 behaviour rather than a defect. Audit history is ' +
       'not discarded to satisfy a delete request; purging an organisation and its records is a ' +
       'platform-administration operation in a later phase. Path id handling is the same as the ' +
-      'read above, and the 404 arm is checked first: a caller naming somebody else\'s ' +
+      "read above, and the 404 arm is checked first: a caller naming somebody else's " +
       'organisation learns nothing about whether it exists. Requires `X-CSRF-Token`.',
     responses: [
       { status: 204, description: 'Deleted. Unreachable for any organisation this API created.' },
       { status: 401, description: 'No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`).' },
-      { status: 403, description: 'The role lacks `organization.delete`, the organisation is suspended, or a CSRF failure.' },
-      { status: 404, description: 'The path id is not the session\'s active organisation (`RESOURCE_NOT_FOUND`).' },
-      { status: 409, description: 'The organisation has an audit history (`INVALID_STATE_TRANSITION`).' },
+      {
+        status: 403,
+        description:
+          'The role lacks `organization.delete`, the organisation is suspended, or a CSRF failure.',
+      },
+      {
+        status: 404,
+        description: "The path id is not the session's active organisation (`RESOURCE_NOT_FOUND`).",
+      },
+      {
+        status: 409,
+        description: 'The organisation has an audit history (`INVALID_STATE_TRANSITION`).',
+      },
     ],
   })
   @HttpCode(204)

@@ -421,9 +421,7 @@ describe('DELETE /api/v1/organizations/:id', () => {
 
     expect(response.status).toBe(409);
     expect(codeOf(response.body)).toBe('INVALID_STATE_TRANSITION');
-    expect(
-      await owner.organization.count({ where: { id: actor.organizationId } }),
-    ).toBe(1);
+    expect(await owner.organization.count({ where: { id: actor.organizationId } })).toBe(1);
   });
 
   it('answers 409 for an organisation created through this API, which audits itself', async () => {

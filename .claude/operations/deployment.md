@@ -29,6 +29,53 @@ explain.
 
 ## 3. Deployment order
 
+### Step 0, once per database, before any migration ever runs
+
+**The migration history is not self-contained.** Two roles and the database name are
+out-of-band preconditions, and the first migration that needs one is Phase 1's — so there is no
+point at which a migration could have created it. Measured against a bare `postgres:16-alpine`:
+`prisma migrate deploy` fails at `20260820121229_row_level_security` with
+`role "sentinel_app" does not exist` (42704), and with the init script mounted the whole history
+replays and exits 0 (carry-forward ruling 96).
+
+A platform operator runs these **as a superuser**, once, against a database named `sentinel`:
+
+```sql
+-- The role the API process connects as. Not a superuser and NOT BYPASSRLS: that is the
+-- only thing that makes row-level security a real second layer rather than decoration.
+CREATE ROLE sentinel_app LOGIN PASSWORD '<from the secret manager>';
+GRANT CONNECT ON DATABASE sentinel TO sentinel_app;
+GRANT USAGE ON SCHEMA public TO sentinel_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO sentinel_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO sentinel_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO sentinel_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO sentinel_app;
+
+-- ADR-0020. Owns user_organizations(text) and nothing else. BYPASSRLS requires superuser
+-- to grant, which is why a migration cannot create this role for itself.
+CREATE ROLE sentinel_org_lookup NOLOGIN NOINHERIT BYPASSRLS;
+```
+
+`infra/docker/postgres/init/01-app-role.sql` is the same statements, and is the authority — it is
+mounted as a Postgres init script locally and in Testcontainers, so it is exercised on every
+integration run. **It hard-codes `GRANT CONNECT ON DATABASE sentinel`**, so mounting it against a
+database with any other name fails with `database "sentinel" does not exist`. The database name
+is a precondition, not a preference.
+
+Two things go wrong if this step is skipped or done partially, and they fail differently.
+Without `sentinel_app` the migration history stops on its second migration, loudly. Without
+`sentinel_org_lookup` the Task 13 migration raises a named `undefined_object` telling the
+operator which role to create — deliberately, rather than failing at `ALTER FUNCTION ... OWNER
+TO` with a message about a role nobody has heard of.
+
+**Do not grant `BYPASSRLS` to `sentinel_app` to make something work.** It is the attribute the
+whole of `security/tenant-isolation.md` §2 rests on, and
+`packages/db/src/migration.integration.spec.ts` asserts its absence.
+
+### Then, on every deploy
+
 Order matters, and getting it wrong causes an outage that looks like a code bug:
 
 ```

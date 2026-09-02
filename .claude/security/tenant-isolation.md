@@ -6,11 +6,17 @@
 > as of Task 6's review round, verified to run *together* with layer 1 through
 > `withTenantTransaction` — `packages/db/src/tenant-transaction.integration.spec.ts` is the
 > proof, including that RLS alone (not layer 1) is what catches nested reads and nested writes
-> reaching a tenant-owned model through a relation. Not yet wired into a request pipeline —
-> that is Phase 2, once there are tenant-owned routes to wire it into. Layer 3 (response DTOs)
-> is Not Implemented — there are no handlers yet to serialise. §3 (isolation beyond the REST
-> API) and §4 (the generated cross-resource test matrix) remain Designed, Not Implemented until
-> Phase 2+ adds the resources they cover.
+> reaching a tenant-owned model through a relation. **Both layers are wired into the request
+> pipeline as of Phase 2 Task 13**, which shipped the first tenant-owned routes; the sentence
+> this banner carried until then — "not yet wired into a request pipeline" — is what changed.
+> Layer 3 (response DTOs) is Not Implemented as a mechanism: the organisation handlers build
+> their responses from explicit `select` lists and a mapper rather than from a serialisation
+> layer, which achieves the same thing for five routes and is not the general control §2
+> describes. §3 (isolation beyond the REST API) and §4 (the generated cross-resource test
+> matrix) remain Designed, Not Implemented until Phase 2+ adds the resources they cover.
+>
+> **§2 records one deliberate exception to the two-layer property**, introduced by the same
+> task — see "The one deliberate exception" below.
 
 Tenant isolation is the control most likely to fail, because it fails silently. A missing
 `where` clause produces working code, passing tests, and a data breach. The design assumes
@@ -148,6 +154,47 @@ accidentally included cannot leak, because the serialiser only emits declared fi
 also prevents the subtler leak of internal fields — fingerprints, storage keys, internal
 IDs of other tenants' referenced rows.
 
+### The one deliberate exception — ADR-0020
+
+**One query in this product is not covered by layer 2, and it is named here so the two-layer
+property above reads as what it is: a rule with exactly one stated exception rather than an
+absolute.**
+
+`GET /api/v1/organizations` lists the organisations the caller belongs to. That question spans
+organisations by construction — you cannot open a tenant transaction for an organisation you are
+trying to discover — so there is no `app.organization_id` to set, and `Membership`'s policy
+returns zero rows for every user who has organisations. Measured, not reasoned: as
+`sentinel_app`, for a user holding two `ACTIVE` memberships,
+`SELECT ... FROM "Membership" WHERE "userId" = $1` returns `(0 rows)`.
+
+ADR-0020's decision is one `SECURITY DEFINER` function, `user_organizations(text)`, owned by
+`sentinel_org_lookup` — a `NOLOGIN NOINHERIT BYPASSRLS` role that exists only to own it.
+`SECURITY DEFINER` alone is not enough: `FORCE ROW LEVEL SECURITY` binds the table owner too,
+which is the whole point of `FORCE`, so the owner must be able to bypass RLS.
+
+For that one statement layer 2 is switched off and layer 1 is the fixed `WHERE` clause in the
+function body. What contains it:
+
+- **The predicate is in a migration, not at the call site.** A caller supplies a user id and
+  nothing else — no filter, no ordering, no column list — so the read cannot be widened without
+  a migration.
+- **The bypass is held by one function, not by the application.** `sentinel_org_lookup` cannot
+  log in, inherits nothing, is granted to nobody, and owns nothing else. It holds `USAGE` on the
+  schema and `SELECT` on exactly two tables, and no default privileges, so a table added by a
+  later migration is invisible to it until somebody grants it deliberately.
+- **`sentinel_app` is unchanged.** The measurement above stays true after the migration; the
+  role gains `EXECUTE` on one function, and `EXECUTE` is revoked from `PUBLIC`.
+- **`SET search_path = public`** closes the standard definer hijack.
+
+The role attributes and grants are asserted in `packages/db/src/migration.integration.spec.ts`
+rather than only described here, because ADR-0020's containment argument otherwise rests on a
+role attribute nothing checks — and because a schema owner that is a superuser locally would let
+a broken version of this pass every test.
+
+**Every later cross-organisation question needs its own decision.** This licenses one query
+shape; a second consumer reading `user_organizations` for a different purpose is a signal to
+write the next ADR, not to widen this function.
+
 ## 3. Isolation beyond the REST API
 
 The REST API is the obvious surface and the one people remember to protect. These are the
@@ -206,3 +253,10 @@ Recorded honestly rather than assumed away.
 - **Redis cache keys.** Every cache key is prefixed with the organisation ID; a missing
   prefix would cross tenants. Covered by a key-construction helper that makes the prefix
   non-optional and a lint rule against raw key strings.
+- **One `BYPASSRLS` object exists** — `user_organizations(text)`, ADR-0020, described in §2. It
+  is a real reduction in the "two independent mechanisms must both be wrong" property, stated
+  rather than implied. The failure mode no design considered there removes is a bug that passes
+  the **wrong user id**: the function's input has to be a user id for the endpoint to exist. The
+  id comes from `request.principal`, never from a path parameter, query string or body, and
+  `organizations.integration.spec.ts` pins that a caller receives their own organisations and
+  not another user's.

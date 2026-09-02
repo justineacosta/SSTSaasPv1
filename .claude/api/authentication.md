@@ -5,13 +5,17 @@
 > this document covers the wire contract.
 >
 > **§8's three routes are Implemented (Phase 2 Task 8)** — registration, email verification and
-> the verification resend — and the committed `openapi.json` publishes **seven** routes rather
-> than four. §2's session flow is **not**: login, MFA verification, logout, the session endpoint
-> and switch-org exist as Zod schemas in `@sentinel/contracts` (`auth.ts`) and as nothing else.
-> No endpoint issues a session cookie, so §3's CSRF requirement governs no cookie-authenticated
-> route yet. §4 and §5 (API keys) have no contracts at all: API keys are deliberately out of
-> Phase 2's scope, and only the `apiKey` arm of `Principal` exists, defined so downstream guards
-> are written once and throwing where it is reached.
+> the verification resend. **§2's session flow is Implemented across Tasks 9, 11 and 13**: login,
+> MFA verification, logout, the session endpoint and, as of Task 13, `switch-org`. §3's CSRF
+> requirement governs every cookie-authenticated unsafe route.
+>
+> §4 and §5 (API keys) have no contracts at all: API keys are deliberately out of Phase 2's
+> scope, and only the `apiKey` arm of `Principal` exists, defined so downstream guards are
+> written once and throwing where it is reached.
+>
+> Route counts belong to `openapi.json` and to `pnpm check:openapi`, not to this sentence — an
+> earlier version of it carried a number that three later tasks each had to remember to update,
+> and none did.
 
 ## 1. Two credential types
 
@@ -41,8 +45,48 @@ GET  /api/v1/auth/session        -> current principal, org, permissions, entitle
 POST /api/v1/auth/switch-org     { organizationId } -> new session context
 ```
 
-> **Status: login, logout, session and `mfa/verify` are Implemented (Phase 2 Tasks 9 and 11).**
-> `switch-org` is Task 13's and the shape above is a contract with no handler.
+> **Status: login, logout, session, `mfa/verify` and `switch-org` are Implemented (Phase 2
+> Tasks 9, 11 and 13).**
+
+`POST /api/v1/auth/switch-org` is `@AuthenticatedOnly()` — not permission-guarded, because a
+permission is always (user, organisation, permission) and the organisation is the thing this
+route changes. It is the **only** writer of `Session.activeOrganizationId` in this product.
+
+It answers 200 with the same document `GET /api/v1/auth/session` returns, now describing the
+organisation just switched to, and **its `permissions` array is populated** — this is the first
+route in the product that can return a non-empty one, because until it ran no session named an
+organisation for tenant resolution to resolve.
+
+What it does, in order:
+
+1. **Resolves membership through the same function the guard uses.** It calls the
+   `TENANT_RESOLVER` port and passes the answer to `resolveTenant`, the pure function
+   `TenantContextGuard` evaluates on every request. A switch therefore succeeds exactly when the
+   guard would resolve on the next request; a second membership query written for this route
+   would eventually disagree with the one that decides authorization, and the symptom would be a
+   caller who switched successfully into an organisation every guarded route then 404s.
+2. **Refuses, or rotates.** No active membership — including one that is `INVITED` or `REMOVED`
+   — is **404 `RESOURCE_NOT_FOUND`**, byte-identical to the answer for an organisation id that
+   has never existed, so the endpoint is not an existence oracle. A suspended organisation the
+   caller does belong to is **403 `ORGANIZATION_SUSPENDED`**, with the same code and status
+   `TenantContextGuard` gives on every guarded route afterwards. A refusal rotates nothing and
+   leaves the session exactly as it found it.
+3. **Rotates the session** (§3's "rotate on privilege change"). The predecessor is revoked and
+   its cache entry tombstoned before the successor row is written, so the previous token stops
+   working immediately. Both cookies are replaced — the CSRF token derives from the session
+   token, so sending one without the other leaves the browser holding a pair that cannot
+   validate.
+4. **Writes an `ORGANIZATION_SWITCHED` audit event** into the organisation switched *to*.
+
+**The audit row is written after the rotation, not in the same transaction as it.**
+`SessionService.rotate` owns an ordering that spans Redis and Postgres and takes no transaction
+handle, so one transaction over both is not expressible. The order is the same compromise
+`POST /auth/logout` makes and for the same reason: auditing first would leave an append-only row
+asserting a switch that did not happen, and a false statement in a table that cannot be corrected
+is worse than a gap in the trail. Neither error is swallowed — a switch that could not be audited
+is a 500, not a quiet 200.
+
+Requires `X-CSRF-Token`, like every other cookie-authenticated unsafe method.
 
 **The four MFA management routes** are all authenticated, all under `CsrfGuard`, and all
 rate-limited as `mfaManagement` (10/hour per IP, fail closed):
