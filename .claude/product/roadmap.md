@@ -14,7 +14,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Not Implemented** — Tasks 1–11 of 18 done 2026-09-02 (schema, migrations, registry, wire contracts, password hashing, the breach check, single-use secret tokens, the mailer with **ten** templates, the session service, the authentication stage with CSRF and CORS, registration with email verification, login/logout/session with per-account lockout, password reset and change, and TOTP MFA with recovery codes); the API publishes **18 routes** and a person can register, confirm an address, sign in, complete a second factor, enrol or disable MFA, change or reset a password and sign out, but **nothing authorises anybody** — `GET /auth/session` returns an empty permission set until Task 12, and there is no screen until Task 16. Task 11 is on an unmerged branch and **leaves one migration generated but unapplied**, awaiting the operator's SQL review |
+| 2 | Identity | **Not Implemented** — Tasks 1–11 of 18 done 2026-09-02 (schema, migrations, registry, wire contracts, password hashing, the breach check, single-use secret tokens, the mailer with **ten** templates, the session service, the authentication stage with CSRF and CORS, registration with email verification, login/logout/session with per-account lockout, password reset and change, and TOTP MFA with recovery codes); the API publishes **18 routes** and a person can register, confirm an address, sign in, complete a second factor, enrol or disable MFA, change or reset a password and sign out, but **nothing authorises anybody** — `GET /auth/session` returns an empty permission set until Task 12, and there is no screen until Task 16. Tasks 1–11 are all merged to `main`, most recently Task 11 as PR #21 on 2026-09-02 |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -1545,8 +1545,7 @@ files — and was green on a re-run of the failed job alone.
 All findings and dispositions:
 [`docs/superpowers/ledger/phase-2/task-10/`](../../docs/superpowers/ledger/phase-2/task-10/).
 
-**Task 11 evidence, 2026-09-02 at the branch head after the fix round**, on
-`feat/phase-2-task-11`, not merged. Every command re-run by the orchestrator on the finished tree
+**Task 11 evidence, 2026-09-02 at the branch head after the fix round.** Every command re-run by the orchestrator on the finished tree
 rather than taken from the implementer's report, exit codes captured outside a pipe.
 
 | Command | Exit | What it proves |
@@ -1623,9 +1622,22 @@ and was committed before the code it justifies, which is the plan's rule and not
 All findings and dispositions:
 [`docs/superpowers/ledger/phase-2/task-11/`](../../docs/superpowers/ledger/phase-2/task-11/).
 
+**Task 11 was merged to `main` on 2026-09-02 as PR #21** (rebase, branch deleted), with CI green
+on a Linux runner before the merge: runs `33587016061` (branch head) and `33587041645` (pull
+request), both `success` at ~5m. **Every stage executed** and was confirmed rather than inferred
+from the conclusion — format, lint, typecheck, unit, spec-project coverage, credential-shaped
+literals, the compose stack, integration, build, `check:openapi`, `check:registry`, Playwright
+install and end-to-end. The only skipped steps are the two failure-only ones, correctly skipped.
+The `Failed to connect to Reaper` Testcontainers flake that hit PR #19 did not recur.
+
+**The migration was reviewed by the operator and applied on 2026-09-02**, before the merge.
+`_prisma_migrations` in the development database now ends at
+`20260901185059_mfa_factor_last_accepted_step`, and `MfaFactor.lastAcceptedStep` exists as
+`integer`. Applying it produced no schema drift and no working-tree change.
+
 **The fix round has not itself been reviewed**, the same status Task 10's last three commits
 carried: each change was measured with the mutation re-run and pasted, but that is the author
-checking their own work.
+checking their own work. Commit `7540279` is the one Task 12's reviewer may treat as unexamined.
 
 **Checkpoint A falls after Task 12** — the identity API enforced end to end with no UI. At that
 point the branch is pushed, CI must be green on a Linux runner, and this file gets an evidence
