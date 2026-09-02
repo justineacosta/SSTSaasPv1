@@ -11,7 +11,9 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { seedReferenceData } from '@sentinel/db';
 import { clearRateLimits, startAuthHarness, type AuthHarness } from '../testing/auth-harness.js';
+import { CSRF_HEADER } from './guards/csrf.guard.js';
 import { SESSION_COOKIE_NAME } from '../modules/auth/cookies.js';
+import { deriveCsrfToken } from '../modules/auth/csrf-token.js';
 import { mintSecretToken } from '../modules/auth/secret-token.js';
 import { describeRoutes, type RegisteredRoute } from './route-inventory.js';
 
@@ -35,20 +37,25 @@ import { describeRoutes, type RegisteredRoute } from './route-inventory.js';
  * is written, and an endpoint the arms below cannot describe is a build
  * failure rather than a gap.
  *
- * # What this file can and cannot prove today, stated precisely
+ * # What this file can and cannot prove, stated precisely
  *
- * **No route in this API declares `@RequirePermission()`.** All eighteen are
- * `@Public()` or `@AuthenticatedOnly()`; the first permission-guarded endpoints
- * are Tasks 13–15's. So the 403 and cross-tenant-404 arms below **run against
- * zero shipped routes** — the arms exist, they are exercised against
- * purpose-built controllers in `authorization.guard.spec.ts` and
- * `tenant-context.spec.ts`, and they will begin governing real endpoints
- * without further work the moment one carries the decorator.
+ * Through Task 12 the honest version of this paragraph read: "no route in this
+ * API declares `@RequirePermission()`, so the 403 and cross-tenant-404 arms
+ * below run against zero shipped routes". Task 13 changed that. Three routes
+ * now declare one — `GET`, `PATCH` and `DELETE /api/v1/organizations/:id` — and
+ * the arms run against them.
  *
- * That is a smaller claim than "the matrix passes for every existing endpoint"
- * sounds, and it is the honest one. What this file proves about the shipped
- * API is that every non-public route refuses an unauthenticated caller, and
- * that no route escapes classification.
+ * Two limits on that claim, both worth naming rather than leaving to be
+ * inferred:
+ *
+ * - **Arm 2 is inapplicable for `organization.read`.** Every system role holds
+ *   it, so no caller exists who could produce a 403 on `GET`. `rolesFor`
+ *   returns `undefined` for the lacker and the arm records itself as run and
+ *   evaluated rather than skipped. `PATCH` and `DELETE` do produce real 403s.
+ * - **Arm 4 asserts "not refused", not 2xx.** A guarded `DELETE` reached here
+ *   answers 409, which is a correct answer that says authorization admitted the
+ *   request. Asserting 2xx would make the matrix refuse any endpoint whose
+ *   business logic legitimately declines.
  *
  * # It drives the application as `sentinel_app`
  *
@@ -85,9 +92,15 @@ let counter = 0;
  * `sentinel_app` cannot write outside a tenant transaction; the application
  * under test still connects as `sentinel_app`.
  */
-async function member(options: {
-  role: SystemRole;
-}): Promise<{ cookie: string; userId: string; organizationId: string }> {
+interface Actor {
+  readonly cookie: string;
+  /** The raw session token, so an unsafe call can derive its CSRF header. */
+  readonly token: string;
+  readonly userId: string;
+  readonly organizationId: string;
+}
+
+async function member(options: { role: SystemRole }): Promise<Actor> {
   counter += 1;
   const suffix = `${String(counter)}-${String(Date.now())}`;
   const owner = harness.prisma;
@@ -137,6 +150,7 @@ async function member(options: {
 
   return {
     cookie: `${SESSION_COOKIE_NAME}=${minted.token}`,
+    token: minted.token,
     userId: user.id,
     organizationId: organization.id,
   };
@@ -196,18 +210,66 @@ async function callAnonymously(route: RegisteredRoute): Promise<request.Response
 }
 
 /**
- * The same call, carrying a session cookie. CSRF is not in the way: every
- * permission-guarded route this matrix will meet is reached here with the
- * cookie alone, and `CsrfGuard` governs unsafe methods on cookie-authenticated
- * routes — so an unsafe guarded route would answer 403 `CSRF_TOKEN_INVALID`
- * before authorization ran. That is a real gap in arms 2 and 4 for unsafe
- * methods and it is recorded rather than papered over: the first guarded route
- * Task 13 ships is `GET /api/v1/organizations`, and whoever ships an unsafe one
- * has to teach this helper to mint a CSRF pair.
+ * SUBSTITUTES THE PATH PARAMETERS OF A ROUTE FOR ONE ACTOR.
+ *
+ * The inventory holds Express paths, so a guarded route reads
+ * `/api/v1/organizations/:id`. Requesting that literally sends the seven
+ * characters `%3Aid` as an organisation id, which every arm answers 404 to —
+ * and 404 is the fail-closed direction, so arms 1, 2 and 3 would all still
+ * "pass" while testing nothing, and only arm 4 would notice. That is
+ * carry-forward ruling 97's family exactly: a mutation that blinds the resolver
+ * leaves the 404 arms green.
+ *
+ * **A parameter this map does not know is a hard failure, not a skip.** The
+ * inversion is the whole design of this file: a new endpoint the arms cannot
+ * describe must fail the build rather than be quietly passed over. Adding a
+ * `:projectId` route in Phase 3 means adding a line here, and until somebody
+ * does, the matrix refuses.
  */
-async function callAs(route: RegisteredRoute, cookie: string): Promise<request.Response> {
+function substitutePathParameters(path: string, actor: Actor): string {
+  return path.replace(/:([A-Za-z0-9_]+)/g, (_match, name: string) => {
+    switch (name) {
+      // Every `:id` in this API today is an organisation id, and for the three
+      // guarded routes it must be **the actor's own** — `TenantContextGuard`
+      // resolves the tenant from the session, and `assertPathIsActiveTenant`
+      // answers 404 for any other value. Arm 3 gets its cross-tenant behaviour
+      // from pointing the session elsewhere, not from changing this.
+      case 'id':
+        return actor.organizationId;
+      default:
+        throw new Error(
+          `The matrix does not know what to substitute for ":${name}" in ${path}. ` +
+            'Add it to substitutePathParameters rather than letting the route go unexercised — ' +
+            'an unexercised route is what this file exists to fail on, and a literal ":param" ' +
+            'answers 404, which is the direction that looks like a pass.',
+        );
+    }
+  });
+}
+
+/**
+ * The same call, carrying a session cookie AND a valid CSRF header.
+ *
+ * **The header is new, and its absence was a real hole rather than a
+ * theoretical one.** `CsrfGuard` governs unsafe methods on cookie-authenticated
+ * routes and runs *before* `AuthorizationGuard`, so an unsafe guarded route
+ * reached with the cookie alone answers 403 `CSRF_TOKEN_INVALID` — which is the
+ * same status arm 2 expects for a missing permission. Measured on the day Task
+ * 13's routes arrived: `PATCH` and `DELETE /api/v1/organizations/:id` passed
+ * arm 2 while authorization had not run at all. The previous version of this
+ * docblock predicted the gap and left it open, because no unsafe guarded route
+ * existed yet.
+ *
+ * Two things close it: the header below, and arm 2 now asserting the error
+ * **code** rather than only the status.
+ *
+ * The value is derived from the raw session token, which is what `CsrfGuard`
+ * compares against — not the CSRF cookie. See `csrf.guard.ts` on why that is a
+ * deliberate strengthening of double-submit.
+ */
+async function callAs(route: RegisteredRoute, actor: Actor): Promise<request.Response> {
   await clearRateLimits(harness.redis);
-  const path = route.path;
+  const path = substitutePathParameters(route.path, actor);
   const call = (() => {
     switch (route.method) {
       case 'GET':
@@ -224,7 +286,7 @@ async function callAs(route: RegisteredRoute, cookie: string): Promise<request.R
         throw new Error(`The matrix does not know how to call ${route.method}.`);
     }
   })();
-  return call.set('Cookie', cookie);
+  return call.set('Cookie', actor.cookie).set(CSRF_HEADER, deriveCsrfToken(actor.token));
 }
 
 describe('every non-public route refuses an unauthenticated caller with 401', () => {
@@ -336,20 +398,29 @@ describe('every permission-guarded route runs all four arms', () => {
    * this file cannot know a valid body for a route it has never seen. Asserting
    * 2xx would make the matrix refuse to accept any endpoint that takes input.
    */
-  it('there are none yet, and that is recorded rather than implied', () => {
-    // Deliberately NOT the sentinel it replaces. The old version asserted the
-    // empty set and nothing else, so on the day it went red the cheapest way
-    // out was to delete it. This one names what has to happen instead.
+  it('there is at least one, so the three arms below are not vacuous', () => {
+    // THE SENTINEL, REPLACED RATHER THAN DELETED — carry-forward ruling 101's
+    // instruction, followed. Its previous form asserted that NO route declared
+    // a permission and named what had to replace it on the day one did. Task 13
+    // is that day: it went red naming
+    // `DELETE /api/v1/organizations/:id, GET /api/v1/organizations/:id,
+    // PATCH /api/v1/organizations/:id`, which is the message doing its job.
+    //
+    // What replaces it has to be the *opposite* assertion, because the failure
+    // mode has inverted. While the set was empty the danger was a green tick
+    // implying coverage; now the danger is the set silently going back to empty
+    // — a controller renamed, a module dropped from `AppModule`, a
+    // `@RequirePermission()` downgraded to `@AuthenticatedOnly()` — after which
+    // arms 2, 3 and 4 would loop over nothing and report green, exactly as they
+    // did for all of Task 12.
     const guarded = routes.filter((route) => route.access?.kind === 'permission').map(key);
-    if (guarded.length > 0) {
-      throw new Error(
-        `${String(guarded.length)} route(s) now declare a permission: ${guarded.join(', ')}. ` +
-          'That is expected from Task 13 onward. Do not delete this assertion — remove it only ' +
-          'together with a check that the arms below actually ran, which the coverage block at ' +
-          'the bottom of this file already performs per arm.',
-      );
-    }
-    expect(guarded).toEqual([]);
+    expect(
+      guarded,
+      'No route declares a permission. Arms 2-4 below iterate over the guarded set, so an ' +
+        'empty set makes all three pass without exercising anything — which is the state this ' +
+        'API was in from Task 7 to Task 12. If a route was deliberately un-guarded, replace ' +
+        'this assertion with one that names what now proves authorization, rather than deleting it.',
+    ).not.toEqual([]);
   });
 
   it('arm 1 — refuses each of them without a credential (401)', async () => {
@@ -380,12 +451,25 @@ describe('every permission-guarded route runs all four arms', () => {
         continue;
       }
       const actor = await member({ role: lacker });
-      const response = await callAs(route, actor.cookie);
+      const response = await callAs(route, actor);
       ran(route, 'no-permission');
       if (response.status !== 403) {
         failures.push(
           `${key(route)} answered ${String(response.status)} to a ${lacker}, expected 403`,
         );
+      } else {
+        // THE CODE, NOT ONLY THE STATUS. `CsrfGuard` answers 403
+        // `CSRF_TOKEN_INVALID` and runs before `AuthorizationGuard`, so a 403
+        // on an unsafe route says nothing on its own about whether
+        // authorization ran — and for the first two days these routes existed
+        // it was the CSRF guard answering. `PERMISSION_DENIED` can only come
+        // from the authorization layer.
+        const code = errorEnvelopeSchema.parse(response.body).error.code;
+        if (code !== 'PERMISSION_DENIED') {
+          failures.push(
+            `${key(route)} answered 403 to a ${lacker} with code ${code}, expected PERMISSION_DENIED`,
+          );
+        }
       }
     }
     expect(failures).toEqual([]);
@@ -405,12 +489,22 @@ describe('every permission-guarded route runs all four arms', () => {
         where: { userId: stranger.userId },
         data: { activeOrganizationId: other.organizationId },
       });
-      const response = await callAs(route, stranger.cookie);
+      // The path is substituted with the STRANGER's own organisation id, which
+      // is the sharper probe: the id is real, the caller is a real member of
+      // it, and the only thing wrong is that their session is pointed
+      // elsewhere. A made-up id would be refused by a check that had never
+      // consulted membership at all.
+      const response = await callAs(route, stranger);
       ran(route, 'other-tenant');
       if (response.status !== 404) {
         failures.push(
           `${key(route)} answered ${String(response.status)} cross-tenant, expected 404`,
         );
+      } else {
+        const code = errorEnvelopeSchema.parse(response.body).error.code;
+        if (code !== 'RESOURCE_NOT_FOUND') {
+          failures.push(`${key(route)} answered 404 cross-tenant with code ${code}`);
+        }
       }
     }
     expect(failures).toEqual([]);
@@ -422,7 +516,7 @@ describe('every permission-guarded route runs all four arms', () => {
       if (route.access?.kind !== 'permission') continue;
       const { holder } = rolesFor(route.access.permission);
       const actor = await member({ role: holder });
-      const response = await callAs(route, actor.cookie);
+      const response = await callAs(route, actor);
       ran(route, 'holder');
       // Not an assertion of 2xx — see the block docblock. What must never
       // appear is a refusal from the authorization pipeline.

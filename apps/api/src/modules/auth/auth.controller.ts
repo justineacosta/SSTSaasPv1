@@ -600,6 +600,11 @@ export class AuthController {
       { status: 404, description: 'No ACTIVE membership in that organisation (`RESOURCE_NOT_FOUND`).' },
     ],
   })
+  // 200, not Nest's default 201 for a POST. Nothing is created — the response
+  // is the same session document `GET /auth/session` returns, and a `Created`
+  // status with no `Location` would be a claim about a new resource that does
+  // not exist. `api/conventions.md` §2 reserves 201 for creations.
+  @HttpCode(200)
   @Post('switch-org')
   async switchOrganization(
     @Body(new ZodValidationPipe(switchOrganizationRequestSchema)) body: SwitchOrganizationRequest,
