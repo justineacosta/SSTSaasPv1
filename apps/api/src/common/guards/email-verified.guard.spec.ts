@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { globSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   Controller,
@@ -12,6 +12,7 @@ import {
   Injectable,
 } from '@nestjs/common';
 import { APP_GUARD, Reflector } from '@nestjs/core';
+import { AppModule } from '../../app.module.js';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { errorEnvelopeSchema } from '@sentinel/contracts';
 import type { Request } from 'express';
@@ -250,24 +251,36 @@ describe('a route with no gate', () => {
 
 describe('what this guard governs today', () => {
   /**
-   * RULING F, AS TWO ASSERTIONS RATHER THAN A SENTENCE.
+   * RULING F, AS TWO ASSERTIONS RATHER THAN A SENTENCE — AND BOTH HALVES HAVE
+   * NOW BEEN REPLACED RATHER THAN DELETED.
    *
-   * Task 12 registered this guard globally, so the first half of ruling F is
-   * now false and is replaced rather than deleted. What it was protecting is
-   * unchanged and is the second assertion: **no route carries
-   * `@RequireVerifiedEmail()`**, so the guard returns early on every request in
-   * the product and `EMAIL_NOT_VERIFIED` still has no producer a caller can
-   * reach. `security/authentication.md` §6's claim stays unmet until Task 13
-   * applies the decorator, and this is what goes red on the day it does —
-   * forcing the document to be revisited rather than quietly becoming true by
-   * accident.
+   * Task 12 registered this guard globally, which falsified the first half.
+   * **Task 13 falsified the second**: `POST /api/v1/organizations` carries
+   * `@RequireVerifiedEmail()`, so the guard stops returning early and
+   * `EMAIL_NOT_VERIFIED` gains a producer a caller can reach for the first
+   * time. The assertion below went red naming the file, which is what it was
+   * built to do — "this is what goes red on the day it does, forcing the
+   * document to be revisited rather than quietly becoming true by accident".
    *
-   * Registered without a single route carrying the decorator is deliberate: the
-   * alternative is Task 13 having to remember both halves, and a guard that is
-   * absent from the pipeline is the half nobody notices is missing.
+   * `security/authentication.md` §6's claim — "unverified users may sign in but
+   * cannot create organisations" — is met by that decorator and by nothing
+   * else, so what replaces the assertion has to pin **exactly which** handlers
+   * carry it. A count would not: moving the decorator from `create` to `list`
+   * keeps the count at one, satisfies §6's letter nowhere, and would leave
+   * organisation creation open to unverified accounts.
+   *
+   * The refusal itself is proved against a real unverified account in
+   * `organizations.integration.spec.ts`; this file proves the wiring.
    */
-  it('is registered as a global guard, so a decorated route is governed at once', async () => {
-    const { AppModule } = await import('../../app.module.js');
+  it('is registered as a global guard, so a decorated route is governed at once', () => {
+    // `AppModule` is imported statically at the top of this file rather than
+    // with `await import(...)` here. The dynamic form worked until Task 13 and
+    // then began **timing out at 5000ms in the whole-lane run while passing on
+    // its own** — `OrganizationsModule` grew the module graph, and a dynamic
+    // import inside a test body is charged to that test's timeout while the
+    // lane's other workers compete for the CPU. Nothing about this assertion
+    // depends on when the import happens; `app.module.spec.ts` has always read
+    // the same metadata off a static import.
     const providers = (Reflect.getMetadata('providers', AppModule) ?? []) as {
       provide?: unknown;
       useClass?: unknown;
@@ -278,7 +291,7 @@ describe('what this guard governs today', () => {
     expect(guards).toContain(EmailVerifiedGuard);
   });
 
-  it('governs no shipped route, because no handler carries @RequireVerifiedEmail()', () => {
+  it('governs exactly the routes that must be gated, and no others', () => {
     // Asserted against the CONTROLLER FILES, with comments stripped, rather
     // than by booting the application: the boot needs Postgres, Redis and a
     // validated environment, none of which this property depends on, and a
@@ -299,10 +312,15 @@ describe('what this guard governs today', () => {
       join(root, relative),
     );
     // PINNED, not merely non-zero (the Task 12 review's L-3). A glob that found
-    // 1 of 3 controllers would satisfy `toBeGreaterThan(0)` and still report
-    // "no route carries the decorator" over two thirds of the API. The wrong
-    // directory shipped once already, which is why the guard is here at all.
-    expect(controllers).toHaveLength(3);
+    // 1 of 4 controllers would satisfy `toBeGreaterThan(0)` and still report
+    // "no route carries the decorator" over three quarters of the API. The
+    // wrong directory shipped once already, which is why the guard is here at
+    // all — and the pin earned its keep again in Task 13, going red at
+    // `expected [ …(4) ] to have a length of 3` when
+    // `organizations.controller.ts` arrived.
+    //
+    // Auth, health, OpenAPI, organizations.
+    expect(controllers).toHaveLength(4);
 
     const decorated = controllers.filter((file) =>
       readFileSync(file, 'utf8')
@@ -310,6 +328,9 @@ describe('what this guard governs today', () => {
         .replace(/^\s*\/\/.*$/gm, '')
         .includes('@RequireVerifiedEmail('),
     );
-    expect(decorated).toEqual([]);
+    // Named, not counted. `security/authentication.md` §6 gates organisation
+    // creation specifically, and Tasks 14-15 add inviting — each of which is a
+    // deliberate addition to this list rather than a number that drifts up.
+    expect(decorated.map((file) => basename(file))).toEqual(['organizations.controller.ts']);
   });
 });

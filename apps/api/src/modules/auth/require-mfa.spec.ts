@@ -1,5 +1,5 @@
 import { globSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Controller, Get } from '@nestjs/common';
 import type { ExecutionContext } from '@nestjs/common';
@@ -362,25 +362,54 @@ describe('the guard is registered, and what it can refuse is bounded', () => {
   });
 
   /**
-   * H-1, AS AN ASSERTION RATHER THAN A DOCBLOCK.
+   * H-1, AS AN ASSERTION RATHER THAN A DOCBLOCK — AND THE DAY IT PREDICTED HAS
+   * ARRIVED.
    *
-   * The guard acts only on a route declaring a permission. No shipped route
-   * does, so today it can refuse nobody — and this is what says so, over the
-   * controller files rather than over a sentence. On the day Task 13 ships a
-   * permission-guarded endpoint this goes red, and whoever ships it has to
-   * decide deliberately whether a member with no factor may reach it.
+   * The guard acts only on a route declaring a permission. Through Task 12 no
+   * shipped route did, so it could refuse nobody, and this assertion said so
+   * over the controller files rather than over a sentence. It also said: "on the
+   * day Task 13 ships a permission-guarded endpoint this goes red, and whoever
+   * ships it has to decide deliberately whether a member with no factor may
+   * reach it."
    *
-   * The `toBeGreaterThan(0)` is not decoration (L-3, and the wrong-directory
-   * glob that shipped once in `email-verified.guard.spec.ts`): a glob that
-   * found nothing would make this claim true forever. The count is pinned
-   * rather than merely non-zero, so finding 1 of 3 fails too.
+   * **THE DECISION, RECORDED HERE BECAUSE THIS IS WHERE IT WAS ASKED FOR.**
+   * `GET`, `PATCH` and `DELETE /api/v1/organizations/:id` are gated: a member of
+   * an organisation with `requireMfa = true` who has no confirmed factor is
+   * refused with 403 `MFA_ENROLMENT_REQUIRED` and must enrol first. That is
+   * `security/authentication.md` §5's rule applied without exception — "a member
+   * without a confirmed factor is forced into enrolment before any other
+   * action" — and it is the whole reason the guard exists.
+   *
+   * Nothing needs `@AllowWithoutMfaEnrolment()`. The routes a member in that
+   * state must still reach — their own session document, logout, and the four
+   * MFA management routes — are all `@AuthenticatedOnly()`, which is outside
+   * this guard's reach by construction (ruling 98's structural fix). So is
+   * `POST /auth/switch-org`, which means a member can always switch to a
+   * different organisation rather than being stranded, and so are
+   * `POST /organizations` and `GET /organizations`: neither acts inside an
+   * organisation that could require anything.
+   *
+   * `MFA_ENROLMENT_REQUIRED` therefore has a producer a caller can reach for the
+   * first time, and it is proved against a real `requireMfa = true` row in
+   * `organizations.scoped.integration.spec.ts` rather than asserted here.
+   *
+   * What replaces the old assertion is its inverse, for the reason the
+   * authorization matrix's sentinel gives: the failure mode has flipped. The
+   * danger was a guard that governed nothing; it is now a guarded set silently
+   * going back to empty, after which this guard would refuse nobody again and
+   * every test would still pass.
+   *
+   * The count is pinned rather than merely non-zero (L-3, and the
+   * wrong-directory glob that shipped once in `email-verified.guard.spec.ts`):
+   * a glob that found nothing would make either claim true forever.
    */
-  it('can refuse nobody today, because no shipped route declares a permission', () => {
+  it('governs the permission-guarded routes, and there is at least one', () => {
     const root = fileURLToPath(new URL('../..', import.meta.url));
     const controllers = globSync('**/*.controller.ts', { cwd: root }).map((relative) =>
       join(root, relative),
     );
-    expect(controllers).toHaveLength(3);
+    // Auth, health, OpenAPI, organizations.
+    expect(controllers).toHaveLength(4);
 
     const declaring = controllers.filter((file) =>
       readFileSync(file, 'utf8')
@@ -388,6 +417,25 @@ describe('the guard is registered, and what it can refuse is bounded', () => {
         .replace(/^\s*\/\/.*$/gm, '')
         .includes('@RequirePermission('),
     );
-    expect(declaring).toEqual([]);
+    expect(declaring.map((file) => basename(file))).toEqual(['organizations.controller.ts']);
+  });
+
+  it('is not exempted by any handler, so the gate applies to every guarded route', () => {
+    // The other direction, and the one ruling 98 was about: an opt-out control
+    // whose exemption is applied to nothing is an outage, but an exemption
+    // applied to the *wrong* route is a silent hole. Zero handlers carry
+    // `@AllowWithoutMfaEnrolment()` and that is a decision — see the docblock
+    // above for why nothing needs it.
+    const root = fileURLToPath(new URL('../..', import.meta.url));
+    const controllers = globSync('**/*.controller.ts', { cwd: root }).map((relative) =>
+      join(root, relative),
+    );
+    const exempted = controllers.filter((file) =>
+      readFileSync(file, 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '')
+        .includes('@AllowWithoutMfaEnrolment('),
+    );
+    expect(exempted).toEqual([]);
   });
 });
