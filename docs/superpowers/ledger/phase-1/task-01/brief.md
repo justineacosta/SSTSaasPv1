@@ -147,7 +147,7 @@ export default defineWorkspace([
 
 - [ ] **Step 2: Write the ESLint flat config with the security rules**
 
-`eslint.config.js` — every rule here corresponds to a line in [`.claude/development/coding-standards.md`](../../../.claude/development/coding-standards.md) §6:
+`eslint.config.js` — every rule here corresponds to a line in [`.claude/development/coding-standards.md`](../../../../../.claude/development/coding-standards.md) §6:
 
 ```js
 import js from '@eslint/js';

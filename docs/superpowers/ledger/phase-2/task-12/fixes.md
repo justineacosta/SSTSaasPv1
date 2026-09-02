@@ -165,6 +165,22 @@ either fix.
 
 ---
 
+## One claim the reviewer verified that was still wrong
+
+`f4ddb4b`'s commit message said "five more broken links remain, all in phase-1 ledger entries and
+the phase-1 plan", and the review's verdict table confirms it: "link-checked all 199 tracked `.md`
+files: exactly 5 broken". **Both are wrong, and wrong the same way** — the checker did not skip
+fenced code blocks, so two of the five are the literal `| [0011](ADR-0011-...) |` rows inside a
+```` ```markdown ```` block in the phase-1 plan, which are content for `.claude/decisions/README.md`
+and resolve correctly there.
+
+Three were real: a `../../../` from a directory five levels below the root. Fixed, and the
+repository now has zero broken relative markdown links.
+
+Recorded as ruling 104, because it is the first claim in this phase that a second pair of eyes
+independently reproduced **and it was still false**. Reproducing a number with the same method is
+not verification.
+
 ## What the reviewer could not verify, and what I did about it
 
 The review lists six. Three describe trees that no longer exist (the two build-time defects, and

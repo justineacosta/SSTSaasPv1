@@ -18,7 +18,7 @@
 
 - [ ] **Step 1: Write the failing tests**
 
-`packages/contracts/src/permissions.spec.ts` — this is the test [`product/permissions.md`](../../../.claude/product/permissions.md) explicitly demands ("this table and that file must agree, and a test asserts it"). It parses the markdown table so the two cannot drift:
+`packages/contracts/src/permissions.spec.ts` — this is the test [`product/permissions.md`](../../../../../.claude/product/permissions.md) explicitly demands ("this table and that file must agree, and a test asserts it"). It parses the markdown table so the two cannot drift:
 
 ```ts
 import { readFileSync } from 'node:fs';
@@ -205,7 +205,7 @@ Expected: FAIL — modules not found.
 
 - [ ] **Step 3: Implement the contracts**
 
-`packages/contracts/src/error-codes.ts` — the complete union from [`api/errors.md`](../../../.claude/api/errors.md) §3:
+`packages/contracts/src/error-codes.ts` — the complete union from [`api/errors.md`](../../../../../.claude/api/errors.md) §3:
 ```ts
 export const ERROR_CODES = {
   // Auth

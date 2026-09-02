@@ -807,6 +807,20 @@ Full reasoning in [`task-10/review.md`](task-10/review.md),
     `indexOf` returns `-1` — two of `app.module.spec.ts`'s four "decision" assertions had that
     shape and only the full-array assertions held the line.
 
+104. **A link checker that does not skip fenced code blocks reports code samples as defects.**
+    Commit `f4ddb4b` recorded "five broken links remain, all in phase-1 ledger entries and the
+    phase-1 plan", and the Task 12 reviewer independently verified it as "exactly right" across
+    all 199 tracked `.md` files. **Both counts were wrong the same way.** Two of the five are the
+    literal table rows inside a ```` ```markdown ```` block in the phase-1 plan, destined for
+    `.claude/decisions/README.md`, where `ADR-0011-prefixed-uuidv7-identifiers.md` resolves
+    correctly. Three were real — a depth error, `../../../` from a directory five levels down —
+    and are now fixed; the repository has **zero** broken relative markdown links.
+
+    Two lessons, and the second is the one worth carrying. A checker is a claim like any other and
+    needs its own false-positive case. And **an independent reviewer reproducing a number does not
+    make it true** if they reproduce the method: this is the first claim in the phase that was
+    verified by a second pair of eyes and still wrong.
+
 ## Pause state
 
 **2026-09-02 — Task 12 built and NOT reviewed. Checkpoint A recorded, one bullet short. Tasks
