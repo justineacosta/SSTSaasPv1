@@ -205,6 +205,28 @@ async function enableMfa(email: string): Promise<{
   recoveryCodes: string[];
   signed: Signed;
   confirmingCode: string;
+  /**
+   * The step the confirming code was generated at, captured here rather than
+   * recomputed by the caller.
+   *
+   * **This is the fix for a real flake, not defensive tidiness.** A TOTP step
+   * is 30 seconds wide, and `lastAcceptedStep` is fixed at the instant the code
+   * is generated. A caller asserting
+   * `toBe(stepAt(Date.now(), TOTP_PRODUCTION.stepSeconds))` is therefore
+   * comparing against whatever step is current *at assertion time*, which is a
+   * different number whenever a boundary falls in between — and the boundary
+   * does not care that the test is correct. Measured arithmetic: with a
+   * generate-to-assert span of D milliseconds the assertion fails on D/30000 of
+   * runs, so roughly 3% at a one-second span. Found by Task 13's reviewer as a
+   * one-off failure in an otherwise green suite, which is exactly how a defect
+   * of this shape presents.
+   *
+   * Returning the step makes the assertion independent of wall-clock timing
+   * instead of merely less likely to trip. The general rule, worth more than
+   * this fix: **never recompute a time-derived value the system under test
+   * already committed to — capture it at the moment it was committed.**
+   */
+  confirmingStep: number;
 }> {
   const signed = await signIn(email);
   await clearRateLimits(h.redis);
@@ -217,7 +239,11 @@ async function enableMfa(email: string): Promise<{
   expect(enrolled.status).toBe(200);
 
   const secret = await secretFor(email);
-  const confirmingCode = codeFor(secret);
+  // One clock reading, used for both the code and the step it belongs to. Two
+  // readings would reintroduce the boundary race this is here to remove.
+  const confirmingAtMs = Date.now();
+  const confirmingCode = codeFor(secret, confirmingAtMs);
+  const confirmingStep = stepAt(confirmingAtMs, TOTP_PRODUCTION.stepSeconds);
   const confirmed = await request(h.server)
     .post('/api/v1/auth/mfa/confirm')
     .set('Cookie', signed.cookie)
@@ -230,6 +256,7 @@ async function enableMfa(email: string): Promise<{
     recoveryCodes: (confirmed.body as { recoveryCodes: string[] }).recoveryCodes,
     signed,
     confirmingCode,
+    confirmingStep,
   };
 }
 
@@ -437,7 +464,7 @@ describe('POST /auth/mfa/confirm', () => {
   it('enables the factor, issues ten recovery codes, and emails the owner', async () => {
     const email = await account();
     const userId = await userIdOf(email);
-    const { recoveryCodes } = await enableMfa(email);
+    const { recoveryCodes, confirmingStep } = await enableMfa(email);
 
     expect(recoveryCodes).toHaveLength(10);
     expect(new Set(recoveryCodes).size).toBe(10);
@@ -446,7 +473,14 @@ describe('POST /auth/mfa/confirm', () => {
     expect(factor.confirmedAt).not.toBeNull();
     // D6: the confirming code is SPENT, so it cannot be replayed at
     // `mfa/verify` inside its drift window.
-    expect(factor.lastAcceptedStep).toBe(stepAt(Date.now(), TOTP_PRODUCTION.stepSeconds));
+    //
+    // Compared against the step the code was GENERATED at, not the step current
+    // now. This line read `stepAt(Date.now(), ...)` until Task 13's residual
+    // sweep, which made it fail on roughly 3% of runs — every run where a
+    // 30-second boundary happened to fall between `enableMfa` generating the
+    // code and this assertion reading the clock again. The reviewer hit it once
+    // in an otherwise green suite. See `enableMfa`'s `confirmingStep`.
+    expect(factor.lastAcceptedStep).toBe(confirmingStep);
 
     const stored = await h.prisma.recoveryCode.findMany({ where: { userId } });
     expect(stored).toHaveLength(10);

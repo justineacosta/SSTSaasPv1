@@ -2051,20 +2051,53 @@ and count it.
 - **Not pushed, and CI has not run.** Every figure above is local. This must be green on a Linux
   runner before Task 14 branches from a merged `main`.
 - **The fix round has not itself been reviewed** — the same status Tasks 10, 11 and 12 carried.
-- **A known flake will surface in CI**: `auth.mfa.integration.spec.ts` has a TOTP step-boundary
-  race, **outside Task 13's range**, hit once by the reviewer and passing in three subsequent full
-  runs. It is not a Task 13 regression and must not be diagnosed as one.
-- **`TEMPORARY` is still granted to `PUBLIC`.** Revoking it is defence in depth against ADR-0021's
-  whole class rather than the instance, and is owed to a deployment hardening pass.
-- **The authorization matrix cannot detect a single guarded route being downgraded** to
-  `@AuthenticatedOnly()` — it leaves the set the matrix iterates. The set going *fully* empty is
-  caught; a single downgrade is covered by the controller's access table and the scoped 403 arm.
-- **`meta.total` is never returned** by `GET /organizations`; counts are opt-in per `pagination.md`
-  §3 and the query schema has no such field.
+  Sent to a fresh adversarial reviewer in the 2026-09-03 residual sweep, together with that
+  sweep's own changes.
+- ~~A known flake will surface in CI: `auth.mfa.integration.spec.ts` has a TOTP step-boundary
+  race.~~ **Closed 2026-09-03, and it was a real defect rather than infrastructure noise.**
+  `enableMfa` generated the confirming code at one clock reading and the assertion recomputed
+  `stepAt(Date.now(), …)` at another; a TOTP step is 30 seconds wide and `lastAcceptedStep` is
+  fixed when the code is generated, so any boundary falling in between failed the assertion.
+  Measured arithmetic: the failure rate is the generate-to-assert span divided by 30,000 ms —
+  about 3% at a one-second span, which is exactly how it presented. `enableMfa` now returns the
+  step it used and the assertion compares against that, so no wall-clock timing can affect it.
+  The general rule is in the code: **never recompute a time-derived value the system under test
+  already committed to.**
+- ~~`TEMPORARY` is still granted to `PUBLIC`.~~ **Closed 2026-09-03** by migration
+  `20260903090000_revoke_temporary_from_public`, which removes the *precondition* for ADR-0021's
+  attack rather than protecting one function against it. It uses `current_database()` rather than
+  a literal, so it cannot silently do nothing against a differently-named database. Measured:
+  `has_database_privilege('sentinel_app', current_database(), 'TEMPORARY')` goes `t` → `f`, and
+  `CREATE TEMP TABLE "Membership"` as `sentinel_app` now answers `permission denied to create
+  temporary tables`. Asserted in `migration.integration.spec.ts` against a database replayed from
+  empty, separately from the `pg_temp` pin, because ADR-0006's argument is that two independent
+  mechanisms must both be wrong.
+- ~~The authorization matrix cannot detect a single guarded route being downgraded.~~ **Closed
+  2026-09-03.** The matrix now pins the guarded inventory as `METHOD path -> permission` and
+  asserts it, so a downgrade fails there rather than only in the controller's access table. A
+  count would have been weaker — adding one route while downgrading another keeps the number
+  identical. Proved by re-running the mutation the old matrix survived: downgrading
+  `organization.update` to `@AuthenticatedOnly()` now turns this file red with a message naming
+  what to do, and the list is deliberately one that must be edited when a guarded route is added
+  (carry-forward ruling 101: a sentinel that fails on the day the feature arrives must say what
+  replaces it).
+- **`meta.total` is never returned** by `GET /organizations`, and this is now a recorded decision
+  rather than an open item. `pagination.md` §3's counts are a whole feature — the opt-in
+  parameter *and* the `reltuples` estimate above 100,000 rows — and implementing half of it on the
+  one list in the product that is inherently tiny would be worse than not implementing it. The
+  natural owner is Phase 3's assets and findings, where the estimate threshold means something.
+  **What the 2026-09-03 sweep did fix is the documentation**: `pagination.md`'s banner still said
+  "no endpoint consumes them yet — there is no list endpoint in the API", which Task 13 falsified
+  and neither its implementer nor its reviewer caught. The banner now states what is implemented,
+  and an integration test pins the behaviour it claims — `?includeTotal=true` is refused with 400
+  `UNKNOWN_FIELD` rather than silently ignored, because `listQuerySchema` is `.strict()`.
 - **One probe row, `org_probe_d2`, remains in the local compose database** with an `AuditEvent`
-  referencing it. It cannot be deleted — the append-only trigger refuses, then `Restrict` refuses —
-  which is the delete-409 behaviour working as designed. Local dev data only; it reaches no
-  Testcontainers run.
+  referencing it. Still true on 2026-09-03. It cannot be deleted — the append-only trigger
+  refuses, then `Restrict` refuses — which is the delete-409 behaviour working as designed, and
+  lifting the trigger to tidy dev data was refused by the harness's permission classifier, also
+  correctly. Local dev data only; it reaches no Testcontainers run.
+- ~~The remote branch was not deleted.~~ **Deleted 2026-09-03**; `git ls-remote --heads origin`
+  returns `main` alone.
 
 ### Phase 3 — SaaS core
 Projects, assets, **asset ownership verification**, scope and scope rules with the
