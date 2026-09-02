@@ -22,7 +22,7 @@ Branch: `feat/phase-2-identity`
 | 10 | Password reset | chained with 9 | **Done** — [brief](task-10/brief.md) · [report](task-10/report.md) · [review](task-10/review.md) · [dispositions](task-10/fix-brief.md) · [fixes](task-10/fixes.md) · [fix review](task-10/fix-review.md) |
 | 11 | TOTP MFA and recovery codes | subagent | **Done** — [brief](task-11/brief.md) · [report](task-11/report.md) · [review](task-11/review.md) · [dispositions](task-11/fix-brief.md) · [fixes](task-11/fixes.md) |
 | 12 | Tenant resolution and the authorization guard | orchestrator | **Done** — [report](task-12/report.md) · [review-brief](task-12/review-brief.md) · [review](task-12/review.md) · [fixes](task-12/fixes.md) |
-| **A** | **Checkpoint — verify, push, CI green, status recorded** | orchestrator | **Partly** — verified and recorded; **not pushed, no CI run** |
+| **A** | **Checkpoint — verify, push, CI green, status recorded** | orchestrator | **Verified, recorded, pushed.** CI run `33602860564` — check its conclusion before starting Task 13 |
 | 13 | Organisations and organisation switching | chained 13→15 | Not started |
 | 14 | Memberships, roles, last-owner invariant | chained 13→15 | Not started |
 | 15 | Invitations | chained 13→15 | Not started |
@@ -863,19 +863,22 @@ commit `7540279` (Task 11's fix round, previously unreviewed). **1 High, 7 Mediu
 seven Mediums are closed. The reviewer re-ran every mutation and every evidence-table number
 independently; all eleven command rows held, and four prose claims did not.
 
-**One open item.** The branch is unpushed and CI has never run on this work. Checkpoint A's second
-bullet asks for a green Linux run cited by run ID; `roadmap.md`'s Checkpoint A section records the
-absence rather than omitting the row. Twelve tasks of unpushed work is exactly what that bullet
-exists to prevent.
+**The branch is pushed and CI is running: run `33602860564`** on `feat/phase-2-task-12-authorization`,
+started 2026-09-02. Checkpoint A's second bullet asks for a green Linux run cited by run ID. **Do
+not read this line as "CI is green"** — check the run's conclusion, and confirm every stage
+executed rather than inferring it from the conclusion, which is the discipline Task 11's merge
+followed.
 
 **The fix round has not itself been reviewed** — the same status Task 10's and Task 11's carried.
 Every change in it was measured with the mutation re-run and pasted, but that is the author
 checking their own work. Task 13's reviewer may treat it as unexamined.
 
 **Branching.** `feat/phase-2-task-12-authorization`, cut from `main` at `a0b2963`, three commits:
-`5460ebf` (code), `543cf0c` (documents), and the roadmap/ledger commit. **Not merged, not
-pushed.** Tasks 13–15 branch from whatever `main` is when they start — pull first; do not cut
-from a commit named in this file.
+`5460ebf` (code), `543cf0c` (documents), `81194bf` (roadmap and ledger), `f4ddb4b`, `a52a486`
+(review brief), `11dff5b` (review), `b4290e9` (fix round), `74bb07c` (broken links). **Pushed and
+NOT MERGED.** Tasks 13–15 branch from whatever `main` is when they start — pull first; do not cut
+from a commit named in this file, and do not start Task 13 until Task 12 is merged, or it will be
+built on a `main` that does not contain the authorization pipeline.
 
 **Next action:** push and get CI green, then Task 13 — organisations and organisation switching, chained 13→15. Task 13 is where
 `Session.activeOrganizationId` first gets written, which is the moment every control Task 12
