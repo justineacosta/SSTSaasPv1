@@ -299,14 +299,33 @@ describe('ADR-0020: user_organizations(text)', () => {
       // The pin was right; the value pinned was the vulnerable one, and the
       // comment beside it asserted the opposite. Both are corrected here.
       const searchPath = rows[0]?.proconfig ?? [];
-      expect(searchPath).toEqual(['search_path=public, pg_temp']);
-      // Asserted separately from the equality above so that a future edit which
-      // keeps `pg_temp` but moves it earlier — the subtle form of this defect,
-      // which an equality assertion would catch only by accident — fails with a
-      // message naming the actual rule.
       const entries = (searchPath[0] ?? '').replace(/^search_path=/, '').split(/\s*,\s*/);
-      expect(entries).toContain('pg_temp');
-      expect(entries[entries.length - 1]).toBe('pg_temp');
+
+      // THE RULE IS ASSERTED FIRST, AND THE ORDER OF THESE THREE LINES IS THE
+      // WHOLE POINT.
+      //
+      // These two assertions used to sit BELOW the equality, with a comment
+      // claiming they would catch a `pg_temp`-moved-earlier edit "with a message
+      // naming the actual rule rather than an equality mismatch". The review of
+      // the residual sweep proved that exactly inverted: `toEqual` runs first,
+      // so any mutation that breaks the rule also breaks the equality, the test
+      // stops there, and these lines never execute. **They could not fail.**
+      // They were decoration presented as a defence — and ADR-0021 nominated
+      // them as "the pattern to copy", which would have propagated the shape.
+      //
+      // Ordered this way, a `search_path = pg_temp, public` edit fails on the
+      // last-entry assertion with a message about `pg_temp`, and the equality
+      // below still pins the exact value for everything else.
+      expect(entries, 'pg_temp must appear in the definer function search_path').toContain(
+        'pg_temp',
+      );
+      expect(
+        entries[entries.length - 1],
+        'pg_temp must be LAST in the search_path. Postgres searches the temporary schema first ' +
+          'for relation names when pg_temp is not listed explicitly, and anywhere but last it is ' +
+          'searched before the schema that holds the real tables — which is ADR-0021 reopened.',
+      ).toBe('pg_temp');
+      expect(searchPath).toEqual(['search_path=public, pg_temp']);
     } finally {
       await admin.$disconnect();
     }
