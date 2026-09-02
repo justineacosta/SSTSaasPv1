@@ -26,6 +26,28 @@ interface GuardProvider {
   readonly useClass?: unknown;
 }
 
+/**
+ * The index of a guard in the pipeline, refusing `-1`.
+ *
+ * The Task 12 review's L-2: two of the four "decision" assertions below were
+ * written as `indexOf(A) < indexOf(B)`, which is **vacuously true when A is
+ * absent** — `indexOf` returns `-1`, and `-1` is less than everything. The
+ * reviewer deleted `MfaEnrolmentGuard`'s provider entirely and watched
+ * `forces MFA enrolment before it evaluates a permission` pass. Only the
+ * full-array assertions held the line.
+ */
+function positionOf(guard: unknown): number {
+  const index = globalGuardClasses().indexOf(guard);
+  if (index === -1) {
+    throw new Error(
+      `${String((guard as { name?: string }).name ?? guard)} is not registered as a global guard. ` +
+        'An ordering assertion about a guard that is absent is vacuously true, which is how a ' +
+        'stage disappears with the order still "asserted".',
+    );
+  }
+  return index;
+}
+
 function globalGuardClasses(): unknown[] {
   const providers = (Reflect.getMetadata('providers', AppModule) ?? []) as GuardProvider[];
   return providers
@@ -57,8 +79,7 @@ describe('the global guard pipeline', () => {
   });
 
   it('puts CSRF after authentication, so an anonymous caller gets 401 and not 403', () => {
-    const classes = globalGuardClasses();
-    expect(classes.indexOf(CsrfGuard)).toBeGreaterThan(classes.indexOf(AuthenticationGuard));
+    expect(positionOf(CsrfGuard)).toBeGreaterThan(positionOf(AuthenticationGuard));
   });
 
   it('resolves the tenant after authentication and before authorization', () => {
@@ -70,11 +91,8 @@ describe('the global guard pipeline', () => {
     // permission evaluated before the tenant would be evaluated against no
     // organisation at all — which `security/authorization.md` §1 calls
     // meaningless in a multi-tenant product.
-    const classes = globalGuardClasses();
-    expect(classes.indexOf(TenantContextGuard)).toBeGreaterThan(
-      classes.indexOf(AuthenticationGuard),
-    );
-    expect(classes.indexOf(TenantContextGuard)).toBeLessThan(classes.indexOf(AuthorizationGuard));
+    expect(positionOf(TenantContextGuard)).toBeGreaterThan(positionOf(AuthenticationGuard));
+    expect(positionOf(TenantContextGuard)).toBeLessThan(positionOf(AuthorizationGuard));
   });
 
   it('forces MFA enrolment before it evaluates a permission', () => {
@@ -83,17 +101,15 @@ describe('the global guard pipeline', () => {
     // with no factor must hear MFA_ENROLMENT_REQUIRED rather than
     // PERMISSION_DENIED, which would send them to ask an owner for a permission
     // that would not have helped.
-    const classes = globalGuardClasses();
-    expect(classes.indexOf(MfaEnrolmentGuard)).toBeLessThan(classes.indexOf(AuthorizationGuard));
+    expect(positionOf(MfaEnrolmentGuard)).toBeLessThan(positionOf(AuthorizationGuard));
   });
 
   it('puts both database-reading gates after the two forgery checks', () => {
     // A cross-site forged request should be refused by a header comparison
     // rather than pay for two database reads on the way to the same refusal.
-    const classes = globalGuardClasses();
     for (const gate of [EmailVerifiedGuard, MfaEnrolmentGuard]) {
-      expect(classes.indexOf(gate)).toBeGreaterThan(classes.indexOf(CsrfGuard));
-      expect(classes.indexOf(gate)).toBeGreaterThan(classes.indexOf(CrossSiteGuard));
+      expect(positionOf(gate)).toBeGreaterThan(positionOf(CsrfGuard));
+      expect(positionOf(gate)).toBeGreaterThan(positionOf(CrossSiteGuard));
     }
   });
 
@@ -108,9 +124,8 @@ describe('the global guard pipeline', () => {
     // resolved tenant that a `@Public()` route does not have. The property that
     // mattered is unchanged and is what is asserted — it runs after
     // authentication and CSRF.
-    const classes = globalGuardClasses();
-    expect(classes.indexOf(CrossSiteGuard)).toBeGreaterThan(classes.indexOf(CsrfGuard));
-    expect(classes.indexOf(CrossSiteGuard)).toBeGreaterThan(classes.indexOf(AuthenticationGuard));
+    expect(positionOf(CrossSiteGuard)).toBeGreaterThan(positionOf(CsrfGuard));
+    expect(positionOf(CrossSiteGuard)).toBeGreaterThan(positionOf(AuthenticationGuard));
   });
 
   it('puts the entitlement stub LAST, so 402 can never precede 403', () => {
@@ -118,9 +133,8 @@ describe('the global guard pipeline', () => {
     // the only decision it currently records — and it is a real one. A caller
     // who was never permitted the action must not learn what the
     // organisation's plan includes.
-    const classes = globalGuardClasses();
-    expect(classes.at(-1)).toBe(EntitlementGuard);
-    expect(classes.indexOf(EntitlementGuard)).toBeGreaterThan(classes.indexOf(AuthorizationGuard));
+    expect(globalGuardClasses().at(-1)).toBe(EntitlementGuard);
+    expect(positionOf(EntitlementGuard)).toBeGreaterThan(positionOf(AuthorizationGuard));
   });
 
   it('registers exactly nine global guards', () => {

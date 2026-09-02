@@ -321,6 +321,91 @@ describe('layer 2 — membership', () => {
   });
 });
 
+describe('a re-added member, with removed rows left behind', () => {
+  /**
+   * THE TASK 12 REVIEW'S M-1, AS A TEST — AND THE FIRST VERSION OF THIS TEST
+   * DID NOT BITE.
+   *
+   * `(organizationId, userId)` is unique only **where `deletedAt` is null**, so
+   * a member who was removed and later re-added leaves `REMOVED` rows sitting
+   * beside the live one. The resolver's `findFirst` originally had no predicate
+   * and no `orderBy`, so Postgres could return any of them — and a `REMOVED`
+   * row reads as `not-a-member`, which is a silent 404 on every guarded route
+   * for a member who is active. This is the shape Task 14's removal and Task
+   * 15's re-invitation produce together.
+   *
+   * **The row order is the whole test, and getting it wrong made the first
+   * version pass under the mutation.** That version inserted the removed rows
+   * *after* the live one, with a comment claiming that was the arrangement
+   * least likely to catch the defect by luck. The opposite is true: with no
+   * `ORDER BY`, Postgres seq-scans a small table in physical order, so the
+   * live row — inserted first — came back first and the mutated resolver
+   * answered 200. Carry-forward ruling 88: measure the guard, not just the fix.
+   *
+   * So this reproduces the real sequence instead. The original membership is
+   * removed, a second removal is left behind, and the member is then re-added —
+   * which puts the live row **last** in physical order, exactly where an
+   * unordered `LIMIT 1` will not find it.
+   */
+  it('resolves the live membership and not a removed one', async () => {
+    const actor = await member({ role: 'OWNER' });
+    const viewer = await owner.role.findUniqueOrThrow({
+      where: { key: 'VIEWER' },
+      select: { id: true },
+    });
+
+    // 1. The original membership is removed. Ruling 10: status and `deletedAt`
+    //    are one fact and the CHECK constraint refuses them apart.
+    await owner.membership.update({
+      where: { id: actor.membershipId },
+      data: { status: 'REMOVED', deletedAt: new Date() },
+    });
+
+    // 2. A second removal left behind, so the live row is not merely second.
+    await owner.membership.create({
+      data: {
+        id: newId('mbr'),
+        organizationId: actor.organizationId,
+        userId: actor.userId,
+        roleId: viewer.id,
+        status: 'REMOVED',
+        deletedAt: new Date(),
+      },
+      select: { id: true },
+    });
+
+    // 3. Re-added. This row is LAST, which is the arrangement that catches an
+    //    unordered read.
+    const readded = await owner.membership.create({
+      data: {
+        id: newId('mbr'),
+        organizationId: actor.organizationId,
+        userId: actor.userId,
+        roleId: (
+          await owner.role.findUniqueOrThrow({ where: { key: 'OWNER' }, select: { id: true } })
+        ).id,
+        status: 'ACTIVE',
+        deletedAt: null,
+      },
+      select: { id: true },
+    });
+    expect(readded.id).not.toBe(actor.membershipId);
+
+    const rows = await owner.membership.count({
+      where: { organizationId: actor.organizationId, userId: actor.userId },
+    });
+    expect(rows).toBe(3);
+
+    // The removed rows carry VIEWER and the live one carries OWNER, so reading
+    // the wrong row shows up as a 403 as well as a 404 — the resolved role is
+    // asserted, not only the status code.
+    const response = await get('/api/v1/probe/scan-create', actor.cookie);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ organizationId: actor.organizationId, roleKey: 'OWNER' });
+    await get('/api/v1/probe/accept-risk', actor.cookie).expect(200);
+  });
+});
+
 describe('layer 3 — organisation state', () => {
   it('refuses an active member of a suspended organisation with 403', async () => {
     const actor = await member({ role: 'OWNER', organizationStatus: 'SUSPENDED' });

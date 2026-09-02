@@ -21,7 +21,7 @@ Branch: `feat/phase-2-identity`
 | 9 | Login, logout, session endpoint, lockout | chained with 10 | **Done** — [brief](task-09/brief.md) · [report](task-09/report.md) · [review](task-09/review.md) · [dispositions](task-09/fix-brief.md) · [fixes](task-09/fixes.md) · [fix review](task-09/fix-review.md) |
 | 10 | Password reset | chained with 9 | **Done** — [brief](task-10/brief.md) · [report](task-10/report.md) · [review](task-10/review.md) · [dispositions](task-10/fix-brief.md) · [fixes](task-10/fixes.md) · [fix review](task-10/fix-review.md) |
 | 11 | TOTP MFA and recovery codes | subagent | **Done** — [brief](task-11/brief.md) · [report](task-11/report.md) · [review](task-11/review.md) · [dispositions](task-11/fix-brief.md) · [fixes](task-11/fixes.md) |
-| 12 | Tenant resolution and the authorization guard | orchestrator | **Built, not reviewed** — [report](task-12/report.md) |
+| 12 | Tenant resolution and the authorization guard | orchestrator | **Done** — [report](task-12/report.md) · [review-brief](task-12/review-brief.md) · [review](task-12/review.md) · [fixes](task-12/fixes.md) |
 | **A** | **Checkpoint — verify, push, CI green, status recorded** | orchestrator | **Partly** — verified and recorded; **not pushed, no CI run** |
 | 13 | Organisations and organisation switching | chained 13→15 | Not started |
 | 14 | Memberships, roles, last-owner invariant | chained 13→15 | Not started |
@@ -737,18 +737,75 @@ Full reasoning in [`task-10/review.md`](task-10/review.md),
     account.
 
 96. **The migration history is not self-contained: it needs the `sentinel_app` role to already
-    exist.** Measured — `prisma migrate deploy` against a bare `postgres:16-alpine` fails at
-    `20260820121229_row_level_security` with `role "sentinel_app" does not exist` (42704). With
+    exist, AND it needs the database to be called `sentinel`.** Measured — `prisma migrate deploy`
+    against a bare `postgres:16-alpine` fails at `20260820121229_row_level_security` with
+    `role "sentinel_app" does not exist` (42704). With
     `infra/docker/postgres/init/01-app-role.sql` mounted as an init script the whole history
-    replays and exits 0. True since Phase 1; found now because this is the first time anything
-    ran that criterion literally. **Binds the first deploy** — the role is created out of band,
-    and `.claude/operations/` should say so before anyone provisions a database.
+    replays and exits 0. **The second half is the reviewer's L-5**: that script hard-codes
+    `GRANT CONNECT ON DATABASE sentinel TO sentinel_app`, so mounting it against a database with
+    any other name fails with `database "sentinel" does not exist`. Both were true since Phase 1;
+    found now because this is the first time anything ran that criterion literally. **Binds the
+    first deploy** — the role and the database name are both out-of-band preconditions, and
+    `.claude/operations/` should say so before anyone provisions a database.
 
-97. **404 is the fail-closed direction, so a mutation that blinds the resolver leaves the 404
-    tests green.** Removing `withTenantTransaction` turned 9 of 18 integration assertions red and
-    left 9 passing — every one of the survivors expects a 404 or an empty set, and got the right
-    answer for the wrong reason. **A mutation score is not a coverage figure.** When reporting
-    one, say which survivors are survivors by construction.
+97. **404 is the fail-closed direction, so a mutation that blinds the resolver leaves most of the
+    404 tests green — and "most" is the word the first version of this ruling got wrong.**
+    Removing `withTenantTransaction` turned 9 of 18 integration assertions red and left 9 passing.
+    This ruling originally said "every one of the survivors expects a 404 or an empty set". The
+    Task 12 reviewer listed them (M-3) and **two are not**: `expands every system role to exactly
+    ROLE_PERMISSIONS` issues no HTTP request at all and cannot be affected by any mutation of the
+    resolver, and `still admits an @AuthenticatedOnly() route for a removed member` asserts **200**
+    twice. The honest split is **7 survivors by fail-closed construction, 1 expecting a success,
+    1 outside the mutation's reach entirely.**
+
+    **A mutation score is not a coverage figure**, and a caveat about a mutation score is a claim
+    that has to be enumerated rather than asserted. When reporting one, list the survivors.
+
+98. **A guard registered globally is an OPT-OUT control, and an opt-out control whose exemption
+    is applied to nothing is an outage.** Task 12's H-1. `MfaEnrolmentGuard` was registered on
+    every authenticated route with `@AllowWithoutMfaEnrolment()` carried by **zero** handlers —
+    so one `requireMfa = true` row would have refused the member's own enrolment endpoint, their
+    session document and their logout. The file's own docblock had predicted it in as many words.
+    Fixed **structurally, not by decorating six handlers**: the guard now acts only on a route
+    declaring a permission, which under `security/authorization.md` §1 is exactly the set of
+    routes that act within an organisation. **Binds every later global guard**: ask whether it is
+    opt-in or opt-out, and if opt-out, what the caller can still reach.
+
+99. **`(organizationId, userId)` is unique only WHERE `deletedAt IS NULL`, so a re-added member
+    has several rows and an unordered read may pick a removed one.** M-1, measured on a replayed
+    schema: two `REMOVED` rows plus one `ACTIVE` returned a `REMOVED` one, which resolves as
+    `not-a-member` — a silent, non-deterministic 404 for a member who is active. The predicate
+    `deletedAt: null` makes the partial unique index guarantee one row. **Binds Task 14's removal
+    and Task 15's re-invitation**, which are what produce the multi-row state together, and any
+    later query over `Membership` that expects one row.
+
+100. **A regression test for a non-deterministic read has to be arranged to lose.** Ruling 88's
+    family. The first test for ruling 99 inserted the removed rows *after* the live one and
+    **passed under the mutation** — Postgres seq-scans a small table in physical order, so the
+    live row came back first by luck, and the comment beside it claimed the opposite arrangement
+    was the safer one. Rewritten to remove-then-re-add, which puts the live row last, it fails on
+    the mutated resolver. **Measure the guard, not just the fix.**
+
+101. **A test named "all four arms" contained one arm, and the coverage assertion could not tell.**
+    M-2. The matrix recorded which *routes* it had exercised, not which *arms* it had run, so a
+    guarded route reached only by the 401 probe counted as covered — proved by the reviewer adding
+    a `@RequirePermission()` route and watching it pass. The three missing arms are now written and
+    coverage is asserted per (route, arm). **A sentinel that fails on the day the feature arrives
+    invites deletion**: the one here now names what must replace it instead of only asserting an
+    empty set.
+
+102. **Passing `undefined` for an optional parameter selects the DEFAULT.** A test written to
+    exercise "no tenant resolved" passed `undefined` into a parameter defaulted to a tenant, and
+    so asserted the opposite of what it read. Caught only because the assertion then failed. Use a
+    distinct sentinel — `null` — for "deliberately absent".
+
+103. **`toContain` over a module's source text is satisfied by the import line.** L-2, measured:
+    deleting the `APP_GUARD` provider for `MfaEnrolmentGuard` while leaving its `import` left
+    `require-mfa.spec.ts` at 14 passed, exit 0. Assert registration against
+    `Reflect.getMetadata('providers', AppModule)` instead. Related, same finding: an ordering
+    assertion written as `indexOf(A) < indexOf(B)` is **vacuously true when A is absent**, because
+    `indexOf` returns `-1` — two of `app.module.spec.ts`'s four "decision" assertions had that
+    shape and only the full-array assertions held the line.
 
 ## Pause state
 
@@ -769,31 +826,43 @@ authorization is enforced on this API.**
 
 **Nine global guards, up from four.** Rate limit, authenticate, tenant resolve, CSRF, cross-site
 refusal, email verified, MFA enrolment, authorize, entitlement. `EmailVerifiedGuard` and
-`MfaEnrolmentGuard` were built in Tasks 8 and 11 and registered nowhere; both are placed, both
-still govern zero routes, and the two specs that asserted their absence now assert the
-registration *plus* the absence of any decorated handler.
+`MfaEnrolmentGuard` were built in Tasks 8 and 11 and registered nowhere; both are placed.
+`EntitlementGuard` is new — it was not "previously unregistered", it did not exist.
 
-**Five mutations were run and all five were caught** — the numbers and the caveat about which
-survivors are survivors by construction are in [task-12/report.md](task-12/report.md) §5 and in
-new ruling 97.
+**Neither of the two placed guards can refuse anybody, and the two reasons are different** — the
+review's M-6, which found the first version of this paragraph flattening them into one.
+`EmailVerifiedGuard` is **opt-in** and no handler carries `@RequireVerifiedEmail()`: a structural
+fact, held by a test. `MfaEnrolmentGuard` acts only on a route declaring a permission and no route
+declares one: also structural, also held by a test — **but only after the review**. It was
+originally registered as an opt-out control over every authenticated route with its exemption
+applied to nothing, which is ruling 98 and was the task's High.
 
-**Two open items, and they are the reason this pause state is not a clean handoff.**
+**Five mutations were run and all five were caught, and two of the counts were wrong** — the
+reviewer re-ran them: mutation 3 is 8 red across both lanes rather than 4, and mutation 5 is 2 red
+rather than 1. The conclusions stand; the numbers did not. Ruling 97 records the more important
+correction, which is that the caveat about the survivors was itself false. Details in
+[task-12/report.md](task-12/report.md) §5 and [review.md](task-12/review.md).
 
-1. **Task 12 has had no adversarial review.** The plan requires a fresh reviewer for every task
-   in every mode, and this one was built by the orchestrator. Commit `7540279` — Task 11's fix
-   round — is still unreviewed too, and the Task 11 pause state already handed it forward. **A
-   reviewer should be given both.**
-2. **The branch is unpushed and CI has never run on this work.** Checkpoint A's second bullet
-   asks for a green Linux run cited by run ID; `roadmap.md`'s Checkpoint A section records the
-   absence rather than omitting the row. Twelve tasks of unpushed work is exactly what that
-   bullet exists to prevent.
+**Task 12 was reviewed on 2026-09-02** by a fresh adversarial reviewer, which also examined
+commit `7540279` (Task 11's fix round, previously unreviewed). **1 High, 7 Mediums, 8 Lows** —
+[review.md](task-12/review.md), dispositions in [fixes.md](task-12/fixes.md). The High and all
+seven Mediums are closed. The reviewer re-ran every mutation and every evidence-table number
+independently; all eleven command rows held, and four prose claims did not.
+
+**One open item.** The branch is unpushed and CI has never run on this work. Checkpoint A's second
+bullet asks for a green Linux run cited by run ID; `roadmap.md`'s Checkpoint A section records the
+absence rather than omitting the row. Twelve tasks of unpushed work is exactly what that bullet
+exists to prevent.
+
+**The fix round has not itself been reviewed** — the same status Task 10's and Task 11's carried.
+Every change in it was measured with the mutation re-run and pasted, but that is the author
+checking their own work. Task 13's reviewer may treat it as unexamined.
 
 **Branching.** `feat/phase-2-task-12-authorization`, cut from `main` at `a0b2963`, three commits:
 `5460ebf` (code), `543cf0c` (documents), and the roadmap/ledger commit. **Not merged, not
 pushed.** Tasks 13–15 branch from whatever `main` is when they start — pull first; do not cut
 from a commit named in this file.
 
-**Next action:** review Task 12 (and `7540279` with it), then push and get CI green, then
-Task 13 — organisations and organisation switching, chained 13→15. Task 13 is where
+**Next action:** push and get CI green, then Task 13 — organisations and organisation switching, chained 13→15. Task 13 is where
 `Session.activeOrganizationId` first gets written, which is the moment every control Task 12
 built starts executing on a real request. Ruling 93 is the one to read first.

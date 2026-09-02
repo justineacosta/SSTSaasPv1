@@ -231,11 +231,23 @@ export const RATE_LIMIT_CLASSES = {
    *
    * **What actually bounds this is per-account, one endpoint up.** Reaching this
    * route at all costs a `PENDING_MFA` session, and minting one costs a
-   * successful login, which `login` above limits to 5 per 15 minutes keyed on
-   * the email address. Five logins an hour times five attempts each caps an
-   * account near 100 attempts/hour however many addresses the attacker owns —
-   * roughly 3,333 hours, about 4.6 months — and every attempt writes an
-   * `MFA_CHALLENGE_FAILED` row, so the guessing is loud. That is a defensible
+   * successful login, which `login.perPrincipal` above limits to 5 per 15
+   * minutes keyed on the **account**. That is **twenty** logins an hour, times
+   * five attempts each, so an account is capped near **100 attempts/hour**
+   * however many addresses the attacker owns — roughly 3,333 hours, about 4.6
+   * months — and every attempt writes an `MFA_CHALLENGE_FAILED` row, so the
+   * guessing is loud.
+   *
+   * **This paragraph was itself wrong until the Task 12 review, in the round
+   * that fixed the 630-year sentence.** It said "5 per 15 minutes keyed on the
+   * email address. Five logins an hour times five attempts each" — five per
+   * fifteen minutes is twenty an hour, 5 × 5 is 25 rather than 100, and
+   * "address" reads as an IP everywhere else in this file while the bounding
+   * limit is the account-keyed one (`perIp` is 20 / 15 min). The 100 and the
+   * 4.6 months were right; every step shown to reach them was wrong. Left on
+   * the record beside the sentence it was correcting, because two false
+   * arithmetic sentences in one paragraph in two consecutive rounds is the
+   * pattern, not the arithmetic. That is a defensible
    * posture; the 630-year sentence described a different and imaginary one, and
    * the cost of leaving it standing was a future reader concluding there was
    * enormous headroom here. The figure is generous for a real user — a mistyped

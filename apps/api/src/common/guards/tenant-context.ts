@@ -132,8 +132,8 @@ const KNOWN_PERMISSIONS: ReadonlySet<string> = new Set<string>(PERMISSIONS);
  * required by any route and can therefore never grant anything — carrying it
  * would only put an unvalidated database string into a type that claims to be
  * the union. The reverse direction is the one that matters and it is asserted
- * elsewhere: `roles.integration.spec.ts` proves the seeded rows expand to
- * exactly `ROLE_PERMISSIONS`, so a *missing* grant fails a test rather than
+ * elsewhere: `authorization.integration.spec.ts` proves the seeded rows expand
+ * to exactly `ROLE_PERMISSIONS`, so a *missing* grant fails a test rather than
  * silently narrowing somebody's authority here.
  */
 export function knownPermissions(keys: readonly string[]): Permission[] {

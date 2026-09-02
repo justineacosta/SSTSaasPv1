@@ -298,7 +298,11 @@ describe('what this guard governs today', () => {
     const controllers = globSync('**/*.controller.ts', { cwd: root }).map((relative) =>
       join(root, relative),
     );
-    expect(controllers.length).toBeGreaterThan(0);
+    // PINNED, not merely non-zero (the Task 12 review's L-3). A glob that found
+    // 1 of 3 controllers would satisfy `toBeGreaterThan(0)` and still report
+    // "no route carries the decorator" over two thirds of the API. The wrong
+    // directory shipped once already, which is why the guard is here at all.
+    expect(controllers).toHaveLength(3);
 
     const decorated = controllers.filter((file) =>
       readFileSync(file, 'utf8')

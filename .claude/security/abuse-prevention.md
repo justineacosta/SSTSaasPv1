@@ -228,9 +228,9 @@ a million codes, ±1 drift so three are live at any instant, which is 3 in 10^6 
 333,333 expected guesses, so at 60 an hour, **0.63 years from a single address**. Ten addresses is
 under a month. **The per-IP figure is therefore the outer loop and not the control.** What bounds
 this per account is one endpoint up: reaching the route costs a `PENDING_MFA` session, minting one
-costs a successful login, and login is 5 / 15 min per address — five logins an hour times five
-attempts each caps an account near 100 attempts/hour however many addresses the attacker owns,
-about 4.6 months to an expected success, with an `MFA_CHALLENGE_FAILED` row written for every
+costs a successful login, and login is **5 / 15 min per account** — twenty logins an hour, times
+five attempts each, caps an account near **100 attempts/hour** however many addresses the attacker
+owns, about 4.6 months to an expected success, with an `MFA_CHALLENGE_FAILED` row written for every
 attempt. 60/hour is generous for a real user with a mistyped code, a drifted phone clock or a
 second device.
 
@@ -238,6 +238,17 @@ second device.
 > measured the division: the premises were right and the result was wrong by a factor of 1000. The
 > sentence is recorded here rather than silently replaced, because a security document's arithmetic
 > is the thing a future reader tunes the limit against.
+
+> **And the replacement paragraph got its own arithmetic wrong, which is why this note exists at
+> all.** From Task 11's fix round until the Task 12 review it read "5 / 15 min per **address** —
+> **five logins an hour** times five attempts each caps an account near 100 attempts/hour". Three
+> errors in one clause: five per fifteen minutes is **twenty** an hour, not five; 5 × 5 is 25, not
+> 100; and the limit that does the bounding is `login.perPrincipal`, which is keyed on the
+> **account**, while "address" everywhere else in this paragraph means an IP (`login.perIp` is
+> 20 / 15 min). The conclusion — 100 attempts/hour, about 4.6 months — was right, and every step
+> shown to reach it was wrong. **A false sentence introduced while correcting a false sentence, in
+> the same paragraph, for the second time in this phase.** Both are left on the record because the
+> pattern is worth more than either fix.
 
 Per IP only. The body is `{ pendingToken, code }` and carries no account; resolving one from the
 pending token would mean a Redis or Postgres read bought by an unauthenticated caller *before* the
