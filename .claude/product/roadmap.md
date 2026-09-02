@@ -1657,7 +1657,7 @@ checking their own work. Commit `7540279` is the one Task 12's reviewer may trea
 
 ---
 
-## Checkpoint A — 2026-09-02 at commit `543cf0c`, one bullet short
+## Checkpoint A — 2026-09-02, reviewed and fixed, one bullet short
 
 **Phase 2 moves to Partially Implemented here**, with the gap named precisely:
 *the identity API is built and the authorization pipeline is enforced end to end; no
@@ -1672,27 +1672,34 @@ after CI because the whole point of the checkpoint is that the window between bu
 something and recording it is when a session ends unexpectedly — but **nothing here may be
 read as "CI is green"**, and the ledger's Task 12 entry carries the same sentence.
 
-**Task 12 has also not been reviewed.** The plan requires a fresh adversarial reviewer for
-every task in every mode; this one was built by the orchestrator, so nobody has checked it but
-its author. The same is true of commit `7540279`, Task 11's fix round.
+**Task 12 was reviewed on 2026-09-02** by a fresh adversarial reviewer, which also took commit
+`7540279` — Task 11's fix round, previously unreviewed. **1 High, 7 Mediums, 8 Lows.** All eight
+of the High and Mediums are closed; the evidence below is from the tree *after* those fixes.
+Every command row in the table was re-run independently by the reviewer and held. **Four prose
+claims did not hold and are corrected in place** — the mutation caveat, the "both specs assert"
+sentence, an opt-in/opt-out conflation, and three source docblocks citing a spec file that has
+never existed. The fix round has not itself been reviewed.
 
 ### Evidence
 
-Every command below was run by the orchestrator on the finished tree at commit `543cf0c`,
+Every command below was run by the orchestrator on the finished tree **after the fix round**,
 with the exit code captured outside a pipe (`out=$(pnpm <cmd> 2>&1); code=$?`), because `$?`
-after a pipe reports the last stage's status and not the command's.
+after a pipe reports the last stage's status and not the command's. The pre-fix figures at
+`543cf0c` are in [task-12/report.md](../../docs/superpowers/ledger/phase-2/task-12/report.md) §4
+and were **independently re-run by the reviewer**, every row holding.
 
 | Command | Exit | What it proves — and no more |
 |---|---|---|
 | `pnpm format:check` | 0 | Prettier style across the workspace. |
 | `pnpm lint` | 0 | 14 tasks. ESLint clean, including the tenant-scoping and no-raw-hex rules. |
 | `pnpm typecheck` | 0 | 14 tasks. The types compile — and nothing about behaviour. |
-| `pnpm test` | 0 | **91 files / 1553 tests**, up from 88 / 1513 at Task 11. |
+| `pnpm test` | 0 | **91 files / 1556 tests**, up from 88 / 1513 at Task 11. |
 | `pnpm check:specs` | 0 | **113 spec files**, each claimed by exactly one Vitest project — no spec runs nothing while printing green. |
-| `pnpm test:integration` | 0 | **22 files / 380 tests** against real Postgres 16, up from 20 / 354. |
+| `pnpm test:integration` | 0 | **22 files / 385 tests** against real Postgres 16, up from 20 / 354. |
 | `pnpm build` | 0 | 8 tasks. |
 | `pnpm check:openapi` | 0 | `apps/api/openapi.json` byte-identical to what the contracts generate, still **18 routes**. **Task 12 shipped no endpoint**, which is the point. |
 | `pnpm check:registry` | 0 | 15 models, 3 tenant-owned, 1 tenant root, 11 deliberately global — unchanged, correctly: Task 12 added no table and no migration. |
+| `pnpm check:secrets` | 0 | No credential-shaped literal in a committed file. |
 | `pnpm test:e2e` | 0 | 5 passed against a Playwright-owned production build. **It proves only that the Phase 1 smoke specs still pass** — there is no authentication screen for it to exercise. |
 | `docker compose ps` | 0 | postgres, redis, minio, mailpit all `Up (healthy)`. |
 | CI on a Linux runner | **not run** | The branch is unpushed. This row is here because a missing row is easier to miss than a stated absence. |
@@ -1739,26 +1746,40 @@ exists, because the set is empty exactly when no tenant resolved and nothing wri
 `activeOrganizationId` until Task 13. **The response has not changed; only the reason for it
 has**, and an empty array in a captured response is not evidence that resolution ran.
 
-**Three guards written in earlier tasks and registered nowhere are now registered.**
+**Two guards written in earlier tasks and registered nowhere are now registered.**
 `EmailVerifiedGuard` (Task 8) and `MfaEnrolmentGuard` (Task 11, whose spec asserted its own
 absence) are in the pipeline, and `MFA_ENROLMENT_POLICY` — the token Task 11 declared with
-"nothing provides this" — is provided. **Both still govern zero routes.** No handler carries
-`@RequireVerifiedEmail()`, and no organisation can be created to set `requireMfa`. The two
-specs that asserted their absence now assert the registration *plus* the absence of any
-decorated handler, so the day one is applied a test says so.
+"nothing provides this" — is provided. `EntitlementGuard` is a third new guard but was not
+previously unregistered: it did not exist.
+
+**Neither placed guard can refuse anybody, and the two reasons are not the same.**
+`EmailVerifiedGuard` is **opt-in**: no handler carries `@RequireVerifiedEmail()`.
+`MfaEnrolmentGuard` acts only on a route declaring a permission, and no route declares one. Both
+are structural and both are held by tests — but the second only after the review, which found it
+registered as an **opt-out** control over every authenticated route with its exemption applied to
+no handler at all. That was the task's High; see the fixes section below.
 
 ### The tests, and the mutations run to prove they bite
 
 A passing suite is not evidence that a suite would fail. Five mutations were applied to the
 finished tree and re-run:
 
+Every row below was re-run independently by the reviewer; two of the counts were wrong and are
+corrected here.
+
 | Mutation | Result |
 |---|---|
-| `withTenantTransaction` removed from the tenant resolver | **9 of 18** integration assertions red. This is carry-forward ruling 75 discharged: under the schema-owner harness the same mutation is invisible, because RLS cannot bite for a superuser. |
+| `withTenantTransaction` removed from the tenant resolver | **9 of 18** integration assertions red. Carry-forward ruling 75 discharged: under the schema-owner harness the same mutation is invisible, because RLS cannot bite for a superuser. |
 | Membership and organisation-state layers swapped | 1 unit + 1 integration assertion red — a non-member of a suspended organisation must hear the membership answer, not the suspension. |
-| `AuthorizationGuard` stops denying | 4 assertions red. |
+| `AuthorizationGuard` stops denying | **8** red — 4 unit and 4 integration. The report first said 4, counting one lane. |
 | The matrix skips one route | The coverage assertion red. **This is the inversion**: an endpoint with no matrix coverage fails the test rather than being silently skipped. |
-| A route gains `@RequireVerifiedEmail()` | 1 assertion red — the "governs no shipped route" claim is held by a test, not by a sentence. |
+| A route gains `@RequireVerifiedEmail()` | **2** red on `POST /auth/logout` — the email-verified spec and `auth.controller.spec.ts`'s per-route assertion. The count is route-dependent; the report first said 1. |
+
+**The caveat about the survivors was itself false and is corrected in ruling 97.** The first
+version said every one of the nine survivors of mutation 1 "expects a 404 or an empty set". Two
+do not: one issues no HTTP request at all, and one asserts **200** twice. The honest split is
+seven survivors by fail-closed construction, one expecting a success, one outside the mutation's
+reach. A caveat about a mutation score is a claim that has to be enumerated, not asserted.
 
 **`authorization.integration.spec.ts` drives the application as `sentinel_app`**, the
 least-privileged role the API process really connects as, not as the harness's default schema
@@ -1771,6 +1792,63 @@ passed in isolation and reported `POST /auth/mfa/enroll answered 429, expected 4
 window pre-empts the 401, and carry-forward ruling 33's shared compose Redis is what spends
 it. Fixed by clearing the windows per request. **Running a new spec on its own is not running
 it.**
+
+### What the review changed
+
+**H-1 — `MfaEnrolmentGuard` was an opt-out control with an empty exemption list.** Registered on
+every authenticated route, with `@AllowWithoutMfaEnrolment()` carried by zero handlers: a single
+`requireMfa = true` row would have refused the member's own enrolment endpoint, their session
+document and their logout. It also read `Session.activeOrganizationId` rather than
+`request.tenant`, so it applied an organisation's MFA policy to a caller whose membership had not
+resolved — undoing one guard later the asymmetry that keeps a removed member's account usable.
+Latent only because nothing writes that column until Task 13. **Fixed structurally**: the guard
+now acts only on a route declaring a permission, which is exactly the set of routes that act
+within an organisation, and reads `request.tenant`. Both halves are held by tests that were
+mutation-checked.
+
+**M-1 — the membership read was unordered over a set that legitimately holds several rows.**
+`(organizationId, userId)` is unique only where `deletedAt IS NULL`, so a removed-then-re-added
+member has several rows; `findFirst` with no predicate and no `orderBy` may return a `REMOVED`
+one, which resolves as `not-a-member` — a silent, non-deterministic 404 for a member who is
+active. Fixed with `deletedAt: null`, which makes the partial unique index guarantee one row.
+Binds Tasks 14 and 15, which produce that state together.
+
+**M-2 — the authorization matrix ran one of its four arms** while this file and two others said
+it ran four. The 403, cross-tenant-404 and success arms are now written, and coverage is asserted
+per (route, arm) rather than per route — so a guarded route reached by one probe fails the same
+way an unexercised route does. Verified by adding a real `@RequirePermission()` route and watching
+all four run.
+
+**M-5 — three source docblocks cited `roles.integration.spec.ts`, which has never existed.** The
+assertion they describe is real and lives in `authorization.integration.spec.ts`. In
+`authorization.guard.ts` that citation is what makes a two-sources-for-one-fact design safe, so a
+reader who opened the named file would have concluded the drift was not closed.
+
+**M-7 — commit `7540279` introduced a false arithmetic sentence into the security paragraph it was
+correcting.** "5 / 15 min per address — five logins an hour times five attempts each caps an
+account near 100 attempts/hour": five per fifteen minutes is twenty an hour, 5 × 5 is 25 not 100,
+and the bounding limit is account-keyed while "address" means IP elsewhere in the paragraph. The
+conclusion was right and every step shown was wrong. Both the wrong sentence and the one it
+replaced are left on the record in `security/abuse-prevention.md`, because a false sentence
+introduced while correcting a false sentence is the pattern this phase keeps producing.
+
+**Three Lows are recorded as owed rather than fixed**, because each needs a change outside this
+task's scope:
+
+- **`Session.activeOrganizationId` has no foreign key.** A session may point at a deleted
+  organisation. Behaviour is correct and fail-closed today, but Task 12 is what made this column
+  drive tenant resolution, and `CLAUDE.md` puts database integrity in the database. Needs a
+  migration — **Task 13**, which is the task that starts writing the column.
+- **Two readers of that column with different freshness.** `AuthenticationGuard` takes it from
+  `SessionService.resolve`, which may be served from the Redis session cache; `SessionDocumentService`
+  reads it fresh from Postgres. Both are always `null` today. Once Task 13 writes it, an in-place
+  `UPDATE` would let `GET /auth/session` report the new organisation beside a permission set
+  resolved for the old one, for up to `SESSION_CACHE_TTL_SECONDS`. **Binds Task 13**: switch
+  organisations through `SessionService.rotate`, which poisons the cache, not through an `UPDATE`.
+- **Byte-identity compares header names, not values.** The plan asks for "same status, same body,
+  same headers"; what is asserted is same status, same body, same header names, plus `content-type`
+  in the unit twin. Comparing every value would be flaky on `date` and `x-request-id`. Stated as
+  the limit it is.
 
 ### What Task 12 deliberately did not do
 

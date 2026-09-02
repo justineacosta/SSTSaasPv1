@@ -63,7 +63,7 @@ export type TenantTransactionBase = Parameters<typeof withTenantTransaction>[0];
  * `ROLE_PERMISSIONS` in `@sentinel/contracts` is the source the seed is built
  * *from*, and reading it here instead would make the seeded `RolePermission`
  * rows decorative — a drift between the two would be invisible, which is
- * carry-forward rulings 5, 13 and 27's family. `roles.integration.spec.ts`
+ * carry-forward rulings 5, 13 and 27's family. `authorization.integration.spec.ts`
  * asserts the two agree for every system role, so the drift fails a test
  * instead.
  */
@@ -79,14 +79,32 @@ export function tenantResolver(base: TenantTransactionBase): TenantResolver {
       // see a partial index — carry-forward ruling 4 — so there is no generated
       // unique input to look it up by.
       //
-      // `deletedAt` is NOT in this predicate, and that is deliberate. The CHECK
-      // constraint `Membership_status_deletedAt_agree_check` makes
+      // `deletedAt: null` IS THE PREDICATE THAT MAKES THIS DETERMINISTIC, and
+      // the first version of this query did not have it. The Task 12 review's
+      // M-1: `(organizationId, userId)` is unique only **where `deletedAt` is
+      // null**, so any number of `REMOVED` rows may coexist with the one live
+      // row — which is exactly what Task 14's member removal followed by Task
+      // 15's re-invitation produces. A `findFirst` with no predicate and no
+      // `orderBy` emits `LIMIT 1` with no `ORDER BY`, and Postgres may return
+      // any of them. Measured by the reviewer on a replayed schema: two
+      // `REMOVED` rows plus one `ACTIVE` row returned a `REMOVED` one, which
+      // `resolveTenant` reads as `not-a-member` — **a silent, non-deterministic
+      // 404 on every guarded route for a member who is active.**
+      //
+      // With this predicate the partial unique index guarantees at most one
+      // matching row, so there is nothing left for an `orderBy` to disambiguate.
+      // The CHECK constraint `Membership_status_deletedAt_agree_check` makes
       // `("deletedAt" IS NULL) = (status <> 'REMOVED')` a database invariant, so
-      // filtering on both would be filtering on one fact twice — and would hide
-      // a violation of that invariant rather than surface it. The `status` read
-      // below is the single question, and `resolveTenant` is what judges it.
+      // this also cannot hide a live `REMOVED` row: such a row cannot exist.
+      // `status` is still read and still judged by `resolveTenant`, because
+      // `INVITED` is inside this predicate and is not a membership.
+      //
+      // The comment that used to sit here said `deletedAt` was omitted because
+      // "filtering on both would be filtering on one fact twice". The query
+      // filtered on neither, so there was no "twice" — a false sentence
+      // defending a real defect.
       const membership = await tx.membership.findFirst({
-        where: { organizationId, userId },
+        where: { organizationId, userId, deletedAt: null },
         select: {
           id: true,
           status: true,

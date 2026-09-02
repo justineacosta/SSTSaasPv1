@@ -2,6 +2,10 @@ import { Inject, Injectable, SetMetadata } from '@nestjs/common';
 import type { CanActivate, ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { ERROR_CODES } from '@sentinel/contracts';
+import {
+  ACCESS_METADATA_KEY,
+  type AccessDeclaration,
+} from '../../common/decorators/access.decorator.js';
 import { DomainError } from '../../common/errors/domain-error.js';
 import { MFA_ENROLMENT_POLICY } from './auth.tokens.js';
 
@@ -25,20 +29,46 @@ import { MFA_ENROLMENT_POLICY } from './auth.tokens.js';
  * is provided in `roles.module.ts` where the tenant-scoped query lives.
  *
  * **AND IT REFUSES NOBODY, WHICH IS A FACT ABOUT DATA RATHER THAN ABOUT
- * WIRING.** The guard returns early when the request names no organisation, and
- * nothing in Phase 2 writes `Session.activeOrganizationId` — Task 13 does — so
- * the policy lookup below is not reached on any request this phase can produce.
- * There is also no way to create an organisation yet, so no row can carry
+ * WIRING.** Nothing in Phase 2 writes `Session.activeOrganizationId` — Task 13
+ * does — and there is no way to create an organisation yet, so no row can carry
  * `requireMfa = true`. `MFA_ENROLMENT_REQUIRED` therefore still has no producer
  * a caller can reach, and nothing may describe it as one until Task 13.
  *
- * # The exemption is not a convenience, it is what stops the rule bricking the
- * account
+ * # THE RULE APPLIES TO ROUTES THAT DECLARE A PERMISSION, AND TO NOTHING ELSE
  *
- * A member forced into enrolment must still be able to REACH enrolment, sign
- * out, and read their own session document. A rule with no exemption refuses
- * the only endpoints that could satisfy it, and a control that cannot be
- * complied with is an outage wearing a control's name.
+ * This is the Task 12 review's H-1, and the shape of the fix is the point.
+ *
+ * The first version registered this guard globally as an **opt-out** control:
+ * it ran on every authenticated route, and the only escape was
+ * `@AllowWithoutMfaEnrolment()`, which **no shipped handler carried**. A single
+ * `requireMfa = true` row would then have refused the member's own enrolment
+ * endpoint, their session document and their logout — total account lockout,
+ * caught by no test, and predicted word for word by the paragraph that used to
+ * sit here saying the exemption "is what stops the rule bricking the account".
+ * A control whose safety depends on somebody remembering to decorate six
+ * handlers is the failure mode this branch's ledger is a list of.
+ *
+ * So the safety is structural instead. `security/authorization.md` §1 makes
+ * authorization the triple (user, organisation, permission), so **a route that
+ * acts within an organisation is exactly a route that declares a permission**.
+ * That is the set §5's "before any other action" means, and it is the set this
+ * guard now governs — the same asymmetry `TenantContextGuard` uses, for the
+ * same reason (carry-forward ruling 95). A member with no factor keeps the
+ * routes that are about *them* rather than about a tenant: enrolment, the
+ * session document, logout, and organisation switching when Task 13 ships it.
+ * They can do nothing in the organisation itself, which is the whole of what
+ * the control is for.
+ *
+ * **It reads `request.tenant`, not `request.activeOrganizationId`** — H-1's
+ * second half. The raw session column says which organisation the cookie points
+ * at; it says nothing about whether the caller is a member of it. Reading it
+ * applied an organisation's MFA policy to somebody whose membership had not
+ * resolved, which is the account-bricking case one guard further on.
+ *
+ * `@AllowWithoutMfaEnrolment()` survives for the case this cannot cover: a
+ * *permission-guarded* route that must stay reachable without a factor. There
+ * is none today, and `require-mfa.spec.ts` asserts that rather than asserting
+ * nothing.
  *
  * `@AllowWithoutMfaEnrolment()` is **handler-level only**, and the type is only
  * half of that. Carry-forward ruling 61: `@RateLimitExempt()` was narrowed to
@@ -132,6 +162,17 @@ export class MfaEnrolmentGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
+    if (context.getType() !== 'http') return true;
+
+    // ONLY A ROUTE THAT DECLARES A PERMISSION. See the file docblock: this is
+    // what makes the account-bricking case unreachable by construction rather
+    // than by remembering to decorate every route a locked-out member needs.
+    const access = this.reflector.getAllAndOverride<AccessDeclaration | undefined>(
+      ACCESS_METADATA_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+    if (access?.kind !== 'permission') return true;
+
     // `get` on the HANDLER alone. Not `getAllAndOverride`. See the file
     // docblock and carry-forward ruling 61.
     const routeIsExempt =
@@ -143,7 +184,7 @@ export class MfaEnrolmentGuard implements CanActivate {
 
     const request = context.switchToHttp().getRequest<{
       principal?: { userId: string };
-      activeOrganizationId?: string | null;
+      tenant?: { organizationId: string };
     }>();
 
     // NOT THIS GUARD'S QUESTION. `AuthenticationGuard` has already admitted or
@@ -152,10 +193,14 @@ export class MfaEnrolmentGuard implements CanActivate {
     const userId = request.principal?.userId;
     if (userId === undefined) return true;
 
-    // The requirement belongs to an ORGANISATION. A session that has chosen
-    // none cannot be subject to one, and asking would be a database read on
-    // every such request that could not change the answer.
-    const organizationId = request.activeOrganizationId ?? null;
+    // `request.tenant`, not `request.activeOrganizationId` — H-1's second half.
+    // A resolved tenant means an ACTIVE membership in an ACTIVE organisation;
+    // the raw column means only that the cookie points somewhere. On a route
+    // declaring a permission an unresolved tenant has already been refused with
+    // 404 by `TenantContextGuard`, so `undefined` here means the pipeline is
+    // not the one this file believes — and the safe answer is to decide
+    // nothing and leave the refusal to the layer that owns it.
+    const organizationId = request.tenant?.organizationId ?? null;
     if (organizationId === null) return true;
 
     const { requireMfa, hasConfirmedFactor } = await this.policy({ userId, organizationId });

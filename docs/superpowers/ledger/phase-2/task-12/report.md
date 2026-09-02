@@ -4,13 +4,16 @@
 > [`roadmap.md`](../../../../../.claude/product/roadmap.md) is the only authority on that.**
 
 **Mode:** orchestrator, per the plan's execution-mode table — Task 12 is a *gate*, "where the
-security model becomes real". No implementer subagent was dispatched. **No adversarial review has
-happened yet**, and the plan requires one for every task in every mode; it is the open item at the
-bottom of this file.
+security model becomes real". No implementer subagent was dispatched — so there was no separation
+between the hand that wrote the code and the hand that wrote the sentences about it, which is why
+the review brief opens by saying so. **The review happened on 2026-09-02** and found 1 High, 7
+Mediums and 8 Lows; §8 and [`fixes.md`](fixes.md) carry the outcome. **Corrections the review
+forced are marked inline below with their finding number**, rather than being silently rewritten.
 
 **Branch:** `feat/phase-2-task-12-authorization`, cut from `main` at `a0b2963`.
-**Commits:** `5460ebf` (code), `543cf0c` (`.claude/` documents), and the roadmap/ledger commit
-this file is part of.
+**Commits:** `5460ebf` (code), `543cf0c` (`.claude/` documents), `81194bf` (roadmap and ledger),
+`f4ddb4b` (two broken ADR links), `a52a486` (review brief), `11dff5b` (the review), plus the fix
+round.
 
 **Date:** 2026-09-02.
 
@@ -82,11 +85,17 @@ the "invalidated on write" clause back into force as a requirement on whoever ad
 refusal, **email verified**, **MFA enrolment**, **authorize**, **entitlement**. Four positions are
 decisions and each is asserted separately in `app.module.spec.ts`.
 
-**Three previously-unregistered guards are now registered.** `EmailVerifiedGuard` (Task 8) and
+**Two previously-unregistered guards are now registered**, plus `EntitlementGuard`, which was not
+previously unregistered — it did not exist (M-6). `EmailVerifiedGuard` (Task 8) and
 `MfaEnrolmentGuard` (Task 11) both shipped with specs asserting their own absence from every
-module. Those specs now assert the registration **plus** the absence of any decorated handler, so
-the property they were really protecting — that neither control governs a route yet — is still
-held by a test rather than by a sentence.
+module.
+
+**Neither can refuse anybody, for two different reasons** — this paragraph first flattened them
+into one (M-6). `EmailVerifiedGuard` is opt-in and nothing opted in. `MfaEnrolmentGuard` acts only
+on a route declaring a permission and no route declares one — **which is true only after the
+review**: it was registered as an opt-out control over every authenticated route with its
+exemption applied to no handler at all (H-1). Both properties are now held by tests; the sentence
+claiming they already were was false for one of the two specs (M-4).
 
 **Changed behaviour outside the new files:**
 
@@ -103,7 +112,9 @@ held by a test rather than by a sentence.
 
 ## 4. Evidence
 
-At `543cf0c`. Reproduced in `roadmap.md`'s Checkpoint A section, which is the authority.
+**At `543cf0c`, which is BEFORE the fix round.** Every row was re-run independently by the
+reviewer and every one held. The post-fix figures are in `roadmap.md`'s Checkpoint A section,
+which is the authority.
 
 | Command | Exit | Notes |
 |---|---|---|
@@ -140,17 +151,22 @@ suite would fail.
 |---|---|
 | `withTenantTransaction` removed from the tenant resolver | **9 of 18** integration assertions red |
 | Membership and organisation-state layers swapped | 1 unit + 1 integration red |
-| `AuthorizationGuard` stops denying | 4 red |
+| `AuthorizationGuard` stops denying | **8** red — 4 unit and 4 integration. This row said 4, counting one lane; corrected after the review re-ran it (L-1) |
 | The matrix skips one route | The coverage assertion red |
-| A route gains `@RequireVerifiedEmail()` | 1 red |
+| A route gains `@RequireVerifiedEmail()` | **2** red on `POST /auth/logout` — the email-verified spec and `auth.controller.spec.ts`'s per-route assertion. Route-dependent; this row said 1 (L-1) |
 
 The first is carry-forward ruling 75 discharged. `authorization.integration.spec.ts` drives the
 application as **`sentinel_app`**, not the harness's default schema owner; under the owner that
 mutation is invisible, because RLS cannot bite for a superuser.
 
-The nine assertions that survived it are the ones whose expected answer *is* 404 or an empty set —
-404 is the fail-closed direction, so a resolver that can see nothing produces the right answer for
-the wrong reason. Stated because "9 of 18 red" would otherwise read as broader coverage than it is.
+**The caveat this paragraph first carried was false and the review disproved it (M-3).** It said
+the nine survivors all expect "a 404 or an empty set". Two do not: `expands every system role to
+exactly ROLE_PERMISSIONS` issues no HTTP request at all, and `still admits an @AuthenticatedOnly()
+route for a removed member` asserts **200** twice. The honest split is **7 survivors by
+fail-closed construction, 1 expecting a success, 1 outside the mutation's reach entirely**. 404 is
+the fail-closed direction, so a resolver that can see nothing produces the right answer for the
+wrong reason — but which survivors those are had to be enumerated rather than asserted, and
+ruling 97 now does.
 
 ---
 
@@ -204,10 +220,11 @@ forever. Caught by the `expect(controllers.length).toBeGreaterThan(0)` guard wri
 
 ## 8. Open
 
-**No adversarial review has happened.** The plan requires a fresh reviewer for every task in every
-mode, and this task was built by the orchestrator, so nobody has checked this work but its author.
-The review should also fold in commit `7540279` — Task 11's fix round, which the Task 11 pause
-state records as never reviewed.
+**The review happened on 2026-09-02** and is in [`review.md`](review.md): 1 High, 7 Mediums, 8
+Lows, dispositions in [`fixes.md`](fixes.md). It also took commit `7540279`. Every High and
+Medium is closed, and the evidence table in §4 above is from the tree *before* those fixes — the
+post-fix figures are in `roadmap.md`'s Checkpoint A section. **The fix round has not itself been
+reviewed.**
 
 **The branch is not pushed and CI has not run.** Checkpoint A's second bullet requires a green run
 on a Linux runner, cited by run ID. That has not happened, so the Checkpoint A section in

@@ -1,9 +1,15 @@
-import { readFileSync } from 'node:fs';
+import { globSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Controller, Get } from '@nestjs/common';
 import type { ExecutionContext } from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
+import { APP_GUARD, Reflector } from '@nestjs/core';
+import { AppModule } from '../../app.module.js';
 import { describe, expect, it, vi } from 'vitest';
+import {
+  ACCESS_METADATA_KEY,
+  type AccessDeclaration,
+} from '../../common/decorators/access.decorator.js';
 import {
   ALLOW_WITHOUT_MFA_ENROLMENT_KEY,
   AllowWithoutMfaEnrolment,
@@ -91,17 +97,42 @@ describe('MfaEnrolmentGuard', () => {
     return Reflect.get(prototype, name) as (...args: never[]) => unknown;
   }
 
+  /**
+   * The fake context carries a **permission** declaration by default, because
+   * after the Task 12 review's H-1 that is the only kind of route this guard
+   * acts on at all. A fixture that declared nothing would make every assertion
+   * below pass through the first early return, which is carry-forward ruling
+   * 58's shape — every fixture on one side of the branch under test.
+   *
+   * `getType` is part of it now: the guard exits non-HTTP contexts, and a fake
+   * without the method threw `TypeError` rather than exercising the rule.
+   */
   function contextFor(
     handler: (...args: never[]) => unknown,
     target: unknown,
     principal?: { userId: string; sessionId: string },
-    activeOrganizationId: string | null = 'org_1',
+    // `null` means "no tenant resolved", NOT `undefined`: passing `undefined`
+    // for an optional parameter selects the DEFAULT, so the no-tenant test read
+    // as asserting one thing and exercised another. Caught by the test failing.
+    tenant: { organizationId: string } | null = { organizationId: 'org_1' },
+    access: AccessDeclaration | undefined = {
+      kind: 'permission',
+      permission: 'organization.read',
+    },
   ): ExecutionContext {
+    // The declaration is read through a real `Reflector`, so it has to live in
+    // real metadata rather than being handed over as a value.
+    if (access === undefined) {
+      Reflect.deleteMetadata(ACCESS_METADATA_KEY, handler);
+    } else {
+      Reflect.defineMetadata(ACCESS_METADATA_KEY, access, handler);
+    }
     return {
+      getType: () => 'http',
       getHandler: () => handler,
       getClass: () => target,
       switchToHttp: () => ({
-        getRequest: () => ({ principal, activeOrganizationId }),
+        getRequest: () => ({ principal, tenant: tenant ?? undefined }),
       }),
     } as unknown as ExecutionContext;
   }
@@ -141,10 +172,13 @@ describe('MfaEnrolmentGuard', () => {
     ).resolves.toBe(true);
   });
 
-  it('does not consult the policy at all when there is no active organisation', async () => {
-    // The requirement belongs to an organisation. A session that has chosen
-    // none cannot be subject to one, and asking would be a database read on
-    // every request that could not change the answer.
+  it('does not consult the policy at all when no tenant resolved', async () => {
+    // The requirement belongs to an ORGANISATION THE CALLER IS A MEMBER OF.
+    // H-1's second half: this used to read `request.activeOrganizationId`, the
+    // raw session column, which says only that the cookie points somewhere —
+    // so an organisation's MFA policy was applied to somebody whose membership
+    // had not resolved. On a permission route an unresolved tenant has already
+    // been refused with 404 one guard earlier.
     const { guard, lookup } = guardWith({ requireMfa: true, hasConfirmedFactor: false });
     await expect(
       guard.canActivate(
@@ -153,6 +187,43 @@ describe('MfaEnrolmentGuard', () => {
           ExemptTarget,
           { userId: 'usr_1', sessionId: 's' },
           null,
+        ),
+      ),
+    ).resolves.toBe(true);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  /**
+   * H-1, AT THE UNIT LEVEL. The guard must not act on a route that declares no
+   * permission — that is what stops a member with no factor being locked out of
+   * enrolment, logout and their own session document.
+   */
+  it('does not consult the policy on an @AuthenticatedOnly() route', async () => {
+    const { guard, lookup } = guardWith({ requireMfa: true, hasConfirmedFactor: false });
+    await expect(
+      guard.canActivate(
+        contextFor(
+          handlerOf(ExemptTarget.prototype, 'guarded'),
+          ExemptTarget,
+          { userId: 'usr_1', sessionId: 's' },
+          { organizationId: 'org_1' },
+          { kind: 'authenticated' },
+        ),
+      ),
+    ).resolves.toBe(true);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it('does not consult the policy on a @Public() route', async () => {
+    const { guard, lookup } = guardWith({ requireMfa: true, hasConfirmedFactor: false });
+    await expect(
+      guard.canActivate(
+        contextFor(
+          handlerOf(ExemptTarget.prototype, 'guarded'),
+          ExemptTarget,
+          { userId: 'usr_1', sessionId: 's' },
+          { organizationId: 'org_1' },
+          { kind: 'public' },
         ),
       ),
     ).resolves.toBe(true);
@@ -238,34 +309,41 @@ describe('MfaEnrolmentRequiredError', () => {
 /**
  * THE HONESTY TEST. D8: the guard is written here and ENFORCES NOTHING.
  *
- * Every sentence Task 11 writes about `requireMfa` says so, and a sentence is
- * exactly the kind of claim this phase keeps finding false. This asserts it
- * against the files instead: `MfaEnrolmentGuard` is named in no module, and the
- * DI token its constructor asks for is provided by nobody, so registering it
- * without also wiring the lookup would fail at boot naming the token rather
- * than admitting every request.
+ * Every sentence written about `requireMfa` says so, and a sentence is exactly
+ * the kind of claim this phase keeps finding false. This asserts it against the
+ * wiring instead: the guard is registered, its DI token is provided, and the
+ * set of routes it can act on is empty.
  *
- * **Task 12 is what changes this test**, deliberately, by the hand that places
- * the guard in the pipeline.
+ * **Task 13 is what changes the last of those**, on the day it ships the first
+ * permission-guarded endpoint.
  */
-describe('the guard is registered, and its lookup is provided', () => {
+describe('the guard is registered, and what it can refuse is bounded', () => {
   /**
-   * The module's CODE, with comments stripped.
+   * REWRITTEN AFTER THE TASK 12 REVIEW, TWICE OVER.
    *
-   * Modules deliberately *mention* the guard and its token in prose, and a raw
-   * text search would read that documentation as the wiring it describes.
-   * Stripping comments is what makes the assertion about wiring rather than
-   * about wording — and it is what keeps this test honest in the new direction
-   * too: a comment saying "registered in `app.module.ts`" would otherwise
-   * satisfy it.
+   * M-4: the Task 12 report claimed this block asserted "the registration
+   * **plus** the absence of any decorated handler". It did not — it had two
+   * `toContain` assertions over file text and nothing else. That sentence was
+   * what would have made a reader believe H-1 was held by a test.
+   *
+   * L-2: `toContain('MfaEnrolmentGuard')` over `app.module.ts` is satisfied by
+   * the **import line**. Measured by the reviewer: deleting the `APP_GUARD`
+   * provider while leaving the import left this file at 14 passed, exit 0. The
+   * registration is now asserted against the module's actual provider
+   * metadata, which an import cannot satisfy.
    */
-  const read = (relative: string): string =>
-    readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/^\s*\/\/.*$/gm, '');
+  const globalGuards = (): unknown[] => {
+    const providers = (Reflect.getMetadata('providers', AppModule) ?? []) as {
+      provide?: unknown;
+      useClass?: unknown;
+    }[];
+    return providers
+      .filter((provider) => provider.provide === APP_GUARD)
+      .map((provider) => provider.useClass);
+  };
 
-  it('is registered as a global guard in app.module.ts', () => {
-    expect(read('../../app.module.ts')).toContain('MfaEnrolmentGuard');
+  it('is registered as a global guard, by provider metadata and not by an import', () => {
+    expect(globalGuards()).toContain(MfaEnrolmentGuard);
   });
 
   it('has its DI token provided, so registering it cannot fail at boot', () => {
@@ -274,6 +352,42 @@ describe('the guard is registered, and its lookup is provided', () => {
     // A guard registered without its lookup fails at boot naming the token —
     // loudly, which is the right failure — but it fails, so this is the half of
     // the pair that keeps the application startable.
-    expect(read('../roles/roles.module.ts')).toContain('MFA_ENROLMENT_POLICY');
+    const source = readFileSync(
+      fileURLToPath(new URL('../roles/roles.module.ts', import.meta.url)),
+      'utf8',
+    )
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    expect(source).toContain('MFA_ENROLMENT_POLICY');
+  });
+
+  /**
+   * H-1, AS AN ASSERTION RATHER THAN A DOCBLOCK.
+   *
+   * The guard acts only on a route declaring a permission. No shipped route
+   * does, so today it can refuse nobody — and this is what says so, over the
+   * controller files rather than over a sentence. On the day Task 13 ships a
+   * permission-guarded endpoint this goes red, and whoever ships it has to
+   * decide deliberately whether a member with no factor may reach it.
+   *
+   * The `toBeGreaterThan(0)` is not decoration (L-3, and the wrong-directory
+   * glob that shipped once in `email-verified.guard.spec.ts`): a glob that
+   * found nothing would make this claim true forever. The count is pinned
+   * rather than merely non-zero, so finding 1 of 3 fails too.
+   */
+  it('can refuse nobody today, because no shipped route declares a permission', () => {
+    const root = fileURLToPath(new URL('../..', import.meta.url));
+    const controllers = globSync('**/*.controller.ts', { cwd: root }).map((relative) =>
+      join(root, relative),
+    );
+    expect(controllers).toHaveLength(3);
+
+    const declaring = controllers.filter((file) =>
+      readFileSync(file, 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '')
+        .includes('@RequirePermission('),
+    );
+    expect(declaring).toEqual([]);
   });
 });

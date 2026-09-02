@@ -26,8 +26,8 @@ import { DomainError } from '../errors/domain-error.js';
  * below is made against `ctx.permissions`, which came from the seeded
  * `RolePermission` rows. If the two ever disagreed, the caller would get a
  * misleading sentence and never a wrong answer — and they cannot disagree,
- * because `roles.integration.spec.ts` asserts the seeded rows expand to exactly
- * `ROLE_PERMISSIONS` for all seven roles.
+ * because `authorization.integration.spec.ts` asserts the seeded rows expand to
+ * exactly `ROLE_PERMISSIONS` for all seven roles.
  */
 const ROLES_WITH_PERMISSION: ReadonlyMap<Permission, readonly SystemRole[]> = new Map(
   Object.values(ROLE_PERMISSIONS)
