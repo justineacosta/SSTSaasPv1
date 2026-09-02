@@ -21,8 +21,8 @@ Branch: `feat/phase-2-identity`
 | 9 | Login, logout, session endpoint, lockout | chained with 10 | **Done** — [brief](task-09/brief.md) · [report](task-09/report.md) · [review](task-09/review.md) · [dispositions](task-09/fix-brief.md) · [fixes](task-09/fixes.md) · [fix review](task-09/fix-review.md) |
 | 10 | Password reset | chained with 9 | **Done** — [brief](task-10/brief.md) · [report](task-10/report.md) · [review](task-10/review.md) · [dispositions](task-10/fix-brief.md) · [fixes](task-10/fixes.md) · [fix review](task-10/fix-review.md) |
 | 11 | TOTP MFA and recovery codes | subagent | **Done** — [brief](task-11/brief.md) · [report](task-11/report.md) · [review](task-11/review.md) · [dispositions](task-11/fix-brief.md) · [fixes](task-11/fixes.md) |
-| 12 | Tenant resolution and the authorization guard | orchestrator | Not started |
-| **A** | **Checkpoint — verify, push, CI green, status recorded** | orchestrator | Not reached |
+| 12 | Tenant resolution and the authorization guard | orchestrator | **Built, not reviewed** — [report](task-12/report.md) |
+| **A** | **Checkpoint — verify, push, CI green, status recorded** | orchestrator | **Partly** — verified and recorded; **not pushed, no CI run** |
 | 13 | Organisations and organisation switching | chained 13→15 | Not started |
 | 14 | Memberships, roles, last-owner invariant | chained 13→15 | Not started |
 | 15 | Invitations | chained 13→15 | Not started |
@@ -694,66 +694,106 @@ Full reasoning in [`task-10/review.md`](task-10/review.md),
     a burst notice to the owner. **The per-account 429 that would actually bound it needs the
     limiter's per-principal stage, owed since ruling 55.**
 
+### From Task 12
+
+91. **A guard handed to `useGlobalGuards()` after `app.init()` never runs, and every assertion
+    about it passes.** The first `tenant-context.spec.ts` did exactly that: eighteen tests green
+    over a pipeline that was not there, including one asserting two refusals were byte-identical
+    — which they were, at 200. It was caught only because three tests expected a **denial**.
+    Carry-forward rulings 58 and 66's family, a fourth time. **Register through `APP_GUARD`**,
+    the way `email-verified.guard.spec.ts` already did, and **assert the status outright rather
+    than only its equality**: an identity assertion between two responses is satisfied by any two
+    identical responses, including two successes.
+
+92. **A new integration spec that passes on its own has not been run.** The authorization matrix
+    was green in isolation and failed under `pnpm test:integration` with
+    `POST /auth/mfa/enroll answered 429, expected 401`. The limiter runs before authentication by
+    design, so a spent window pre-empts the 401, and carry-forward ruling 33's shared compose
+    Redis is what spends it. `clearRateLimits` is called **per request** here, because
+    `mfaManagement` allows ten an hour per IP and one pass over eighteen routes exhausts several
+    classes. **Binds every later task that adds an integration spec**: run the lane, not the file.
+
+93. **`Session.activeOrganizationId` is the only source of the active organisation, and nothing
+    writes it until Task 13.** Every layer Task 12 built is therefore live and reaches no
+    production request: `TenantContextGuard` short-circuits before its query, `MfaEnrolmentGuard`
+    exits early, and `GET /auth/session` returns `permissions: []` — the same value it returned
+    before, for a different reason. **An empty permission set in a captured response is not
+    evidence that resolution ran.** Binds Task 13, which is where all of this starts executing
+    for the first time, on the day it writes that column.
+
+94. **There is no permission cache, and invariant 4 is structural rather than maintained.**
+    Operator's decision, 2026-09-02, against a Redis cache as the alternative. `Membership.roleId`
+    and the seeded grants are read by the transaction that follows a role change, so there is no
+    `invalidate()` for **Task 14's role change or Task 15's invitation acceptance to forget**.
+    Adding a cache later is additive — and doing so puts `permissions.md` invariant 4's
+    "invalidated on write" clause back into force as a requirement on whoever adds it.
+
+95. **Two guards deny only on a route that declares a permission, and that asymmetry is a
+    control rather than an omission.** A member removed from their only organisation must still
+    reach `GET /auth/session`, `POST /auth/logout` and their MFA routes — all
+    `@AuthenticatedOnly()` — or they hold a valid credential that no endpoint will answer,
+    including the one that ends the session. Same argument `require-mfa.ts` makes about its
+    exemption. **Binds Task 14's member removal**: removing a member must not brick their
+    account.
+
+96. **The migration history is not self-contained: it needs the `sentinel_app` role to already
+    exist.** Measured — `prisma migrate deploy` against a bare `postgres:16-alpine` fails at
+    `20260820121229_row_level_security` with `role "sentinel_app" does not exist` (42704). With
+    `infra/docker/postgres/init/01-app-role.sql` mounted as an init script the whole history
+    replays and exits 0. True since Phase 1; found now because this is the first time anything
+    ran that criterion literally. **Binds the first deploy** — the role is created out of band,
+    and `.claude/operations/` should say so before anyone provisions a database.
+
+97. **404 is the fail-closed direction, so a mutation that blinds the resolver leaves the 404
+    tests green.** Removing `withTenantTransaction` turned 9 of 18 integration assertions red and
+    left 9 passing — every one of the survivors expects a 404 or an empty set, and got the right
+    answer for the wrong reason. **A mutation score is not a coverage figure.** When reporting
+    one, say which survivors are survivors by construction.
+
 ## Pause state
 
-**2026-09-02 — Task 11 complete, reviewed and fixed; Task 12 is next. Checkpoint A is one task
-away, and it is the last one before this phase gets a recorded status.**
+**2026-09-02 — Task 12 built and NOT reviewed. Checkpoint A recorded, one bullet short. Tasks
+13–15 are next, as a chained run.**
 
-Task 11 shipped **TOTP MFA and recovery codes**. `pnpm check:openapi` reports **18** routes, up from
-13. A person can enrol an authenticator, confirm it, complete a second factor at login, spend a
-recovery code, regenerate the set, and turn MFA off — three of those requiring the current password.
+Task 12 shipped **tenant resolution and the authorization guard** — the six layers of
+`security/authorization.md` §2, in order, each able to deny. `pnpm check:openapi` still reports
+**18** routes, because Task 12 shipped no endpoint, and that is the point rather than an
+oversight.
 
-**The migration is applied.** `20260901185059_mfa_factor_last_accepted_step` was generated with
-`--create-only` per the plan's §5, reviewed by the operator on 2026-09-02, and applied then —
-`_prisma_migrations` ends there and `MfaFactor.lastAcceptedStep` exists as `integer`. No drift, no
-working-tree change. The SQL is quoted in full in [task-11/report.md](task-11/report.md).
+**`@RequirePermission()` is evaluated for the first time since Task 7 wrote it, and it governs
+nothing.** All eighteen shipped routes are `@Public()` or `@AuthenticatedOnly()`. The guard is
+registered globally so that Tasks 13–15's endpoints are governed from the moment they are
+written; until one carries the decorator, the 403 and cross-tenant-404 arms of the matrix run
+over fixture routes and real seeded rows and over no production endpoint. **Do not write that
+authorization is enforced on this API.**
 
-**The High was H1 and it was measured.** Two concurrent regenerations left twenty live recovery
-codes from two `200 OK` responses, and the consumer's unordered `take: 10` made ten of the twenty
-the owner was shown permanently unusable. Concurrent enrolment answered 500. Both closed by a
-per-user `pg_advisory_xact_lock` — the device this module already used one file over, keyed on the
-pending session instead of the user.
+**Nine global guards, up from four.** Rate limit, authenticate, tenant resolve, CSRF, cross-site
+refusal, email verified, MFA enrolment, authorize, entitlement. `EmailVerifiedGuard` and
+`MfaEnrolmentGuard` were built in Tasks 8 and 11 and registered nowhere; both are placed, both
+still govern zero routes, and the two specs that asserted their absence now assert the
+registration *plus* the absence of any decorated handler.
 
-**Ruling 88 fired twice, and the second time was on the fix itself.** H1's guard, written as one
-race, reproduced the defect in only two runs out of three against the unlocked code. Rewritten to
-five rounds asserting the invariant after each round, it is 3 of 3. A guard that misses a High one
-time in three is a guard that goes green on the regression that reintroduces it — measure the guard,
-not just the fix.
+**Five mutations were run and all five were caught** — the numbers and the caveat about which
+survivors are survivors by construction are in [task-12/report.md](task-12/report.md) §5 and in
+new ruling 97.
 
-**Eight false sentences, three inside security controls**, and the two worth carrying: a rate-limit
-comment and `abuse-prevention.md` §1 both said "one expected success every 630 years" where the
-same premises give **0.63 years**; and `security/authentication.md` §5 marked incremental MFA key
-rotation **Built** when the process holds one key and rotating it would make every enrolled factor
-undecryptable *silently*, because `mfa/verify` answers the ordinary `MFA_INVALID`. One false
-sentence originated in the orchestrator's brief and reached two committed artefacts; one was
-introduced by the orchestrator's own re-verification **in the same commit that falsified it**.
+**Two open items, and they are the reason this pause state is not a clean handoff.**
 
-**Task 12 inherits.** `Organization.requireMfa`'s guard is written and **registered in no module** —
-Task 12 places it in the pipeline, and a spec that strips comments before searching asserts it is
-absent today. `MFA_ENROLMENT_REQUIRED` has no producer. `@RequirePermission()` is still metadata no
-guard enforces, which is Task 12's whole subject.
+1. **Task 12 has had no adversarial review.** The plan requires a fresh reviewer for every task
+   in every mode, and this one was built by the orchestrator. Commit `7540279` — Task 11's fix
+   round — is still unreviewed too, and the Task 11 pause state already handed it forward. **A
+   reviewer should be given both.**
+2. **The branch is unpushed and CI has never run on this work.** Checkpoint A's second bullet
+   asks for a green Linux run cited by run ID; `roadmap.md`'s Checkpoint A section records the
+   absence rather than omitting the row. Twelve tasks of unpushed work is exactly what that
+   bullet exists to prevent.
 
-**Still owed, and none of it Task 11's to close:** the promoted session takes the ordinary 7-day
-lifetime even when "remember me" was ticked (login discards `rememberMe` on the pending arm and
-`rotate` inherits the row's value — needs a `Session` column or a `rotate` parameter); incremental
-MFA key rotation, which is an ADR nobody owns; ruling 55's per-principal limiter stage; per-account
-notice throttling (ruling 79); the racing-login equivalent for member removal (ruling 82, Task 14);
-`Organization.name`'s absent length cap (ruling 86, Task 13); and ruling 24's dormant-account
-rehash half.
-
-**Branching. Task 11 is merged.** PR #21, rebased onto `main` on 2026-09-02 and the branch
-deleted, with CI green on a Linux runner before the merge — runs `33587016061` (branch head) and
-`33587041645` (pull request), both `success` at ~5m, with every stage confirmed to have executed
-rather than inferred from the conclusion. The `Failed to connect to Reaper` flake that hit PR #19
-did not recur, which does not mean it is fixed — it is a Ryuk startup failure on the runner and it
-will come back. **Task 12 branches from whatever `main` is when you start** — pull first; do not cut
+**Branching.** `feat/phase-2-task-12-authorization`, cut from `main` at `a0b2963`, three commits:
+`5460ebf` (code), `543cf0c` (documents), and the roadmap/ledger commit. **Not merged, not
+pushed.** Tasks 13–15 branch from whatever `main` is when they start — pull first; do not cut
 from a commit named in this file.
 
-**The fix round has not itself been reviewed.** Every change in it was measured with the mutation
-re-run and pasted, but that is the author checking their own work — the same status Task 10's last
-three commits carried into Task 11, where its reviewer was told it could treat them as unexamined.
-
-**Next action:** Task 12 — tenant resolution and the authorization guard, which the plan puts in
-the **orchestrator** column rather than a subagent's, because it is where the security model becomes
-real. Fold commit `7540279` — Task 11's unreviewed fix round — into that task's review, the way Task
-11's reviewer was handed Task 10's unexamined commits.
+**Next action:** review Task 12 (and `7540279` with it), then push and get CI green, then
+Task 13 — organisations and organisation switching, chained 13→15. Task 13 is where
+`Session.activeOrganizationId` first gets written, which is the moment every control Task 12
+built starts executing on a real request. Ruling 93 is the one to read first.
