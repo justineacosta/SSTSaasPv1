@@ -248,3 +248,36 @@ overwritten.
   does not appear. The instruction that could not be undone was respected.
 - **The broken ADR link is real.** `.claude/security/audit.md:148` links
   `ADR-0019-platform-audit-event-table.md`; the file on disk is `ADR-0019-platform-audit-events.md`.
+
+---
+
+## Corrections, 2026-09-02, after the review
+
+Appended rather than edited into the text above, because this file is a dated record and the review
+found the class of defect that silent editing hides. Both were caught by the adversarial reviewer.
+
+**L3 — the migration's line count.** The paragraph above says "42 lines of reasoning with the first
+executable statement on line 44". The file has **40** lines of reasoning and the `ALTER TABLE` is
+line **43** of a 43-line file, which has no line 44. The pasted SQL itself is byte-identical to the
+file on disk (`diff` exit 0), which the reviewer verified independently.
+
+**L8 — the orchestrator's own broken-link sentence, false in the artefact that ships it.** The
+"Pre-existing defects found, not fixed" list above, and the re-verification section's present-tense
+"The broken ADR link **is** real", both describe `.claude/security/audit.md:148` as linking
+`ADR-0019-platform-audit-event-table.md`. That was true at `7b09aa4`. It is **not** true at
+`9513d97` or later: the orchestrator fixed the link in the very commit that ships both sentences,
+and said so in that commit's message while leaving the present tense standing. Correct statement:
+the link was broken on the implementer's tree, the implementer found it and correctly declined to
+fix it as out of scope, and the orchestrator fixed it when placing this file.
+
+That is the same defect class this branch keeps producing — a false sentence introduced *while
+recording a true finding* — and it is the fifth instance on this branch of a correction creating one.
+
+**M2 — the D4 survivor figures above came from a throwaway probe, not from the committed tests.**
+The `D4 PROBE: survivors=25 …` block is not reproducible from this repository: `grep -rn "D4 PROBE"`
+returns nothing, because the probe was deleted after the run. What is committed under
+`describe('the credential race (D4)')` is **two sequential predicate tests**, which race nothing —
+the docblock says so, but the report presented a concurrency survivor count in the register Task
+10's High was accepted in. The predicate is real and both of its stages are load-bearing; the
+reviewer proved that by mutating the shipped code in both directions, which is reproducible. The
+number is what is unsupported, and the word "race" with it.

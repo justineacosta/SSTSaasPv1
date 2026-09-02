@@ -56,6 +56,27 @@ export interface MfaFactorDelegate {
 }
 
 /**
+ * "Does this user already have a CONFIRMED factor?", asked inside the enrolment
+ * transaction and nowhere else.
+ *
+ * Review M1. The same question `factorFor` answers, but it has to be asked a
+ * second time under the advisory lock: the pre-transaction read is advisory,
+ * because a sibling request can confirm a factor between that read and this
+ * write, and the `create` would then raise P2002 against
+ * `@@unique([userId, type])` and answer 500.
+ *
+ * Narrower than `MfaFactorDelegate` on purpose — it selects the id alone. The
+ * secret has no business being read on a path that only needs to know whether a
+ * row exists.
+ */
+export interface MfaConfirmedFactorProbe {
+  findFirst(args: {
+    where: { userId: string; type: 'TOTP'; confirmedAt: { not: null } };
+    select: { id: true };
+  }): Promise<{ readonly id: string } | null>;
+}
+
+/**
  * The two conditional writes that make MFA survive concurrency, and one delete.
  *
  * Both `updateMany` shapes are compare-and-swaps, and `count: 0` is a REFUSAL
@@ -113,9 +134,20 @@ export interface MfaFactorTransactionDelegate extends MfaFactorDelegate {
 }
 
 export interface RecoveryCodeDelegate {
+  /**
+   * Review L6: `orderBy` is part of the port, not an optional nicety.
+   *
+   * `take` bounds the read so one request cannot be made arbitrarily expensive.
+   * With no ordering it also silently *filters* — review H1 measured the state
+   * where twenty unused rows existed and the ten this returned were chosen by
+   * the planner, which decided which of the owner's recovery codes worked.
+   * Requiring the ordering here means a caller cannot reintroduce that by
+   * omission.
+   */
   findMany(args: {
     where: { userId: string; usedAt: null };
     select: { id: true; codeHash: true };
+    orderBy: { createdAt: 'asc' };
     take: number;
   }): Promise<readonly { readonly id: string; readonly codeHash: string }[]>;
 }
@@ -153,6 +185,31 @@ export interface MfaUserDelegate {
     where: { id: string };
     select: { id: true; email: true; emailVerifiedAt: true };
   }): Promise<MfaUserRow | null>;
+}
+
+/**
+ * The recipient of a management notice, and nothing else.
+ *
+ * Review L5. Three enrolment call sites selected `emailVerifiedAt` and then
+ * discarded it, which left it unclear whether ruling 71's verified-address gate
+ * had been considered and rejected or simply forgotten. It was a decision, and
+ * it is recorded at the call site: these four routes are reachable only behind
+ * an `ACTIVE` session for the very account being mailed, and the notice IS the
+ * detection control for the stolen-session case, so gating it on a verified
+ * address would remove detection exactly where it is wanted.
+ * `password-change.service.ts` — the nearest precedent for an authenticated
+ * security notice — sends ungated too. Ruling 71's gate stays where it belongs,
+ * on notices an UNAUTHENTICATED caller can provoke, which is why the new-device
+ * notice on the MFA arm keeps it.
+ *
+ * Selecting the column and ignoring it is what made that ambiguous, so the port
+ * no longer offers it here.
+ */
+export interface MfaNoticeRecipientDelegate {
+  findUnique(args: {
+    where: { id: string };
+    select: { email: true };
+  }): Promise<{ readonly email: string } | null>;
 }
 
 /**
@@ -228,9 +285,9 @@ export interface MfaAuditCountDelegate {
 }
 
 export interface MfaTransaction extends PlatformAuditTransaction {
-  mfaFactor: MfaFactorTransactionDelegate;
+  mfaFactor: MfaFactorTransactionDelegate & MfaConfirmedFactorProbe;
   recoveryCode: RecoveryCodeTransactionDelegate;
-  user: MfaUserDelegate;
+  user: MfaUserDelegate & MfaNoticeRecipientDelegate;
   platformAuditEvent: PlatformAuditTransaction['platformAuditEvent'] & MfaAuditCountDelegate;
   /**
    * The per-session advisory lock. NEW-3 and carry-forward ruling 84.
@@ -252,7 +309,7 @@ export interface MfaTransaction extends PlatformAuditTransaction {
 export interface MfaStore {
   mfaFactor: MfaFactorDelegate;
   recoveryCode: RecoveryCodeDelegate;
-  user: MfaUserDelegate;
+  user: MfaUserDelegate & MfaNoticeRecipientDelegate;
   credential: MfaCredentialDelegate;
   session: MfaSessionDelegate;
   /**

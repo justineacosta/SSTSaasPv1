@@ -225,9 +225,19 @@ Task 10's.
 **per pending session**, so a caller willing to re-authenticate gets a fresh five each time; the
 ladder alone bounds guessing at five per login rather than absolutely. The arithmetic behind 60:
 a million codes, ±1 drift so three are live at any instant, which is 3 in 10^6 per guess — about
-one expected success every 630 years from one address at this rate, with each cycle of five also
-costing a fresh login (itself 5 / 15 min per account). It is generous for a real user with a
-mistyped code, a drifted phone clock or a second device.
+333,333 expected guesses, so at 60 an hour, **0.63 years from a single address**. Ten addresses is
+under a month. **The per-IP figure is therefore the outer loop and not the control.** What bounds
+this per account is one endpoint up: reaching the route costs a `PENDING_MFA` session, minting one
+costs a successful login, and login is 5 / 15 min per address — five logins an hour times five
+attempts each caps an account near 100 attempts/hour however many addresses the attacker owns,
+about 4.6 months to an expected success, with an `MFA_CHALLENGE_FAILED` row written for every
+attempt. 60/hour is generous for a real user with a mistyped code, a drifted phone clock or a
+second device.
+
+> This paragraph read "one expected success every **630 years**" from Task 11 until its review
+> measured the division: the premises were right and the result was wrong by a factor of 1000. The
+> sentence is recorded here rather than silently replaced, because a security document's arithmetic
+> is the thing a future reader tunes the limit against.
 
 Per IP only. The body is `{ pendingToken, code }` and carries no account; resolving one from the
 pending token would mean a Redis or Postgres read bought by an unauthenticated caller *before* the

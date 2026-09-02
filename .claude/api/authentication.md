@@ -108,9 +108,10 @@ is ambient and a `PENDING_MFA` session must be presented deliberately —
 [ADR-0018](../decisions/ADR-0018-pending-mfa-session-row.md) records that decision and its cost.
 The pending token is a short-lived credential that can do exactly one thing: complete MFA. It
 cannot read any resource, and `GET /auth/session` presented with one answers 401 `MFA_REQUIRED`
-— which Phase 2 Task 11 is the first to put a test behind
-(`auth.mfa.integration.spec.ts`), including the strongest form: presenting the pending token
-*as* a session cookie does not work either.
+— tested since Phase 2 Task 9 in `auth.login.integration.spec.ts`, in the strongest form:
+presenting the pending token *as* a session cookie does not work either.
+`authentication.integration.spec.ts` asserts the same property at the guard layer, and Task 11
+adds the case reached from the far side of a completed challenge.
 
 **Completing MFA rotates the pending session rather than issuing a new one**, so the token the
 caller held before the promotion cannot be used after it, and the promoted row carries

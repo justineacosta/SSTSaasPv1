@@ -3,6 +3,7 @@ import {
   renderFailedLoginBurst,
   renderMfaDisabled,
   renderMfaEnabled,
+  renderMfaRecoveryCodesRegenerated,
   renderNewDeviceSignIn,
   renderPasswordChanged,
   renderRegistrationAttempt,
@@ -56,6 +57,7 @@ export const EMAIL_TEMPLATES = {
   passwordChanged: renderPasswordChanged,
   mfaEnabled: renderMfaEnabled,
   mfaDisabled: renderMfaDisabled,
+  mfaRecoveryCodesRegenerated: renderMfaRecoveryCodesRegenerated,
   newDeviceSignIn: renderNewDeviceSignIn,
   registrationAttempt: renderRegistrationAttempt,
   failedLoginBurst: renderFailedLoginBurst,
@@ -64,7 +66,7 @@ export const EMAIL_TEMPLATES = {
 export type EmailTemplateId = keyof typeof EMAIL_TEMPLATES;
 
 /**
- * The three that carry a live credential in a `?token=` link, and the six
+ * The three that carry a live credential in a `?token=` link, and the seven
  * that carry nothing and contain no link at all.
  *
  * Split rather than derived, because the two halves obey opposite rules and a
@@ -82,6 +84,7 @@ export const NOTICE_TEMPLATE_IDS = [
   'passwordChanged',
   'mfaEnabled',
   'mfaDisabled',
+  'mfaRecoveryCodesRegenerated',
   'newDeviceSignIn',
   'registrationAttempt',
   'failedLoginBurst',

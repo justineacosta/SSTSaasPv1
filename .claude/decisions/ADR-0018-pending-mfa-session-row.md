@@ -113,7 +113,7 @@ not a session anybody asked to be remembered, and `absoluteLifetimeSeconds` igno
 no defect in either component: `issue` is right not to honour the flag on a ten-minute credential,
 and `rotate` is right to inherit rather than invent. The gap is between them, and it is a
 consequence of modelling the pending credential as a session that carries the field at all. It is
-recorded here, in `security/authentication.md` §5, and in Task 11's report as a known behavioural
+recorded here, in `api/authentication.md` §2, and in Task 11's report as a known behavioural
 gap rather than fixed: carrying the preference across the promotion needs either a column on
 `Session` that means "what the user asked for, not what this row got" or a `rememberMe` parameter
 on `rotate`, and both are decisions with a wider blast radius than Task 11's scope.

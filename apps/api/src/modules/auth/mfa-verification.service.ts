@@ -165,9 +165,30 @@ export class MfaVerificationService {
   ): Promise<MfaVerifyResult> {
     const resolution = await this.sessions.resolve(command.pendingToken);
     // ONE REFUSAL FOR EVERY WAY THE TOKEN CAN BE WRONG. Unknown, expired,
-    // revoked and "resolved but not pending" are indistinguishable to the
-    // caller — a caller holding a token that was never issued must not be able
-    // to learn that one that WAS issued has merely expired.
+    // revoked and "resolved but not pending" all raise the same error, and the
+    // response is byte-identical apart from its request id — measured across
+    // eight distinct refusal modes.
+    //
+    // REVIEW M3 — BYTE-IDENTICAL IS NOT TIME-IDENTICAL, AND THIS COMMENT USED TO
+    // CLAIM IT WAS. It said the four cases were "indistinguishable to the
+    // caller", full stop. They are not, by construction: `resolve()` fails here
+    // before any Argon2 work, so a dead token costs one lookup, while a LIVE
+    // pending session presented with a recovery-shaped code costs ten Argon2id
+    // verifications — D7's padding, which is a control, not an accident.
+    // Measured at the harness's reduced parameters: 3 ms against 370 ms, a 123×
+    // separation that widens to roughly 3 ms against 2.5 s at ADR-0014's
+    // production parameters.
+    //
+    // The residual is therefore "is this pending token still live", which also
+    // reveals that the five-attempt lock has fired. It is NOT "which account",
+    // NOT "does this address exist", and NOT "how many recovery codes remain" —
+    // that last one is what the padding closes. Reaching a live pending session
+    // already costs a correct password, so what leaks is whether a token the
+    // caller already holds is spent.
+    //
+    // Deliberately not closed by padding this path: a full Argon2 scan on every
+    // unknown token would hand an unauthenticated caller ~2.5 s of CPU per
+    // request, which is a worse defect than the one it would close.
     if (resolution.outcome !== 'resolved') throw new MfaInvalidError();
     if (resolution.session.status !== 'PENDING_MFA') throw new MfaInvalidError();
 
@@ -276,9 +297,19 @@ export class MfaVerificationService {
    *
    * `recovery-codes.service.ts` owns the matching and the padding that keeps the
    * cost constant; this owns the spend. `take: RECOVERY_CODE_COUNT` bounds the
-   * read to the size of one set — a user cannot accumulate more, and an
-   * unbounded read here would be a way to make one request arbitrarily
-   * expensive if that ever stopped being true.
+   * read to the size of one set: an unbounded read here would be a way to make
+   * one request arbitrarily expensive.
+   *
+   * **Review L6 — the `take` is a BOUND, not a filter, and the `orderBy` is what
+   * makes that true.** This docblock used to argue the bound was safe because "a
+   * user cannot accumulate more" than ten unused codes. Review H1 measured the
+   * case where they can: two concurrent regenerations left twenty live rows, and
+   * with no `orderBy` the ten this read returned — and therefore the ten codes
+   * that still worked — were whichever ten the query planner happened to hand
+   * back. Two codes the API had returned with a `200 OK` were refused here.
+   * H1's advisory lock restores the invariant; this ordering means a future
+   * break of it degrades into "the oldest set wins", deterministically, instead
+   * of into a set chosen by the planner.
    */
   private async spendRecoveryCode(
     sessionId: string,
@@ -288,6 +319,7 @@ export class MfaVerificationService {
     const stored = await this.store.recoveryCode.findMany({
       where: { userId, usedAt: null },
       select: { id: true, codeHash: true },
+      orderBy: { createdAt: 'asc' },
       take: RECOVERY_CODE_COUNT,
     });
 

@@ -132,6 +132,7 @@ const NAMELESS_TEMPLATE_IDS = [
   'passwordChanged',
   'mfaEnabled',
   'mfaDisabled',
+  'mfaRecoveryCodesRegenerated',
 ] as const satisfies readonly EmailTemplateId[];
 
 /**
@@ -212,6 +213,7 @@ const CASES: Record<EmailTemplateId, (s: AttackerStrings) => RenderedEmail> = {
   passwordChanged: (s) => EMAIL_TEMPLATES.passwordChanged(notice(s)),
   mfaEnabled: (s) => EMAIL_TEMPLATES.mfaEnabled(notice(s)),
   mfaDisabled: (s) => EMAIL_TEMPLATES.mfaDisabled(notice(s)),
+  mfaRecoveryCodesRegenerated: (s) => EMAIL_TEMPLATES.mfaRecoveryCodesRegenerated(notice(s)),
   // NEITHER a name NOR a user agent, and neither can be passed: the context
   // type carries no field for either (rulings 70 and, since H2, 63-as-amended).
   newDeviceSignIn: (s) =>
@@ -293,7 +295,7 @@ describe('the email template registry', () => {
     expect(new Set(classified).size).toBe(classified.length);
   });
 
-  it('registers the nine templates authentication.md §2, §5, §6 and §7 require', () => {
+  it('registers the ten templates authentication.md §2, §5, §6 and §7 require', () => {
     expect([...IDS].sort()).toEqual([
       'emailVerification',
       // Task 9. §7's "a burst notifies the account owner" had no template at
@@ -303,6 +305,10 @@ describe('the email template registry', () => {
       'invitation',
       'mfaDisabled',
       'mfaEnabled',
+      // Review M4's fix round. Regeneration was the only MFA state change that
+      // notified nobody, which is exactly why an attacker holding a stolen
+      // session and the password would choose it over `disable`.
+      'mfaRecoveryCodesRegenerated',
       'newDeviceSignIn',
       'passwordChanged',
       'passwordReset',
@@ -555,6 +561,7 @@ const CONTEXT_RENDERING_NOTICE_IDS = [
   'passwordChanged',
   'mfaEnabled',
   'mfaDisabled',
+  'mfaRecoveryCodesRegenerated',
   'newDeviceSignIn',
 ] as const satisfies readonly EmailTemplateId[];
 
