@@ -1,6 +1,12 @@
 # API authorization
 
-> **Status: Designed. Not Implemented.** Phase 2.
+> **Status: Partially Implemented (Phase 2, Task 12).** §1's declarations exist and
+> `@RequirePermission()` is evaluated; §3's status codes are produced by
+> `TenantContextGuard` and `AuthorizationGuard`; §4's envelope is what a 403 actually
+> carries. **No shipped endpoint declares a permission**, so none of §3's rows below the
+> first can be reached by a caller today — Tasks 13–15 ship the first guarded routes.
+> `@RequireEntitlement` in §1's example does not exist (Phase 10). §5's project-scoped
+> half is not built.
 > Model and permission list: [`../security/authorization.md`](../security/authorization.md)
 > and [`../product/permissions.md`](../product/permissions.md). This document covers how it
 > appears on the wire and how endpoints declare it.
@@ -42,25 +48,53 @@ GET /api/v1/auth/session
   "entitlements": { "maxConcurrentScans": 10, "sso": false, ... } }
 ```
 
+**What the shipped document actually contains** — `sessionResponseSchema`, and the sketch
+above is the design rather than the current shape: `userId`, `activeOrganization`,
+`permissions` and `entitlements`, with no `user` object and no `mfaEnabled`. The session
+identifier is deliberately absent.
+
+`permissions` became real in Task 12: it is the effective set for the session's active
+organisation, computed by `TenantContextGuard` from the membership's role. **It is `[]` on
+every session that exists**, because the set is empty exactly when no tenant resolved and
+nothing writes `Session.activeOrganizationId` until Task 13 — so the observable response
+has not changed, only the reason for it. An empty array is also what a member of a
+suspended organisation receives: they may do nothing there, so an *effective* set of
+nothing is the accurate report. `entitlements` is still `{}` and is Phase 10.
+
 The frontend uses `permissions` to hide or disable affordances
 ([`../architecture/frontend.md`](../architecture/frontend.md) §5). **This is UX only.** The
 list is a mirror of server-side rules, never the rules themselves; every action it permits is
 re-authorised server-side, and every action it hides is still rejected if called directly.
 
-Permissions are re-fetched on organisation switch and invalidated on role change, so a demoted
-user's UI catches up on their next request rather than at a cache TTL.
+Permissions are re-fetched on organisation switch and reflect a role change on the next
+request, so a demoted user's UI catches up immediately rather than at a cache TTL. As of
+Task 12 that holds because **there is no cache to expire**: the effective set is read from
+`Membership` and its `Role` on every request that names an organisation. The reasoning, and
+why the plan's permission cache was not built, is in
+[`../security/authorization.md`](../security/authorization.md) §4.
 
 ## 3. Status codes
 
-| Situation | Status | Code |
-|---|---|---|
-| Not authenticated | 401 | `UNAUTHENTICATED` |
-| Not a member of the target organisation | **404** | `RESOURCE_NOT_FOUND` |
-| Member, lacks the permission | 403 | `PERMISSION_DENIED` |
-| Resource belongs to another tenant | **404** | `RESOURCE_NOT_FOUND` |
-| Organisation suspended | 403 | `ORGANIZATION_SUSPENDED` |
-| Entitlement exhausted | 402 | `QUOTA_EXCEEDED` |
-| Plan does not include the feature | 402 | `FEATURE_NOT_AVAILABLE` |
+| Situation | Status | Code | Built |
+|---|---|---|---|
+| Not authenticated | 401 | `UNAUTHENTICATED` | Task 7 |
+| Not a member of the target organisation | **404** | `RESOURCE_NOT_FOUND` | Task 12 |
+| Session names no organisation at all | **404** | `RESOURCE_NOT_FOUND` | Task 12 |
+| Member, lacks the permission | 403 | `PERMISSION_DENIED` | Task 12 |
+| Resource belongs to another tenant | **404** | `RESOURCE_NOT_FOUND` | Structural, Phase 1 |
+| Organisation suspended | 403 | `ORGANIZATION_SUSPENDED` | Task 12 |
+| Entitlement exhausted | 402 | `QUOTA_EXCEEDED` | Phase 10 |
+| Plan does not include the feature | 402 | `FEATURE_NOT_AVAILABLE` | Phase 10 |
+
+**Row three is new and it is the same response as row two, byte for byte.** A session that
+has chosen no organisation and a session pointed at an organisation the caller does not
+belong to both produce the identical 404 — same status, same body, same headers, asserted
+as an identity rather than as two expectations. They are distinguished internally only
+because the difference decides what `GET /auth/session` reports about itself.
+
+**`NOT_A_MEMBER` exists in the error-code list and has no producer, deliberately.** This
+table maps that situation onto `RESOURCE_NOT_FOUND`, and a distinct code on the wire would
+be the disclosure the whole of §3 exists to prevent.
 
 **Cross-tenant access returns 404, never 403.** A 403 confirms the resource exists, which lets
 an attacker enumerate IDs and map another customer's estate. 403 is reserved for resources
@@ -75,11 +109,24 @@ file a ticket:
 
 ```jsonc
 { "error": { "code": "PERMISSION_DENIED",
-    "message": "You need the \"Accept risk\" permission to close this finding as accepted risk.",
+    "message": "You need the \"finding.accept_risk\" permission to do this.",
     "details": { "required": "finding.accept_risk", "yourRole": "MEMBER",
                  "rolesWithPermission": ["OWNER", "ADMIN", "SECURITY_LEAD"] },
     "requestId": "req_..." } }
 ```
+
+**`details` is exactly what is shipped**, asserted field by field. The `message` is the
+permission key rather than a human label for it — this document previously showed
+`"Accept risk"`, and there is no mapping from a permission to a display name anywhere in
+the codebase, so writing one would have meant inventing a second list to keep in step with
+`PERMISSIONS`. The frontend keys on `details.required` and renders whatever label it likes.
+
+`rolesWithPermission` is computed from `ROLE_PERMISSIONS` in `packages/contracts`, while
+the refusal itself is decided against the seeded `RolePermission` rows. That is two sources
+for one fact, and it is safe in one direction only — a drift would produce a misleading
+hint and never a wrong answer — but the drift is closed anyway:
+`authorization.integration.spec.ts` asserts the seeded rows expand to exactly
+`ROLE_PERMISSIONS` for all seven system roles.
 
 We never list *which users* hold the permission — that is organisation membership detail the
 caller may not be entitled to. Roles are safe; names are not.
@@ -95,6 +142,20 @@ afterwards.
 There is no code path where a handler receives an unscoped client and remembers to filter. The
 scoping is in the client, not the handler
 ([`../security/tenant-isolation.md`](../security/tenant-isolation.md) §2).
+
+**As of Task 12 a handler gets the scoping as a runner, not as a client**, and the
+distinction matters. `tenantRunnerFor` in `common/decorators/ctx.decorator.ts` returns a
+function bound to the resolved `organizationId` that runs its callback inside
+`withTenantTransaction`. A bare client would carry layer 1 (the client extension) and
+silently drop layer 2 (row-level security), which is activated by `SET LOCAL
+app.organization_id` inside a transaction — the exact defect `withTenantTransaction`'s own
+docblock records having shipped once. The organisation id is closed over rather than passed,
+so a handler cannot scope to one it read off the request. **No shipped handler uses it yet**,
+because no shipped route declares a permission.
+
+**The `GUEST` half of this section is Not Implemented.** Project- and team-level grants need
+projects, which are Phase 3. `PROJECT_SCOPED_PERMISSIONS` exists in `packages/contracts` and
+nothing reads it.
 
 ## 6. Testing
 

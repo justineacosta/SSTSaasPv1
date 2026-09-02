@@ -4,6 +4,13 @@ Canonical mapping of system roles to permissions. The machine-readable source of
 `packages/contracts/src/permissions.ts`; **this table and that file must agree**, and a test
 asserts it.
 
+**As of Task 12 there is a third copy and it is the one that decides.** The seeded
+`Role` / `Permission` / `RolePermission` rows are what `TenantContextGuard` expands to build
+an effective permission set — reading the constant instead would make those rows decorative
+and a drift invisible. `pnpm db:seed` builds them *from* the constant, and
+`authorization.integration.spec.ts` asserts the seeded rows expand to exactly
+`ROLE_PERMISSIONS` for all seven roles, so the three agree or a test fails.
+
 Enforcement design: [`../security/authorization.md`](../security/authorization.md).
 
 Legend: `Y` granted · `-` not granted · `P` granted only for projects explicitly shared
@@ -87,6 +94,20 @@ a guest with no grants sees nothing.
 2. A custom role can hold **only permissions its creator holds**.
 3. An API key can hold **only a subset of its creator's permissions**, and never
    `organization.delete`, `organization.manage_roles`, `billing.manage`, or `apikey.create`.
-4. Changing a member's role takes effect on their **next request** — the permission cache is
-   invalidated on write, not expired on a timer.
+4. Changing a member's role takes effect on their **next request**.
+
+   **As of Phase 2 Task 12 this holds because there is no permission cache.** The invariant
+   was written expecting one, invalidated on write rather than expired on a timer; what
+   shipped reads `Membership`, its `Role` and the seeded `RolePermission` rows on every
+   request that names an organisation, so the transaction that follows a role change is the
+   one that observes it. The reasoning — a cache satisfies this only for as long as every
+   future writer remembers to invalidate it, and Task 14's role change and Task 15's
+   invitation acceptance are both still unwritten — is in
+   [`../security/authorization.md`](../security/authorization.md) §4. The operator took the
+   decision on 2026-09-02. Adding a cache later is additive, and would put the "invalidated on
+   write" clause back into force as a requirement on whoever adds it.
+
+   Proved rather than asserted: `authorization.integration.spec.ts` promotes a member, demotes
+   one and removes one, each time over the **same session cookie** with no sign-in in between,
+   and asserts the next request reflects it.
 5. Removing a member revokes their sessions for that organisation immediately.

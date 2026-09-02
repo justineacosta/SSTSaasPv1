@@ -2,7 +2,7 @@ import type { Server } from 'node:http';
 import { errorEnvelopeSchema } from '@sentinel/contracts';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startAuthHarness, type AuthHarness } from '../testing/auth-harness.js';
+import { clearRateLimits, startAuthHarness, type AuthHarness } from '../testing/auth-harness.js';
 import { describeRoutes, type RegisteredRoute } from './route-inventory.js';
 
 /**
@@ -79,6 +79,20 @@ const key = (route: RegisteredRoute): string => `${route.method} ${route.path}`;
  * authentication, which is itself the defect worth catching.
  */
 async function callAnonymously(route: RegisteredRoute): Promise<request.Response> {
+  // THE LIMITER RUNS BEFORE AUTHENTICATION, so a route whose window is spent
+  // answers 429 and the caller never learns they were unauthenticated. That is
+  // `architecture/backend.md` §3's deliberate order and not a defect — but it
+  // makes the limiter a variable in a suite that is about authorization, and
+  // carry-forward ruling 33 records that the compose Redis is shared with every
+  // other integration suite and with a developer's running application. Cleared
+  // per request rather than per block: `mfaManagement` allows ten an hour per IP
+  // and every request here arrives from loopback, so one pass over eighteen
+  // routes exhausts several classes on its own.
+  //
+  // This was found by the whole-lane run, not by the file on its own — running
+  // this spec alone passed while `pnpm test:integration` reported
+  // `POST /auth/mfa/enroll answered 429, expected 401`.
+  await clearRateLimits(harness.redis);
   const path = route.path;
   switch (route.method) {
     case 'GET':
