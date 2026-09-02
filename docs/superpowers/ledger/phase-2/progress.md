@@ -960,6 +960,13 @@ routine role change. **D2 requires the race test to be arranged to fail without 
 unlocked version cannot be made to produce an organisation with zero owners, the race was not
 tested.
 
+**An implementer was dispatched against this brief on 2026-09-03 and cancelled by the operator
+before it wrote anything**, so that Task 14 could be built in a fresh session — which is the
+protocol's own preference (execution protocol §1: one session per task, and a fresh session that
+cannot pick up Task N from the committed record has found a documentation defect). It committed
+nothing and created no file; `git status` was clean at cancellation and the branch is still at
+`c2af5fb`. **There is no partial work to find, reconcile, or delete.**
+
 **Next action:** dispatch the Task 14 implementer against
 [task-14/brief.md](task-14/brief.md), then a fresh adversarial reviewer. Rulings 99 and 100 are the
 ones to read first — Task 14's removal path is what *creates* the multi-row `Membership` state that
