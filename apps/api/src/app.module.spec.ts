@@ -10,6 +10,9 @@ import { EntitlementGuard } from './common/guards/entitlement.guard.js';
 import { RateLimitGuard } from './common/guards/rate-limit.guard.js';
 import { TenantContextGuard } from './common/guards/tenant-context.js';
 import { MfaEnrolmentGuard } from './modules/auth/require-mfa.js';
+import { AuthModule } from './modules/auth/auth.module.js';
+import { OrganizationsModule } from './modules/organizations/organizations.module.js';
+import { RolesModule } from './modules/roles/roles.module.js';
 
 /**
  * THE GUARD HALF OF `architecture/backend.md` §3'S PIPELINE.
@@ -142,5 +145,45 @@ describe('the global guard pipeline', () => {
     // Phase 10's real entitlement check replaces the stub rather than adding to
     // this number; Phase 3's audit stage is service-level and is not a guard.
     expect(globalGuardClasses()).toHaveLength(9);
+  });
+});
+
+/**
+ * THE MODULES THE COMPOSITION ROOT IMPORTS, ASSERTED THE WAY RULING 103 SAYS TO.
+ *
+ * L-2 again, in its other form: `toContain` over a module's **source text** is
+ * satisfied by the import line, so deleting an entry from the `imports` array
+ * while leaving its `import` statement leaves such a test green. Measured in
+ * Task 12 — removing the `APP_GUARD` provider for `MfaEnrolmentGuard` left
+ * `require-mfa.spec.ts` at 14 passed, exit 0.
+ *
+ * Reading `Reflect.getMetadata('imports', AppModule)` reads the array Nest
+ * actually consumes.
+ *
+ * `OrganizationsModule` is the entry this block was added for. Without it in
+ * the array, none of the five organisation routes is registered — and the
+ * failure is silent in exactly the wrong direction: `pnpm check:openapi` would
+ * report a smaller document, the authorization matrix would find no
+ * permission-guarded route and go back to running its 403 and cross-tenant-404
+ * arms against nothing, and every one of those checks would still exit 0.
+ */
+function importedModules(): unknown[] {
+  return (Reflect.getMetadata('imports', AppModule) ?? []) as unknown[];
+}
+
+describe('the modules AppModule composes', () => {
+  it('registers OrganizationsModule, without which no organisation route exists', () => {
+    expect(importedModules()).toContain(OrganizationsModule);
+  });
+
+  it('registers AuthModule and RolesModule, which the guards depend on', () => {
+    // `RolesModule` provides `TENANT_RESOLVER` and `MFA_ENROLMENT_POLICY`, and
+    // an `APP_GUARD`'s dependencies are resolved from the module that declares
+    // it — so its absence is a boot failure rather than a silent one. Asserted
+    // anyway, because `AuthModule`'s absence is *not*: `OrganizationSwitchService`
+    // lives there, and losing it would remove `POST /auth/switch-org` and with
+    // it the only writer of `Session.activeOrganizationId`.
+    expect(importedModules()).toContain(AuthModule);
+    expect(importedModules()).toContain(RolesModule);
   });
 });

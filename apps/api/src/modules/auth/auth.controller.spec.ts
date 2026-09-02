@@ -15,7 +15,7 @@ import type { RateLimitClass } from '../../common/guards/rate-limit.config.js';
 import { AuthController } from './auth.controller.js';
 
 /**
- * THE DECORATORS ON THE FOURTEEN SHIPPED HANDLERS, READ OFF THE REAL
+ * THE DECORATORS ON THE FIFTEEN SHIPPED HANDLERS, READ OFF THE REAL
  * CONTROLLER.
  *
  * M1. Three mutations survived the entire eleven-command gate before this file
@@ -58,7 +58,8 @@ type HandlerName =
   | 'mfaEnroll'
   | 'mfaConfirm'
   | 'mfaDisable'
-  | 'mfaRecoveryCodes';
+  | 'mfaRecoveryCodes'
+  | 'switchOrganization';
 
 /**
  * A handler read off the prototype as a REFLECTION TARGET, never to be called.
@@ -82,9 +83,12 @@ interface RouteExpectation {
 }
 
 /**
- * The fourteen routes, as an exact table. A fifteenth handler appearing on this
+ * The fifteen routes, as an exact table. A sixteenth handler appearing on this
  * controller without a row here fails the exhaustiveness test below rather than
- * shipping undeclared — which is how Task 9's three arrived.
+ * shipping undeclared — which is how Task 9's three arrived, and how Task 13's
+ * `switchOrganization` arrived: the test went red naming it
+ * (`expected [ 'changePassword', …(14) ] to deeply equal [ 'changePassword',
+ * …(13) ]`) before a row had been written for it.
  *
  * `access` is in the table rather than asserted uniformly because Task 9 is
  * where this controller stopped being all-public. A route on the wrong arm of
@@ -247,6 +251,28 @@ const ROUTES: readonly RouteExpectation[] = [
     access: { kind: 'authenticated' },
     refusesCrossSite: false,
   },
+  {
+    // TASK 13, AND THE ROUTE THAT MAKES EVERY GUARD TASK 12 BUILT START
+    // RUNNING. It writes `Session.activeOrganizationId`, which nothing wrote
+    // before it (carry-forward ruling 93).
+    //
+    // `@AuthenticatedOnly()` and NOT `@RequirePermission()`: a permission is
+    // always (user, organisation, permission), and the organisation is what
+    // this route changes. Requiring one would ask the caller to hold a
+    // permission in the organisation they are leaving. It is also the arm
+    // `access.decorator.ts` names for exactly this route in its own docblock.
+    //
+    // `generalSession` rather than a class of its own: `abuse-prevention.md` §1
+    // has no row for switching, and the transcription runs document-to-code.
+    // Declared rather than defaulted to, so this table records that somebody
+    // chose (ruling 55's bookkeeping).
+    handler: 'switchOrganization',
+    path: 'switch-org',
+    method: RequestMethod.POST,
+    rateLimit: 'generalSession',
+    access: { kind: 'authenticated' },
+    refusesCrossSite: false,
+  },
 ];
 
 /**
@@ -381,7 +407,7 @@ describe('the controller as a whole', () => {
     expect(Reflect.getMetadata(ALLOW_PENDING_MFA_KEY, AuthController)).toBeUndefined();
   });
 
-  it('exposes exactly the fourteen handlers in the table above', () => {
+  it('exposes exactly the fifteen handlers in the table above', () => {
     const handlers = Object.getOwnPropertyNames(AuthController.prototype).filter(
       (name) => name !== 'constructor',
     );
