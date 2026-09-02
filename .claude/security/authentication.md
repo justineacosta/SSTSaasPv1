@@ -317,14 +317,29 @@ bodies and errors.
   which costs them the password again. **The count is per pending session**, so signing in
   again starts a fresh five — what is bounded is guessing at one challenge, and the outer bound
   is the rate limit plus login's own 5 / 15 min per account.
-- **DEFERRED, AND ENFORCED BY NOTHING TODAY.** Organisations may **require** MFA; members
-  without a confirmed factor are to be forced into enrolment before any other action, enforced
-  server-side on every request and not only at login. The **decision** is built and unit-tested
-  (`apps/api/src/modules/auth/require-mfa.ts`, with `MFA_ENROLMENT_REQUIRED` as its refusal),
-  and it is **registered in no module and applied to no request**, because the check needs
-  tenant resolution and organisation membership, which Phase 2 Task 12 builds. `Organization.requireMfa`
-  is a column nothing reads. This is the same status `@RequirePermission()` has: metadata and a
-  mechanism, with no guard in the pipeline. **Task 12 places it.**
+- **PLACED IN THE PIPELINE BY TASK 12, AND STILL REFUSING NOBODY.** Organisations may
+  **require** MFA; members without a confirmed factor are to be forced into enrolment before
+  any other action, enforced server-side on every request and not only at login. The
+  **decision** is built and unit-tested (`apps/api/src/modules/auth/require-mfa.ts`, with
+  `MFA_ENROLMENT_REQUIRED` as its refusal). Task 12 registered `MfaEnrolmentGuard` as a
+  global guard, ahead of the authorization guard so a member with no factor hears this rather
+  than `PERMISSION_DENIED`, and provided the tenant-scoped lookup it asks for. The sentence
+  this bullet carried through Task 11 — "registered in no module and applied to no request" —
+  is half false now and is replaced rather than deleted.
+
+  **What is still true is the second half.** The guard returns early when the request names
+  no organisation, and nothing writes `Session.activeOrganizationId` until Task 13, so its
+  lookup is not reached on any request this phase can produce. There is also no endpoint that
+  creates an organisation, so no row can carry `requireMfa = true`. `MFA_ENROLMENT_REQUIRED`
+  therefore **still has no producer a caller can reach**, and nothing may describe this as an
+  enforced control until Task 13. `Organization.requireMfa` is now a column something reads —
+  in a code path no request takes.
+
+- **INCREMENTAL MFA KEY ROTATION IS STILL NOT BUILT**, and Task 12 did not change that. It is
+  repeated here because the paragraph above moved: the process holds one key,
+  `MfaFactor.secretKeyVersion` is never written, and rotating the key would make every
+  enrolled factor undecryptable *silently*, because `mfa/verify` answers the ordinary
+  `MFA_INVALID`. Recorded in Task 11's ledger as an ADR nobody owns.
 - **DEFERRED.** WebAuthn is the intended second factor type and none of it is built. The
   `MfaFactorType` enum carries `WEBAUTHN` and the `MfaFactor` table is typed and multi-row from
   the start, so adding it is an insert rather than a migration of the authentication model —

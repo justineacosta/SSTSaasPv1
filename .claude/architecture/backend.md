@@ -78,12 +78,14 @@ and are unaffected; anything that must cover *every* response, routed or not, be
 | CORS | Middleware, third; one configured origin, exact match, credentials ([ADR-0017](../decisions/ADR-0017-cors-allowlist-with-credentials.md)) | **Implemented (Task 7)**. Middleware rather than a guard so a preflight is answered before the rate limiter and the authentication guard, and so the headers reach error responses. **A preflight therefore reaches neither the limiter nor `LoggingInterceptor`**: every unsafe browser request generates one request that no limit counts and no log line records — see below |
 | Rate limit | Guard, Redis-backed, every declared scope | Implemented (global `APP_GUARD`) |
 | Authenticate | Guard, session cookie or API key -> `Principal` | **Implemented (Task 7)** for the session-cookie half: `AuthenticationGuard`, global `APP_GUARD`, constructs a `UserPrincipal` onto `request.principal`. The API-key half is Not Implemented — no key can be issued in Phase 2 |
-| Tenant resolve | Guard, membership + org state -> `TenantContext` | Not Implemented (Phase 2). `TenantContext` is declared in `packages/contracts` as of Task 2; nothing constructs one |
+| Tenant resolve | Guard, membership + org state -> `TenantContext` | **Implemented (Task 12)**: `TenantContextGuard`, global `APP_GUARD`, immediately after Authenticate. Reads `Session.activeOrganizationId` and nothing else, resolves membership and organisation state under `withTenantTransaction`, and puts a `TenantContext` on `request.tenant`. **It denies only on a route declaring `@RequirePermission()`** — an `@AuthenticatedOnly()` route proceeds with no tenant, so a removed member can still sign out. **It performs no query today**: nothing writes `activeOrganizationId` until Task 13, so the first branch short-circuits on every request |
 | CSRF | Guard, cookie-authenticated unsafe methods only | **Implemented (Task 7)**: `CsrfGuard`, global `APP_GUARD`, after Authenticate. **Governs `POST /api/v1/auth/logout` since Task 9** — the first cookie-authenticated unsafe route this product has published |
 | Cross-site refusal | Guard, opt-in per handler, for public unsafe routes | **Implemented (Task 9)**: `CrossSiteGuard`, global `APP_GUARD`, last. Applies only to handlers carrying `@RefuseCrossSite()`, which today is `POST /api/v1/auth/login` alone — see below |
 | Validate | Zod pipe against `packages/contracts` schemas | Implemented; no consumer until Phase 2 |
-| Authorize | Guard reading `@RequirePermission` | Decorator implemented and asserted at boot; **guard still Not Implemented** (Task 12). Task 7 added a third *declaration* arm, `@AuthenticatedOnly()`, which does not move this row: a route naming a permission is authenticated by Task 7's guard and its permission is evaluated by nobody |
-| Entitlement | Guard reading `@RequireEntitlement` | Not Implemented (Phase 10) |
+| Authorize | Guard reading `@RequirePermission` | **Implemented (Task 12)**: `AuthorizationGuard`, global `APP_GUARD`. It compares the declared permission against `request.tenant.permissions` and refuses with 403 `PERMISSION_DENIED` naming the permission, the caller's role and the roles that hold it; with no tenant at all it fails closed as **404**, not 403, so a misconfiguration cannot become an existence oracle. **No shipped route declares a permission**, so it governs nothing yet — Tasks 13–15 ship the first |
+| Email verified | Guard, opt-in per handler via `@RequireVerifiedEmail()` | **Registered (Task 12)**, `EmailVerifiedGuard`, global `APP_GUARD`. **Governs zero routes**: no handler carries the decorator, and a spec asserts that over the controller files so the day one does, it is noticed. Task 13 applies the first |
+| MFA enrolment | Guard, `Organization.requireMfa` | **Registered (Task 12)**, `MfaEnrolmentGuard` — written in Task 11 and left in no module, placed here ahead of Authorize so a member with no factor hears `MFA_ENROLMENT_REQUIRED` rather than `PERMISSION_DENIED`. **Refuses nobody**: it exits early when the request names no organisation, and no organisation can be created to set `requireMfa` until Task 13 |
+| Entitlement | Guard, no decorator | **Stub (Task 12)**, `EntitlementGuard`, global `APP_GUARD`, **last**. Admits every request. Registered so the layer exists and its position is recorded — 402 after 403, so a caller who was never permitted the action does not learn what the plan includes. `@RequireEntitlement` deliberately **does not exist**; Phase 10 ships the decorator and its evaluation together |
 | Handle | Controller -> service | Implemented |
 | Serialise | Interceptor, explicit DTO | Not Implemented |
 | Errors | Global filter -> shared error envelope | Implemented |
@@ -121,13 +123,35 @@ raw `@SetMetadata` on a fixture controller. Full rule in
 
 **Guard order is the order of the `APP_GUARD` providers in `app.module.ts`, and nothing
 else makes it visible** — a reordering is a one-line diff to an array that changes no type
-and still runs every guard. `app.module.spec.ts` asserts it: rate limit, authenticate,
-CSRF, cross-site refusal. Rate limiting stays first so an unauthenticated flood carrying a
-garbage cookie does not buy a Redis read and a Postgres read each before anything refuses it.
-The cross-site refusal is last because it is the narrowest — every handler that opts into it is
-`@Public()`, which is exactly the set `CsrfGuard` skips, so its position is almost free, and a
-caller whose credential or CSRF token is wrong should hear about that first. The cost of
-that order is recorded rather than fixed: `generalSession` keys on
+and still runs every guard. `app.module.spec.ts` asserts it, and as of Task 12 there are
+**nine**: rate limit, authenticate, tenant resolve, CSRF, cross-site refusal, email
+verified, MFA enrolment, authorize, entitlement.
+
+Four of those positions are decisions rather than conveniences, and each is asserted
+separately so that a reordering fails for a reason a reader can act on:
+
+- **Rate limiting stays first** so an unauthenticated flood carrying a garbage cookie does
+  not buy a Redis read and a Postgres read each before anything refuses it.
+- **Tenant resolve sits immediately after authenticate**, because a permission evaluated
+  against no organisation is meaningless in a multi-tenant product
+  (`../security/authorization.md` §1) — and after, not before, because a query keyed on an
+  absent principal is the shape that returns somebody else's row.
+- **Both database-reading gates sit after the two forgery checks.** A cross-site forged
+  request should be refused by a header comparison rather than pay for two reads on the way
+  to the same refusal.
+- **MFA enrolment precedes authorize**, per `../security/authentication.md` §5's "before
+  any other action": a member with no factor must hear `MFA_ENROLMENT_REQUIRED` and not
+  `PERMISSION_DENIED`, which would send them to ask an owner for a permission that would
+  not have helped.
+
+The cross-site refusal is **no longer last in the array**, and that is not a demotion —
+Task 12 added four stages behind it, every one of which needs a principal and a resolved
+tenant that a `@Public()` route does not have. The property that mattered is unchanged and
+is what the spec asserts: it runs after authentication and after CSRF, because a caller
+whose credential or CSRF token is wrong should hear about that first, and every handler
+that opts into it is `@Public()` — exactly the set `CsrfGuard` skips.
+
+The cost of putting the limiter first is recorded rather than fixed: `generalSession` keys on
 `principalSource: 'authenticated'`, which reads `request.principalId` — a field the limiter
 reads before the authentication guard could set it — so that scope is unresolvable and
 `generalSession`'s per-principal limit is applied to no request. **Nothing reports it**: the
