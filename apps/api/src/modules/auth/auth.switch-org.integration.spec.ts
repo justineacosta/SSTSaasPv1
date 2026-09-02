@@ -175,9 +175,7 @@ describe('POST /api/v1/auth/switch-org', () => {
     const document = sessionResponseSchema.parse(response.body);
     expect(document.permissions.length).toBeGreaterThan(0);
     expect(document.permissions).toEqual([...ROLE_PERMISSIONS.SECURITY_LEAD].sort());
-    expect(document.permissions.length).toBeLessThan(
-      ROLE_PERMISSIONS.OWNER.length,
-    );
+    expect(document.permissions.length).toBeLessThan(ROLE_PERMISSIONS.OWNER.length);
     expect(document.activeOrganization?.id).toBe(organizationId);
     expect(document.userId).toBe(actor.userId);
   });
@@ -242,7 +240,13 @@ describe('POST /api/v1/auth/switch-org', () => {
 
     const events = await owner.auditEvent.findMany({
       where: { organizationId, action: 'ORGANIZATION_SWITCHED' },
-      select: { actorType: true, actorId: true, resourceType: true, resourceId: true, metadata: true },
+      select: {
+        actorType: true,
+        actorId: true,
+        resourceType: true,
+        resourceId: true,
+        metadata: true,
+      },
     });
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({

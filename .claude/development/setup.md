@@ -50,6 +50,39 @@ pnpm dev                        # web + api, watch mode (workers arrive in Phase
 | MinIO console | http://localhost:9001 |
 | Prisma Studio (`pnpm db:studio`) | http://localhost:5555 |
 
+### Two database roles must exist before `pnpm db:migrate`
+
+`docker compose up -d` creates them, because `infra/docker/postgres/init/01-app-role.sql` is
+mounted as a Postgres init script and runs when the data volume is first initialised. **That is
+the only time it runs.** A volume created before a role was added to that file will not have it,
+and the migration that needs it fails.
+
+| Role | What it is | Attributes |
+|---|---|---|
+| `sentinel_app` | The least-privileged role the API process connects as. Every RLS policy applies to it. | `LOGIN`, no `SUPERUSER`, no `BYPASSRLS` |
+| `sentinel_org_lookup` | Owns `user_organizations(text)` and nothing else — ADR-0020. | `NOLOGIN NOINHERIT BYPASSRLS` |
+
+**Neither can be created by a migration**, and the reasons differ. `sentinel_app` is referenced
+by the Phase 1 row-level-security migration, which runs before any migration could have created
+it; `sentinel_org_lookup` needs `BYPASSRLS`, which requires superuser. Both are out-of-band
+provisioning steps — carry-forward ruling 96 for the first, ADR-0020's consequences for the
+second — and the same is true of the first production deployment, which needs both `CREATE ROLE`
+statements run by an operator before the migration history is applied.
+
+If `pnpm db:migrate` fails with `role "sentinel_org_lookup" does not exist`, the volume predates
+Task 13. Either run the init script by hand as a superuser:
+
+```bash
+docker compose exec -T postgres psql -U sentinel -d sentinel   < infra/docker/postgres/init/01-app-role.sql
+```
+
+or recreate the volume (`docker compose down -v && docker compose up -d`), which destroys all
+local data.
+
+The migration does not assume the role exists. It raises a named `undefined_object` naming the
+role and the statement that creates it, rather than failing at `ALTER FUNCTION ... OWNER TO` with
+a message about a role nobody has heard of.
+
 There are **no seeded user accounts.** Register through the UI; the verification email lands in
 Mailpit. Seeding fake tenants would make an empty product look populated, which is exactly the
 illusion this codebase is meant to avoid.

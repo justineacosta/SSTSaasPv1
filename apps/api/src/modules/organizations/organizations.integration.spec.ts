@@ -204,7 +204,13 @@ describe('POST /api/v1/organizations', () => {
 
     const events = await owner.auditEvent.findMany({
       where: { organizationId: body.id },
-      select: { action: true, actorType: true, actorId: true, resourceType: true, resourceId: true },
+      select: {
+        action: true,
+        actorType: true,
+        actorId: true,
+        resourceType: true,
+        resourceId: true,
+      },
     });
     expect(events).toEqual([
       {
@@ -349,9 +355,7 @@ describe('GET /api/v1/organizations', () => {
     const first = await organizationFor({ userId: actor.userId });
     const second = await organizationFor({ userId: actor.userId });
 
-    const response = await request(server)
-      .get('/api/v1/organizations')
-      .set('Cookie', actor.cookie);
+    const response = await request(server).get('/api/v1/organizations').set('Cookie', actor.cookie);
 
     expect(response.status).toBe(200);
     const body = organizationCollectionSchema.parse(response.body);
@@ -381,7 +385,10 @@ describe('GET /api/v1/organizations', () => {
     // them at the head of the result, where a test asserting only on the first
     // row would miss it. The assertion is on the whole set, which is stronger.
     const actor = await signedIn({});
-    const removedFirst = await organizationFor({ userId: actor.userId, membershipStatus: 'REMOVED' });
+    const removedFirst = await organizationFor({
+      userId: actor.userId,
+      membershipStatus: 'REMOVED',
+    });
     const removedSecond = await organizationFor({
       userId: actor.userId,
       membershipStatus: 'REMOVED',
@@ -425,7 +432,9 @@ describe('GET /api/v1/organizations', () => {
     expect(page1.pagination.nextCursor).not.toBeNull();
 
     const second = await request(server)
-      .get(`/api/v1/organizations?limit=2&cursor=${encodeURIComponent(page1.pagination.nextCursor ?? '')}`)
+      .get(
+        `/api/v1/organizations?limit=2&cursor=${encodeURIComponent(page1.pagination.nextCursor ?? '')}`,
+      )
       .set('Cookie', actor.cookie);
     const page2 = organizationCollectionSchema.parse(second.body);
     expect(page2.data).toHaveLength(1);

@@ -1,12 +1,13 @@
 # Authorization architecture
 
-> **Status: Partially Implemented (Phase 2, Task 12).** The pipeline is built and every
-> layer below can deny. **It governs no shipped endpoint**, because no route in this API
-> declares `@RequirePermission()` yet — the eighteen Phase 2 routes are `@Public()` or
-> `@AuthenticatedOnly()`, and Tasks 13–15 ship the first guarded ones. The layers are
-> proved against purpose-built controllers and against real seeded rows over the
-> `sentinel_app` role, not against a production route. §5 and §10 say exactly which parts
-> are live. Extended per phase as new resources appear.
+> **Status: Partially Implemented (Phase 2, Tasks 12 and 13).** The pipeline is built, every
+> layer below can deny, and **as of Task 13 it governs shipped endpoints**: `GET`, `PATCH` and `DELETE /api/v1/organizations/:id`, carrying `organization.read`,
+`organization.update` and `organization.delete`. Task 13 also ships
+> `POST /api/v1/auth/switch-org`, the only writer of `Session.activeOrganizationId` — which is
+> what makes layers 2 and 3 evaluate at all, since they short-circuit while that column is
+> NULL. The layers are proved against those routes over the `sentinel_app` role, and still
+> against purpose-built controllers for the cases no shipped route reaches. §5 and §10 say
+> exactly which parts are live. Extended per phase as new resources appear.
 
 ## 1. The question authorization answers
 
@@ -157,13 +158,23 @@ route and asserts each carries an explicit access declaration.
 > banner carried from Task 7 to Task 11 — "read, and enforced by nobody" — is no longer
 > true, and that is why this banner changed.
 >
-> **No shipped route declares a permission, so the guard governs nothing yet.** The
-> eighteen routes Phase 2 publishes are `@Public()` or `@AuthenticatedOnly()`; Tasks 13–15
-> ship the first guarded ones, and the guard is registered globally so that they are
-> governed from the moment they are written rather than from the moment somebody remembers
-> to add a guard. Proof is in `authorization.guard.spec.ts` (purpose-built controllers
-> through the real guard chain) and `authorization.integration.spec.ts` (real seeded rows,
-> real row-level security, over the `sentinel_app` role).
+> **Three shipped routes declare a permission as of Task 13, and the guard governs them.**
+> `GET`, `PATCH` and `DELETE /api/v1/organizations/:id`, carrying `organization.read`,
+`organization.update` and `organization.delete`. The guard was registered
+> globally in Task 12 precisely so that they were governed from the moment they were written
+> rather than from the moment somebody remembered to add a guard, and that is what happened:
+> no change to the guard was needed to bring them under it.
+>
+> Proof is in `authorization.guard.spec.ts` (purpose-built controllers through the real guard
+> chain), `authorization.integration.spec.ts` (real seeded rows, real row-level security, over
+> the `sentinel_app` role), `organizations.scoped.integration.spec.ts` (the shipped routes,
+> same role) and `authorization-matrix.integration.spec.ts`, which runs all four arms of §10's
+> exit criterion over the live route inventory.
+>
+> **One arm is inapplicable rather than passing**, and it is worth naming: every system role
+> holds `organization.read`, so no caller exists who could produce a 403 on `GET
+> /organizations/:id`. The matrix records that arm as evaluated-and-inapplicable rather than
+> as covered. `PATCH` and `DELETE` produce real 403s.
 >
 > **`@RequireEntitlement` in the example above does not exist and is deliberately not
 > built.** Phase 10 ships the decorator and its evaluation in one change. A decorator that

@@ -1,10 +1,12 @@
 # API authorization
 
-> **Status: Partially Implemented (Phase 2, Task 12).** §1's declarations exist and
+> **Status: Partially Implemented (Phase 2, Tasks 12 and 13).** §1's declarations exist and
 > `@RequirePermission()` is evaluated; §3's status codes are produced by
 > `TenantContextGuard` and `AuthorizationGuard`; §4's envelope is what a 403 actually
-> carries. **No shipped endpoint declares a permission**, so none of §3's rows below the
-> first can be reached by a caller today — Tasks 13–15 ship the first guarded routes.
+> carries. **Three shipped endpoints declare a permission** as of Task 13 — `GET`, `PATCH` and `DELETE /api/v1/organizations/:id`, carrying `organization.read`,
+`organization.update` and `organization.delete` — so §3's rows are reachable by a caller for the
+> first time. The sentence this banner carried through Task 12, "no shipped endpoint declares
+> a permission", is what changed. Tasks 14 and 15 add the membership and invitation routes.
 > `@RequireEntitlement` in §1's example does not exist (Phase 10). §5's project-scoped
 > half is not built.
 > Model and permission list: [`../security/authorization.md`](../security/authorization.md)
@@ -150,8 +152,11 @@ function bound to the resolved `organizationId` that runs its callback inside
 silently drop layer 2 (row-level security), which is activated by `SET LOCAL
 app.organization_id` inside a transaction — the exact defect `withTenantTransaction`'s own
 docblock records having shipped once. The organisation id is closed over rather than passed,
-so a handler cannot scope to one it read off the request. **No shipped handler uses it yet**,
-because no shipped route declares a permission.
+so a handler cannot scope to one it read off the request. **`@Ctx()` is used by three shipped
+handlers** as of Task 13 — the `:id` routes on `OrganizationsController`. Those handlers open
+their tenant transactions through `withTenantTransaction` directly rather than through
+`tenantRunnerFor`, because they need the same transaction to carry the audit write; the runner
+remains the shape for a handler that only reads.
 
 **The `GUEST` half of this section is Not Implemented.** Project- and team-level grants need
 projects, which are Phase 3. `PROJECT_SCOPED_PERMISSIONS` exists in `packages/contracts` and

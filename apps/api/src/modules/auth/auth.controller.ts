@@ -589,15 +589,24 @@ export class AuthController {
         description: 'The new session context.',
         schema: switchOrganizationResponseSchema,
       },
-      { status: 400, description: 'The body did not validate (`VALIDATION_ERROR`, `UNKNOWN_FIELD`).' },
+      {
+        status: 400,
+        description: 'The body did not validate (`VALIDATION_ERROR`, `UNKNOWN_FIELD`).',
+      },
       {
         status: 401,
         description:
           'No usable session, or the session was revoked between the membership check and the ' +
           'rotation (`UNAUTHENTICATED`, `SESSION_EXPIRED`).',
       },
-      { status: 403, description: 'The organisation is suspended (`ORGANIZATION_SUSPENDED`), or a CSRF failure.' },
-      { status: 404, description: 'No ACTIVE membership in that organisation (`RESOURCE_NOT_FOUND`).' },
+      {
+        status: 403,
+        description: 'The organisation is suspended (`ORGANIZATION_SUSPENDED`), or a CSRF failure.',
+      },
+      {
+        status: 404,
+        description: 'No ACTIVE membership in that organisation (`RESOURCE_NOT_FOUND`).',
+      },
     ],
   })
   // 200, not Nest's default 201 for a POST. Nothing is created — the response
