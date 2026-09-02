@@ -205,10 +205,23 @@ and had it rotated, and it is written into the organisation being switched **to*
 where a reader asking "who started acting here, and when" will look. Without it, an
 organisation's own log begins mid-sentence with whatever the member touched first.
 
-The four names an `AuditEvent` row may carry today are `ORGANIZATION_CREATED`,
-`ORGANIZATION_UPDATED`, `ORGANIZATION_DELETED` and `ORGANIZATION_SWITCHED`
+The three names an `AuditEvent` row may carry today are `ORGANIZATION_CREATED`,
+`ORGANIZATION_UPDATED` and `ORGANIZATION_SWITCHED`
 (`apps/api/src/modules/audit/audit.actions.ts`). Every other name in this section is either a
 `PlatformAuditEvent` name with a producer, or a name in the taxonomy with no producer yet.
+
+**`ORGANIZATION_DELETED` is one of those names, and it is not reachable in Phase 2 —
+deliberately.** `AuditEvent.organizationId` references `Organization.id` with `onDelete:
+Restrict`, so an event describing a deletion and the deletion it describes cannot commit in one
+transaction in either order: audit-first is refused with *"Key is still referenced from table
+AuditEvent"*, delete-first with *"Key is not present in table Organization"*. Both measured as
+`sentinel_app` on 2026-09-02; the transcripts are in `audit.actions.ts`. Because
+`ORGANIZATION_CREATED` is written by the transaction that creates an organisation, **no
+organisation created through this API can be deleted**, and `DELETE /api/v1/organizations/:id`
+answers 409. The name stays in §4's taxonomy because Phase 11's platform-admin purge path is
+what will write it, after disposing of the audit history deliberately. An earlier version of
+this paragraph counted four names and listed `ORGANIZATION_DELETED` among those with a producer,
+which the file it cited disproves.
 
 Domain: `PROJECT_*`, `ASSET_CREATED/UPDATED/DELETED`, `ASSET_OWNERSHIP_VERIFIED`,
 `ASSET_OWNERSHIP_EXPIRED`, `SCOPE_CHANGED`, `SCAN_CREATED/STARTED/CANCELLED/COMPLETED/FAILED`,
