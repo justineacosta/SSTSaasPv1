@@ -169,6 +169,47 @@ describe('migrations', () => {
     }
   });
 
+  /**
+   * THE PRIVILEGE PHASE 1 REVOKED, AND THE DRIFT THAT HID IT FOR A WHOLE TASK.
+   *
+   * `20260820132520_tenant_root_and_audit_restrict` ends with
+   * `REVOKE DELETE ON "Organization" FROM sentinel_app`, and says why:
+   * "Deleting a tenant is a platform-admin operation (Phase 11), not something
+   * request-path code should be able to do at all. Without DELETE, the
+   * Organization -> AuditEvent cascade this migration just changed to RESTRICT
+   * can never be triggered by the application role in the first place."
+   *
+   * **Nothing asserted it, and the compose database had drifted.** On
+   * 2026-09-02 the local Postgres reported
+   * `has_table_privilege('sentinel_app', 'Organization', 'DELETE') = t` while a
+   * freshly replayed database reported `f` — so a probe run locally returned the
+   * foreign-key error and looked like the whole story, and the endpoint built on
+   * that probe answered 500 the first time it met a correctly migrated
+   * database. Same shape as ADR-0020's own warning, on a different control: a
+   * local role that is incidentally more privileged than the real one.
+   *
+   * `UPDATE` is asserted alongside it, in the other direction. The revoke is
+   * deliberately narrow — renaming an organisation is an ordinary
+   * `organization.update` operation — so a broader `REVOKE UPDATE, DELETE`
+   * would break `PATCH /api/v1/organizations/:id` and this is what would say so.
+   */
+  it('sentinel_app cannot DELETE an Organization, and can still UPDATE one', async () => {
+    const admin = createUnscopedPrismaClient(container.getConnectionUri());
+    try {
+      const rows = await admin.$queryRaw<{ del: boolean; upd: boolean; sel: boolean }[]>`
+        SELECT has_table_privilege('sentinel_app', 'public."Organization"', 'DELETE') AS del,
+               has_table_privilege('sentinel_app', 'public."Organization"', 'UPDATE') AS upd,
+               has_table_privilege('sentinel_app', 'public."Organization"', 'SELECT') AS sel
+      `;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.del).toBe(false);
+      expect(rows[0]?.upd).toBe(true);
+      expect(rows[0]?.sel).toBe(true);
+    } finally {
+      await admin.$disconnect();
+    }
+  });
+
   it('sentinel_app cannot create objects in the public schema', async () => {
     const app = createUnscopedPrismaClient(sentinelAppUrl(container));
     try {

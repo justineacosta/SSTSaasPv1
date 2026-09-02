@@ -71,13 +71,23 @@ export function assertPathIsActiveTenant(ctx: TenantContext, pathId: string): vo
   if (pathId !== ctx.organizationId) throw notFound();
 }
 
-/** True for Prisma's unique-constraint violation. */
-function isUniqueConstraintViolation(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002';
-}
-
 /**
- * True for Prisma's foreign-key violation.
+ * Postgres `unique_violation`. `api/errors.md`'s 409 case.
+ *
+ * **Two shapes, because the INSERT is raw.** A model operation raises Prisma's
+ * `P2002`; `$executeRaw` raises `P2010` ("raw query failed") carrying the
+ * SQLSTATE in `meta.code`. `create` inserts the tenant root with raw SQL — see
+ * its docblock for why — so only the second shape can occur there today, and
+ * both are matched because the first is what every other write in this service
+ * would raise and a matcher that knew about one of them would be a 500 waiting
+ * for whichever call site changed.
+ *
+ * Measured on 2026-09-02 against the compose Postgres, inserting a duplicate
+ * slug through `withTenantTransaction` + `$executeRaw`:
+ *
+ *     constructor : PrismaClientKnownRequestError
+ *     code        : P2010
+ *     meta        : {"code":"23505","message":"Unique constraint failed: "}
  *
  * Detected structurally rather than with `instanceof
  * PrismaClientKnownRequestError`, for the reason `identity.store.ts` gives: the
@@ -85,8 +95,77 @@ function isUniqueConstraintViolation(error: unknown): boolean {
  * `no-restricted-imports`, and importing the error class would mean widening a
  * security fence for a string comparison.
  */
-function isForeignKeyViolation(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2003';
+const UNIQUE_VIOLATION_SQLSTATE = '23505';
+
+function isUniqueConstraintViolation(error: unknown): boolean {
+  if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002') {
+    return true;
+  }
+  return sqlStateOf(error) === UNIQUE_VIOLATION_SQLSTATE;
+}
+
+/**
+ * THE TWO REASONS POSTGRES REFUSES TO DELETE AN ORGANISATION, AND THE ORDER
+ * THEY FIRE IN.
+ *
+ * D5 named one of them — `AuditEvent.organizationId` is `ON DELETE RESTRICT`,
+ * so an organisation with audit history cannot go. **There is a second, and it
+ * fires first.** Migration `20260820132520_tenant_root_and_audit_restrict`
+ * revokes the privilege outright, and says why in its own comment: "Deleting a
+ * tenant is a platform-admin operation (Phase 11), not something request-path
+ * code should be able to do at all. Without DELETE, the Organization ->
+ * AuditEvent cascade this migration just changed to RESTRICT can never be
+ * triggered by the application role in the first place."
+ *
+ * So `sentinel_app` cannot delete an `Organization` row under any
+ * circumstances, with or without audit history. Both refusals mean the same
+ * thing to a caller — this API does not delete organisations — and both are
+ * answered 409 with a message that is true in either case.
+ *
+ * **This was measured, and the local database had drifted in a way that hid
+ * it.** The compose Postgres reported `has_table_privilege('sentinel_app',
+ * 'Organization', 'DELETE') = t` on 2026-09-02, so a probe against it returned
+ * the foreign-key error and looked like a complete answer; a freshly-replayed
+ * Testcontainers database reported the privilege error instead, and the
+ * endpoint answered 500. That is ADR-0020's warning about incidentally
+ * privileged local roles, landing on a different control.
+ *
+ * `42501` and `23503` are the two SQLSTATEs, measured as `sentinel_app`:
+ *
+ *     -- raw parameterised DELETE, no privilege:
+ *     code: P2010  meta: {"code":"42501","message":"ERROR: permission denied for table Organization"}
+ *
+ * The delete is issued as raw SQL for exactly this reason. Through
+ * `tx.organization.delete(...)` the privilege denial arrives as a
+ * `PrismaClientUnknownRequestError` with **no `code` and no `meta`** — the
+ * SQLSTATE is only in the message prose — so the only way to recognise it would
+ * be to match either an error class this module is fenced from importing or a
+ * substring of a message Prisma may reword. Raw SQL surfaces both refusals as
+ * `P2010` with the SQLSTATE in `meta.code`, which is a structural match.
+ */
+const INSUFFICIENT_PRIVILEGE_SQLSTATE = '42501';
+const FOREIGN_KEY_VIOLATION_SQLSTATE = '23503';
+
+/**
+ * Detected structurally rather than with `instanceof
+ * PrismaClientKnownRequestError`, for the reason `identity.store.ts` gives: the
+ * generated client is fenced off from application code by
+ * `no-restricted-imports`, and importing the error class would mean widening a
+ * security fence for a string comparison.
+ */
+function sqlStateOf(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return undefined;
+  if (error.code !== 'P2010') return undefined;
+  const meta: unknown = 'meta' in error ? error.meta : undefined;
+  if (typeof meta !== 'object' || meta === null || !('code' in meta)) return undefined;
+  return typeof meta.code === 'string' ? meta.code : undefined;
+}
+
+function isOrganizationUndeletable(error: unknown): boolean {
+  const sqlState = sqlStateOf(error);
+  return (
+    sqlState === INSUFFICIENT_PRIVILEGE_SQLSTATE || sqlState === FOREIGN_KEY_VIOLATION_SQLSTATE
+  );
 }
 
 /**
@@ -127,15 +206,57 @@ export class OrganizationService {
    * `POST /api/v1/organizations` — the organisation, the creator's `OWNER`
    * membership and the audit event, in one transaction.
    *
-   * # The transaction is scoped to the organisation being created (D2)
+   * # The transaction is scoped to the organisation being created, and the root
+   * INSERT is raw. BOTH HALVES OF THAT WERE MEASURED.
    *
    * The id is minted first and `withTenantTransaction` is opened on it, so
-   * `app.organization_id` names a row that does not exist yet. All three
-   * inserts satisfy their policies inside it: `Organization`'s is keyed on `id`
-   * with a `WITH CHECK`, and `Membership`'s and `AuditEvent`'s on
-   * `organizationId`. **Measured, not assumed** — as `sentinel_app` against the
-   * compose Postgres on 2026-09-02 all three inserts returned `INSERT 0 1`, and
-   * the committed row read back inside a tenant transaction on the same id.
+   * `app.organization_id` names a row that does not exist yet.
+   *
+   * **Layer 2 accepts that, and this was checked before anything was built.**
+   * As `sentinel_app` against the compose Postgres on 2026-09-02, inside one
+   * transaction with `app.organization_id` set to an id that did not yet exist,
+   * the `Organization`, `Membership` and `AuditEvent` inserts each returned
+   * `INSERT 0 1` and the committed row read back. `Organization`'s policy is
+   * keyed on `id` with a `WITH CHECK`, and the other two on `organizationId`,
+   * so all three are satisfied.
+   *
+   * **Layer 1 refuses it, and that is a Phase 1 decision rather than a bug.**
+   * `decideScope` puts `create` in `ROOT_DISALLOWED_OPERATIONS`
+   * (`packages/db/src/tenant-scope.ts`), whose comment reads: "The tenant root
+   * has no tenant to be created *into* — organisation creation runs through the
+   * unscoped client during onboarding, before a TenantContext exists. Refused
+   * outright rather than given a (meaningless) scoped interpretation."
+   * `tenant-scope.spec.ts` pins that refusal, so it is a fence to work within
+   * rather than one to widen. Measured through the real client on 2026-09-02:
+   *
+   *     await withTenantTransaction(base, orgId, (tx) =>
+   *       tx.organization.create({ data: { id: orgId, ... } }));
+   *     -> MissingTenantContextError: No organisation in context for
+   *        Organization.create. Tenant-owned models must be queried through a
+   *        tenant-scoped client.
+   *
+   * Reaching the endpoint, that surfaced as a 500.
+   *
+   * **So the root row is inserted with parameterised raw SQL inside the same
+   * transaction, and nothing else changes.** `$executeRaw` is not a model
+   * operation, so the extension's `$allOperations` hook does not see it — which
+   * is the honest description of what is happening: layer 1 is bypassed for
+   * exactly the one statement Phase 1 refuses to interpret, and for no other.
+   * The two tenant-owned inserts below still go through the extension, so layer
+   * 1 is live for `Membership` and `AuditEvent`; layer 2 is live for all three,
+   * because the `SET LOCAL` is what the policies read and it applies to raw
+   * statements as much as to generated ones.
+   *
+   * What that costs is bounded and worth stating: the only organisation id in
+   * this transaction is one `newId('org')` minted three lines up, and no value
+   * from the request reaches it. There is nothing here for layer 1 to have
+   * caught.
+   *
+   * The row is read back through Prisma rather than returned from the INSERT,
+   * so the response columns stay typed against the schema and `RETURNING` does
+   * not become a second place the column list is written. `findUnique` on the
+   * root IS supported by layer 1 — it is keyed on `id` and checked — so that
+   * read is fully scoped.
    *
    * # Slug uniqueness is the database constraint, not a pre-check (D3)
    *
@@ -160,8 +281,22 @@ export class OrganizationService {
 
     try {
       return await withTenantTransaction(this.base, organizationId, async (tx) => {
-        const organization = await tx.organization.create({
-          data: { id: organizationId, slug: command.slug, name: command.name },
+        // Parameterised: `$executeRaw` is a tagged template, so every value
+        // below is a Prisma placeholder rather than string concatenation.
+        // `status`, `createdAt` and `requireMfa` take their column defaults;
+        // `updatedAt` has none, because Prisma's `@updatedAt` is applied
+        // client-side, so it is written here. A column added later without a
+        // default fails this INSERT loudly rather than silently defaulting.
+        await tx.$executeRaw`
+          INSERT INTO "Organization" (id, slug, name, "updatedAt")
+          VALUES (${organizationId}, ${command.slug}, ${command.name}, now())
+        `;
+
+        // Read back through Prisma so the response stays typed against the
+        // schema, and so layer 1 scopes the read: `findUnique` on the tenant
+        // root is keyed on `id` and checked by the extension.
+        const organization = await tx.organization.findUniqueOrThrow({
+          where: { id: organizationId },
           select: ORGANIZATION_COLUMNS,
         });
 
@@ -355,10 +490,33 @@ export class OrganizationService {
   }
 
   /**
-   * `DELETE /api/v1/organizations/:id` — and through this API it always answers
-   * 409.
+   * `DELETE /api/v1/organizations/:id` — and it always answers 409.
    *
-   * # There is no audit event here, and there cannot be one
+   * # The application role cannot delete an organisation at all
+   *
+   * Not "cannot yet", and not only "cannot while audit events exist": migration
+   * `20260820132520` revokes `DELETE` on `Organization` from `sentinel_app`
+   * outright, and its comment gives the reason — "Deleting a tenant is a
+   * platform-admin operation (Phase 11), not something request-path code should
+   * be able to do at all." The `AuditEvent` foreign key is the second line
+   * behind it, and would refuse any organisation with history even if the
+   * privilege were granted. `isOrganizationUndeletable` documents both, with
+   * the measurements.
+   *
+   * That makes 409 the only answer this handler can produce for a caller who
+   * gets past the permission check, which is what the plan asked for —
+   * "deletion fails while audit events exist, by design" — reached by the
+   * database rather than by a check written here.
+   *
+   * **THE ENDPOINT ISSUES THE STATEMENT ANYWAY, AND THAT IS A CHOICE.** A
+   * handler that simply threw 409 without touching the database would be a
+   * policy invented in application code on top of a database that already has
+   * one, and it would go on answering 409 on the day Phase 11 grants the
+   * privilege and disposes of the history. Issuing the statement and reporting
+   * what the database said means this endpoint starts working when the database
+   * starts allowing it, and never before.
+   *
+   * # There is no audit event, and there cannot be one
    *
    * `AuditEvent.organizationId` references `Organization.id` with
    * `onDelete: Restrict`, so an event about a deletion and the deletion it
@@ -366,44 +524,44 @@ export class OrganizationService {
    * `sentinel_app` on 2026-09-02: with the audit row written first the `DELETE`
    * is refused (`Key is still referenced from table "AuditEvent"`), and with
    * the `DELETE` first the audit row is refused (`Key is not present in table
-   * "Organization"`). The full transcript is in `audit.actions.ts`, beside the
-   * name that is deliberately absent from that constant.
+   * "Organization"`). The transcript is in `audit.actions.ts`, beside the name
+   * that is deliberately absent from that constant.
    *
-   * # And therefore 409, always, for anything this API created
+   * # Raw SQL, for a legibility reason rather than a capability one
    *
-   * `create` writes `ORGANIZATION_CREATED` in the transaction that creates the
-   * organisation, so every organisation reachable through this endpoint already
-   * has audit history and the foreign key refuses to let it go. That is the
-   * plan's "deletion fails while audit events exist, by design" reached by the
-   * database rather than by a check here — and it means the success path below
-   * is unreachable through the public API rather than merely rare. It is
-   * written anyway because the alternative is an endpoint that refuses without
-   * asking, which would be a policy invented in application code on top of a
-   * database that already has one.
+   * Through `tx.organization.delete(...)` the privilege denial arrives as a
+   * `PrismaClientUnknownRequestError` carrying **no `code` and no `meta`** — the
+   * SQLSTATE appears only in message prose — so the only way to recognise it
+   * would be to match an error class this module is fenced from importing, or a
+   * substring Prisma may reword. The raw statement surfaces it as `P2010` with
+   * the SQLSTATE in `meta.code`, which is a structural match.
    *
-   * **The constraint is not weakened and nothing is soft-deleted.**
-   * `Organization` has no `deletedAt`, adding one is a schema decision outside
-   * this task, and the real purge path is Phase 11's platform admin — which has
-   * to dispose of the audit history deliberately, which is exactly the review
-   * step `Restrict` exists to force.
+   * Nothing is widened by it: the statement is parameterised,
+   * `assertPathIsActiveTenant` has already checked the path id against the
+   * resolved tenant, and `Organization`'s RLS policy is keyed on
+   * `id = current_setting('app.organization_id', true)` — so inside this
+   * transaction the only row this `WHERE` can reach is the tenant's own.
    *
-   * The message says why, because a refusal that does not say how to succeed
-   * generates a support ticket (`api/errors.md` §4).
+   * **The constraint is not weakened, the privilege is not re-granted, and
+   * nothing is soft-deleted.** `Organization` has no `deletedAt`, and adding one
+   * is a schema decision outside this task.
    */
   async remove(ctx: TenantContext, pathId: string): Promise<void> {
     assertPathIsActiveTenant(ctx, pathId);
 
     try {
-      await withTenantTransaction(this.base, ctx.organizationId, (tx) =>
-        tx.organization.delete({ where: { id: ctx.organizationId }, select: { id: true } }),
+      await withTenantTransaction(
+        this.base,
+        ctx.organizationId,
+        (tx) => tx.$executeRaw`DELETE FROM "Organization" WHERE id = ${ctx.organizationId}`,
       );
     } catch (error) {
-      if (isForeignKeyViolation(error)) {
+      if (isOrganizationUndeletable(error)) {
         throw new DomainError(
           ERROR_CODES.INVALID_STATE_TRANSITION,
-          'This organisation cannot be deleted while it has an audit history. Those events are ' +
+          'This API does not delete organisations. An organisation and its audit history are ' +
             'retained deliberately and are not discarded on request — contact Sentinel support ' +
-            'to have the organisation and its records purged.',
+            'to have them purged.',
           409,
         );
       }
