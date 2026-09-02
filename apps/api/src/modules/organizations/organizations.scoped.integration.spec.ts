@@ -93,6 +93,8 @@ interface Member {
 async function member(options: {
   role?: SystemRole;
   organizationStatus?: 'ACTIVE' | 'SUSPENDED';
+  /** The organisation demands a confirmed second factor of its members. */
+  requireMfa?: boolean;
   /** Point the session somewhere other than the organisation just created. */
   activeOrganizationId?: string;
 }): Promise<Member> {
@@ -103,6 +105,7 @@ async function member(options: {
       slug: `scoped-${suffix}`,
       name: `Scoped ${suffix}`,
       status: options.organizationStatus ?? 'ACTIVE',
+      requireMfa: options.requireMfa ?? false,
     },
     select: { id: true },
   });
@@ -306,6 +309,64 @@ describe('GET /api/v1/organizations/:id', () => {
 
     expect(response.status).toBe(403);
     expect(codeOf(response.body)).toBe('ORGANIZATION_SUSPENDED');
+  });
+
+  it('answers 403 MFA_ENROLMENT_REQUIRED when the organisation requires a factor and the member has none', async () => {
+    // THE FIRST TIME `MfaEnrolmentGuard` REFUSES ANYBODY. Built in Task 11,
+    // registered in Task 12, and structurally unable to act until a route
+    // declared a permission — which is what `require-mfa.spec.ts`'s H-1
+    // assertion said, and what it went red about when this controller arrived.
+    //
+    // The decision it demanded is recorded in that spec's docblock and is this:
+    // the `:id` routes ARE gated. `security/authentication.md` §5 says a member
+    // without a confirmed factor is forced into enrolment "before any other
+    // action", and nothing here is an exception to that.
+    //
+    // The member is not stranded by it — `GET /auth/session`, logout, the four
+    // MFA routes and `POST /auth/switch-org` are all `@AuthenticatedOnly()`,
+    // which is outside this guard's reach by construction. The last of those is
+    // asserted below rather than argued, because "the user can always get out"
+    // is the property ruling 98 was written about.
+    const actor = await member({ requireMfa: true });
+
+    const response = await request(server)
+      .get(`/api/v1/organizations/${actor.organizationId}`)
+      .set('Cookie', actor.cookie);
+
+    expect(response.status).toBe(403);
+    expect(codeOf(response.body)).toBe('MFA_ENROLMENT_REQUIRED');
+
+    // Ruling 98: an opt-out control must not brick the account. The session
+    // document is still readable, so the member can see where they are and
+    // reach their security settings.
+    await request(server).get('/api/v1/auth/session').set('Cookie', actor.cookie).expect(200);
+  });
+
+  it('admits the same member once they hold a confirmed factor', async () => {
+    // The other direction, so the test above cannot pass because the route is
+    // broken for everyone. `confirmedAt` is what counts, never a row count —
+    // carry-forward ruling 7: an abandoned enrolment is a row that exists, and
+    // counting rows would let a user satisfy the requirement by starting an
+    // enrolment and closing the tab.
+    const actor = await member({ requireMfa: true });
+    await owner.mfaFactor.create({
+      data: {
+        id: newId('mfa'),
+        userId: actor.userId,
+        type: 'TOTP',
+        // Not a real ciphertext, and it does not need to be: nothing in this
+        // path decrypts it. `MfaEnrolmentGuard` asks only whether a CONFIRMED
+        // factor exists.
+        secretEncrypted: 'probe-not-a-real-ciphertext',
+        confirmedAt: new Date(),
+      },
+      select: { id: true },
+    });
+
+    const response = await request(server)
+      .get(`/api/v1/organizations/${actor.organizationId}`)
+      .set('Cookie', actor.cookie);
+    expect(response.status).toBe(200);
   });
 
   it('refuses an anonymous caller with 401', async () => {

@@ -10,7 +10,7 @@ import {
 import { describeRoutes, registeredRouterRoutes } from '../common/route-inventory.js';
 import { detailedReportSchema, readinessReportSchema } from '../modules/health/health.contracts.js';
 import { buildApp } from '../testing/build-app.js';
-import { generateOpenApiDocument } from './generate.js';
+import { generateOpenApiDocument, toOpenApiPath } from './generate.js';
 
 /**
  * The real application, with every module, routed by the real `configureApp`.
@@ -90,12 +90,30 @@ describe('the OpenAPI document', () => {
     // Stronger than the containment check above, and the reason drift is
     // impossible: the document's path list is compared against Express's own
     // router, so a route that exists but is undocumented fails here.
+    //
+    // **The router's side is translated, not the document's.** Express registers
+    // `/api/v1/organizations/:id`; OpenAPI templates the same segment as
+    // `{id}`, and the document must carry the OpenAPI spelling or no validator
+    // or client generator can read it. Comparing raw strings would force one of
+    // the two to be wrong, so `toOpenApiPath` — the same function the generator
+    // uses — is applied to the router's list before the comparison.
+    //
+    // Applying the generator's own function to both sides would make this
+    // vacuous, which is why it is applied to ONE side: the document keeps
+    // whatever the generator produced, and if that ever stopped being the
+    // OpenAPI spelling the two lists would diverge here.
     const documented = Object.entries(document.paths)
       .flatMap(([path, item]) =>
         Object.keys(item).map((method) => `${method.toUpperCase()} ${path}`),
       )
       .sort();
-    expect(documented).toEqual(registeredRouterRoutes(app));
+    const registered = registeredRouterRoutes(app)
+      .map((entry) => {
+        const [method, ...rest] = entry.split(' ');
+        return `${String(method)} ${toOpenApiPath(rest.join(' '))}`;
+      })
+      .sort();
+    expect(documented).toEqual(registered);
   });
 
   it('is served, unauthenticated, at /api/v1/openapi.json', () => {

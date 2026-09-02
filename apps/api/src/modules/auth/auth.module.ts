@@ -5,6 +5,7 @@ import { PrismaModule } from '../../infrastructure/prisma/prisma.module.js';
 import { RedisModule } from '../../infrastructure/redis/redis.module.js';
 import { ENV, PRISMA } from '../../infrastructure/tokens.js';
 import { AuditModule } from '../audit/audit.module.js';
+import { RolesModule } from '../roles/roles.module.js';
 import { AuthController } from './auth.controller.js';
 import { AuthMailer } from './auth-mailer.js';
 import {
@@ -74,8 +75,30 @@ import { type SecretTokenTtlSeconds, TokenService } from './token.service.js';
  * client of its own — it writes into the caller's transaction, which is what
  * `security/audit.md` §2 requires.
  */
+/**
+ * `RolesModule` IS IMPORTED EXPLICITLY EVEN THOUGH IT IS `@Global()`.
+ *
+ * `OrganizationSwitchService` injects `TENANT_RESOLVER`, which `RolesModule`
+ * provides. A `@Global()` module's exports are visible to every module *in the
+ * compiled graph* — so in the running application, where `AppModule` imports
+ * both, the injection resolves without this line. It does not resolve when
+ * `AuthModule` is compiled on its own, which `auth.module.spec.ts` does
+ * deliberately, and which is how this was found:
+ *
+ *     Nest can't resolve dependencies of the OrganizationSwitchService
+ *     (?, SessionService, SessionDocumentService, SENTINEL_PRISMA, AuditService).
+ *     Please make sure that the argument "SENTINEL_TENANT_RESOLVER" at index [0]
+ *     is available in the AuthModule module.
+ *
+ * The import is the fix rather than the spec being taught to include
+ * `RolesModule`, and `app.module.ts` already states the principle for
+ * `DiscoveryModule`: a dependency that works only while some unrelated module
+ * happens to be imported is one a refactor switches off silently. There is no
+ * cycle — `RolesModule` imports `PrismaModule` and reads two token *strings*
+ * from `auth.tokens.ts`, never `AuthModule` itself.
+ */
 @Module({
-  imports: [PrismaModule, RedisModule, MailModule, AuditModule],
+  imports: [PrismaModule, RedisModule, MailModule, AuditModule, RolesModule],
   controllers: [AuthController],
   providers: [
     {
