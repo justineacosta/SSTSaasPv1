@@ -23,7 +23,7 @@ Branch: `feat/phase-2-identity`
 | 11 | TOTP MFA and recovery codes | subagent | **Done** — [brief](task-11/brief.md) · [report](task-11/report.md) · [review](task-11/review.md) · [dispositions](task-11/fix-brief.md) · [fixes](task-11/fixes.md) |
 | 12 | Tenant resolution and the authorization guard | orchestrator | **Done** — [report](task-12/report.md) · [review-brief](task-12/review-brief.md) · [review](task-12/review.md) · [fixes](task-12/fixes.md) |
 | **A** | **Checkpoint — verify, push, CI green, status recorded** | orchestrator | **Done** — CI green, merged as PR #23 on 2026-09-02. |
-| 13 | Organisations and organisation switching | chained 13→15 | Not started |
+| 13 | Organisations and organisation switching | subagent + fresh reviewer | **Done** — [brief](task-13/brief.md) · [report](task-13/report.md) · [review](task-13/review.md) · [fixes](task-13/fixes.md) |
 | 14 | Memberships, roles, last-owner invariant | chained 13→15 | Not started |
 | 15 | Invitations | chained 13→15 | Not started |
 | 16 | Web — authentication screens | chained with 17 | Not started |
@@ -838,73 +838,125 @@ Full reasoning in [`task-10/review.md`](task-10/review.md),
     reported success for guards that never ran (ruling 91), and now a watcher reported success for
     a run that was cancelled. **An exit code is a claim about a process, not about a result.**
 
+### From Task 13
+
+106. **A `SECURITY DEFINER` function with `SET search_path = public` is still hijackable, because
+    `pg_temp` is searched FIRST when it is not listed.** ADR-0020 claimed that setting "closes the
+    standard SECURITY DEFINER hijack"; it does not. `sentinel_app` holds `TEMPORARY` — PostgreSQL's
+    default grant to `PUBLIC`, never revoked here — so it created a temp table named `"Membership"`,
+    granted the definer role `SELECT` on it, and `user_organizations()` returned a **real
+    `Organization` row for a user with no membership**, under `BYPASSRLS`, to a role whose own reads
+    of both tables return zero rows. The fixed predicate in the function body was applied
+    faithfully, to the wrong table. **Write `pg_temp` LAST in every definer function's
+    `search_path`**, and pin the *rule* — present, and last — not the value. ADR-0021 supersedes
+    ADR-0020. Cost if wrong: a cross-tenant enumeration primitive behind the only `BYPASSRLS` object
+    in the system.
+
+107. **A security property asserted in prose is a hypothesis until someone tries to violate it.**
+    ADR-0020 produced two defects in one task, and neither was found by any command in the
+    verification suite: two missing `GRANT`s (found by the implementer, whose function errored with
+    `relation "Membership" does not exist` — an error naming a missing *table* rather than a missing
+    *privilege*) and ruling 106 (found by the reviewer attacking it). Both were found by someone
+    trying to make the artefact fail. **The cheapest time to attack a security sentence is while
+    writing it.**
+
+108. **When a document states a count, compute the count.** Three separate parties wrote or reviewed
+    a counting sentence in this task and all three got one wrong: `security/audit.md` claimed four
+    `AuditEvent` action names citing a file that holds three; `audit.actions.ts` said "All four
+    actions above" twenty-one lines below the constant holding three; and the stale
+    "no shipped route declares `@RequirePermission()`" sentence was reported as being in 3 places,
+    then 5, and the orchestrator then said 11 from memory — a `git grep` over `.claude/` and
+    `apps/api/src/` at `1310604` returns **fourteen lines across nine files**, plus a tenth whose
+    wording escaped the grep. Three parties stated that count and all three were wrong. Every
+    instance that was caught was caught by extracting or grepping; every instance had survived being
+    read. **Reading a list and agreeing with it is not verification**, and neither is remembering
+    which files you edited.
+
+109. **A test arm can record itself as exercised while never reaching the code it names.** The
+    authorization matrix's arm 3 pointed a stranger's session at an organisation they had no
+    membership in, so `TenantContextGuard` answered 404 before any handler ran — the arm passed, the
+    coverage assertion counted it, and the path-versus-tenant check it exists to probe was never
+    evaluated. Proved by deleting `assertPathIsActiveTenant`: five unit and five integration tests
+    went red, and the matrix stayed green. **Ask what would have to break for this arm to fail, and
+    check that it is the thing the arm is named after.**
+
+110. **Guards run before validation, so any check inside a handler is behind the request body.**
+    The corrected arm 3 immediately hit it: `PATCH` answered 400 from `ZodValidationPipe` and the
+    tenant check still never ran. An empty body is correct for arms about credentials and wrong for
+    arms about handler logic. **Binds every future matrix arm** that tests something past the guard
+    chain, and the fix shape is a per-route body registry with a loud failure, not a generator.
+
+111. **When two parsers must agree, validate with one and pass THAT PARSER'S OUTPUT to the other.**
+    `list-cursor.ts` validated a timestamp with `Date` and passed the client's original string to
+    Postgres, on the written reasoning that "an ISO string that `Date` refuses is one Postgres would
+    refuse too". The converse was what mattered and is false — `new Date('2026')` is valid,
+    `'2026'::timestamptz` is a syntax error — so a malformed cursor answered 500 where 400 was
+    specified, through a path the docblock claimed was closed. Re-serialising costs one call.
+
+112. **`prisma migrate dev` fixes a bad migration forward; it never edits one that has been
+    applied.** Ruling 2's consequence, exercised for the first time. The `pg_temp` fix is a second
+    migration doing `ALTER FUNCTION`, not an edit to the first, because editing an applied migration
+    breaks `prisma migrate dev` on every existing clone while `migrate deploy` and `migrate status`
+    do not notice — silent to CI, landing on whoever pulls next.
+
+113. **A local compose database drifts from a replayed one, and the drift can hide a control.**
+    `has_table_privilege('sentinel_app','Organization','DELETE')` was `t` locally and `f` on a
+    replayed database, so a local probe of the delete path returned the expected foreign-key error
+    while Testcontainers answered 500. Phase 1's `REVOKE DELETE ON "Organization" FROM sentinel_app`
+    existed precisely so request-path code cannot delete a tenant, and **nothing asserted it**. Now
+    asserted both directions. **A privilege nothing tests is a privilege that has already drifted
+    somewhere.**
+
 ## Pause state
 
-**2026-09-02 — Task 12 built and NOT reviewed. Checkpoint A recorded, one bullet short. Tasks
-13–15 are next, as a chained run.**
+**2026-09-02 — Task 13 built, reviewed, fixed, and NOT pushed. CI has not run. Task 14 is next.**
 
-Task 12 shipped **tenant resolution and the authorization guard** — the six layers of
-`security/authorization.md` §2, in order, each able to deny. `pnpm check:openapi` still reports
-**18** routes, because Task 12 shipped no endpoint, and that is the point rather than an
-oversight.
+Task 13 shipped **five organisation routes and `POST /api/v1/auth/switch-org`**, and it is the task
+where the authorization pipeline started governing real endpoints. `GET`, `PATCH` and
+`DELETE /api/v1/organizations/:id` carry `@RequirePermission()` — **the first shipped routes in this
+product to declare a permission at all** — and `switch-org` is the first writer of
+`Session.activeOrganizationId`, which is what makes layers 2 and 3 evaluate rather than
+short-circuit. `POST /api/v1/organizations` carries `@RequireVerifiedEmail()`, the first handler to
+do so. `check:openapi` reports **21 paths / 24 operations**, up from 18.
 
-**`@RequirePermission()` is evaluated for the first time since Task 7 wrote it, and it governs
-nothing.** All eighteen shipped routes are `@Public()` or `@AuthenticatedOnly()`. The guard is
-registered globally so that Tasks 13–15's endpoints are governed from the moment they are
-written; until one carries the decorator, the 403 and cross-tenant-404 arms of the matrix run
-over fixture routes and real seeded rows and over no production endpoint. **Do not write that
-authorization is enforced on this API.**
+**The brief was wrong in three places and the implementer refused to paper over any of them.** D2
+(create inside `withTenantTransaction`) is refused by layer 1 — `create` is in
+`ROOT_DISALLOWED_OPERATIONS`, so the tenant root is inserted with a parameterised `$executeRaw` and
+the two tenant-owned rows still go through the extension. D5 named the second reason for the delete
+409 and not the first, which is a revoked `DELETE` privilege. And the brief predicted
+`check:openapi` would print 24; it prints 21, because the script counts unique paths. **The audit
+event the brief asked for on deletion cannot exist** — `AuditEvent.organizationId` is `onDelete:
+Restrict`, so the event and the deletion cannot commit in either order, and since creation audits
+itself **no organisation created through this API can be deleted**. The 409 is what the plan asked
+for; the brief contradicted the plan it was drawn from. Rulings in
+[task-13/report.md](task-13/report.md) §11.
 
-**Nine global guards, up from four.** Rate limit, authenticate, tenant resolve, CSRF, cross-site
-refusal, email verified, MFA enrolment, authorize, entitlement. `EmailVerifiedGuard` and
-`MfaEnrolmentGuard` were built in Tasks 8 and 11 and registered nowhere; both are placed.
-`EntitlementGuard` is new — it was not "previously unregistered", it did not exist.
+**The review found 1 High, 3 Mediums, 2 Lows, and 7 false claims in the citation pass.** The High is
+ruling 106 and it was a defect in the orchestrator's own ADR: `SET search_path = public` does not
+close the definer hijack, and a temp table named `"Membership"` turned the only `BYPASSRLS` object in
+the system into a cross-tenant enumeration primitive. **Reproduced by the orchestrator before it was
+accepted**, fixed forward in a second migration, and **ADR-0021 supersedes ADR-0020**. All six code
+findings are closed or explicitly accepted; dispositions in [task-13/fixes.md](task-13/fixes.md).
 
-**Neither of the two placed guards can refuse anybody, and the two reasons are different** — the
-review's M-6, which found the first version of this paragraph flattening them into one.
-`EmailVerifiedGuard` is **opt-in** and no handler carries `@RequireVerifiedEmail()`: a structural
-fact, held by a test. `MfaEnrolmentGuard` acts only on a route declaring a permission and no route
-declares one: also structural, also held by a test — **but only after the review**. It was
-originally registered as an opt-out control over every authenticated route with its exemption
-applied to nothing, which is ruling 98 and was the task's High.
+**The stale "no shipped route declares `@RequirePermission()`" sentence was in eleven places**, not
+the three the report disclosed or the five the review found — including four rows of
+`architecture/backend.md`'s pipeline table that neither party opened. All corrected. Ruling 108 is
+the general defence and it is cheap: when a document states a count, compute the count.
 
-**Five mutations were run and all five were caught, and two of the counts were wrong** — the
-reviewer re-ran them: mutation 3 is 8 red across both lanes rather than 4, and mutation 5 is 2 red
-rather than 1. The conclusions stand; the numbers did not. Ruling 97 records the more important
-correction, which is that the caveat about the survivors was itself false. Details in
-[task-12/report.md](task-12/report.md) §5 and [review.md](task-12/review.md).
+**The fix round has not itself been reviewed** — the same status Tasks 10, 11 and 12 carried. Task
+14's reviewer may treat it as unexamined.
 
-**Task 12 was reviewed on 2026-09-02** by a fresh adversarial reviewer, which also examined
-commit `7540279` (Task 11's fix round, previously unreviewed). **1 High, 7 Mediums, 8 Lows** —
-[review.md](task-12/review.md), dispositions in [fixes.md](task-12/fixes.md). The High and all
-seven Mediums are closed. The reviewer re-ran every mutation and every evidence-table number
-independently; all eleven command rows held, and four prose claims did not.
+**A known flake will surface in CI and must not be misdiagnosed.** `auth.mfa.integration.spec.ts`
+has a TOTP step-boundary race, **outside Task 13's range**, which the reviewer hit once and which
+passed in three subsequent full runs here. It is not a Task 13 regression.
 
-**CI is green: run `33603114204`** on `4db9dd6`, `completed / success`, all eighteen stages
-confirmed to have executed rather than inferred from the conclusion. The first run
-(`33602860564`) was cancelled by a later push and the watcher exited 0 on it anyway — ruling 105.
+**Branching.** `feat/phase-2-task-13-organizations`, cut from `main` at `1310604`. Eleven commits,
+`6f879e8` → `0fc2b5c`. **Pushed: no. CI: not run. Merged: no.** Task 14 branches from whatever
+`main` is when it starts — pull first, and do not start until Task 13 is merged, or it will be built
+on a `main` without the organisation routes.
 
-**Task 12 is merged.** PR #23, rebased onto `main` on 2026-09-02 and the branch deleted, with CI
-green on a Linux runner before the merge: runs `33603114204` (`4db9dd6`), `33603722257` (the
-branch head) and `33604298215` (the pull request), all `success`, every stage confirmed to have
-executed rather than inferred from the conclusion. The rebase rewrote the SHAs, so those runs name
-commits that no longer exist — `git diff 0e91856 49a871c` is empty, and the merge started a
-further run on `main`.
-
-**Tasks 13–15 branch from whatever `main` is when they start — pull first**; do not cut from a
-commit named in this file.
-
-**The fix round has not itself been reviewed** — the same status Task 10's and Task 11's carried.
-Every change in it was measured with the mutation re-run and pasted, but that is the author
-checking their own work. Task 13's reviewer may treat it as unexamined.
-
-**Branching.** `feat/phase-2-task-12-authorization`, cut from `main` at `a0b2963`, three commits:
-`5460ebf` (code), `543cf0c` (documents), `81194bf` (roadmap and ledger), `f4ddb4b`, `a52a486`
-(review brief), `11dff5b` (review), `b4290e9` (fix round), `74bb07c` (broken links). **Pushed and
-NOT MERGED.** Tasks 13–15 branch from whatever `main` is when they start — pull first; do not cut
-from a commit named in this file, and do not start Task 13 until Task 12 is merged, or it will be
-built on a `main` that does not contain the authorization pipeline.
-
-**Next action:** Task 13 — organisations and organisation switching, chained 13→15. Task 13 is where
-`Session.activeOrganizationId` first gets written, which is the moment every control Task 12
-built starts executing on a real request. Ruling 93 is the one to read first.
+**Next action:** push, get CI green, merge. Then Task 14 — memberships, roles, and the last-owner
+invariant. Rulings 99 and 100 are the ones to read first: `(organizationId, userId)` is unique only
+`WHERE "deletedAt" IS NULL`, and Task 14's removal path is what produces the multi-row state that
+makes an unordered read non-deterministic. Ruling 95 binds it too — removing a member must not brick
+their account.

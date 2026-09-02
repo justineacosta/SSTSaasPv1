@@ -14,7 +14,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Partially Implemented** — Tasks 1–12 of 18 done 2026-09-02, **Checkpoint A reached**. The identity API is built and the authorization pipeline is enforced end to end: a request is rate-limited, authenticated against an opaque server-side session, CSRF-checked, resolved to a tenant, and authorized against a permission the route declares — and every one of those stages can deny. **No authentication UI exists, so the E2E journey exit criterion is unmet and the phase is not complete.** The second gap is smaller and must not be glossed: **no shipped route declares `@RequirePermission()`**, so layers 2–4 govern zero production endpoints today — Tasks 13–15 ship the first. Evidence table under Phase 2 below |
+| 2 | Identity | **Partially Implemented** — Tasks 1–13 of 18 done 2026-09-02, **Checkpoint A passed and Task 13 merged into the branch, not yet into `main`**. The identity API is built and the authorization pipeline is enforced end to end: a request is rate-limited, authenticated against an opaque server-side session, CSRF-checked, resolved to a tenant, and authorized against a permission the route declares — and every one of those stages can deny. **Task 13 closed the gap that mattered most: three shipped routes now declare `@RequirePermission()`** — `GET`, `PATCH` and `DELETE /api/v1/organizations/:id` — so layers 2–4 govern production endpoints for the first time, and `POST /api/v1/auth/switch-org` is the first writer of `Session.activeOrganizationId`. **No authentication UI exists, so the E2E journey exit criterion is unmet and the phase is not complete.** Task 13 is **not pushed and CI has not run on it**. Evidence table under Phase 2 below |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -77,11 +77,13 @@ boot so it cannot pass by inspecting nothing. `@Public()` is therefore load-bear
 
 **`@RequirePermission()` is evaluated as of Task 12**, by `AuthorizationGuard`, registered
 globally. The sentence this paragraph carried from Task 7 to Task 11 — "metadata no guard
-enforces" — is no longer true. **What is still true, and is the sentence that replaces it:
-no shipped route declares a permission.** All eighteen Phase 2 routes are `@Public()` or
-`@AuthenticatedOnly()`, so the guard runs on every request and has an opinion about none of
-them. Tasks 13–15 ship the first guarded endpoints, and the guard is registered globally
-precisely so that they are governed from the moment they are written rather than from the
+enforces" — is no longer true. **And as of Task 13 it governs shipped
+endpoints.** `GET`, `PATCH` and `DELETE /api/v1/organizations/:id` declare `organization.read`,
+`organization.update` and `organization.delete` — the first routes in this product to declare a
+permission at all. Through Task 12 all eighteen routes were `@Public()` or `@AuthenticatedOnly()`
+and this paragraph said so. Tasks 14–15 add the membership and invitation routes, and the guard is
+registered globally precisely so that they are governed from the moment they are written rather than
+from the
 moment somebody remembers to add a guard.
 
 **Nine global guards now, up from four**, in the order `app.module.spec.ts` asserts: rate
@@ -619,11 +621,11 @@ and sign out. The authorization pipeline is built and every one of its nine guar
 
 **Two gaps, and neither is a detail.** There is **no authentication UI** — `apps/web`'s `(auth)`
 route group still holds a layout with no routes under it — so the E2E journey exit criterion is
-unmet and cannot be met before Task 18. And **no shipped route declares `@RequirePermission()`**,
-so the authorization guard runs on every request and has an opinion about none of them; Tasks 13–15
-ship the first guarded endpoints. `GET /auth/session` returns `permissions: []` for every session
-that exists, now because nothing writes `Session.activeOrganizationId` until Task 13 rather than
-because nothing computes a permission set.
+unmet and cannot be met before Task 18. **The second gap closed on 2026-09-02**: Task 13 shipped
+three routes declaring `@RequirePermission()` and `POST /api/v1/auth/switch-org`, the first writer of
+`Session.activeOrganizationId`. `GET /auth/session` returns a populated `permissions` array for a
+session that has switched organisation, and `permissions: []` only for one that has not — which is
+now a fact about that session rather than about the whole product.
 
 **One of the three exit criteria is met, one is met in a narrower sense than it reads, one is
 unmet** — the table in the Checkpoint A section below states each of them rather than implying it.
@@ -1954,6 +1956,115 @@ nothing could detect until the invariant was written down.
 
 **API keys are deliberately not in Phase 2.** The `Principal` union defines the `apiKey` arm so
 downstream guards are written once, but no key is issued, accepted, or stored in this phase.
+
+## Task 13 — organisations, switching, and the first guarded routes
+
+**2026-09-02, on `feat/phase-2-task-13-organizations` at `0fc2b5c`, after the review and its fix
+round. Not pushed; CI has not run on this branch.** Every command was re-run by the orchestrator on
+the finished tree with the exit code captured outside a pipe, because `$?` after a pipe reports the
+last stage's status and not the command's. The implementer's own figures were re-run independently
+before the fix round and all ten held.
+
+| Command | Exit | What it proves — and no more |
+|---|---|---|
+| `pnpm format:check` | 0 | Prettier style across the workspace. |
+| `pnpm lint` | 0 | 14 tasks, including the tenant-scoping and no-raw-hex rules. |
+| `pnpm typecheck` | 0 | 14 tasks. The types compile — and nothing about behaviour. |
+| `pnpm test` | 0 | **95 files / 1628 tests**, up from 91 / 1556 at Checkpoint A. |
+| `pnpm check:specs` | 0 | **120 spec files**, each claimed by exactly one Vitest project. |
+| `pnpm test:integration` | 0 | **25 files / 440 tests** against real Postgres 16, up from 22 / 385. |
+| `pnpm build` | 0 | 8 tasks. |
+| `pnpm check:openapi` | 0 | Byte-identical. **21 paths carrying 24 operations**, up from 18. The command logs unique *paths*; the two figures were equal until this task added a second operation to `/organizations` and a third to `/organizations/{id}`. |
+| `pnpm check:registry` | 0 | 15 models, unchanged — correctly: Task 13 added no table. |
+| `pnpm check:secrets` | 0 | 433 tracked files, no credential-shaped literal. |
+| `docker compose ps` | 0 | postgres, redis, minio, mailpit all `Up (healthy)`. |
+| `pnpm db:migrate` | 0 | Both Task 13 migrations applied to the local database. |
+
+`pnpm test:e2e` was **not run and has no row.** `git diff --stat 1310604..HEAD -- apps/web` is
+empty. **CI has not run on this branch**, so every figure above is from a Windows workstation.
+
+**What that table licenses and nothing more.** The suite is green and the endpoints behave as their
+specs pin them. It says nothing about a person using any of this: there is still no authentication
+UI, and nothing in `apps/web` was touched.
+
+### What Task 13 built
+
+Five organisation routes and `POST /api/v1/auth/switch-org`. `POST /organizations` creates the
+organisation, the creator's `OWNER` membership and the audit event in one transaction, gated on a
+verified email. `GET /organizations` lists the caller's own. `GET`, `PATCH` and
+`DELETE /organizations/:id` require `organization.read`, `organization.update` and
+`organization.delete`.
+
+**This is the task where the authorization pipeline started governing something.** Through Task 12
+all eighteen shipped routes were `@Public()` or `@AuthenticatedOnly()`, so layers 2–4 ran on every
+request and had an opinion about none of them. Three routes now declare a permission; `switch-org`
+is the first writer of `Session.activeOrganizationId`, which is what makes tenant resolution and the
+MFA gate evaluate rather than short-circuit; and `POST /organizations` is the first handler to carry
+`@RequireVerifiedEmail()`. `MFA_ENROLMENT_REQUIRED` has a reachable producer for the first time.
+
+**A cross-organisation read needed a decision, and it produced two ADRs.**
+[ADR-0020](../decisions/ADR-0020-cross-organisation-membership-lookup.md) put "which organisations
+do I belong to" behind one `SECURITY DEFINER` function owned by a dedicated `BYPASSRLS` role,
+because `Membership` carries `FORCE ROW LEVEL SECURITY` and no tenant transaction can be opened for
+an organisation the caller is trying to discover.
+[ADR-0021](../decisions/ADR-0021-definer-search-path-pins-pg-temp-last.md) **supersedes it**: the
+review proved that `SET search_path = public` does not close the definer hijack, because Postgres
+searches `pg_temp` first for relation names unless it is listed explicitly. Measured — a temp table
+named `"Membership"` made the function return a real `Organization` row for a user with no
+membership, under `BYPASSRLS`, to a role whose own reads of both tables return zero rows. Fixed
+forward in a second migration; the function now pins `pg_temp` last.
+
+### What the review found, and what the brief got wrong
+
+**1 High, 3 Mediums, 2 Lows, and 7 false claims in the citation pass.** The High was a defect in the
+orchestrator's own ADR and is described above; it was reproduced independently before being
+accepted. All six code findings are closed or explicitly accepted, with dispositions in
+[`task-13/fixes.md`](../../docs/superpowers/ledger/phase-2/task-13/fixes.md).
+
+**Three of the brief's own instructions were wrong, and the implementer reported each rather than
+working around it.** Creating the organisation inside `withTenantTransaction` is refused by layer 1,
+because `create` is in `ROOT_DISALLOWED_OPERATIONS`. The delete-409's first cause is a revoked
+`DELETE` privilege, not the audit foreign key. And the brief predicted `check:openapi` would print
+24 when it prints 21 — it counts paths, not operations.
+
+**The audit event the brief asked for on deletion cannot exist.** `AuditEvent.organizationId` is
+`onDelete: Restrict`, so the event and the deletion cannot commit in either order — both directions
+measured. Since creation audits itself, **no organisation created through this API can be deleted**,
+and the endpoint answers 409. That is what the plan asked for; the brief contradicted the plan it
+was drawn from. `ORGANIZATION_DELETED` stays in the audit taxonomy as a name Phase 11's purge path
+will write, and stays out of `AUDIT_ACTIONS`, where a producer no transaction can commit would be
+worse than an absence.
+
+**The stale sentence was in far more places than either party found, and the orchestrator's first
+count of it was also wrong.** The implementer disclosed 3 sites, all in `roadmap.md`; the reviewer
+found 2 more and said 5; the orchestrator then wrote "eleven" from memory of the files it had
+edited. Counted mechanically instead — one `git grep` for the sentence family over `.claude/` and
+`apps/api/src/` at `1310604` — it is **fourteen lines across nine files**, plus a tenth file
+(`auth-harness.ts`) phrasing it differently enough to escape that grep. Among them were four rows of
+`architecture/backend.md`'s pipeline table that neither party opened. All corrected.
+Two separate documents also miscounted the audit action list, in the same change that explained why
+the fourth name cannot exist. The defence that worked every time was mechanical: extract the list
+and count it.
+
+### Still owed after Task 13
+
+- **Not pushed, and CI has not run.** Every figure above is local. This must be green on a Linux
+  runner before Task 14 branches from a merged `main`.
+- **The fix round has not itself been reviewed** — the same status Tasks 10, 11 and 12 carried.
+- **A known flake will surface in CI**: `auth.mfa.integration.spec.ts` has a TOTP step-boundary
+  race, **outside Task 13's range**, hit once by the reviewer and passing in three subsequent full
+  runs. It is not a Task 13 regression and must not be diagnosed as one.
+- **`TEMPORARY` is still granted to `PUBLIC`.** Revoking it is defence in depth against ADR-0021's
+  whole class rather than the instance, and is owed to a deployment hardening pass.
+- **The authorization matrix cannot detect a single guarded route being downgraded** to
+  `@AuthenticatedOnly()` — it leaves the set the matrix iterates. The set going *fully* empty is
+  caught; a single downgrade is covered by the controller's access table and the scoped 403 arm.
+- **`meta.total` is never returned** by `GET /organizations`; counts are opt-in per `pagination.md`
+  §3 and the query schema has no such field.
+- **One probe row, `org_probe_d2`, remains in the local compose database** with an `AuditEvent`
+  referencing it. It cannot be deleted — the append-only trigger refuses, then `Restrict` refuses —
+  which is the delete-409 behaviour working as designed. Local dev data only; it reaches no
+  Testcontainers run.
 
 ### Phase 3 — SaaS core
 Projects, assets, **asset ownership verification**, scope and scope rules with the
