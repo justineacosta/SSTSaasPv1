@@ -46,6 +46,9 @@ import {
   resetPasswordResponseSchema,
   type SessionResponse,
   sessionResponseSchema,
+  type SwitchOrganizationRequest,
+  switchOrganizationRequestSchema,
+  switchOrganizationResponseSchema,
   type VerifyEmailRequest,
   type VerifyEmailResponse,
   verifyEmailRequestSchema,
@@ -71,6 +74,7 @@ import { deriveCsrfToken } from './csrf-token.js';
 import { EmailVerificationService } from './email-verification.service.js';
 import { LoginService } from './login.service.js';
 import { LogoutService } from './logout.service.js';
+import { OrganizationSwitchService } from './organization-switch.service.js';
 import { MfaEnrolmentService } from './mfa-enrolment.service.js';
 import { MfaVerificationService } from './mfa-verification.service.js';
 import { PasswordChangeService } from './password-change.service.js';
@@ -80,17 +84,19 @@ import { principalOf, requestContextOf } from './request-context.js';
 import { SessionDocumentService } from './session-document.service.js';
 
 /**
- * THE FOURTEEN ROUTES ON THIS CONTROLLER.
+ * THE FIFTEEN ROUTES ON THIS CONTROLLER.
  *
- * Fourteen here, **eighteen in the product** — the health probes and the
- * OpenAPI document itself make up the difference, and `pnpm check:openapi`
- * counts all of them. Task 8 shipped `/register`, `/verify-email` and
+ * Fifteen here, **twenty-four in the product** — the four organisation routes,
+ * the health probes and the OpenAPI document itself make up the difference, and
+ * `pnpm check:openapi` counts all of them. Task 8 shipped `/register`, `/verify-email` and
  * `/resend-verification` and took that total from four to seven; Task 9 added
  * `/login`, `/logout` and `/session` and took it to ten; Task 10 added
  * `/forgot-password`, `/reset-password` and `/change-password` and took it to
- * thirteen; Task 11 adds the five under `/mfa` and takes it to eighteen. (L6:
- * the heading previously said "the six routes this product publishes", which
- * contradicted the sentence below it.)
+ * thirteen; Task 11 added the five under `/mfa` and took it to eighteen; Task
+ * 13 adds `switch-org` here and four organisation routes on
+ * `OrganizationsController`, taking it to twenty-four. (L6: the heading
+ * previously said "the six routes this product publishes", which contradicted
+ * the sentence below it.)
  *
  * # `mfa/verify` is `@Public()` AND `@AllowPendingMfa()`, and that pair is D4
  *
@@ -144,12 +150,17 @@ import { SessionDocumentService } from './session-document.service.js';
  * the disclosure this endpoint is built to avoid. A 201 for a new address and a
  * 200 for an existing one would be the whole oracle in the status line.
  *
- * # `@RequirePermission()` appears nowhere here
+ * # `@RequirePermission()` appears nowhere here, and that is now a decision
+ * rather than a limitation
  *
- * It is still metadata no guard enforces (Task 12), so no route of this task's
- * may rely on it. `@Public()` is enforced today — by `AuthenticationGuard`,
- * which skips these three, and by the boot-time access assertion, which refuses
- * to start on a route that declares nothing.
+ * Task 12 built the guard and Task 13 ships the first routes that declare a
+ * permission — all four of them on `OrganizationsController`. None is here,
+ * because every route on this controller is about a *user* and about no tenant:
+ * registering, verifying, signing in and out, resetting a password, managing a
+ * second factor, reading your own session, and choosing which organisation to
+ * act in. `security/authorization.md` §1 is the rule that puts them on this
+ * side of the line — a permission is always (user, organisation, permission),
+ * and none of these has an organisation to hold one in.
  */
 @Controller({ path: 'auth', version: '1' })
 export class AuthController {
@@ -163,6 +174,8 @@ export class AuthController {
     @Inject(PasswordChangeService) private readonly passwordChanges: PasswordChangeService,
     @Inject(MfaEnrolmentService) private readonly mfaEnrolment: MfaEnrolmentService,
     @Inject(MfaVerificationService) private readonly mfaVerification: MfaVerificationService,
+    @Inject(OrganizationSwitchService)
+    private readonly organizationSwitch: OrganizationSwitchService,
   ) {}
 
   /**
@@ -515,6 +528,106 @@ export class AuthController {
     // here: this route is `@AuthenticatedOnly()` and its whole job is to answer
     // a caller who may have no organisation at all.
     return this.sessionDocument.forPrincipal(principalOf(request), request.tenant);
+  }
+
+  /**
+   * Changes which organisation this session is acting in, and rotates it.
+   *
+   * # This is the route that writes `Session.activeOrganizationId`
+   *
+   * Nothing in this codebase wrote that column before Task 13 (carry-forward
+   * ruling 93), so this is where `TenantContextGuard`, `MfaEnrolmentGuard` and
+   * `AuthorizationGuard` stop short-circuiting and begin deciding real
+   * requests. `organization-switch.service.ts` carries the argument for why
+   * membership is decided by the guard's own resolver rather than by a second
+   * query here.
+   *
+   * # `@AuthenticatedOnly()`, not `@RequirePermission()`
+   *
+   * A permission is always (user, organisation, permission), and the whole
+   * point of this route is that the organisation is about to change. Requiring
+   * one would ask the caller to hold a permission in the organisation they are
+   * leaving in order to enter another. `access.decorator.ts` names this case in
+   * its own docblock — *"listing the organisations you belong to, switching
+   * between them"*.
+   *
+   * # It sets both cookies, exactly as login does
+   *
+   * The rotation mints a new session token, so the browser must be given it or
+   * the caller is signed out. The CSRF cookie is derived from the session token
+   * (`csrf-token.ts`), so it rotates with it automatically and its `Max-Age`
+   * matches for `cookies.ts`'s reason: a CSRF cookie that outlives its session,
+   * or dies before it, is a logged-in user who cannot submit a form.
+   *
+   * `generalSession`, and the same sentence applies as on `logout` and
+   * `session`: the class keys on an authenticated principal, the limiter runs
+   * before the authentication guard, and so it resolves nothing today
+   * (carry-forward ruling 55).
+   */
+  @AuthenticatedOnly()
+  @RateLimit('generalSession')
+  @ApiDoc({
+    summary: 'Switch the active organisation.',
+    description:
+      'Points the current session at another organisation the caller is an ACTIVE member of, ' +
+      '**rotating the session** as it does — `security/authentication.md` §3 requires a rotation ' +
+      'on any privilege change, and changing organisation changes the effective permission set. ' +
+      'Both cookies are replaced; the previous session token stops working immediately. The ' +
+      'response is the same document `GET /api/v1/auth/session` returns, now describing the ' +
+      'organisation just switched to, and its `permissions` array is populated. Switching to an ' +
+      'organisation the caller is not an active member of is **404**, not 403 — the same answer ' +
+      'an organisation that does not exist gets, so neither confirms the other. A suspended ' +
+      'organisation the caller does belong to is 403 `ORGANIZATION_SUSPENDED`, matching what ' +
+      'every guarded route would answer afterwards. Requires `X-CSRF-Token`.',
+    requestBody: {
+      description: 'The organisation to switch to. The schema is strict.',
+      schema: switchOrganizationRequestSchema,
+    },
+    responses: [
+      {
+        status: 200,
+        description: 'The new session context.',
+        schema: switchOrganizationResponseSchema,
+      },
+      { status: 400, description: 'The body did not validate (`VALIDATION_ERROR`, `UNKNOWN_FIELD`).' },
+      {
+        status: 401,
+        description:
+          'No usable session, or the session was revoked between the membership check and the ' +
+          'rotation (`UNAUTHENTICATED`, `SESSION_EXPIRED`).',
+      },
+      { status: 403, description: 'The organisation is suspended (`ORGANIZATION_SUSPENDED`), or a CSRF failure.' },
+      { status: 404, description: 'No ACTIVE membership in that organisation (`RESOURCE_NOT_FOUND`).' },
+    ],
+  })
+  @Post('switch-org')
+  async switchOrganization(
+    @Body(new ZodValidationPipe(switchOrganizationRequestSchema)) body: SwitchOrganizationRequest,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<SessionResponse> {
+    const switched = await this.organizationSwitch.switch({
+      ...principalOf(request),
+      organizationId: body.organizationId,
+      ...requestContextOf(request),
+    });
+
+    // Both cookies, in one `Set-Cookie` array — the same shape login uses, and
+    // for the same reason: the CSRF token derives from the session token, so
+    // sending one without the other leaves the browser holding a pair that
+    // cannot validate.
+    response.setHeader('Set-Cookie', [
+      serialiseSessionCookie({
+        value: switched.token,
+        maxAgeSeconds: switched.cookieMaxAgeSeconds,
+      }),
+      serialiseCsrfCookie({
+        value: deriveCsrfToken(switched.token),
+        maxAgeSeconds: switched.cookieMaxAgeSeconds,
+      }),
+    ]);
+
+    return switched.document;
   }
 
   /**
