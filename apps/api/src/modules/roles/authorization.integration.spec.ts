@@ -37,11 +37,17 @@ import { mintSecretToken } from '../auth/secret-token.js';
  * without `app.organization_id` set, `Membership` and `Organization` return
  * zero rows for this role and every arm collapses to 404.
  *
- * # The guarded routes are purpose-built, because no shipped route is guarded
+ * # The guarded routes here are purpose-built, and shipped ones now exist too
  *
- * No endpoint in this API declares `@RequirePermission()` — the eighteen Phase 2
- * routes are `@Public()` or `@AuthenticatedOnly()`, and the first guarded ones
- * are Tasks 13–15's. The controller below is added to the **real** `AppModule`,
+ * Task 13 shipped the first three permission-guarded endpoints — `GET`, `PATCH`
+ * and `DELETE /api/v1/organizations/:id` — which the generated matrix in
+ * `authorization-matrix.integration.spec.ts` exercises. This file keeps its own
+ * purpose-built controller anyway, because it exercises arms and roles the
+ * shipped routes cannot reach: every system role against every permission,
+ * including combinations no organisation endpoint expresses. Through Task 12 no
+ * shipped route was guarded at all and this paragraph said so.
+ *
+ * The controller below is added to the **real** `AppModule`,
  * so everything except the endpoint is production: the real guard array in the
  * real order, the real resolver, the real Postgres, the real session cookie.
  *

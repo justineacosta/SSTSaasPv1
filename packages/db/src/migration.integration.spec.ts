@@ -282,10 +282,31 @@ describe('ADR-0020: user_organizations(text)', () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]?.prosecdef).toBe(true);
       expect(rows[0]?.owner).toBe('sentinel_org_lookup');
-      // `SET search_path = public` closes the standard SECURITY DEFINER hijack,
-      // where a caller creates a shadowing object in a schema earlier on the
-      // path. It is load-bearing, not decoration, so it is pinned.
-      expect(rows[0]?.proconfig).toEqual(['search_path=public']);
+      // `pg_temp` MUST BE PRESENT AND MUST BE LAST, and the value this pinned
+      // before Task 13's review did neither.
+      //
+      // Postgres searches the temporary schema FIRST for relation names unless
+      // `pg_temp` is written explicitly, in which case it is searched where it
+      // is written. So `search_path = public` — the value this assertion used
+      // to pin, with a comment claiming it "closes the standard SECURITY
+      // DEFINER hijack" — left `pg_temp` implicitly first, and a caller holding
+      // TEMPORARY could shadow `Membership` with a temp table of their own.
+      // Measured: the function returned a real `Organization` row for a user
+      // with no membership, under `BYPASSRLS`, to a role whose direct reads of
+      // both tables return zero rows. The transcript is in
+      // `20260902130000_organization_lookup_search_path/migration.sql`.
+      //
+      // The pin was right; the value pinned was the vulnerable one, and the
+      // comment beside it asserted the opposite. Both are corrected here.
+      const searchPath = rows[0]?.proconfig ?? [];
+      expect(searchPath).toEqual(['search_path=public, pg_temp']);
+      // Asserted separately from the equality above so that a future edit which
+      // keeps `pg_temp` but moves it earlier — the subtle form of this defect,
+      // which an equality assertion would catch only by accident — fails with a
+      // message naming the actual rule.
+      const entries = (searchPath[0] ?? '').replace(/^search_path=/, '').split(/\s*,\s*/);
+      expect(entries).toContain('pg_temp');
+      expect(entries[entries.length - 1]).toBe('pg_temp');
     } finally {
       await admin.$disconnect();
     }

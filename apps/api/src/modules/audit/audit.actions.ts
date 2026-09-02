@@ -103,10 +103,18 @@ export type AuditAction = (typeof AUDIT_ACTIONS)[number];
  *
  * Deliberately narrow, on the same rule `PLATFORM_AUDIT_RESOURCE_TYPES`
  * follows: every entry must be a real Prisma model, and a union carrying values
- * nothing writes is a list nobody maintains. All four actions above are events
+ * nothing writes is a list nobody maintains. All three actions above are events
  * about an `Organization` — including the switch, whose subject is the
  * organisation the member began acting in rather than the session row that
  * carried them there.
+ *
+ * "All three", counted: `AUDIT_ACTIONS` holds `ORGANIZATION_CREATED`,
+ * `ORGANIZATION_UPDATED` and `ORGANIZATION_SWITCHED`. This sentence said "all
+ * four" until Task 13's review, twenty-one lines below the constant it was
+ * miscounting and in the same file as the comment explaining why
+ * `ORGANIZATION_DELETED` cannot have a producer. It is the same defect
+ * `security/audit.md` carried in the same change, and the defence that caught
+ * both is the same one: when a sentence states a count, compute the count.
  */
 export const AUDIT_RESOURCE_TYPES = ['Organization'] as const;
 

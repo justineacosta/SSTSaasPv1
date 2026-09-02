@@ -103,3 +103,41 @@ describe('decodeListCursor refuses', () => {
     expect(error.code).toBe('VALIDATION_ERROR');
   });
 });
+
+describe('decodeListCursor normalises `createdAt` before it reaches the query', () => {
+  /**
+   * THE VALUE HANDED TO POSTGRES MUST BE ONE THIS CODE PRODUCED.
+   *
+   * Task 13's review, L1. `Date` and Postgres do not agree on what an ISO
+   * timestamp is, and `Date` is the more permissive of the two:
+   *
+   *     JS   new Date('2026')            -> valid
+   *     PG   SELECT '2026'::timestamptz  -> ERROR: invalid input syntax
+   *
+   * So `'2026'` passed the `Number.isNaN` check and was then interpolated into
+   * the comparison as the client wrote it, failing inside the query — a 500 for
+   * an input `api/errors.md` says is a 400. Validating with one parser and
+   * passing the raw input to the other is the defect; passing the first
+   * parser's *output* is the fix.
+   *
+   * This asserts the normalisation directly rather than through a live query,
+   * because that is where the guarantee lives: any value returned from here is
+   * `toISOString()`'s output, and that is a format Postgres accepts by
+   * construction.
+   */
+  it('re-serialises a value that `Date` accepts and Postgres would reject', () => {
+    const hostile = Buffer.from('{"createdAt":"2026","id":"org_x"}', 'utf8').toString('base64url');
+    const decoded = decodeListCursor(hostile);
+    expect(decoded.createdAt).not.toBe('2026');
+    expect(decoded.createdAt).toBe(new Date('2026').toISOString());
+    expect(decoded.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  });
+
+  it('leaves an already-canonical timestamp byte-identical, so paging is stable', () => {
+    const canonical = '2026-09-02T10:00:00.000Z';
+    const encoded = Buffer.from(`{"createdAt":"${canonical}","id":"org_x"}`, 'utf8').toString(
+      'base64url',
+    );
+    expect(decodeListCursor(encoded).createdAt).toBe(canonical);
+  });
+});

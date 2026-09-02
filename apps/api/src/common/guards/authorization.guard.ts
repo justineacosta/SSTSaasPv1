@@ -75,11 +75,14 @@ const ROLES_WITH_PERMISSION: ReadonlyMap<Permission, readonly SystemRole[]> = ne
  * is reachable by a non-member, because a non-member was refused one layer up
  * with a 404 that says nothing at all.
  *
- * # It governs no shipped route today, and that must not be written otherwise
+ * # It governs three shipped routes as of Task 13
  *
- * No endpoint in this API declares `@RequirePermission()`: the eighteen routes
- * Phase 2 publishes are `@Public()` or `@AuthenticatedOnly()`, and the first
- * permission-guarded endpoints are Tasks 13–15's. The guard is proved against
+ * `GET`, `PATCH` and `DELETE /api/v1/organizations/:id` declare
+ * `organization.read`, `organization.update` and `organization.delete` — the
+ * first permission-guarded endpoints this product has published. Through Task
+ * 12 there were none, and this paragraph said so in as many words; the
+ * inventory-driven matrix now fails if the guarded set ever returns to empty.
+ * The guard is proved against
  * purpose-built controllers in `authorization.guard.spec.ts` and against real
  * seeded rows over the `sentinel_app` role in
  * `authorization.integration.spec.ts` — the precedent `EmailVerifiedGuard`,

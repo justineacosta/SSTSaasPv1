@@ -1,0 +1,87 @@
+-- `pg_temp` must be LAST in the definer function's search_path, and
+-- `SET search_path = public` did not put it there at all.
+--
+-- WHAT WAS WRONG. 20260902083622_organization_lookup_function created
+-- `user_organizations(text)` with `SET search_path = public`, and both that
+-- migration's comment and ADR-0020's Decision section claimed the setting
+-- "closes the standard SECURITY DEFINER hijack, where a caller creates a
+-- shadowing object in a schema earlier on the path". That sentence is false.
+--
+-- PostgreSQL searches the temporary schema **first**, ahead of everything, when
+-- resolving RELATION names, unless `pg_temp` appears explicitly in
+-- `search_path` — in which case it is searched at the position written. Listing
+-- `public` alone does not exclude `pg_temp`; it leaves it implicitly first. The
+-- documented safe form is to write `pg_temp` LAST.
+--
+-- `sentinel_app` holds TEMPORARY on this database — PostgreSQL grants it to
+-- PUBLIC by default and nothing here revoked it — so `sentinel_app` can create
+-- a temporary relation named "Membership" and grant the definer role SELECT on
+-- it. Measured as `sentinel_app` against the compose Postgres on 2026-09-02,
+-- one session, no tenant context:
+--
+--     CREATE TEMP TABLE "Membership" (id text, "organizationId" text,
+--                                     "userId" text, status text,
+--                                     "deletedAt" timestamptz);
+--     INSERT INTO pg_temp."Membership"
+--       VALUES ('fake1','org_probe_d2','usr_attacker_not_a_member','ACTIVE',NULL);
+--     GRANT SELECT ON pg_temp."Membership" TO sentinel_org_lookup;
+--
+--     SELECT id, slug, name, status
+--       FROM user_organizations('usr_attacker_not_a_member');
+--           id      |   slug   |   name   | status
+--     --------------+----------+----------+--------
+--      org_probe_d2 | probe-d2 | Probe D2 | ACTIVE
+--     (1 row)
+--
+--     -- the same role, same session, reading the real table directly:
+--     SELECT count(*) FROM public."Organization";
+--      count
+--     -------
+--          0
+--
+-- The function joined an ATTACKER-SUPPLIED `Membership` against the REAL
+-- `public."Organization"` under `BYPASSRLS`, and returned a row for a user with
+-- no membership — to a role whose own reads of both tables return nothing. That
+-- is a cross-tenant enumeration primitive, not a nuisance.
+--
+-- Only the relation on the FROM side is hijackable this way: `Organization` is
+-- reached through the join and resolved the same way, so a temp table shadowing
+-- either one participates. Nothing about the fixed predicate in the body
+-- prevents it — the predicate was applied faithfully, to the wrong table.
+--
+-- THE FIX, PROVED IN THE SAME SESSION AS THE ATTACK. A second function
+-- identical but for `SET search_path = public, pg_temp` was created and called
+-- with the same temp table in place:
+--
+--     === shipped function (search_path = public) ===
+--      rows_returned: 1
+--     === same attack vs (search_path = public, pg_temp) ===
+--      rows_returned: 0
+--
+-- WHY THIS IS A NEW MIGRATION RATHER THAN AN EDIT. Carry-forward ruling 2:
+-- editing an applied migration breaks `prisma migrate dev` on every existing
+-- clone while `migrate deploy` and `migrate status` do not notice, so the
+-- breakage is local, silent to CI, and lands on whoever pulls next. The
+-- previous migration stays exactly as it was applied; this one corrects it
+-- forward. A database that replays both ends in the same state as one that
+-- receives only this.
+--
+-- SOUNDNESS ON ITS OWN (ruling 1): one `ALTER FUNCTION ... SET`. No table, no
+-- column, no policy, no privilege. A database that stops after this migration
+-- is sound, and one that stops before it has the function with the weaker
+-- search_path rather than no function at all.
+--
+-- WHAT THIS DOES NOT DO. It does not revoke TEMPORARY from PUBLIC. That would
+-- be defence in depth and it is a database-wide privilege change affecting
+-- every role and every future connection, which is a decision of its own rather
+-- than a line in a corrective migration. It is recorded as a residual in
+-- `.claude/security/tenant-isolation.md`. Exploiting the hijack requires
+-- arbitrary SQL execution as `sentinel_app`, which the API does not offer — both
+-- raw statements in the request path are parameterised tagged templates — so
+-- what is fixed here is a defence-in-depth failure and a false security claim,
+-- not a presently reachable vulnerability.
+
+ALTER FUNCTION public.user_organizations(text) SET search_path = public, pg_temp;
+
+COMMENT ON FUNCTION public.user_organizations(text) IS
+  'ADR-0021 (supersedes ADR-0020). The organisations one user is an ACTIVE, non-deleted member of. SECURITY DEFINER, owned by sentinel_org_lookup (BYPASSRLS), because Membership carries FORCE ROW LEVEL SECURITY and this question spans organisations. search_path pins pg_temp LAST: listing public alone leaves the temporary schema implicitly first for relation names, which is a hijack a caller holding TEMPORARY can perform. The user id must come from the authenticated session, never from a path parameter, query string or body.';

@@ -246,8 +246,9 @@ export class TenantContextGuard implements CanActivate {
     const organizationId = request.activeOrganizationId ?? null;
     const resolution =
       organizationId === null
-        ? // No query. The answer cannot depend on the database, and today this
-          // is every request: nothing writes the column until Task 13.
+        ? // No query. The answer cannot depend on the database. Before Task 13
+          // this was every request, because nothing wrote the column; it is now
+          // every request made by a session that has not switched organisation.
           resolveTenant({
             activeOrganizationId: null,
             membership: null,

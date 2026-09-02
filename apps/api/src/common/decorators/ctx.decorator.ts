@@ -26,12 +26,14 @@ import type { Request } from 'express';
  * with the detail kept server-side. A 500 is the correct answer to "this
  * application is wired wrong".
  *
- * # No shipped handler uses it yet
+ * # Shipped handlers use it as of Task 13
  *
- * No route in this API declares `@RequirePermission()` — Tasks 13–15 ship the
- * first ones. It is proved against purpose-built controllers in
- * `ctx.decorator.spec.ts`, which is the only honest way to prove a rule about
- * handlers that do not exist yet.
+ * `GET`, `PATCH` and `DELETE /api/v1/organizations/:id` declare
+ * `organization.read`, `organization.update` and `organization.delete`, and
+ * read their tenant through this decorator. Through Task 12 no route declared a
+ * permission and this paragraph said so. It is still *also* proved against
+ * purpose-built controllers in `ctx.decorator.spec.ts`, which stays the honest
+ * way to prove the arms no shipped route exercises.
  */
 export const Ctx = createParamDecorator(
   (_data: unknown, context: ExecutionContext): TenantContext => {

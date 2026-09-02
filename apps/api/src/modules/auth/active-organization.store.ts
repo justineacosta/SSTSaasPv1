@@ -96,10 +96,12 @@ export interface ActiveOrganizationLookup {
  *
  * One interactive transaction, one `set_config`, and one primary-key lookup —
  * on `GET /auth/session` only, and only when `activeOrganizationId` is non-null.
- * **Today that is never**: nothing in Phase 2 writes that column until Task 13,
- * so the live cost is one `if` and the code below does not execute. It is built
- * now rather than stubbed because an unimplemented lookup is a lookup Task 13
- * has to discover is missing, and it would discover it as a `null` that looks
+ * **Through Task 12 that was never**, because nothing wrote the column, and
+ * this paragraph said so. Task 13 shipped `POST /api/v1/auth/switch-org`, so
+ * the lookup below now executes for any session that has switched. It was built
+ * ahead of its writer rather than stubbed because an unimplemented lookup is a
+ * lookup Task 13 would have had to discover was missing, and it would have
+ * discovered it as a `null` that looks
  * exactly like "this user has not chosen an organisation".
  */
 export function activeOrganizationLookup(base: TenantTransactionBase): ActiveOrganizationLookup {

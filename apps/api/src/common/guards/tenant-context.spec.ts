@@ -249,8 +249,11 @@ describe('TenantContextGuard', () => {
   });
 
   /**
-   * The short circuit that makes this guard free in Phase 2: nothing writes
-   * `Session.activeOrganizationId` until Task 13, so there is no query to make.
+   * The short circuit that makes this guard free for a session which has not
+   * switched organisation. Before Task 13 nothing wrote
+   * `Session.activeOrganizationId` and this was every request; `switch-org` now
+   * writes it, so the branch below is the un-switched case rather than the only
+   * case.
    */
   it('performs no query when the session names no organisation', async () => {
     let called = false;
