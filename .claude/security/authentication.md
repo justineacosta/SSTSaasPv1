@@ -144,7 +144,7 @@ mechanism is commonly built wrong:
 on login is the mechanism that drains the population of hashes stored before a parameter raise, so
 the oracle narrows every time somebody signs in — but an account whose owner never signs in again
 keeps its old hash indefinitely, and nothing in this product can reach it.
-[ADR-0014](../decisions/ADR-0014-argon2id-password-hashing.md) §116 already acknowledges that. The
+[ADR-0014](../decisions/ADR-0014-argon2-implementation.md) §116 already acknowledges that. The
 residual is therefore **open and shrinking**, not closed, and no document may describe it as
 closed.
 
@@ -441,7 +441,7 @@ specific to a reset.
   lost concurrent credential write all produce `TOKEN_INVALID`.
 - **The breach check runs before the token is spent**, so a `PASSWORD_BREACHED` refusal does not
   cost the user their link. That matters for a check that is disabled by default and fails open
-  ([ADR-0015](../decisions/ADR-0015-hibp-breach-check.md)).
+  ([ADR-0015](../decisions/ADR-0015-password-breach-check-fails-open.md)).
 - **A request for an address with no account still writes an audit row**, naming nothing and
   carrying no address in its metadata. The wire response is identical for every input by design,
   so that row is the only trace a distributed sweep leaves. See [`audit.md`](audit.md) §4.
