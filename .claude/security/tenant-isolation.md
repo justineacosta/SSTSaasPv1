@@ -187,18 +187,35 @@ function body. What contains it:
 - **`SET search_path = public, pg_temp`** — `pg_temp` present and **last** — closes the standard
   definer hijack. The function shipped with `SET search_path = public`, and that did **not** close
   it: Postgres searches the temporary schema first for relation names unless `pg_temp` is listed
-  explicitly, and `sentinel_app` holds `TEMPORARY`, so a temp table named `"Membership"` was
-  measured shadowing the real one and returning a real `Organization` row for a user with no
-  membership. Corrected by migration `20260902130000_organization_lookup_search_path`;
+  explicitly, and `sentinel_app` held `TEMPORARY` at the time, so a temp table named
+  `"Membership"` was measured shadowing the real one and returning a real `Organization` row for a
+  user with no membership. Corrected by migration `20260902130000_organization_lookup_search_path`;
   [ADR-0021](../decisions/ADR-0021-definer-search-path-pins-pg-temp-last.md) supersedes ADR-0020
   and carries the transcript.
+- **`TEMPORARY` is revoked from `PUBLIC`**, which removes the *precondition* for that attack rather
+  than protecting one function against it. PostgreSQL grants `TEMPORARY` to `PUBLIC` on every
+  database by default and nothing here had revoked it; migration
+  `20260903090000_revoke_temporary_from_public` does, using `current_database()` rather than a
+  literal so it cannot silently do nothing against a differently-named database. Measured on the
+  compose database: `has_database_privilege('sentinel_app', current_database(), 'TEMPORARY')` goes
+  `t` → `f`, and `CREATE TEMP TABLE "Membership"` as `sentinel_app` now answers
+  `permission denied to create temporary tables in database "sentinel"`.
 
-**Residual, recorded rather than fixed:** `sentinel_app` still holds `TEMPORARY` on the database,
-which is PostgreSQL's default grant to `PUBLIC`. Revoking it would be defence in depth against the
-whole class rather than this instance, and it is a database-wide privilege change owed to a
-deployment hardening pass. The instance is closed; the mechanism is not. **Any future
-`SECURITY DEFINER` object must pin `pg_temp` last**, and the assertion to copy is the one in
-`migration.integration.spec.ts` that pins the *rule* — present, and last — not only the value.
+**Two mechanisms, and both are asserted separately** — the ADR-0006 argument applied to this
+function. The `search_path` pin protects `user_organizations(text)` whatever privileges a caller
+holds; the revoke protects every present and future definer object against this class whatever
+their `search_path` says. Either alone is recoverable: a superuser or a role deliberately granted
+`TEMPORARY` puts the capability back, and a future migration can forget the pin.
+
+**Still true, and the reason the pin is not redundant:** **any future `SECURITY DEFINER` object
+must pin `pg_temp` last.** The assertion to copy is the one in `migration.integration.spec.ts` that
+pins the *rule* — present, and last — not only the value.
+
+**Residual:** a role that legitimately needs temporary tables must now be granted `TEMPORARY` by
+name. Nothing in this application creates one — Prisma does not, and the only temporary tables ever
+created in this repository were the hand-written probes demonstrating the ADR-0021 attack. A future
+analytics or reporting path that needs them should be granted it explicitly rather than by
+restoring the `PUBLIC` default.
 
 The role attributes and grants are asserted in `packages/db/src/migration.integration.spec.ts`
 rather than only described here, because ADR-0020's containment argument otherwise rests on a

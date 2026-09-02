@@ -362,6 +362,32 @@ describe('GET /api/v1/organizations', () => {
     expect(body.data.map((row) => row.id).sort()).toEqual([first, second].sort());
   });
 
+  it('refuses ?includeTotal=true with 400 UNKNOWN_FIELD rather than ignoring it', async () => {
+    // `api/pagination.md` §3 documents `?includeTotal=true` as the opt-in for
+    // `meta.total`, and this API does not implement it — no endpoint counts,
+    // and the `reltuples` estimate above 100,000 rows does not exist. That
+    // makes the interesting question what happens when a client trusts the
+    // document, and the answer must be a refusal rather than a silently
+    // ignored parameter: a caller who asks for a total and receives a page
+    // without one, with a 200, has been told the total is genuinely absent
+    // from the data.
+    //
+    // `listQuerySchema` is `.strict()`, so this is `UNKNOWN_FIELD` at 400 by
+    // carry-forward ruling 14 — every Zod issue here is an unrecognised key.
+    // Asserted rather than reasoned, because the documentation sentence added
+    // to `pagination.md` in this change claims exactly this behaviour, and an
+    // unverified claim about the repository is a false claim whether or not it
+    // is meant.
+    const actor = await signedIn({});
+
+    const response = await request(server)
+      .get('/api/v1/organizations?includeTotal=true')
+      .set('Cookie', actor.cookie);
+
+    expect(response.status).toBe(400);
+    expect(codeOf(response.body)).toBe('UNKNOWN_FIELD');
+  });
+
   it('does not return another user’s organisations', async () => {
     // The one failure mode ADR-0020 says its design cannot remove: a bug that
     // passes the wrong user id. The function's input has to be a user id for

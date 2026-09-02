@@ -2,10 +2,23 @@
 
 > **Status: Partially Implemented.** §1's response envelope and §4's default of 50, maximum of
 > 100 and clamp-rather-than-reject rule exist as Zod schemas in `@sentinel/contracts`
-> (`paginationSchema`, `listQuerySchema`, `collectionEnvelopeSchema`) as of Phase 2 Task 2.
-> **No endpoint consumes them yet** — there is no list endpoint in the API. Everything else here
-> — the keyset SQL, offset pagination, the cursor encoding, sorting, estimates — is Designed,
-> Not Implemented.
+> (`paginationSchema`, `listQuerySchema`, `collectionEnvelopeSchema`) as of Phase 2 Task 2, and
+> **one endpoint consumes them as of Phase 2 Task 13**: `GET /api/v1/organizations`. It applies
+> the default and the clamp, echoes the applied limit, and paginates by keyset on
+> `(createdAt, id)` with the opaque cursor §1 describes
+> (`apps/api/src/modules/organizations/list-cursor.ts`). Until Task 13 this banner read "no
+> endpoint consumes them yet — there is no list endpoint in the API", which Task 13 made false
+> and did not correct.
+>
+> **Still Designed, Not Implemented:** §3's counts entirely — no endpoint accepts
+> `?includeTotal=true`, nothing returns `meta.total`, and the `reltuples` estimate above 100,000
+> rows does not exist; §5's `?sort=` allowlist; and offset pagination. §3 in particular is a
+> whole feature rather than a missing field, which is why `GET /api/v1/organizations` does not
+> implement half of it: `listQuerySchema` is `.strict()`, so `?includeTotal=true` is refused at
+> 400 rather than silently ignored, which is the honest answer for a parameter this API does not
+> yet honour. The natural owner is the first list that can actually be large — Phase 3's assets
+> and findings — where the estimate threshold means something. A user's own organisations is not
+> that list.
 
 **Every list endpoint paginates. There are no unbounded list endpoints.** A tenant with
 400,000 findings must not be able to ask for all of them, and an endpoint that works fine in

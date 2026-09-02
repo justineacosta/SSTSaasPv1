@@ -331,6 +331,41 @@ describe('ADR-0020: user_organizations(text)', () => {
     }
   });
 
+  /**
+   * THE SECOND, INDEPENDENT DEFENCE AGAINST ADR-0021's ATTACK.
+   *
+   * Pinning `pg_temp` last protects `user_organizations(text)`. Revoking
+   * TEMPORARY removes the *precondition* for the whole class: a caller who
+   * cannot create a temporary relation cannot shadow `"Membership"` in the
+   * first place, whatever a future definer function's `search_path` says.
+   *
+   * Both are asserted, separately, on the ADR-0006 argument that two
+   * independent mechanisms must both be wrong before a tenant sees another
+   * tenant's rows. Either one alone is recoverable: a superuser or a
+   * deliberately-granted role can hold TEMPORARY again, and a future migration
+   * can forget the `search_path` pin.
+   *
+   * PostgreSQL grants TEMPORARY to PUBLIC on every database by default, so —
+   * exactly like the `REVOKE EXECUTE ... FROM PUBLIC` above — the revoke is
+   * what makes this false rather than anything the schema does.
+   */
+  it('revokes TEMPORARY from PUBLIC, so sentinel_app cannot create the shadowing table', async () => {
+    const admin = createUnscopedPrismaClient(container.getConnectionUri());
+    try {
+      const rows = await admin.$queryRaw<{ app: boolean; anyone: boolean }[]>`
+        SELECT has_database_privilege('sentinel_app', current_database(), 'TEMPORARY') AS app,
+               has_database_privilege('public', current_database(), 'TEMPORARY')       AS anyone
+      `;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.anyone).toBe(false);
+      // `sentinel_app` holds no TEMPORARY of its own either — it had this only
+      // by way of the PUBLIC default, which is the point.
+      expect(rows[0]?.app).toBe(false);
+    } finally {
+      await admin.$disconnect();
+    }
+  });
+
   it('returns a user’s organisations to sentinel_app across tenants, where a direct read returns none', async () => {
     const admin = createUnscopedPrismaClient(container.getConnectionUri());
     const app = createUnscopedPrismaClient(sentinelAppUrl(container));

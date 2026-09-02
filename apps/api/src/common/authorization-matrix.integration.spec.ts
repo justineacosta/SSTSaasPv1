@@ -462,6 +462,59 @@ describe('every permission-guarded route runs all four arms', () => {
     ).not.toEqual([]);
   });
 
+  /**
+   * THE DOWNGRADE SENTINEL — the gap the test above cannot close.
+   *
+   * Task 13's review, M2, and it was admitted rather than fixed at the time.
+   * The assertion above catches the guarded set going *fully* empty. It cannot
+   * catch **one** route being downgraded from `@RequirePermission()` to
+   * `@AuthenticatedOnly()`, because such a route simply leaves the set that
+   * arms 2–4 iterate: the arms still run, still pass, and cover one endpoint
+   * fewer than yesterday. Measured then — downgrading `organization.update`
+   * turned exactly one unit test and one integration test red and left this
+   * whole file green.
+   *
+   * A count would be weaker than it looks: adding a route while downgrading
+   * another keeps the number identical. So the inventory is pinned by
+   * `METHOD path -> permission`, which is the fact that actually matters and
+   * the one a reader can check against the controllers.
+   *
+   * **This is a list that must be edited when routes are added, and that is the
+   * design rather than a maintenance cost.** Carry-forward ruling 101: a
+   * sentinel that fails on the day the feature arrives invites deletion, so it
+   * has to say what to do instead of merely failing. Adding a guarded endpoint
+   * turns this red with a message naming the new route; the fix is one line
+   * here, and the alternative — deriving the expectation from the same
+   * inventory it is checking — would assert nothing at all.
+   */
+  it('every guarded route declares the permission it is supposed to, and none has been downgraded', () => {
+    const EXPECTED_GUARDED_ROUTES: Readonly<Record<string, string>> = {
+      'GET /api/v1/organizations/:id': 'organization.read',
+      'PATCH /api/v1/organizations/:id': 'organization.update',
+      'DELETE /api/v1/organizations/:id': 'organization.delete',
+    };
+
+    // Built by hand rather than with `Object.fromEntries`, which is typed
+    // `{ [k: string]: any }` and trips the no-unsafe-assignment rule — and the
+    // rule is right: an `any` here would let a typo in `permission` pass the
+    // comparison below without anyone noticing.
+    const actual: Record<string, string> = {};
+    for (const route of routes) {
+      if (route.access?.kind !== 'permission') continue;
+      actual[key(route)] = route.access.permission;
+    }
+
+    expect(
+      actual,
+      'The set of permission-guarded routes, or the permission one of them declares, has ' +
+        'changed. If you ADDED a guarded route, add it to EXPECTED_GUARDED_ROUTES above — that ' +
+        'is this assertion working. If a route DISAPPEARED from this list, a ' +
+        '@RequirePermission() was downgraded to @AuthenticatedOnly() or removed, and arms 2-4 ' +
+        'below now cover one endpoint fewer while still reporting green: that is the failure ' +
+        'this test exists to catch, and it must not be fixed by editing the list.',
+    ).toEqual(EXPECTED_GUARDED_ROUTES);
+  });
+
   it('arm 1 — refuses each of them without a credential (401)', async () => {
     const failures: string[] = [];
     for (const route of routes) {
