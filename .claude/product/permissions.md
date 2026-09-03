@@ -136,13 +136,28 @@ a guest with no grants sees nothing.
    `ADMIN` and then reads the member list over that member's own unchanged cookie, which a
    `VIEWER` could not have done a moment earlier.
 
-   **`security/authorization.md` §4's no-minting-authority rule now has a second enforcement
-   point, and it is the role change.** A role may only be granted if every permission it carries
+   **`security/authorization.md` §4's no-minting-authority rule now has two enforcement points,
+   and the first is the role change.** A role may only be granted if every permission it carries
    is one the actor already holds — so an `ADMIN`, who holds `organization.manage_roles` but not
    `organization.delete`, cannot promote anybody to `OWNER`. Refused with 403
    `PERMISSION_DENIED` naming the first permission the actor lacks. It is a comparison of
    permission **sets**, deliberately, and not a role ranking: a ranking is a second model of
    authority beside this table and it drifts the first time a permission moves between roles.
+
+   **The second is removal**, added in Task 14's fix round: an actor may not remove a member
+   whose role carries a permission the actor does not hold, so `organization.manage_members`
+   alone does not let an `ADMIN` remove an `OWNER` (403 `PERMISSION_DENIED`, naming
+   `organization.delete`). It is the same helper and the same set comparison. Enforcing the rule
+   on the `PATCH` only left it one-directional — an `ADMIN` could not mint an `OWNER` and could
+   evict one, irreversibly, since the evicted owner cannot restore themselves and no `ADMIN` can
+   promote a replacement. `OWNER` removing `OWNER`, `ADMIN` removing `ADMIN`, and self-removal at
+   any role are equal or subset comparisons and pass.
+
+   **Self-removal is supported and is not an accident.** A member may remove their own
+   membership; the last-owner invariant refuses the sole owner walking out (422), and the same
+   call revokes their sessions for that organisation while leaving their account and their
+   sessions elsewhere intact. It is stated in the route's OpenAPI description so a client does
+   not have to infer it.
 5. Removing a member revokes their sessions for that organisation immediately.
 
    **Enforced since Phase 2 Task 14.** `DELETE

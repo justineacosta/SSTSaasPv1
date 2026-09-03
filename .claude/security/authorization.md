@@ -106,7 +106,7 @@ System roles ship seeded and immutable. Custom roles are per-organisation and ma
 subset of permissions the creator themselves holds — you cannot mint authority you do not
 possess, which closes the obvious privilege-escalation path.
 
-> **The no-minting rule has an enforcement point as of Phase 2 Task 14, and it is not custom
+> **The no-minting rule has two enforcement points as of Phase 2 Task 14, and neither is custom
 > roles.** Custom roles are Phase 11. What enforces it today is `PATCH
 > /api/v1/organizations/{id}/members/{membershipId}`: a member's role may only be changed to one
 > whose permission set is a **subset of the actor's own effective set**, and the refusal is 403
@@ -123,6 +123,21 @@ possess, which closes the obvious privilege-escalation path.
 > comparison have one origin. `membership.service.spec.ts` asserts the rule over all 49 ordered
 > pairs of system roles, deriving the expectation from `ROLE_PERMISSIONS` rather than from a
 > transcribed table.
+>
+> **The second point is `DELETE /api/v1/organizations/{id}/members/{membershipId}`, and it was
+> added in Task 14's fix round rather than in Task 14.** The same comparison, pointed at the role
+> the *target* holds: an actor may not remove a member whose role carries a permission the actor
+> does not hold. Without it the rule was enforced in one direction only — an `ADMIN` could not
+> **make** an `OWNER` and could **unmake** one, and could not undo it, because the removed owner
+> cannot restore themselves and no `ADMIN` can promote a replacement. `organization.manage_members`
+> is therefore necessary and not sufficient on that route.
+>
+> The ordinary cases are unaffected and are asserted rather than assumed: `OWNER` removing
+> `OWNER`, `ADMIN` removing `ADMIN`, and self-removal at any role are all equal or subset
+> comparisons and pass; `ADMIN` removing `OWNER` is 403 `PERMISSION_DENIED` naming
+> `organization.delete`. The arms are in
+> `apps/api/src/modules/memberships/memberships.integration.spec.ts`. It is one helper shared with
+> the `PATCH`, not a second copy, for the reason the paragraph above gives about rankings.
 
 | Role | Intent | Notes |
 |---|---|---|
