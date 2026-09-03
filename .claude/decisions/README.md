@@ -29,6 +29,8 @@ re-litigated every six months by someone who cannot see why the obvious option w
 | [0019](ADR-0019-platform-audit-events.md) | Actions with no organisation are audited in a separate `PlatformAuditEvent` table | Accepted |
 | [0020](ADR-0020-cross-organisation-membership-lookup.md) | The caller's own organisation list is read through one `SECURITY DEFINER` function owned by a dedicated `BYPASSRLS` role | Superseded by 0021 |
 | [0021](ADR-0021-definer-search-path-pins-pg-temp-last.md) | The cross-organisation lookup function pins `pg_temp` last in its `search_path` | Accepted |
+| [0022](ADR-0022-invitation-acceptance-definer-lookup.md) | Invitation acceptance resolves its tenant through a second `SECURITY DEFINER` lookup on the existing `BYPASSRLS` role | Accepted |
+| [0023](ADR-0023-rate-limiter-runs-in-two-phases.md) | The rate limiter runs twice — an edge pass before authentication and a tenant pass after authorization | Accepted |
 
 **0018 was claimed out of order and is now written.** It was reserved for the pending-MFA
 credential decision while Phase 2 Task 9 shipped that credential provisionally; Phase 2 Task 11
