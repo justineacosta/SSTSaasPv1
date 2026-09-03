@@ -122,7 +122,15 @@ Method: apply the mutation to the shipped source, run the target lane, record wh
 ### 3.1 The survivor: M6
 
 Deleting `deletedAt: null` from `assertOrganizationKeepsAnOwner`'s count turns **nothing** red —
-`pnpm vitest run --project integration apps/api/src/modules/memberships` exits **0**, 34/34 passing.
+`pnpm vitest run --project integration apps/api/src/modules/memberships` exits **0**, 36/36 passing.
+
+> **Corrected in the Task 14 fix round (MEDIUM-5).** This sentence said "34/34". The review ran
+> the command twice, unmutated and under M6, and got 2 files / **36** tests both times; the fix
+> round reproduced 36 before adding to the file. The report's own arithmetic elsewhere implies 36
+> — it records the integration lane growing by 36 tests, 443 to 479, across the two new files,
+> and those two files are the whole of this lane. The substance of this section is unchanged: M6
+> does survive, and the reason given for it is right. It was the count that was wrong, which is
+> ruling 108's own subject.
 
 The reason is a database constraint, not a coverage hole.
 `Membership_status_deletedAt_agree_check` makes the two columns one fact, so `status: ACTIVE`
@@ -256,11 +264,36 @@ descending order of how much they matter:
    same is true of `packages/db/src/tenant-resources.ts:28` ("Task 14's DMMF-driven coverage
    check"), which is `check:registry` and already exists. I did not build a global-`omit` guard, and
    I do not believe this task owes one. The genuinely Phase-2-Task-14 references are in
-   `session.service.ts` (695, 711, 736), `session.repository.ts:121`, `tenant-resolver.store.ts`
-   (30, 86), `authorization.integration.spec.ts` (340, 445), `product/permissions.md:104`,
-   `security/authentication.md:537` and `security/authorization.md:262`. **A cross-phase
-   task-number collision is a trap for whoever greps next**, and it will recur at Phase 2's Tasks
-   15 to 18.
+   `session.repository.ts:121`, `tenant-resolver.store.ts` (30, 86),
+   `apps/api/src/modules/roles/authorization.integration.spec.ts` (340, 445), and — cited by the
+   phrase rather than by the line, see below — `session.service.ts`'s "Task 14 owns the equivalent
+   for member removal" and "Any future caller of this method that needs 'and nothing survives'",
+   `.claude/security/authentication.md`'s "The same post-issue check belongs on any path that
+   issues a session after verifying a credential", `.claude/product/permissions.md`'s invariant 1
+   ("Enforced since Phase 2 Task 14, by a row lock rather than by a count") and
+   `.claude/security/authorization.md` §4's "The no-minting rule has two enforcement points as of
+   Phase 2 Task 14". **A cross-phase task-number collision is a
+   trap for whoever greps next**, and it will recur at Phase 2's Tasks 15 to 18.
+
+   > **Corrected in the Task 14 fix round (LOW-1 and LOW-2).** Two of these citations were line
+   > numbers into documents this very task then rewrote. `product/permissions.md:104` was blank
+   > and `security/authorization.md:262` was an unrelated sentence by the time the list was
+   > published — both had been correct at the branch base `01dfe99` and were moved by this task's
+   > own documentation commit `7ef117b`, and the fix round's documentation commits moved them
+   > again. A line number into a file the same change edits is a citation with a shelf life of one
+   > commit, so those two are now cited by heading and quoted phrase, which survive an edit.
+   > `authorization.integration.spec.ts` is at `apps/api/src/modules/roles/`, not
+   > `apps/api/src/common/` where a reader following the neighbouring paths in this list would
+   > look; its directory is now stated. Lines 340 and 445 in it were and are correct.
+   >
+   > **And the same defect then bit two more of these citations while this correction was being
+   > written**, which is why the rule and not just the two entries has changed. The fix round's
+   > MEDIUM-3 change edited `session.service.ts` and `security/authentication.md`, so
+   > `session.service.ts` 695/711/736 and `security/authentication.md:537` no longer pointed at
+   > what the list said they did — 736 had become a closing brace. Every citation in this list
+   > that names a file the fix round touched is now a quoted phrase. The three that are still line
+   > numbers name files nothing in this round edited, and each was re-run and confirmed after the
+   > last commit.
 
 3. **§5's "the answer is 404, not 403, on all three membership routes" needed splitting to be
    testable.** Two different checks produce that 404 and only one of them is what the authorization
