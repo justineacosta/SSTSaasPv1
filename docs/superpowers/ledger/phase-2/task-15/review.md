@@ -197,3 +197,135 @@ which is right; the ADR narrowed it and cut off the quoted text. **Low, MEASURED
   route uses `generalSession`, `login`, `registration`, `passwordReset*`, `mfa*`,
   `emailVerification*` — all `perIp`/`perPrincipal`, i.e. edge-only. **The claim holds.**
 
+
+---
+
+## Pass 2 — Code findings
+
+### F-1 — `revoke`'s docblock and the implementer's report both claim an expired invitation answers 404. The code answers 204 and writes an audit row. **High. MEASURED (code); behaviour INFERRED from a literal predicate.**
+
+`apps/api/src/modules/invitations/invitation.service.ts` (the `revoke` docblock):
+
+> "**An invitation that is already accepted, already revoked, expired, or belongs to another
+> organisation all answer the same 404.** … An expired invitation answering 404 rather than a
+> successful revocation is deliberate: there is nothing to revoke, and a 204 would tell the caller
+> they had changed something they had not."
+
+Report §4 item 7 repeats it as a decision taken:
+
+> "**An expired invitation is a 404 on revoke, not a 204.** There is nothing to revoke, and a 204
+> would tell the caller they had changed something they had not."
+
+The predicate that decides it is `LIVE_INVITATION`:
+
+```ts
+const LIVE_INVITATION = { acceptedAt: null, revokedAt: null } as const;
+```
+
+`revoke` uses it and nothing else, in both statements:
+
+```ts
+where: { id: invitationId, organizationId: ctx.organizationId, ...LIVE_INVITATION },
+```
+
+**There is no `expiresAt` term anywhere in `revoke`.** An expired-but-unconsumed invitation has
+`acceptedAt IS NULL` and `revokedAt IS NULL` — the same file says so twice, in `create`'s
+supersede comment ("an expired-but-unconsumed row still holds the slot") and in `LIVE_INVITATION`'s
+own docblock ("An expired row is still 'live' by this definition and still holds the slot"). So
+`findFirst` returns it, `updateMany` matches it and reports `count: 1`, an `INVITATION_REVOKED`
+audit event is written, and the endpoint answers **204**.
+
+The behaviour is arguably the better one. The defect is that two pieces of prose — one of them a
+docblock a future reader will trust over the code — assert the opposite, and **no test covers it**:
+
+```
+$ grep -n "  it(" apps/api/src/modules/invitations/invitations.integration.spec.ts | grep -i revok
+850:  it('answers 404 to an invitation that is already revoked, already accepted, or absent', …
+919:  it('does not write two audit rows when two revocations race one invitation', …
+```
+
+Expired is deliberately not in that list, and the report's §10 ("everything I could not finish")
+does not name it as untested either. Either the predicate gains an expiry term and the test gains a
+fourth id, or both docblock and report lose the sentence. As it stands the file documents a control
+it does not have.
+
+### F-2 — the second limiter pass is skipped by every refusal above it, and `invitations` declares nothing at the edge, so the create route has **no** rate limit for any request that fails a guard. **Medium. INFERRED (from the asserted guard order and the class table).**
+
+Asserted guard order (`apps/api/src/app.module.spec.ts`, green):
+
+```
+RateLimitGuard, AuthenticationGuard, TenantContextGuard, CsrfGuard, CrossSiteGuard,
+EmailVerifiedGuard, MfaEnrolmentGuard, AuthorizationGuard, TenantRateLimitGuard, EntitlementGuard
+```
+
+`invitations` is `{ perOrganization: …, failMode: 'closed' }` and nothing else
+(`rate-limit.config.ts:318`), and `RATE_LIMIT_SCOPE_PHASES` puts `perOrganization` in `'tenant'`.
+So on `POST /api/v1/organizations/:id/invitations`:
+
+- the **edge** pass filters the scope list to `perIp`/`perPrincipal`, finds neither declared,
+  `declared === 0`, and returns true **without issuing a Redis command** — by design, and the
+  guard's own comment says so;
+- any refusal from CSRF, cross-site, `@RequireVerifiedEmail()`, MFA enrolment, `AuthorizationGuard`,
+  or an unresolved tenant throws **before** `TenantRateLimitGuard` runs.
+
+Concretely: a signed-in `GUEST` (or any member without `organization.manage_members`, or anyone
+whose email is unverified) can issue **unlimited** POSTs to that route. Each one costs a Redis
+session read, a Postgres user read and a full tenant-context resolution, and charges no window
+anywhere. Before the split the same request was refused at the edge for zero backend cost.
+
+This is the inverse of the trade ADR-0023's placement argument states ("a `GUEST` who cannot invite
+anybody could still exhaust the organisation's daily invitation budget"). The ADR's Consequences
+section lists three items and does not include this one; `TenantRateLimitGuard`'s own docblock makes
+the same one-sided argument.
+
+Honest bound on severity: rulings 55 and 90 already leave `generalSession`'s `perPrincipal` limit
+applied to no request, so **every** authenticated route in this API is currently unlimited and this
+one is no worse than its neighbours. That is why this is Medium and not High. What is new is that
+the ADR presents the placement as a pure win and the second half of the trade is unrecorded.
+
+### F-3 — `POST /api/v1/invitations/accept`, when built, cannot carry any `perOrganization` class, and nothing records that. **Low. INFERRED.**
+
+D1 makes accept authenticated and tenant-less, so `TenantContextGuard` resolves nothing and
+`request.organizationId` stays undefined — it is written only in the `resolution.outcome ===
+'resolved'` arm. The tenant pass would then see `declared === 1`, `decisions.length === 0`,
+`failMode: 'closed'` → **429 on every request**, which is precisely the pre-split failure ADR-0023
+exists to remove. So accept must fall back to `generalSession` — whose only scope is the
+`perPrincipal` that rulings 55/90 leave unresolvable. **The endpoint that consumes a credential
+from a request body will therefore ship with no rate limit at all.**
+
+The token is 256 bits, so this is not a brute-force exposure; it is an unmetered channel into a
+database lookup that also invokes the `SECURITY DEFINER` function. Neither ADR names it and neither
+does the `RATE_LIMIT_SCOPE_PHASES` docblock. It is the first thing the accept implementer will hit.
+
+### F-4 — token discipline: clean.
+
+Verified against `security/authentication.md` §6's five properties.
+
+| Property | Where | Verdict |
+|---|---|---|
+| 256-bit random | `secret-token.ts` — `SECRET_TOKEN_BYTES = 32`, `randomBytes(32).toString('base64url')` | holds |
+| hashed at rest | `mintSecretToken` returns `{token, tokenHash: sha256(token)}`; only `minted.tokenHash` reaches `tx.invitation.create` | holds |
+| 7-day TTL | `this.tokens.expiresAtFor('INVITATION')` reads `TOKEN_TTL_INVITATION_SECONDS`, default `604_800` (`packages/config/src/env.ts:212`; `env.spec.ts:376` asserts `604_800 // 7d`) | holds |
+| email-only delivery | `created.token` is passed only to `this.sendInvitation(...)`, after the commit; `InvitationMailerAdapter.send` puts it in `EMAIL_TEMPLATES.invitation` and in no log line (the failure log names `templateId` and `recipient` only) | holds |
+| never echoed by an endpoint | `INVITATION_COLUMNS` has no `tokenHash`; all three statements returning an invitation use it; `toResponse` maps a fixed field list. Integration asserts both halves — "creates an invitation, sends exactly one message, and **returns no token**" and "lists the organisation's invitations newest first, **and never a token**" | holds |
+| not in the audit row | `MEMBER_INVITED` metadata is `{email, roleKey, supersededInvitationId}`; `minted.token` is not referenced in that object | holds |
+
+Single-use is **not** verifiable, because consumption is the accept endpoint and it does not exist.
+
+### F-5 — audit events: in-transaction, correct resource type, and `INVITATION_EXPIRED`'s absence is honest.
+
+- `MEMBER_INVITED` is written by `this.audit.record(tx, …)` inside the `withTenantTransaction`
+  callback, as is `INVITATION_REVOKED`. `AuditService.record` takes the transaction handle rather
+  than opening one, so `CLAUDE.md` rule 10 holds by construction. The revoke test asserts the
+  pairing directly ("revokes a pending invitation, with the audit row in the same transaction"),
+  and the 404 test asserts **zero** `INVITATION_REVOKED` rows after three refusals.
+- `resourceType: 'Invitation'` on both, and `'Invitation'` is in `AUDIT_RESOURCE_TYPES`.
+- D4's "the superseded row gets no `INVITATION_REVOKED`" holds: the supersede `updateMany` writes
+  no event, and the id travels in `MEMBER_INVITED.metadata.supersededInvitationId`.
+- `INVITATION_EXPIRED`'s documented absence is **honest**: `grep -rn "INVITATION_EXPIRED" .claude/`
+  returns nothing, so the comment's claim "`security/audit.md` §4 does not list `INVITATION_EXPIRED`
+  either, so nothing is owed to that document" reproduces.
+- The one real inconsistency is the one the report flags itself (§10 item 6): `INVITATION_ACCEPTED`
+  is in `AUDIT_ACTIONS` with **no producer**, which that constant's own governing rule ("Only names
+  something in this codebase writes") forbids. Flagged honestly; it remains a live contradiction in
+  the file and the orchestrator has not ruled on it.
