@@ -466,6 +466,36 @@ describe('PATCH /api/v1/organizations/:id/members/:membershipId', () => {
     expect(codeOf(response.body)).toBe('RESOURCE_NOT_FOUND');
   });
 
+  it('answers 404 when the path names an organisation the session is not acting in', async () => {
+    // `assertPathIsActiveTenant`, per route rather than only through the
+    // authorization matrix. The membership id is a REAL, live one in the
+    // caller's own organisation and the caller genuinely holds
+    // `organization.manage_roles` there — so the only thing wrong with the
+    // request is that `:id` names a different organisation. Without that check
+    // the request would succeed, which is why the membership id has to be a
+    // valid one: a made-up id answers 404 from the lookup and the arm would
+    // pass over a handler that never compared the path to the tenant at all.
+    await clearRateLimits(harness.redis);
+    const { actor, organizationId } = await acting('OWNER');
+    const colleague = await user();
+    const target = await membership({ organizationId, userId: colleague.id, role: 'VIEWER' });
+    const elsewhere = await organization();
+
+    const response = await request(server)
+      .patch(`${membersPath(elsewhere)}/${target}`)
+      .set(csrf(actor))
+      .send({ roleKey: 'ADMIN' });
+
+    expect(response.status).toBe(404);
+    expect(codeOf(response.body)).toBe('RESOURCE_NOT_FOUND');
+
+    const unchanged = await owner.membership.findUniqueOrThrow({
+      where: { id: target },
+      select: { role: { select: { key: true } } },
+    });
+    expect(unchanged.role.key).toBe('VIEWER');
+  });
+
   it('answers 404 for a membership id that does not exist, with the same body', async () => {
     await clearRateLimits(harness.redis);
     const { actor, organizationId } = await acting('OWNER');
@@ -742,6 +772,32 @@ describe('DELETE /api/v1/organizations/:id/members/:membershipId', () => {
       .data.filter((row) => row.user.id === colleague.id);
     expect(listed).toHaveLength(1);
     expect(listed[0]?.id).toBe(live);
+  });
+
+  it('answers 404 when the path names an organisation the session is not acting in', async () => {
+    // The removal's half of `assertPathIsActiveTenant` — a real, live
+    // membership in the caller's own organisation, reached through a path that
+    // names a different one. See the PATCH test above for why the id must be a
+    // real one.
+    await clearRateLimits(harness.redis);
+    const { actor, organizationId } = await acting('OWNER');
+    const colleague = await user();
+    const target = await membership({ organizationId, userId: colleague.id, role: 'VIEWER' });
+    const elsewhere = await organization();
+
+    const response = await request(server)
+      .delete(`${membersPath(elsewhere)}/${target}`)
+      .set(csrf(actor));
+
+    expect(response.status).toBe(404);
+    expect(codeOf(response.body)).toBe('RESOURCE_NOT_FOUND');
+
+    const untouched = await owner.membership.findUniqueOrThrow({
+      where: { id: target },
+      select: { status: true, deletedAt: true },
+    });
+    expect(untouched.status).toBe('ACTIVE');
+    expect(untouched.deletedAt).toBeNull();
   });
 
   it('answers 404 for another tenant’s membership id', async () => {
