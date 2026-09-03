@@ -133,3 +133,67 @@ The *conclusion* drawn from the census — "none of `Membership`, `Invitation`, 
 compound `@@unique`" — is **correct** (the three real declarations are on `MfaFactor` and
 `IdentityProviderLink`). So this is a false supporting measurement under a true claim, which is
 the harder kind to catch and exactly the phase's recurring defect.
+
+---
+
+### C-4 — ADR-0022 and ADR-0023 measurements: reproduced, with one off-by-two citation
+
+**ADR-0022** (`invitation-acceptance-definer-lookup`). Every measurement quoted reproduces.
+
+I re-ran the ADR's own probe table against the live compose Postgres, in a transaction that was
+rolled back (`docker compose exec -T postgres psql -U sentinel -d sentinel`, `SET LOCAL ROLE
+sentinel_app`, one seeded `Invitation` with `tokenHash = 'REVIEWHASH_abc'`):
+
+```
+ A direct read, no org set  | 0
+ B definer, no org set      | org_rev_a
+ C definer, wrong hash      | NULL
+ D direct read, correct org | 1
+ E direct read, wrong org   | 0
+```
+
+That is the ADR's table exactly, plus row E which it did not need. Role attributes and grants also
+reproduce:
+
+```
+       rolname       | rolsuper | rolbypassrls | rolcanlogin
+ sentinel            | t        | t            | t
+ sentinel_app        | f        | f            | t
+ sentinel_org_lookup | f        | t            | f
+
+                proname                |        owner        | prosecdef |          proconfig
+ user_organizations                    | sentinel_org_lookup | t         | {"search_path=public, pg_temp"}
+ invitation_organization_by_token_hash | sentinel_org_lookup | t         | {"search_path=public, pg_temp"}
+
+ grantee: sentinel_org_lookup -> SELECT on Invitation, Membership, Organization   (three tables)
+ proacl:  {sentinel_org_lookup=X/…, sentinel_app=X/…}                             (PUBLIC has none)
+ has_database_privilege('sentinel_app','TEMPORARY')  = f
+ has_database_privilege('public','TEMPORARY')        = f
+```
+
+So the ADR's Consequences ("three tables instead of two", "`sentinel_app` gains EXECUTE on one more
+function and is otherwise unchanged") are **true as measured**.
+
+**One citation is wrong.** ADR-0022's Context cites the `Invitation` policy at
+`…/20260820121229_row_level_security/migration.sql:18-20`. Lines 18-20 are `ALTER TABLE … ENABLE`,
+`ALTER TABLE … FORCE`, `CREATE POLICY "tenant_isolation" ON "Invitation"`. The predicate the ADR
+quotes on the same line — `USING ("organizationId" = current_setting('app.organization_id', true))`
+— is at line **21**, and the `WITH CHECK` half at 22. The implementer's report cited **18-22**,
+which is right; the ADR narrowed it and cut off the quoted text. **Low, MEASURED.**
+
+**ADR-0023** (`rate-limiter-runs-in-two-phases`). Measurements reproduce.
+
+- `rate-limit.integration.spec.ts:290-296` is exactly the cited test — verified with
+  `grep -n "refuses when a fail-closed class has no resolvable scope"` → line 290, closing `});` at
+  296. The ADR's line range is correct (report §2 cites the same range).
+- The `RATE_LIMIT_SCOPE_PHASES` table quoted in the ADR matches
+  `rate-limit.config.ts:378-382` exactly.
+- "The guard pipeline is ten global guards" — `app.module.spec.ts` asserts `toHaveLength(10)` and
+  the exact ordered array with `TenantRateLimitGuard` between `AuthorizationGuard` and
+  `EntitlementGuard`; three relational assertions are present as the ADR claims.
+- "The edge pass is unchanged for every existing route" — verified by enumerating every
+  `@RateLimit(...)` in `apps/api/src` outside specs (30 hits, 24 of them decorators). Only
+  `invitations.controller.ts:136` names a class with a `perOrganization` scope. Every other shipped
+  route uses `generalSession`, `login`, `registration`, `passwordReset*`, `mfa*`,
+  `emailVerification*` — all `perIp`/`perPrincipal`, i.e. edge-only. **The claim holds.**
+
