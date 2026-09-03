@@ -2299,7 +2299,9 @@ switch that is taken back leaves no append-only event saying it happened.
 
 **Status: Implemented**, with one security window open and recorded below rather than closed.
 
-*Verified 2026-09-04 by the orchestrator on the finished tree at `<HEAD>`, re-running every
+*Verified 2026-09-04 by the orchestrator on the tree committed as `5a1195a` — the suite was run
+on that working tree immediately before it was committed, and every change since the last
+code-affecting commit is Markdown. Re-running every
 command rather than taking a subagent's report, with exit codes captured outside a pipe
 (`out=$(pnpm <cmd> 2>&1); code=$?`) because `$?` after a pipe reports the last stage's status and
 not the command's.*
