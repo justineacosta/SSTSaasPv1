@@ -14,7 +14,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Partially Implemented** — Tasks 1–14 of 18 done 2026-09-03, **Checkpoint A passed, and Tasks 13 and 14 are both merged into `main` and green on CI**. The identity API is built and the authorization pipeline is enforced end to end: a request is rate-limited, authenticated against an opaque server-side session, CSRF-checked, resolved to a tenant, and authorized against a permission the route declares — and every one of those stages can deny. **Task 14 took the permission-guarded route count from three to seven** — the member list, role change and removal under `/organizations/:id/members`, plus `GET /roles` — and made `product/permissions.md`'s invariants 1 and 5 enforced rather than described. **No authentication UI exists, so the E2E journey exit criterion is unmet and the phase is not complete.** Task 14 merged as **PR #28** (rebase, 2026-09-03T07:56:59Z, resulting head `43ef446`); `git ls-remote --heads origin` returns `main` alone. Evidence table under Phase 2 below |
+| 2 | Identity | **Partially Implemented** — Tasks 1–15 of 18 done 2026-09-04, **Checkpoint A passed; Tasks 13 and 14 are merged into `main` and green on CI, Task 15 is built and verified but NOT pushed and NOT merged**. The identity API is built and the authorization pipeline is enforced end to end: a request is rate-limited, authenticated against an opaque server-side session, CSRF-checked, resolved to a tenant, and authorized against a permission the route declares — and every one of those stages can deny. **Task 15 took the OpenAPI document from 24 paths to 27 and the permission-guarded route count from seven to ten**, adding invitation create, list and revoke plus `POST /api/v1/invitations/accept` — the first route in this product that is authenticated and deliberately declares no permission, because the acceptor is a member of nothing. It also **closed a latent Task 1 defect** (`Invitation` carried a full unique on `(organizationId, email)` and no delete path, so re-inviting a removed member was impossible) and **forced the rate limiter into two phases** (ADR-0023), taking the guard pipeline to ten. **One security window is open and recorded**: an invitation offering `OWNER` survives its issuer's removal and still mints an `OWNER` — the remedy belongs in Task 14's writes and is owed. **No authentication UI exists, so the E2E journey exit criterion is unmet and the phase is not complete.** Evidence table under Phase 2 below |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -618,10 +618,13 @@ else is needed, and re-verifying Phase 1 is not part of it:
 4. The plan's section for **your task only**, plus the previous task's ledger entry at
    `docs/superpowers/ledger/phase-2/task-NN/`.
 
-**Status is Partially Implemented as of Task 12 — Checkpoint A, recorded below with its evidence
-table.** Eighteen endpoints are live: a person can register, confirm an address, sign in, complete
-a second factor, enrol or disable MFA, change or reset a password, read their own session document
-and sign out. The authorization pipeline is built and every one of its nine guard stages can deny.
+**Status is Partially Implemented. Checkpoint A is recorded below with its evidence table, and
+Tasks 13, 14 and 15 have shipped since.** As of Task 15 the OpenAPI document holds **27 paths**,
+computed by `pnpm check:openapi` rather than counted by hand: a person can register, confirm an
+address, sign in, complete a second factor, enrol or disable MFA, change or reset a password, read
+their own session document, sign out, create and switch organisations, manage members and roles,
+and invite, revoke and accept invitations. The authorization pipeline is built and every one of its
+**ten** guard stages can deny — the tenth is Task 15's second rate-limiter pass (ADR-0023).
 
 **Two gaps, and neither is a detail.** There is **no authentication UI** — `apps/web`'s `(auth)`
 route group still holds a layout with no routes under it — so the E2E journey exit criterion is
@@ -2291,6 +2294,184 @@ switch that is taken back leaves no append-only event saying it happened.
   dormant-account rehash half; the denial audit event, which belongs with Phase 3's `/audit-logs`;
   `Organization.name`'s absent length cap (ruling 86); and `meta.total` on list endpoints, whose
   natural owner is Phase 3.
+
+## Task 15 — invitations, and the second question no tenant context can answer
+
+**Status: Implemented**, with one security window open and recorded below rather than closed.
+
+*Verified 2026-09-04 by the orchestrator on the finished tree at `<HEAD>`, re-running every
+command rather than taking a subagent's report, with exit codes captured outside a pipe
+(`out=$(pnpm <cmd> 2>&1); code=$?`) because `$?` after a pipe reports the last stage's status and
+not the command's.*
+
+| Command | Exit | What it proves |
+|---|---|---|
+| `pnpm format:check` | 0 | Prettier style across the workspace. |
+| `pnpm lint` | 0 | 14 tasks. ESLint clean, including the no-raw-hex and tenant-scoping rules. |
+| `pnpm typecheck` | 0 | 14 tasks. Types compile — and nothing more than that. |
+| `pnpm test` | 0 | **100 files / 1716 tests**, up from 99 / 1673 at Task 14. |
+| `pnpm check:specs` | 0 | **128 spec files**, each claimed by exactly one Vitest project. |
+| `pnpm test:integration` | 0, 0, 0 | **28 files / 521 tests**, up from 27 / 485. Run three times end to end — twice on the code-final tree and once more at final `HEAD` — because ruling 119 records this lane going red on a coin flip. |
+| `pnpm build` | 0 | 8 tasks. |
+| `pnpm check:openapi` | 0 | **27 paths**, up from 24. `openapi.json` byte-identical to what the contracts generate. |
+| `pnpm check:registry` | 0 | 15 models, 3 tenant-owned, 1 tenant root, 11 deliberately global — unchanged, correctly: this task added no table. |
+| `pnpm check:secrets` | 0 | 457 tracked files, no credential-shaped literals. |
+| `pnpm db:migrate` | 0 | Both Task 15 migrations applied to the local database. |
+| `docker compose ps` | — | Four services healthy. |
+
+### What Task 15 built
+
+**Four endpoints**, taking the API from 24 to 27 OpenAPI paths and the count of routes declaring
+`@RequirePermission()` from seven to ten:
+
+- `POST`, `GET` on `/api/v1/organizations/:id/invitations` and `DELETE` on
+  `.../invitations/:invitationId`, all three declaring `organization.manage_members`. The create
+  route additionally carries `@RequireVerifiedEmail()` — `security/authentication.md` §6's
+  "unverified users cannot create organisations, **invite**, or scan".
+- `POST /api/v1/invitations/accept`, on its own tenant-less controller, declaring
+  `@AuthenticatedOnly()` and **no permission at all**. It is the eleventh route and it is
+  deliberately absent from `EXPECTED_GUARDED_ROUTES`.
+
+**Two migrations, both reviewed as SQL by the operator before they touched a database**, per the
+plan's execution protocol §5.
+
+`20260903160000_invitation_partial_unique` replaces `Invitation`'s full
+`@@unique([organizationId, email])` with a partial unique index predicated on
+`"acceptedAt" IS NULL AND "revokedAt" IS NULL`. **This was a latent defect from Task 1, in the
+sibling table of the one Task 1 fixed**, and the comment beside `model Membership` predicted it in
+so many words. `Invitation` has no delete path, so under a full unique index the first invitation
+ever sent to an address permanently consumed that address's only slot in the organisation, and
+"re-inviting a removed member must work" was impossible. Expiry is deliberately not in the
+predicate and cannot be: a partial index predicate must be `IMMUTABLE` and `now()` is not, so
+Postgres refuses it outright. The supersede path covers it instead.
+
+`20260904020000_invitation_lookup_function` adds the `SECURITY DEFINER` lookup
+[ADR-0022](../decisions/ADR-0022-invitation-acceptance-definer-lookup.md) records.
+
+### The blocker this task hit, and why it needed a decision rather than a workaround
+
+**Accepting an invitation is the second question in Phase 2 that no tenant context can answer, and
+a sharper case than the first.** `GET /organizations` at least belongs to somebody who has
+organisations; the person accepting an invitation **is a member of nothing**. Their
+`Session.activeOrganizationId` is null, `TenantContextGuard` resolves no tenant, and
+`withTenantTransaction` has no id to `SET LOCAL`. The invitation row names the organisation — that
+is the fact being looked up — so the handler could not open the transaction that would let it read
+the row that would tell it which transaction to open.
+
+Measured as `sentinel_app` (`rolsuper=f, rolbypassrls=f`) in one transaction, rolled back:
+
+```
+A. direct read, no org set        0   <- the defect
+B. definer function, no org set   org_probe_t15
+C. definer function, wrong hash   NULL
+D. direct read, correct org set   1   <- why the fix is small
+```
+
+Row A is why `prisma.invitation.findUnique({ where: { tokenHash } })` compiles, passes review, and
+returns null for every invitation ever sent.
+
+**The containment argument is worth reading before anyone extends that path**, and the first draft
+of ADR-0022 got it wrong. `withTenantTransaction(base, organizationId, fn)` takes a **raw** id and
+issues `set_config` for it with **no membership check of any kind**. So the accept handler opens a
+fully privileged tenant transaction into an organisation named by a value a client-supplied token
+selected. What keeps that safe is the handler re-reading the invitation inside that transaction and
+refusing unless the row is live, unexpired and addressed to the authenticated user — **not** RLS,
+which by then has been told to trust the id. The adversarial review caught the ADR claiming
+otherwise.
+
+### The rate limiter now runs twice, and that was forced
+
+`invitations` is `perOrganization`-only and fail-closed, and nothing populated
+`request.organizationId` because the organisation comes from `TenantContextGuard`, which runs after
+the limiter. **The route would have answered 429 to every request, including the first** — and the
+codebase already asserted exactly that, in a Phase 1 test that drives `@RateLimit('invitations')`
+on a fixture route and expects 429.
+
+[ADR-0023](../decisions/ADR-0023-rate-limiter-runs-in-two-phases.md) records the split:
+`RATE_LIMIT_SCOPE_PHASES` puts `perIp` and body-keyed `perPrincipal` in an `'edge'` pass before
+authentication and `perOrganization` in a `'tenant'` pass after authorization. The guard pipeline
+is now **ten** global guards and `app.module.spec.ts` pins the order.
+
+**`perPrincipal: 'authenticated'` deliberately stayed at the edge, where it still resolves
+nothing.** Rulings 55 and 90 are not closed by this task: `generalSession`'s 1000/min per principal
+is still applied to no request. The stage it needs now exists; switching it on is a separate
+decision with its own blast radius.
+
+### The open window — read this before building on invitations
+
+**An invitation offering `OWNER` survives its issuer being removed, and accepting it still mints an
+`OWNER`.** D5's no-minting check runs when an invitation is created and nowhere else. Measured end
+to end through Task 14's real `DELETE .../members/:membershipId`: the removed owner's invitation is
+still live and the acceptor receives 201 with `roleKey: OWNER`.
+
+This is a re-escalation path for somebody removed precisely to take that authority away, through an
+address they control, and it is carry-forward ruling 124's shape — an authority rule enforced on one
+verb and not on the events that should invalidate its output.
+
+**The remedy is on the other side of the transaction**, in `MembershipService.remove` and
+`updateRole`, where the invitations a departing member issued and could no longer issue would be
+revoked in the same transaction as the removal. That is a change to Task 14's writes and it is
+recorded as owed rather than taken here. Re-running `assertActorMayGrant` at accept time instead was
+considered and rejected: it would refuse every invitation from a colleague who has since
+legitimately left, which is a lock-out with no recovery path for the invitee.
+
+It is pinned by `D9 — RECORDS AN OPEN WINDOW: an invitation outlives its issuer's authority`,
+written to fail if the behaviour changes silently and named so nobody reads it as approval.
+
+### What the adversarial review found, and what it cost
+
+Fourteen findings: one High, six Medium, the rest Low or clean. **Two were against prose the
+orchestrator wrote**, which is the outcome the citation pass exists to produce.
+
+- **The High was a documented control that did not exist.** `revoke`'s docblock and the
+  implementer's report both stated that an expired invitation answers 404. It answers **204** —
+  measured with a probe. The ruling went to the code: `list` applies no liveness filter, so an
+  expired invitation is visible to the caller being refused, and answering 404 to a revoke of a row
+  they can see is two contradictory answers about one row. Setting `revokedAt` also does real work:
+  it frees the `(organizationId, email)` slot immediately.
+- **A mutation table asserted a red run that does not happen.** The report claimed removing
+  `deletedAt: null` from the already-a-member check produced one failure; the reviewer measured
+  20/20 green over two runs, and green again for removing `status: 'ACTIVE'` alone. Only removing
+  **both** goes red — because the CHECK constraint `Membership_status_deletedAt_agree_check` makes
+  the two terms a biconditional. **That is the database working, not a missing test**, and no
+  mutation deleting one term can go red. The predicate now carries a comment naming that dependency
+  so nobody simplifies a term away expecting a test to catch it.
+- **Ruling 108 again, inside a file this task edited.** `authorization-matrix.integration.spec.ts`
+  carried "Seven routes … counted from `EXPECTED_GUARDED_ROUTES` below rather than remembered"
+  while that constant held ten, and "the other five routes" where it was eight. A comment that
+  says how it was counted is not the same as having recounted it.
+- **`emails/registry.ts` said "There are NINE members" of a record holding ten.** Traced with
+  `git log -S`: seven from Task 5, `registrationAttempt` eighth on 2026-08-31, `failedLoginBurst`
+  ninth on 2026-09-01, and `mfaRecoveryCodesRegenerated` tenth on 2026-09-02 in Task 11's fix
+  round — after the ordinal narrative was written and while it was still true. A paragraph that
+  counts by narrating its own history stays correct only if every later writer reads the narration.
+
+### Still owed after Task 15
+
+- **The open D9 window above.** The highest-value item on this list, and the only one that is a
+  security gap rather than a limitation. Its natural owner is whoever next touches
+  `MembershipService.remove` and `updateRole`.
+- **Rulings 55 and 90 stay open.** The tenant stage exists now, so the remaining work is a decision
+  about switching `perPrincipal: 'authenticated'` on, not a missing mechanism.
+- **A request refused above the tenant limiter pass is never counted.** `invitations` declares
+  nothing at the edge, so an authenticated caller lacking `organization.manage_members` has an
+  unlimited channel to a 403. The mirror placement is worse — it would let anyone holding any
+  session in the tenant spend the tenant's 50/day budget — so the chosen order is the better of two
+  imperfect ones, and it is bounded by rulings 55 and 90 already leaving every authenticated route
+  effectively unlimited.
+- **`POST /api/v1/invitations/accept` can carry no `perOrganization` class**, for the same reason
+  ADR-0022 exists. Any abuse limit for that route has to be `perIp` or a body-keyed `perPrincipal`
+  at the edge, and none is declared today.
+- **`MembershipStatus.INVITED` still has no producer.** Acceptance creates the `Membership`, so no
+  row exists while an invitation is pending. Nothing outside tests writes it.
+- **The tenant-client compound-unique test lost its subject.** No tenant-owned model carries a
+  compound `@@unique` any more, so the property was replaced by a weaker one plus a DMMF sentinel
+  naming what to restore. The loss is stated in the file rather than hidden.
+- Carried forward and untouched by this task: the promoted session's 7-day lifetime even when
+  "remember me" was ticked; incremental MFA key rotation; per-account notice throttling (ruling
+  79); ruling 24's dormant-account rehash half; the denial audit event, which belongs with Phase
+  3's `/audit-logs`; `Organization.name`'s absent length cap (ruling 86); and `meta.total` on list
+  endpoints, whose natural owner is Phase 3.
 
 ### Phase 3 — SaaS core
 Projects, assets, **asset ownership verification**, scope and scope rules with the
