@@ -2044,7 +2044,7 @@
           "Memberships"
         ],
         "summary": "Remove a member from an organisation.",
-        "description": "Soft-deletes one membership in the organisation the session is currently acting in and writes a `MEMBER_REMOVED` audit event in the same transaction. Requires `organization.manage_members`. The row is retained with a `deletedAt` timestamp rather than deleted, which is what allows the same person to be re-added later. **The last owner cannot be removed**: a removal that would leave the organisation with no `OWNER` is refused with 422 `INVALID_STATE_TRANSITION`, decided under a row lock on the organisation so that two concurrent removals cannot both succeed. The removed member’s sessions **for this organisation** are revoked immediately, on their next request rather than at a cache expiry; their sessions pointed at other organisations, or at none, are deliberately left alone so that removal never locks somebody out of their own account. A membership belonging to another organisation, one that does not exist, and one that has already been removed all answer the same 404. Requires `X-CSRF-Token`.",
+        "description": "Soft-deletes one membership in the organisation the session is currently acting in and writes a `MEMBER_REMOVED` audit event in the same transaction. Requires `organization.manage_members`. The row is retained with a `deletedAt` timestamp rather than deleted, which is what allows the same person to be re-added later. **The last owner cannot be removed**: a removal that would leave the organisation with no `OWNER` is refused with 422 `INVALID_STATE_TRANSITION`, decided under a row lock on the organisation so that two concurrent removals cannot both succeed. The removed member’s sessions **for this organisation** are revoked immediately, on their next request rather than at a cache expiry; their sessions pointed at other organisations, or at none, are deliberately left alone so that removal never locks somebody out of their own account. A membership belonging to another organisation, one that does not exist, and one that has already been removed all answer the same 404. **A member may remove themselves**: pass your own membership id and the membership is soft-deleted and your sessions for this organisation are revoked, subject to the same last-owner rule — the sole owner of an organisation cannot leave it. **You may not remove a member whose role holds a permission you do not hold yourself**, which is refused with 403 `PERMISSION_DENIED` naming the first such permission: `organization.manage_members` lets an `ADMIN` remove another `ADMIN`, a `MEMBER` or themselves, and does not let them remove an `OWNER`. Requires `X-CSRF-Token`.",
         "parameters": [
           {
             "name": "id",
@@ -2073,7 +2073,7 @@
             "description": "No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`)."
           },
           "403": {
-            "description": "The role lacks `organization.manage_members`, the organisation is suspended, or a CSRF failure."
+            "description": "The role lacks `organization.manage_members`, the target member holds a permission the caller does not (`PERMISSION_DENIED`), the organisation is suspended, or a CSRF failure."
           },
           "404": {
             "description": "The path id is not the session’s active organisation, or no live membership with that id exists in it (`RESOURCE_NOT_FOUND`)."

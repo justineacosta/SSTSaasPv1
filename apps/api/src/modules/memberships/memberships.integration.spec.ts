@@ -726,6 +726,105 @@ describe('DELETE /api/v1/organizations/:id/members/:membershipId', () => {
     expect(response.status).toBe(204);
   });
 
+  it('refuses an ADMIN removing an OWNER with 403, and the OWNER is still there', async () => {
+    // THE ASYMMETRY THIS CLOSES. D5 stops an `ADMIN` from *making* an `OWNER`;
+    // without the mirror on this route an `ADMIN` could *unmake* one and could
+    // not undo it — the removed owner cannot restore themselves and no `ADMIN`
+    // can promote a replacement. `security/authorization.md` §4: you cannot mint
+    // authority you do not possess, and evicting the only principal who holds it
+    // is the same rule pointed the other way.
+    await clearRateLimits(harness.redis);
+    const { actor, organizationId } = await acting('ADMIN');
+    const boss = await user();
+    const target = await membership({ organizationId, userId: boss.id, role: 'OWNER' });
+
+    const response = await request(server)
+      .delete(`${membersPath(organizationId)}/${target}`)
+      .set(csrf(actor));
+
+    expect(response.status).toBe(403);
+    expect(codeOf(response.body)).toBe('PERMISSION_DENIED');
+    // The same `required` the PATCH arm names, from the same helper: the first
+    // permission in `PERMISSIONS` order that OWNER holds and ADMIN does not.
+    expect(envelopeOf(response.body).error.details).toMatchObject({
+      required: 'organization.delete',
+      yourRole: 'ADMIN',
+    });
+
+    // A 403 that left the row removed would be the worst of both answers.
+    const row = await owner.membership.findUniqueOrThrow({
+      where: { id: target },
+      select: { status: true, deletedAt: true },
+    });
+    expect(row.status).toBe('ACTIVE');
+    expect(row.deletedAt).toBeNull();
+    expect(
+      await owner.auditEvent.count({ where: { organizationId, action: 'MEMBER_REMOVED' } }),
+    ).toBe(0);
+  });
+
+  it('admits an ADMIN removing another ADMIN — equal sets pass', async () => {
+    // The rule must not brick the ordinary case. `ADMIN` removing `ADMIN` is a
+    // set compared with itself, so nothing is missing and it passes. This arm is
+    // what stops the check above from being satisfied by a role *ranking*, which
+    // would refuse this one too.
+    await clearRateLimits(harness.redis);
+    const { actor, organizationId } = await acting('ADMIN');
+    const colleague = await user();
+    const target = await membership({ organizationId, userId: colleague.id, role: 'ADMIN' });
+
+    const response = await request(server)
+      .delete(`${membersPath(organizationId)}/${target}`)
+      .set(csrf(actor));
+
+    expect(response.status).toBe(204);
+  });
+
+  it('admits an ADMIN removing themselves, and revokes their session for this organisation', async () => {
+    // SELF-REMOVAL IS SUPPORTED, and the authority check never refuses it: an
+    // actor's own role is an equal set to itself. Leaving an organisation is a
+    // legitimate action, bounded by the last-owner invariant, and ruling 95 is
+    // satisfied — the account survives, only this tenant's sessions go.
+    await clearRateLimits(harness.redis);
+    const { actor, organizationId, membershipId } = await acting('ADMIN');
+    // A second member holding OWNER, so the last-owner invariant is not what
+    // decides this arm.
+    const boss = await user();
+    await membership({ organizationId, userId: boss.id, role: 'OWNER' });
+
+    const response = await request(server)
+      .delete(`${membersPath(organizationId)}/${membershipId}`)
+      .set(csrf(actor));
+
+    expect(response.status).toBe(204);
+
+    const row = await owner.membership.findUniqueOrThrow({
+      where: { id: membershipId },
+      select: { status: true, deletedAt: true },
+    });
+    expect(row.status).toBe('REMOVED');
+    expect(row.deletedAt).not.toBeNull();
+
+    const session = await owner.session.findUniqueOrThrow({
+      where: { id: actor.sessionId },
+      select: { revokedAt: true },
+    });
+    expect(session.revokedAt).not.toBeNull();
+  });
+
+  it('admits an OWNER removing an OWNER — the rule refuses reaching upwards, not sideways', async () => {
+    await clearRateLimits(harness.redis);
+    const { actor, organizationId } = await acting('OWNER');
+    const peer = await user();
+    const target = await membership({ organizationId, userId: peer.id, role: 'OWNER' });
+
+    const response = await request(server)
+      .delete(`${membersPath(organizationId)}/${target}`)
+      .set(csrf(actor));
+
+    expect(response.status).toBe(204);
+  });
+
   it('completes the add / remove / re-add round trip, and the resolver keeps using the LIVE row', async () => {
     // Carry-forward rulings 99 and 100, arranged to lose. Remove-then-re-add
     // puts the live row PHYSICALLY LAST, which is the arrangement in which an
