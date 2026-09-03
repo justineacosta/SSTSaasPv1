@@ -41,21 +41,31 @@ import { describeRoutes, type RegisteredRoute } from './route-inventory.js';
  *
  * Through Task 12 the honest version of this paragraph read: "no route in this
  * API declares `@RequirePermission()`, so the 403 and cross-tenant-404 arms
- * below run against zero shipped routes". Task 13 changed that. Three routes
- * now declare one — `GET`, `PATCH` and `DELETE /api/v1/organizations/:id` — and
- * the arms run against them.
+ * below run against zero shipped routes". Task 13 changed that and Task 14
+ * widened it. **Seven** routes now declare one, counted from
+ * `EXPECTED_GUARDED_ROUTES` below rather than remembered: three on
+ * `/organizations/:id` (Task 13), three on `/organizations/:id/members` and
+ * `GET /roles` (Task 14).
  *
- * Two limits on that claim, both worth naming rather than leaving to be
+ * Three limits on that claim, all worth naming rather than leaving to be
  * inferred:
  *
  * - **Arm 2 is inapplicable for `organization.read`.** Every system role holds
- *   it, so no caller exists who could produce a 403 on `GET`. `rolesFor`
- *   returns `undefined` for the lacker and the arm records itself as run and
- *   evaluated rather than skipped. `PATCH` and `DELETE` do produce real 403s.
- * - **Arm 4 asserts "not refused", not 2xx.** A guarded `DELETE` reached here
- *   answers 409, which is a correct answer that says authorization admitted the
- *   request. Asserting 2xx would make the matrix refuse any endpoint whose
- *   business logic legitimately declines.
+ *   it, so no caller exists who could produce a 403 on `GET
+ *   /organizations/:id` or on `GET /roles`. `rolesFor` returns `undefined` for
+ *   the lacker and the arm records itself as run and evaluated rather than
+ *   skipped. The other five routes produce real 403s.
+ * - **Arm 3 runs one of two probes, declared per route.** See
+ *   `crossTenantProbeFor`: a route with a tenant id in its path is probed
+ *   against `assertPathIsActiveTenant`, and a route without one — `GET /roles`
+ *   is the first — against `TenantContextGuard`. What neither probe covers is a
+ *   correct path id carrying another tenant's *resource* id, which is proved
+ *   per resource in the resource's own suite.
+ * - **Arm 4 asserts "not refused", not 2xx.** A guarded `DELETE` on an
+ *   organisation answers 409 and a `DELETE` of the caller's own sole `OWNER`
+ *   membership answers 422; both are correct answers that say authorization
+ *   admitted the request. Asserting 2xx would make the matrix refuse any
+ *   endpoint whose business logic legitimately declines.
  *
  * # It drives the application as `sentinel_app`
  *
@@ -101,6 +111,14 @@ interface Actor {
   readonly token: string;
   readonly userId: string;
   readonly organizationId: string;
+  /**
+   * Their own membership row in that organisation.
+   *
+   * Added in Task 14, because `:membershipId` has to substitute to something
+   * that exists inside the resolved tenant or arm 4 answers 404 for the wrong
+   * reason — a refusal that looks exactly like the one arm 3 is asserting.
+   */
+  readonly membershipId: string;
 }
 
 async function member(options: { role: SystemRole }): Promise<Actor> {
@@ -125,7 +143,7 @@ async function member(options: { role: SystemRole }): Promise<Actor> {
     where: { key: options.role },
     select: { id: true },
   });
-  await owner.membership.create({
+  const membership = await owner.membership.create({
     data: {
       id: newId('mbr'),
       organizationId: organization.id,
@@ -156,6 +174,7 @@ async function member(options: { role: SystemRole }): Promise<Actor> {
     token: minted.token,
     userId: user.id,
     organizationId: organization.id,
+    membershipId: membership.id,
   };
 }
 
@@ -239,6 +258,14 @@ function substitutePathParameters(path: string, actor: Actor): string {
       // from pointing the session elsewhere, not from changing this.
       case 'id':
         return actor.organizationId;
+      // Task 14. **The actor's own membership, not an arbitrary id.** A made-up
+      // membership id would answer 404 on every arm, and 404 is the fail-closed
+      // direction (carry-forward ruling 97) — arms 1, 2 and 3 would go on
+      // passing while arm 4 failed for a reason that has nothing to do with
+      // authorization. With their own row, the only thing that can refuse arms
+      // 2 and 3 is the guard chain, which is what they are named after.
+      case 'membershipId':
+        return actor.membershipId;
       default:
         throw new Error(
           `The matrix does not know what to substitute for ":${name}" in ${path}. ` +
@@ -295,8 +322,76 @@ function bodyFor(route: RegisteredRoute): Record<string, unknown> {
       // `updateOrganizationRequestSchema` rejects `{}` by design — an empty
       // patch is a request that cannot be satisfied or refused meaningfully.
       return { name: 'Matrix probe' };
+    case 'PATCH /api/v1/organizations/:id/members/:membershipId':
+      // `OWNER`, deliberately, and it is the actor's OWN membership that
+      // `substitutePathParameters` puts in the path. Arm 4's holder is an
+      // `OWNER` and the only owner their organisation has, so any other value
+      // here would be refused 422 by the last-owner invariant — a correct
+      // answer, and one that would stop this arm from ever reaching a 200.
+      // Setting the role a member already holds is applied and audited rather
+      // than refused (`membership.service.ts`), so this is a real success.
+      return { roleKey: 'OWNER' };
     default:
       return {};
+  }
+}
+
+/**
+ * WHICH CROSS-TENANT PROBE ARM 3 CAN ACTUALLY RUN AGAINST A ROUTE.
+ *
+ * Added in Task 14, because `GET /api/v1/roles` is the first guarded route in
+ * this API with **no tenant-owned resource in its path**, and the probe Task 13
+ * settled on cannot be run against it: pointing a real member of another
+ * organisation at their own organisation id requires there to be an
+ * organisation id in the path.
+ *
+ * Two probes, and each names the check it reaches:
+ *
+ * - **`path`** — the caller is a real, active member of the organisation their
+ *   session names, and the path names a *different* organisation they are also
+ *   a member of. Everything about the request is legitimate except that the
+ *   path did not select the tenant, so the only thing that can refuse it is
+ *   `assertPathIsActiveTenant`. This is the probe carry-forward ruling 109
+ *   forced into existence: the earlier version pointed the stranger at an
+ *   organisation they had no membership in, `TenantContextGuard` answered 404
+ *   before any handler ran, and the check the arm is named after was never
+ *   evaluated by anything.
+ * - **`session`** — the caller's session names an organisation they hold no
+ *   membership in. The refusal comes from `TenantContextGuard` itself, one
+ *   layer earlier. For a route with no path id this is the whole of what
+ *   "authenticated in a different tenant" can mean, and it is a real arm rather
+ *   than a concession: it is the `not-a-member` row of `api/authorization.md`
+ *   §3.
+ *
+ * **A guarded route missing from this map is a hard failure, not a default.**
+ * Ruling 109's lesson is that the dangerous version of this arm is the one that
+ * passes without reaching anything, so the choice is written down per route and
+ * a new endpoint has to make it deliberately. Note what this map does NOT
+ * cover: a path id that is legitimately the caller's own tenant but a
+ * *resource* id belonging to another one — `assertPathIsActiveTenant` never
+ * fires there and the handler's own lookup is what must answer 404. That case
+ * is proved per resource in `memberships.integration.spec.ts` and
+ * `organizations.scoped.integration.spec.ts`, because the matrix cannot know
+ * what a resource of an arbitrary future route looks like.
+ */
+function crossTenantProbeFor(route: RegisteredRoute): 'path' | 'session' {
+  switch (`${route.method} ${route.path}`) {
+    case 'GET /api/v1/organizations/:id':
+    case 'PATCH /api/v1/organizations/:id':
+    case 'DELETE /api/v1/organizations/:id':
+    case 'GET /api/v1/organizations/:id/members':
+    case 'PATCH /api/v1/organizations/:id/members/:membershipId':
+    case 'DELETE /api/v1/organizations/:id/members/:membershipId':
+      return 'path';
+    case 'GET /api/v1/roles':
+      return 'session';
+    default:
+      throw new Error(
+        `The matrix does not know which cross-tenant probe applies to ${route.method} ` +
+          `${route.path}. Add it to crossTenantProbeFor rather than letting arm 3 guess — an ` +
+          'arm that cannot reach the check it is named after passes while proving nothing, ' +
+          'which is carry-forward ruling 109 and is what this map exists to prevent.',
+      );
   }
 }
 
@@ -492,6 +587,19 @@ describe('every permission-guarded route runs all four arms', () => {
       'GET /api/v1/organizations/:id': 'organization.read',
       'PATCH /api/v1/organizations/:id': 'organization.update',
       'DELETE /api/v1/organizations/:id': 'organization.delete',
+      // Task 14. The member list declares `organization.manage_members` and not
+      // `organization.read`, which the plan settled and which
+      // `memberships.controller.ts` records the reasoning for: widening later
+      // is additive, narrowing later is a breaking change to a shipped
+      // contract.
+      'GET /api/v1/organizations/:id/members': 'organization.manage_members',
+      'PATCH /api/v1/organizations/:id/members/:membershipId': 'organization.manage_roles',
+      'DELETE /api/v1/organizations/:id/members/:membershipId': 'organization.manage_members',
+      // `organization.read` because every system role holds it and the role
+      // picker is a thing you use *inside* an organisation. It is the first
+      // guarded route in this API with no tenant-owned resource in its path,
+      // which is why `crossTenantProbeFor` exists.
+      'GET /api/v1/roles': 'organization.read',
     };
 
     // Built by hand rather than with `Object.fromEntries`, which is typed
@@ -590,23 +698,34 @@ describe('every permission-guarded route runs all four arms', () => {
       // That is the case §6 requires be indistinguishable from absence, and it
       // is the one that generalises to every future resource whose handler
       // compares a path id against the resolved tenant.
+      //
+      // WHICH of the two probes applies is declared per route in
+      // `crossTenantProbeFor`, because Task 14 shipped the first guarded route
+      // with no tenant-owned resource in its path. See that function.
+      const probe = crossTenantProbeFor(route);
       const stranger = await member({ role: 'OWNER' });
       const other = await member({ role: 'OWNER' });
-      const ownerRole = await harness.prisma.role.findUniqueOrThrow({
-        where: { key: 'OWNER' },
-        select: { id: true },
-      });
-      await harness.prisma.membership.create({
-        data: {
-          id: newId('mbr'),
-          organizationId: other.organizationId,
-          userId: stranger.userId,
-          roleId: ownerRole.id,
-          status: 'ACTIVE',
-          deletedAt: null,
-        },
-        select: { id: true },
-      });
+      if (probe === 'path') {
+        const ownerRole = await harness.prisma.role.findUniqueOrThrow({
+          where: { key: 'OWNER' },
+          select: { id: true },
+        });
+        await harness.prisma.membership.create({
+          data: {
+            id: newId('mbr'),
+            organizationId: other.organizationId,
+            userId: stranger.userId,
+            roleId: ownerRole.id,
+            status: 'ACTIVE',
+            deletedAt: null,
+          },
+          select: { id: true },
+        });
+      }
+      // For the `session` probe the membership above is deliberately NOT
+      // created: the stranger's session is pointed at an organisation they hold
+      // no membership in, and `TenantContextGuard` is what refuses. That is the
+      // only cross-tenant condition a route with no path id can be put in.
       await harness.prisma.session.updateMany({
         where: { userId: stranger.userId },
         data: { activeOrganizationId: other.organizationId },

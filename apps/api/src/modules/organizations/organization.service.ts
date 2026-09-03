@@ -41,8 +41,14 @@ export interface UpdateOrganizationCommand extends AuthRequestContext {
  * `RESOURCE_NOT_FOUND` — and `security/authorization.md` §6 says why: a 403
  * confirms the resource exists. `tenant-context.ts` has the same function for
  * the same reason, one layer up.
+ *
+ * **Exported since Task 14**, and for the same reason it is one function here:
+ * `membership.service.ts` answers 404 to a membership belonging to another
+ * tenant, to a membership id that does not exist, and to one that has already
+ * been removed, and all three must be byte-identical to these. Importing it is
+ * how they cannot drift; a fourth copy is how they eventually do.
  */
-function notFound(): DomainError {
+export function notFound(): DomainError {
   return new DomainError(ERROR_CODES.RESOURCE_NOT_FOUND, 'Not found.', 404);
 }
 
