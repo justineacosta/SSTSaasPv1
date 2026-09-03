@@ -1343,6 +1343,147 @@
         }
       }
     },
+    "/api/v1/invitations/accept": {
+      "post": {
+        "operationId": "InvitationAcceptanceController_accept",
+        "tags": [
+          "InvitationAcceptance"
+        ],
+        "summary": "Accept an invitation.",
+        "description": "Consumes a single-use invitation token and creates the caller’s membership of the organisation that issued it, in one transaction, with an `INVITATION_ACCEPTED` audit event. **The invitation must have been sent to the address the caller is signed in as** — the server compares the stored address to the authenticated user’s and never to anything in the body, which is why the body carries the token alone. This route is authenticated but names no organisation and requires no permission: the caller is not a member of anything yet, which is exactly what accepting fixes. It does **not** require a verified email address — holding a token that was emailed to that address is the same proof the verification step exists to obtain. An unknown token, an expired one, a revoked one, one that has already been accepted, one superseded by a newer invitation to the same address, and one issued to somebody else all answer the **same 422 `TOKEN_INVALID` with the same message**, so the endpoint is not an oracle for whether a given token exists. Accepting does not change which organisation the session is acting in — call `POST /api/v1/auth/switch-org` afterwards. Requires `X-CSRF-Token`.",
+        "requestBody": {
+          "description": "The raw token from the emailed link. The schema is strict, so an unknown key is a 400 — in particular there is no `email` and no `organizationId`, both of which the server derives from the token itself.",
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  }
+                },
+                "required": [
+                  "token"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The membership just created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "organizationId": {
+                      "type": "string"
+                    },
+                    "user": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "email": {
+                          "type": "string",
+                          "format": "email",
+                          "maxLength": 254
+                        },
+                        "name": {
+                          "type": "string",
+                          "nullable": true
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "email",
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "roleKey": {
+                      "type": "string",
+                      "enum": [
+                        "OWNER",
+                        "ADMIN",
+                        "SECURITY_LEAD",
+                        "MEMBER",
+                        "VIEWER",
+                        "AUDITOR",
+                        "GUEST"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ACTIVE",
+                        "INVITED",
+                        "REMOVED"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "organizationId",
+                    "user",
+                    "roleKey",
+                    "status",
+                    "createdAt",
+                    "updatedAt"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body did not validate (`VALIDATION_ERROR`, `UNKNOWN_FIELD`)."
+          },
+          "401": {
+            "description": "No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`)."
+          },
+          "403": {
+            "description": "A CSRF failure (`CSRF_TOKEN_INVALID`)."
+          },
+          "409": {
+            "description": "The caller is already a live member of that organisation (`DUPLICATE_RESOURCE`)."
+          },
+          "422": {
+            "description": "The token is not redeemable (`TOKEN_INVALID`). One code and one message for unknown, expired, revoked, already accepted, superseded, and issued to a different address."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "authenticated"
+        }
+      }
+    },
     "/api/v1/openapi.json": {
       "get": {
         "operationId": "OpenApiController_read",
