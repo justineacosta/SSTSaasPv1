@@ -329,3 +329,74 @@ Single-use is **not** verifiable, because consumption is the accept endpoint and
   is in `AUDIT_ACTIONS` with **no producer**, which that constant's own governing rule ("Only names
   something in this codebase writes") forbids. Flagged honestly; it remains a live contradiction in
   the file and the orchestrator has not ruled on it.
+
+### F-6 — the tenant-client test resolution: a real guard was traded for a weaker real guard plus a maintenance sentinel. Defensible, and the loss is stated honestly. **No finding above Low.**
+
+What went: `tenant-client.integration.spec.ts`'s "rewrites findUnique by a compound unique key, not
+just by id", which drove a real `findUnique` with a nested compound `where` through a real tenant
+client against a real Postgres.
+
+What replaced it, and whether each bites:
+
+1. **The moved unit property** in `packages/db/src/tenant-scope.spec.ts` — "passes a NESTED compound
+   `where` through byte-for-byte, never merging into it". **It bites. MEASURED.** I mutated
+   `decideScope`'s `findUnique` arm to merge the scope column into `where`:
+
+   ```ts
+   const mutated = checkedArgs as { where?: Record<string, unknown> };
+   return { kind: 'run-and-check',
+            args: { ...mutated, where: { ...mutated.where, [keyField]: organizationId } }, … };
+   ```
+
+   ```
+   $ npx vitest run --project unit packages/db/src/tenant-scope.spec.ts
+   Tests  6 failed | 21 passed (27)
+     × decideScope > rewrites findUnique to a run-and-check plan instead of a different operation
+     × decideScope > passes a NESTED compound `where` through byte-for-byte, never merging into it
+     × decideScope > widens a select that omits the scope column, and flags it for stripping
+     × decideScope > leaves a select that already asks for the scope column alone
+     × decideScope > drops the scope column from an omit that excludes it, and flags it for stripping
+     × decideScope > leaves an omit that does not exclude the scope column alone
+   ```
+
+   Restored from a backup copy; re-ran: `Tests 27 passed (27)`; `git status --short` clean.
+   **This reproduces the report §5 / §9 row exactly** ("6 red, including the new nested-`where`
+   test" / "Restored: 27 passed").
+
+2. **The DMMF sentinel** in `tenant-client.integration.spec.ts`. It is not a regression guard for
+   the tenant client — it cannot fail for the reason the deleted test could. It is a maintenance
+   sentinel that fails on the day a tenant-owned model regains a compound `@@unique`, and its
+   message names the test to restore, which is ruling 101's requirement. Its second assertion
+   (`anyCompound` must be exactly `['IdentityProviderLink','MfaFactor']`) is what stops the empty
+   set passing vacuously through a broken filter — **INFERRED**, read from the code; I did not run
+   the integration lane against a mutated `compoundUniques` filter.
+
+Judgement: the answer is honest and the loss is written where a reader will meet it ("What is lost,
+stated plainly" in the replacement comment). The residual gap is real and correctly named — nothing
+now proves that Prisma issues the query the plan describes for a nested compound `where`. Given no
+tenant-owned model has such a constraint, there is nothing to prove it against; inventing a schema
+constraint for the test's benefit would be worse. **Not a finding, recorded as checked.**
+
+### F-7 — cross-tenant isolation: the tests exist, but they cannot fail for the application layer alone.
+
+`invitations.integration.spec.ts` carries the two `CLAUDE.md`-mandatory arms:
+
+```
+787:  it('CROSS-TENANT — shows nothing of another organisation, and 404s its path id', …
+880:  it('CROSS-TENANT — Tenant A gets 404 for Tenant B's invitation id, and it survives', …
+```
+
+The revoke arm is the good one: it uses B's invitation id under **A's own path** (the shape an
+attacker actually has, since B's path id is refused earlier by `assertPathIsActiveTenant`), asserts
+404 with `RESOURCE_NOT_FOUND`, asserts the body is byte-identical to the refusal for an id that
+does not exist, and then asserts B's row still has `revokedAt IS NULL`. That last assertion is the
+one that makes it a real isolation test rather than a status-code test.
+
+The honest limitation, which is a property of the design and not a defect in the test:
+**three layers hold that boundary** — the explicit `organizationId` in the `where`, the tenant
+client's scoping extension, and `FORCE ROW LEVEL SECURITY` on `Invitation`. Removing any single one
+of them leaves the test green, because the other two still refuse. So the test guards the
+*outcome*, not any one layer. That is the right thing to assert at this level and the file says as
+much ("three layers, all stated"); I record it so nobody reads a green cross-tenant test as
+evidence that the application-level predicate is load-bearing. **INFERRED** — I did not run the
+three single-layer mutations, which would need an integration run each.
