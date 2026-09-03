@@ -131,6 +131,27 @@ function lastOwner(action: 'demoted' | 'removed'): DomainError {
  *
  * A zero-row result means the organisation vanished between the guard's
  * resolution and this statement. 404 is the honest answer to that, not a 500.
+ *
+ * # IT IS TAKEN BEFORE THE MEMBERSHIP IS RESOLVED, AND THAT ORDER IS THE POINT
+ *
+ * Both callers take this lock as their **first** statement and read the
+ * membership second, so a request naming a membership id that does not exist
+ * still takes `FOR UPDATE` on the tenant row — for the length of a transaction
+ * that then ends immediately with a 404. A caller holding
+ * `organization.manage_roles` or `organization.manage_members` can therefore
+ * serialise the tenant's membership writes by hammering ids that do not exist.
+ * Noted, measured against the alternative, and kept.
+ *
+ * The alternative — resolve the membership first, lock second — reopens the
+ * window this lock exists to close, because the owner count would then be read
+ * outside it, and a count from the wrong snapshot is precisely the defect D1
+ * rejects. The cost of the ordering is a privileged caller holding a per-tenant
+ * lock for the duration of a 404; the cost of reversing it is the anomaly the
+ * first test in `last-owner.integration.spec.ts` measures.
+ *
+ * **Do not "optimise" this into a conditional lock.** A branch that decides
+ * when to lock is a branch that can be wrong, and an unexplained
+ * lock-before-read is exactly the shape a later reader tidies away.
  */
 async function lockOrganization(tx: TenantTransaction, organizationId: string): Promise<void> {
   const locked = await tx.$queryRaw<{ id: string }[]>`
@@ -268,6 +289,28 @@ async function assertOrganizationKeepsAnOwner(
  * is the first missing one **in `PERMISSIONS` order**, which makes the message
  * deterministic; the seeded rows come back in whatever order Postgres returns
  * them, and a message that varied run to run would be untestable.
+ *
+ * # IT HAS TWO CALLERS, AND THE SECOND ONE IS REMOVAL
+ *
+ * D5 as the brief wrote it binds the role change only, and Task 14 shipped it
+ * that way. The review found the asymmetry that makes that incoherent: an
+ * `ADMIN` could not **make** an `OWNER` and could **unmake** one, and could not
+ * undo it — the removed owner cannot restore themselves and no `ADMIN` can
+ * promote a replacement. `security/authorization.md` §4's principle is "you
+ * cannot mint authority you do not possess", and an action a principal can take
+ * but cannot reverse from inside their own authority wants a rule.
+ *
+ * So `remove` asks the same question of the role the **target** holds: an actor
+ * may not remove a member whose role carries a permission the actor does not
+ * hold. One helper, not two, and a set comparison rather than a ranking for the
+ * reason above — a ranking is a second model of authority that drifts from
+ * `ROLE_PERMISSIONS`.
+ *
+ * The ordinary cases are not bricked by it, and they are the ones to check
+ * before reading the tests: `OWNER` removing `OWNER` is equal sets and passes;
+ * `ADMIN` removing `ADMIN` passes; `ADMIN` removing anything weaker passes; and
+ * self-removal is always equal sets, so it passes for every role. What is
+ * refused is an actor reaching **upwards** — `ADMIN` removing `OWNER` is 403.
  */
 export function assertActorMayGrant(ctx: TenantContext, granted: readonly string[]): void {
   const missing = granted.filter(
@@ -474,8 +517,17 @@ export class MembershipService {
         action: 'demoted',
       });
 
+      // BOTH PREDICATES, STATED. Carry-forward ruling 99 and the reason
+      // `assertOrganizationKeepsAnOwner`'s docblock gives for its own copy: every
+      // `Membership` statement in this file names the organisation and excludes
+      // the soft-deleted, and one that did not would read as an oversight. The
+      // row was resolved live by `liveMembership` a few lines up, inside this
+      // transaction and under the organisation lock, and the only writer that
+      // can soft-delete it is `remove`, which takes the same lock — so a
+      // `P2025` here is unreachable rather than handled. If a later writer skips
+      // the lock, this write fails loudly instead of updating a removed row.
       const updated = await tx.membership.update({
-        where: { id: membershipId },
+        where: { id: membershipId, organizationId: ctx.organizationId, deletedAt: null },
         data: { roleId: granted.id },
         select: MEMBERSHIP_COLUMNS,
       });
@@ -525,6 +577,18 @@ export class MembershipService {
    * **204 with no body**, per `api/conventions.md` §2. There is nothing to
    * return: the membership the caller named no longer exists in the sense the
    * API means by "member".
+   *
+   * **Self-removal is supported**, and it is supported rather than tolerated.
+   * Leaving an organisation is a legitimate action; the last-owner invariant
+   * refuses the only dangerous case, which is the sole owner walking out (422);
+   * and the same call revokes the leaver's sessions for this tenant, which is
+   * the correct end state. Ruling 95 is satisfied — their sessions elsewhere and
+   * their account survive. The authority check above never refuses it, because
+   * an actor's own role is always an equal set to itself.
+   *
+   * The order of the four refusals mirrors `updateRole`'s and for the same
+   * reason: path id (404), membership (404), the authority check (403), the
+   * last-owner invariant (422).
    */
   async remove(
     ctx: TenantContext,
@@ -538,6 +602,20 @@ export class MembershipService {
       await lockOrganization(tx, ctx.organizationId);
 
       const membership = await liveMembership(tx, ctx.organizationId, membershipId);
+
+      // D5's rule, pointed at the role the TARGET holds rather than at one being
+      // granted. See `assertActorMayGrant`'s docblock for why removal asks the
+      // same question as a role change. Read from the seeded `RolePermission`
+      // rows, like the role change's own read, so both sides of the comparison
+      // have the same origin as `ctx.permissions`.
+      const held = await tx.role.findUniqueOrThrow({
+        where: { key: membership.roleKey },
+        select: { permissions: { select: { permission: { select: { key: true } } } } },
+      });
+      assertActorMayGrant(
+        ctx,
+        held.permissions.map((grant) => grant.permission.key),
+      );
 
       await assertOrganizationKeepsAnOwner(tx, ctx.organizationId, {
         membershipId,

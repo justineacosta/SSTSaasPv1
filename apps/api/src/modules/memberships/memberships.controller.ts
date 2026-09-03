@@ -204,6 +204,19 @@ export class MembershipsController {
    * and carry-forward ruling 95 is why the difference matters — a member whose
    * every session was revoked would hold a credential no endpoint answers,
    * including the one that ends it.
+   *
+   * **`organization.manage_members` is necessary and not sufficient.** The same
+   * no-minting-authority rule the `PATCH` enforces binds here, pointed at the
+   * role the target holds: an actor may not remove a member whose role carries a
+   * permission the actor does not hold, so an `ADMIN` cannot remove an `OWNER`.
+   * Recorded as an orchestrator decision in the Task 14 fix round rather than
+   * something the plan asked for — the plan says only that removal requires
+   * `organization.manage_members`. See `assertActorMayGrant`.
+   *
+   * **Self-removal is supported.** It is the same call with the caller's own
+   * membership id, it is bounded by the last-owner invariant, and it revokes the
+   * caller's sessions for this organisation. Said here and in the description
+   * below because a client cannot otherwise tell whether it is a feature.
    */
   @RequirePermission('organization.manage_members')
   @RateLimit('generalSession')
@@ -221,15 +234,23 @@ export class MembershipsController {
       'than at a cache expiry; their sessions pointed at other organisations, or at none, are ' +
       'deliberately left alone so that removal never locks somebody out of their own account. ' +
       'A membership belonging to another organisation, one that does not exist, and one that has ' +
-      'already been removed all answer the same 404. Requires `X-CSRF-Token`.',
+      'already been removed all answer the same 404. **A member may remove themselves**: pass ' +
+      'your own membership id and the membership is soft-deleted and your sessions for this ' +
+      'organisation are revoked, subject to the same last-owner rule — the sole owner of an ' +
+      'organisation cannot leave it. **You may not remove a member whose role holds a ' +
+      'permission you do not hold yourself**, which is refused with 403 `PERMISSION_DENIED` ' +
+      'naming the first such permission: `organization.manage_members` lets an `ADMIN` remove ' +
+      'another `ADMIN`, a `MEMBER` or themselves, and does not let them remove an `OWNER`. ' +
+      'Requires `X-CSRF-Token`.',
     responses: [
       { status: 204, description: 'Removed.' },
       { status: 401, description: 'No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`).' },
       {
         status: 403,
         description:
-          'The role lacks `organization.manage_members`, the organisation is suspended, or a ' +
-          'CSRF failure.',
+          'The role lacks `organization.manage_members`, the target member holds a permission ' +
+          'the caller does not (`PERMISSION_DENIED`), the organisation is suspended, or a CSRF ' +
+          'failure.',
       },
       {
         status: 404,
