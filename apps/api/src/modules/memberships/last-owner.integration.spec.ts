@@ -298,15 +298,35 @@ describe('the shipped endpoints hold the invariant under contention', () => {
    *
    * A `Promise.all` of two demotions proves the outcome is right but not that
    * the lock is what made it right: the two requests may simply not have
-   * overlapped. This does. The test takes the organisation's row lock on its
-   * own connection and holds it; a handler that takes the same lock cannot get
-   * past its first statement until the test lets go, and one that does not takes
-   * no notice.
+   * overlapped. This does. The test takes a conflicting row lock on the
+   * organisation on its own connection and holds it; a handler that takes
+   * `FOR UPDATE` cannot get past its first statement until the test lets go,
+   * and one that does not takes no notice. The assertion is a *timing* one in
+   * the only direction that is safe to assert: a request blocked on a lock has
+   * **not** answered while the lock is held.
    *
-   * So the assertion is a *timing* one in the only direction that is safe to
-   * assert: a request that is blocked on a lock has **not** answered while the
-   * lock is held. Deleting `FOR UPDATE` from the service makes this go red
-   * immediately rather than probabilistically.
+   * # `FOR NO KEY UPDATE`, and the first version of this test was wrong
+   *
+   * The blocker originally took `FOR UPDATE`, and **the mutation survived it**:
+   * with `FOR UPDATE` deleted from `membership.service.ts` this test still
+   * passed, taking 1325ms to do so. It was measuring something real and not the
+   * thing it is named after.
+   *
+   * What it was measuring is the foreign key. The tenant-scoping client
+   * extension forces the scope column into the payload of every `updateMany`
+   * (`withScopedData` in `packages/db/src/tenant-scope.ts`), so the removal's
+   * `UPDATE "Membership"` writes `organizationId` explicitly even though the
+   * value is unchanged — which makes Postgres re-check
+   * `Membership_organizationId_fkey` and take `FOR KEY SHARE` on the parent
+   * `Organization` row. `FOR KEY SHARE` conflicts with `FOR UPDATE`, so a
+   * blocker holding `FOR UPDATE` stalls the handler whether or not the handler
+   * asked for a lock of its own.
+   *
+   * `FOR NO KEY UPDATE` is the discriminator, from Postgres's row-lock conflict
+   * table: it conflicts with `FOR UPDATE` (so the handler's lock still waits)
+   * and **not** with `FOR KEY SHARE` (so the foreign-key re-check does not).
+   * With this lock the mutation goes red, which is what the test claims to be
+   * able to do.
    */
   it('a membership write waits for a lock held on the organisation row', async () => {
     await clearRateLimits(harness.redis);
@@ -319,7 +339,11 @@ describe('the shipped endpoints hold the invariant under contention', () => {
     const blocker = alice.$transaction(
       async (tx) => {
         await tx.$executeRaw`SELECT set_config('app.organization_id', ${org.organizationId}, true)`;
-        await tx.$queryRaw`SELECT id FROM "Organization" WHERE id = ${org.organizationId} FOR UPDATE`;
+        // NOT `FOR UPDATE` — see the docblock. `FOR NO KEY UPDATE` blocks the
+        // handler's own `FOR UPDATE` and lets the foreign-key re-check's
+        // `FOR KEY SHARE` through, which is the only lock mode that tells the
+        // two apart.
+        await tx.$queryRaw`SELECT id FROM "Organization" WHERE id = ${org.organizationId} FOR NO KEY UPDATE`;
         await released.wait;
       },
       { timeout: 20_000, maxWait: 20_000 },
