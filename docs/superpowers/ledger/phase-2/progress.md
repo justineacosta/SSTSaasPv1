@@ -24,7 +24,7 @@ Branch: `feat/phase-2-identity`
 | 12 | Tenant resolution and the authorization guard | orchestrator | **Done** — [report](task-12/report.md) · [review-brief](task-12/review-brief.md) · [review](task-12/review.md) · [fixes](task-12/fixes.md) |
 | **A** | **Checkpoint — verify, push, CI green, status recorded** | orchestrator | **Done** — CI green, merged as PR #23 on 2026-09-02. |
 | 13 | Organisations and organisation switching | subagent + fresh reviewer | **Done** — [brief](task-13/brief.md) · [report](task-13/report.md) · [review](task-13/review.md) · [fixes](task-13/fixes.md) |
-| 14 | Memberships, roles, last-owner invariant | subagent + fresh reviewer | **In progress** — branch cut, [brief](task-14/brief.md) written, no code yet |
+| 14 | Memberships, roles, last-owner invariant | subagent + fresh reviewer + fix round | **Done** — [brief](task-14/brief.md) · [report](task-14/report.md) · [review](task-14/review.md) · [dispositions](task-14/fix-brief.md) · [fixes](task-14/fixes.md) |
 | 15 | Invitations | chained 13→15 | Not started |
 | 16 | Web — authentication screens | chained with 17 | Not started |
 | 17 | Web — app shell, org switcher, `/settings/security` | chained with 16 | Not started |
@@ -967,67 +967,120 @@ Full reasoning in [`task-10/review.md`](task-10/review.md),
     seven routes and listed six, when a `grep -rn "@RateLimit('generalSession')"` returns **eight**.
     **Write the command beside the number, every time.**
 
+### From Task 14
+
+119. **A one-sided barrier is not a barrier, and a test written to catch a race lost one.** HIGH-1.
+    The unlocked-race arm opened its gate in the first transaction and then had that same
+    transaction `await` the gate it had just opened — which resolves immediately. Nothing made the
+    first transaction wait for the second to have counted, so on a slow start the first write landed
+    before the second read and the arm failed. **The integration lane was red on a coin flip**: two
+    full-lane runs on the same tree gave `EXIT=1` then `EXIT=0`. Reproduced deterministically by
+    inserting a 500 ms delay before the second count. The comment above the gate claimed the
+    interleaving was "arranged rather than hoped for — a race test that depends on timing reports
+    green on the machine that is fast enough"; it was hoped for, and it failed in the manner its own
+    comment described. **A barrier must be counting: every participant arrives, then all proceed.**
+
+120. **A lock needs a detector per path that takes it, not one per invariant it protects.** HIGH-2.
+    Deleting the organisation lock from `updateRole` alone left the memberships lane 36/36 green and
+    survived one run in four of the file meant to guard it, because the only deterministic detector
+    issued a `DELETE` and therefore exercised `remove` and never `updateRole` — **the demotion race,
+    which is the case the plan names in its own words, was the one path nothing reliably guarded.**
+    Two methods taking the same lock are two mutations, not one.
+
+121. **A `FOR UPDATE` blocker is not a valid lock detector on a tenant-owned table.** Measured. The
+    tenant-scoping extension forces `organizationId` into every `updateMany` payload, so Postgres
+    re-checks the foreign key and takes `FOR KEY SHARE` on the parent row — which conflicts with a
+    `FOR UPDATE` blocker whether or not the handler locks anything, so the detector passes under its
+    own mutation. `FOR NO KEY UPDATE` is the blocker mode that conflicts with the handler's
+    `FOR UPDATE` and not with the foreign key's `FOR KEY SHARE`. Found by the implementer testing
+    its own detector rather than trusting it.
+
+122. **"The endpoint checks first" is the reasoning ruling 82 struck down, and it came back.**
+    `remove` shipped a comment arguing that nothing could mint a session pointed at the organisation
+    afterwards, because `POST /auth/switch-org` decides membership with the guard's own resolver.
+    That decision precedes the write, which is the window. Measured with a delay instrumented
+    between the membership read and `rotate`: the switch returned 200, left a live un-revoked
+    session pointed at the organisation the member had just been removed from, and its own 200 body
+    carried a populated 23-permission set. **Wherever a credential is issued against a fact that can
+    change, the fact must be re-read *after* the issue and the credential revoked if it moved** —
+    ruling 82's shape, `credentialStillCurrent`'s shape, and now the organisation switch's.
+
+123. **Do not invent a second historical error to make the first one rhyme.** MEDIUM-4. A comment
+    written under ruling 108's banner claimed a previous sentence "said 'all three' of a constant
+    holding two". Checked with `git show` at the base commit: the sentence said "All three actions
+    above", `AUDIT_ACTIONS` held three, and it was **correct** — it described the actions, not the
+    resource types. A miscount was fabricated inside the comment warning about miscounts, and the
+    document written in the same commit got it right and contradicted the code. **Ruling 108 applies
+    to counts of the times somebody miscounted.**
+
+124. **An authority rule enforced on one verb and not its inverse is not an authority model.** The
+    no-minting rule stopped an `ADMIN` making an `OWNER` while nothing stopped an `ADMIN` unmaking
+    one — irreversibly, since no `ADMIN` can promote a replacement. Neither the plan nor the brief
+    named it and the review surfaced it as an open question. **When a rule restricts granting
+    authority, ask what it says about removing it**, and compare permission sets rather than ranking
+    roles: a ranking is a second model of authority that drifts from `ROLE_PERMISSIONS`.
+
+125. **A test that cannot be re-run is evidence about a moment, not a regression guard.** The
+    ruling-82 closure above was proved end to end with instrumentation that was then deleted; what is
+    committed is a unit spec of the decision. That is worth having and it is not the same thing.
+    Recorded as owed rather than counted as covered — the distinction this phase keeps having to
+    re-learn is between a measurement and a guard.
+
 ## Pause state
 
-**2026-09-03 — Task 13 and its residual sweep both merged to `main`. Task 14 started: branch cut,
-brief written, no code yet.**
+**2026-09-03 — Task 14 built, reviewed, fixed, and NOT pushed. CI has not run on it. Task 15 is
+next.**
 
-**The six open Task 13 items are all closed or settled, and merged as PR #26** (rebase,
-2026-09-02 18:29:10Z, merge commit `730ac83`). CI green three times, every conclusion read from the
-run rather than a watcher: `33666832762` (push), `33666879564` (pull request) and `33667495207`
-(push on `main`), all `completed / success` with all eighteen substantive stages confirmed to have
-executed. `git diff 79a97d0 origin/main` is empty. Both remote feature branches are deleted;
-`git ls-remote --heads origin` returns `main` alone.
+Task 14 shipped **four endpoints** and took the permission-guarded route count from three to seven:
+`GET /organizations/:id/members`, `PATCH` and `DELETE` on `.../members/:membershipId`, and
+`GET /roles`. It is the task where `product/permissions.md`'s invariants 1 and 5 stopped being
+descriptions. Invariant 1 is enforced by a `SELECT ... FOR UPDATE` on the tenant root taken before
+the owner count, in every write that can reduce it; invariant 5 reuses Task 6's
+`revokeAllForUserInOrganization` and deliberately spares the member's sessions in other
+organisations. `check:openapi` reports **24 paths**, up from 21. No migration was needed — every
+column existed from Task 1.
 
-What that sweep closed: `TEMPORARY` revoked from `PUBLIC` (two migrations — one revokes, one
-verifies, because the revoke alone cannot fail); the TOTP step-boundary flake, which was a real
-defect rather than infrastructure noise; the authorization matrix's blindness to a single guarded
-route being downgraded; `meta.total` settled as a recorded decision; the stale remote branch; and
-the Task 13 fix round, which had never been reviewed.
+**The review found 0 Critical, 2 High, 3 Medium, 5 Low, and both Highs were about tests rather than
+handlers.** The first is ruling 119 and it is the one that matters: this task made the integration
+lane **red on a coin flip**, because its own unlocked-race arm had a one-sided barrier. Two
+full-lane runs on the same tree gave `EXIT=1` then `EXIT=0`. The second is ruling 120 — deleting the
+organisation lock from `updateRole` alone left the lane green, because the only deterministic
+detector issued a `DELETE` and never exercised the demotion path the plan actually names.
 
-**Its review found four more Mediums, three of them defects in the sweep itself** — rulings 115–118.
-The worst was M1: the `REVOKE TEMPORARY` migration could not fail, because PostgreSQL warns rather
-than errors when a non-owner issues `REVOKE ... FROM PUBLIC`. **The review of that fix round has
-not itself been reviewed**, which is the same open end Tasks 10–13 all carried.
+**Ruling 82 came due and the sentence denying it was written by this task.** `remove` shipped a
+comment asserting nothing could mint a session pointed at the organisation afterwards; measured
+false, and closed with the post-rotate membership re-read in `OrganizationSwitchService`. Rulings
+119–125 are all from this task and its fix round.
 
-**Task 13 is merged.** PR #25, rebase, 2026-09-02 16:28:42Z, merge commit `f9664e2`, and `main`
-now contains the organisation routes. CI green three times with every conclusion read from the
-run's `conclusion` field rather than a watcher's exit status (ruling 105): `33650180237` (push,
-`6e12233`), `33650864655` (pull request, `6e12233`), `33655155267` (push on `main`, `f9664e2`) —
-all `completed / success`, all eighteen substantive stages confirmed to have executed. The rebase
-rewrote the SHAs, so the first two name a commit no longer on `main`; `git diff 6e12233 origin/main`
-is empty, so the tree CI verified is the tree that merged. Re-verified on `main` after the merge
-rather than assumed. **The remote branch was not deleted** and still exists at `6e1223378d3d`.
+**Two orchestrator rulings beyond the review.** An `ADMIN` may not remove an `OWNER` — the
+no-minting rule was enforced on the role change and not on its inverse (ruling 124). Self-removal
+is permitted and is not a defect; it needed documenting only.
 
-**The merge was performed by the operator, not by this session.** `gh pr merge` was refused by the
-harness's permission classifier three times — twice directly and once through the `update-config`
-skill that would have added a permission rule for it. The session declined to reach the same
-outcome through a local merge and push, and declined to write `.claude/settings.json` itself:
-an agent editing the file that expresses the operator's authorisation, in order to grant itself an
-action it was just denied, is privilege escalation whatever the intent. **This is a real workflow
-constraint for every later task, not a one-off** — plan for the operator to merge, or for a
-permission rule to be added by them first. Recorded as ruling 114.
+**Three residuals a fresh session should not mistake for finished work**, all in `roadmap.md`'s
+"Still owed after Task 14": the ruling-82 closure has **no committed integration test** (the
+end-to-end proof needed instrumentation that was deleted; what is committed is a unit spec of the
+decision — ruling 125); the mixed removal-versus-demotion race arm is a `Promise.all` and does not
+force overlap; and two mutations survive by construction, both recorded beside the code.
 
-**Task 14 is started and no code exists yet.** Branch `feat/phase-2-task-14-memberships`, cut from
-`main` at `f9664e2`. The brief is written at [task-14/brief.md](task-14/brief.md) and carries seven
-orchestrator decisions, of which the load-bearing one is **D1: the last-owner invariant is enforced
-by `SELECT ... FOR UPDATE` on the `Organization` row, counting owners inside the lock.** A CHECK
-constraint cannot express "at least one row exists"; a trigger alone does not close the race,
-because two concurrent transactions each count under their own snapshot and both pass; and
-`SERIALIZABLE` closes it but needs a retry loop, turning an unhandled `40001` into a 500 on a
-routine role change. **D2 requires the race test to be arranged to fail without the lock** — if the
-unlocked version cannot be made to produce an organisation with zero owners, the race was not
-tested.
+**Verification, re-run by the orchestrator on the finished tree rather than taken from a subagent's
+report**, at `d7a1dd9`: `format:check`, `lint`, `typecheck`, `build` all 0; `pnpm test` 99 files /
+1673; `check:specs` 126; **`test:integration` run three separate times end to end, each exit 0, 27
+files / 485** — three times because of ruling 119, and the fix round ran three of its own before
+that; `test:e2e` 5 passed; `check:openapi` byte-identical at 24 paths; `check:registry` 15 models,
+unchanged; `check:secrets` 446; `docker compose ps` four services healthy. The full table is in
+`roadmap.md` under "Task 14".
 
-**An implementer was dispatched against this brief on 2026-09-03 and cancelled by the operator
-before it wrote anything**, so that Task 14 could be built in a fresh session — which is the
-protocol's own preference (execution protocol §1: one session per task, and a fresh session that
-cannot pick up Task N from the committed record has found a documentation defect). It committed
-nothing and created no file; `git status` was clean at cancellation and the branch is still at
-`c2af5fb`. **There is no partial work to find, reconcile, or delete.**
+**Branching.** `feat/phase-2-task-14-memberships`, cut from `main` after Task 13 merged, and
+rebased onto `0739af9` at the start of this session — the branch pre-existed with three docs
+commits and no code, from a session whose implementer was cancelled. **Pushed: no. CI: not run.
+Merged: no.**
 
-**Next action:** dispatch the Task 14 implementer against
-[task-14/brief.md](task-14/brief.md), then a fresh adversarial reviewer. Rulings 99 and 100 are the
-ones to read first — Task 14's removal path is what *creates* the multi-row `Membership` state that
-makes an unordered read non-deterministic, and the regression test for it has to be arranged to
-lose.
+*No commit count is written here, deliberately* — ruling 108, and Task 13's pause state learned it
+the hard way twice. Run `git rev-list --count main..HEAD`.
+
+**Next action:** push, get CI green, merge. Then Task 15 — invitations. Read rulings **99** and
+**100** first, because Task 14's removal path is now what produces the multi-row `(organizationId,
+userId)` state and re-invitation is what consumes it; **124** binds the invited role, which is the
+third call site of the no-minting rule and the first one nobody has written yet; and **122** binds
+invitation acceptance, which issues a membership against a fact that can change while it is in
+flight.
