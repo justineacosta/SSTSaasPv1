@@ -487,3 +487,69 @@ deserialize column of type 'void'".
    orchestrator to rule on either way.
 7. **`registry.ts`'s "NINE members".** Section 7, last block. Not corrected.
 8. **Nothing was pushed.** No PR, no merge — ruling 114.
+
+---
+
+## Fix round
+
+**Written by the orchestrator, not by the implementer, and that is a departure worth naming.**
+The fix-round implementer's session was killed by a transient HTTP 529 partway through, after it
+had committed four commits and while it was about to commit a fifth. Everything below is
+reconstructed from `git show` over `23744af..7b33fac` and from verification the orchestrator ran
+itself on the finished tree. Nothing here is taken from the implementer's own summary, because it
+never wrote one.
+
+### What landed, by commit
+
+| Commit | What |
+|---|---|
+| `96490ac` | `POST /api/v1/invitations/accept` on its own tenant-less controller; `invitation-organization.store.ts` as the port over ADR-0022's definer function; `lockOrganization` exported from `membership.service.ts` rather than duplicated; F-1 and F-9 and F-3 |
+| `189f69f` | C-2's two recomputed counts, the eighth controller sentinel, accept's decorator assertions |
+| `1529fe4` | The acceptance path's tests, its two deterministic races, and D9 measured |
+| `7b33fac` | `openapi.json` regenerated, 26 paths → 27 |
+| `0bfd550` | ADR-0022's function asserted on every run — written by the implementer, left uncommitted when its session died, verified by the orchestrator before committing |
+
+### D9 / ruling 122 — the answer, which is three answers
+
+The implementer's analysis is in `invitation.service.ts`'s `accept` docblock and it does not claim
+a clean result. Three facts a `Membership` is issued against:
+
+1. **The invitation's liveness — CLOSED**, and not by the pre-check. `accept`'s conditional
+   `updateMany` and `revoke`'s write the same row under the same predicate, so Postgres serialises
+   them at row level and whichever commits second matches nothing. Pinned by a test using a
+   session-level advisory-lock blocker rather than a `Promise.all`, per ruling 119.
+2. **The organisation's state — NOT closed, and cannot be.** Nothing in this API writes
+   `Organization.status`, so a suspension can land one microsecond after any re-read. What makes
+   it survivable is structural: a `Membership` is not a bearer credential. There is no permission
+   cache (ruling 94), `TenantContextGuard` re-resolves membership and organisation status on every
+   request naming an organisation, and acceptance mints no session. This is the difference from
+   ruling 82's `Session`, which carries captured privilege for up to 30 days.
+3. **The inviter's authority — OPEN, and recorded rather than claimed closed.** See below.
+
+### The open window, stated plainly because it is a security gap
+
+**An invitation offering `OWNER` survives its issuer being removed, and accepting it still mints an
+`OWNER`.** D5's no-minting check runs in `create` and nowhere else. Measured end to end through
+Task 14's real `DELETE .../members/:membershipId`: the removed owner's invitation is still live and
+the acceptor receives 201 with `roleKey: OWNER`.
+
+This is a re-escalation path for somebody removed precisely to take that authority away, through an
+address they control. It is ruling 124's shape exactly — an authority rule enforced on one verb and
+not on the events that should invalidate its output.
+
+The remedy is on the other side of the transaction, in `MembershipService.remove` and `updateRole`,
+where the invitations a departing member issued and could no longer issue would be revoked in the
+same transaction as the removal. That is a change to Task 14's writes, and it is **handed up, not
+taken here**. Re-running `assertActorMayGrant` at accept time instead was considered and rejected:
+it would refuse every invitation from a colleague who has since legitimately left, a lock-out with
+no recovery path for the invitee.
+
+It is pinned by `D9 — RECORDS AN OPEN WINDOW: an invitation outlives its issuer's authority`,
+written to fail if the behaviour changes silently and named so nobody reads it as approval.
+
+### One defect found by the orchestrator in the fix round's own work
+
+`invitation.service.ts:653` cited that test as `records the OPEN D9 window` — a paraphrase, not the
+test's name — so a grep for the citation found nothing and the docblock read as a reference to a
+test that did not exist. The test is real and thorough; the citation was not. Corrected to quote
+the name exactly, with a note saying why.
