@@ -545,3 +545,112 @@ address") went red on **1 run of 3**. That independently corroborates the report
 finding — that arm alone is a coin flip and the session-level advisory-lock blocker is what made
 the guard deterministic. The replacement detector went red on 3 of 3. **The report's headline
 mutation claim is sound and the added detector is a real guard.**
+
+---
+
+## Area 2 — judging the `SECURITY DEFINER` lookup (`20260904020000_invitation_lookup_function`)
+
+### Does it leak anything?
+
+No, on the terms it sets. It returns one `text` column and no row data. Measured (probe table in
+C-4): a wrong hash returns `NULL`, a correct hash returns the organisation id with no
+`app.organization_id` set. The argument is a SHA-256 of 256 bits of `randomBytes` output
+(`secret-token.ts`), so there is no enumeration path and no oracle a caller does not already have
+the answer to.
+
+Two narrow observations, neither rising to a finding:
+
+- The function filters on **nothing but the hash** — an accepted, revoked or expired invitation's
+  token still resolves its organisation id. That is deliberate and stated in the migration comment
+  ("It makes no policy decision"). The disclosure is one opaque id to someone who already held the
+  credential. **Not a finding.**
+- `RETURNS text` over a `SELECT` with no `LIMIT`: a multi-row result would silently return the first
+  row rather than erroring. `Invitation_tokenHash_key` is UNIQUE (confirmed in `\d "Invitation"`),
+  so it cannot happen. **Not a finding**, recorded because the guarantee lives in an index, not in
+  the function.
+
+### Can it be abused?
+
+`REVOKE EXECUTE … FROM PUBLIC` then `GRANT … TO sentinel_app` is present and effective:
+
+```
+proacl = {sentinel_org_lookup=X/sentinel_org_lookup, sentinel_app=X/sentinel_org_lookup}
+```
+
+PUBLIC holds no EXECUTE. `sentinel_org_lookup` is `NOLOGIN` (`rolcanlogin = f`), so the owner
+cannot connect. The only caller is the API process.
+
+**The abuse surface that matters is not the function — it is what the handler does with its
+result, and ADR-0022's second property overstates the containment.** The ADR says:
+
+> "…all they learn is an opaque organisation id **they cannot act on** — every subsequent read and
+> write in the accept path runs under RLS in a transaction scoped to that id."
+
+`withTenantTransaction(base, organizationId, fn)` (`packages/db/src/tenant-transaction.ts:33-44`)
+takes a raw id and performs **no membership or entitlement check** — it calls
+`set_config('app.organization_id', <id>, true)` and hands the callback a scoped client. RLS scoped
+to an organisation does not restrict the caller *within* that organisation; it restricts them *to*
+it. So the accept handler will open a fully-privileged tenant transaction into an organisation the
+authenticated user is a member of nothing in, chosen by a value derived from a client-supplied
+token. Every tenant-owned row in that organisation — `Membership`, `Invitation`, `AuditEvent` — is
+readable and writable inside that transaction, and the only thing that stops it is the handler
+being written not to.
+
+That is the same posture ADR-0020's `user_organizations` has and it is probably acceptable, but the
+ADR's "cannot act on" is the wrong description of why, and it is the sentence a later reader will
+lean on when adding the fourth definer function. The accurate statement is: **containment is the
+handler's discipline, not RLS.** `assertPathIsActiveTenant` — the check that makes every other
+tenant route safe — has nothing to compare against here, because there is no path id and no
+resolved tenant. **Medium, INFERRED (from the two function bodies; there is no accept handler to
+measure).**
+
+### Is `search_path = public, pg_temp` correct?
+
+Yes, and it is what ADR-0021 requires. Confirmed in the live catalogue rather than in the file:
+
+```
+ proname                               | owner               | prosecdef | proconfig
+ user_organizations                    | sentinel_org_lookup | t         | {"search_path=public, pg_temp"}
+ invitation_organization_by_token_hash | sentinel_org_lookup | t         | {"search_path=public, pg_temp"}
+```
+
+`pg_temp` is last, so an unqualified `"Invitation"` resolves in `public` first. The second,
+independent defence the migration comment claims is also real:
+
+```
+ has_database_privilege('sentinel_app','sentinel','TEMPORARY') = f
+ has_database_privilege('public','sentinel','TEMPORARY')       = f
+```
+
+### Are the grants right?
+
+Yes. `sentinel_org_lookup` holds SELECT on exactly three tables and nothing else:
+
+```
+ sentinel_org_lookup | Invitation   | SELECT
+ sentinel_org_lookup | Membership   | SELECT
+ sentinel_org_lookup | Organization | SELECT
+```
+
+which matches ADR-0022's Consequences exactly. No default privileges were granted, so the claim
+that a later migration's table stays invisible holds.
+
+### Is it sufficient for the accept path to be built on?
+
+Sufficient for the **lookup**, yes — probe rows B and D together show the whole sequence works:
+resolve the id with the definer function, then read the full row and write `Membership` and
+`AuditEvent` under ordinary RLS inside `withTenantTransaction(that id)`. `User` is not tenant-owned
+and carries no policy, so the invited-address comparison (D11) needs nothing extra.
+
+Two things it does **not** unblock, and only one of them is recorded:
+
+1. `lockOrganization` is still not exported. **Verified**: `membership.service.ts:156` reads
+   `async function lockOrganization(tx: TenantTransaction, organizationId: string): Promise<void>`
+   with no `export` keyword. D8 requires acceptance to take that lock and `permissions.md` invariant
+   1 names Task 15 as the next taker. The report flags this (§6); the migration and both ADRs do
+   not.
+2. Nothing in the schema, the function, or either ADR constrains the accept handler to compare the
+   invited address to the authenticated user's (D11). That is the whole security of the endpoint
+   and it is entirely unwritten code. Stating the obvious because the branch's documents now read
+   as though acceptance is unblocked: **the blocker was one of three, and the other two are the
+   lock and D11.**
