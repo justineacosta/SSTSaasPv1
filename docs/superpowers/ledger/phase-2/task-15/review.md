@@ -1,7 +1,8 @@
 # Task 15 (Invitations) — Adversarial Review
 
-**Status: IN PROGRESS.** Built incrementally; each finding is written the moment it is
-established. If this document ends abruptly, everything above the cut is verified work.
+**Status: COMPLETE.** All eight review areas examined; see the Coverage section at the end for
+what was measured and what was only reasoned about. Built incrementally, each finding written the
+moment it was established.
 
 Reviewer: adversarial reviewer agent (did not write the code under review).
 Branch: `feat/phase-2-task-15-invitations`, commits `2aa2f4e..HEAD`, base `main` at `77d74e4`.
@@ -654,3 +655,172 @@ Two things it does **not** unblock, and only one of them is recorded:
    and it is entirely unwritten code. Stating the obvious because the branch's documents now read
    as though acceptance is unblocked: **the blocker was one of three, and the other two are the
    lock and D11.**
+
+---
+
+### F-10 — nine `.claude/` sentences the implementer correctly identified as false are still false at `HEAD`. **Medium. MEASURED.**
+
+`CLAUDE.md`'s Documentation rules: "When you change API behaviour, the schema, auth, authorization,
+… or a security control, update the matching `.claude/` document **in the same change**." The
+implementer was told not to write status prose and handed the list up (report §7) — correct under
+the brief. Three commits have landed since (`f42729f`, `6cc567f`, `fa8ffaf`) and the orchestrator
+wrote two ADRs, but none of the nine sentences was corrected. Re-verified at `HEAD`:
+
+| Document | Sentence, as it still reads | Truth |
+|---|---|---|
+| `.claude/architecture/backend.md:99` | "It governs **seven** shipped routes as of Task 14" | ten (`EXPECTED_GUARDED_ROUTES`) |
+| `.claude/architecture/backend.md:141` | "as of Task 12 there are **nine**: rate limit, authenticate, …" | ten |
+| `.claude/architecture/backend.md:168-176` | "Splitting the limiter into an early per-IP stage and a late per-principal one is the fix, and **it is not built**." | the split is built |
+| `.claude/security/authorization.md:109` | "The no-minting rule has **two** enforcement points as of Phase 2 Task 14" | three |
+| `.claude/security/authorization.md:301` | "run over **seven** shipped routes as of Task 14" | ten |
+| `.claude/security/authentication.md:357-358` | "The invitation row is Task 15's and **remains Designed only**." | issue/hash/TTL/revoke/supersede are built; acceptance is not |
+| `.claude/security/authentication.md:366` (table) | "accepting requires authentication as that address" | no code |
+| `.claude/security/abuse-prevention.md:151-155` | "there is **no tenant context before Phase 2**… those fail-closed classes would carry no limit at all" | now resolvable in the tenant phase; the paragraph does not mention the limiter runs twice |
+| `.claude/product/permissions.md:126-127` | "Task 14's role change and Task 15's invitation acceptance are **both still unwritten**" | Task 14's shipped |
+
+(`.claude/product/permissions.md:112` — "Task 15's invitation acceptance is the next one" — is still
+true as a rule and is correctly flagged as merely misreadable.)
+
+I verified the one edit the implementer *did* make is exactly what was claimed:
+`git diff main..HEAD -- .claude/security/audit.md` is a single line, splitting
+`` `INVITATION_ACCEPTED/REVOKED` `` into two separately backticked names. No sentence added or
+removed. **Accurate.**
+
+The `.claude/` situation is not the implementer's defect — it is the branch's, and it is
+release-blocking under the project's own rule as long as the branch is a candidate for merge.
+
+---
+
+## What I checked and found clean
+
+Each of these was examined and produced no finding. What I ran is named so a later reader can tell
+"clean" from "not looked at".
+
+- **The two-phase limiter's fail-closed behaviour on every path.** Read `rate-limit.guard.ts` end to
+  end. `declared` counts scopes in the current phase only, so a class with nothing in this phase
+  passes without a Redis command; a class *with* a scope in this phase whose identifier is
+  `undefined` reaches `declared > 0 && decisions.length === 0` and applies `failMode`. Fail-closed is
+  therefore still fail-closed for an unresolved tenant, on a public route, and on a Redis throw
+  (the `try` wraps only the Redis loop; `applyFailMode` is reached from both the catch and the
+  unresolved branch). The `rate-limit.integration.spec.ts:290` test still passes for the reason
+  ADR-0023 states — the fixture route is `@Public()`, so it reaches `TenantRateLimitGuard` with no
+  `request.organizationId`.
+- **Double-charging.** `RATE_LIMIT_SCOPE_PHASES` is `satisfies Record<RateLimitScope, 'edge'|'tenant'>`
+  over the whole `RATE_LIMIT_SCOPES` tuple, so every scope has exactly one phase and no window can
+  be charged twice. `app.module.spec.ts` additionally asserts the two passes are two different
+  classes (Nest resolves `APP_GUARD` by class, so a repeated registration would be one instance in
+  two positions).
+- **`request.organizationId` is not attacker-controlled.** `tenant-context.ts` writes it only in the
+  `resolution.outcome === 'resolved'` arm, from `resolution.context.organizationId` — the resolved
+  membership, not the path parameter. So a caller cannot mint fresh rate-limit buckets by naming
+  other organisations.
+- **The edge pass is unchanged for existing routes.** Enumerated every `@RateLimit(...)` decorator
+  in `apps/api/src` outside specs; only `invitations.controller.ts:136` names a class with a
+  `perOrganization` scope.
+- **`INVITATION_COLUMNS` cannot leak a token.** No `tokenHash` in the `select`; all three returning
+  statements use it; `toResponse` maps a fixed field list; the contract-level half is pinned by
+  `packages/contracts/src/invitations.spec.ts` and the integration half by two assertions.
+- **The mailer.** `InvitationMailerAdapter` renders the shared `EMAIL_TEMPLATES.invitation`, takes no
+  display name (rulings 70/85), logs only `templateId` and `recipient` on failure, and swallows the
+  failure after the commit (ruling 45). It does not put the raw token in any log binding.
+- **Audit in-transaction discipline.** Both writers take `tx`; `AuditService.record` cannot open its
+  own transaction.
+- **`assertActorMayGrant` import rather than extraction (D5's fork).** Reproduced the report's
+  measurement: `npx madge --circular --extensions ts apps/api/src/modules/invitations/invitation.service.ts`
+  → `Processed 46 files (1.5s)` / `✔ No circular dependency found!`, **EXIT=0**. The report's quoted
+  line is exact.
+- **The one `.claude/` edit made.** Exactly the single mechanical line claimed.
+- **`audit.actions.ts`'s census.** Computed: 8 actions, 3 resource types; the docblock says eight and
+  three. Its history paragraph about past miscounts is itself correct.
+
+## Verification table — commands I ran, with real exit codes
+
+Exit codes captured as `out=$(pnpm <cmd> 2>&1); code=$?`, outside a pipe.
+
+| Command | Exit | Output |
+|---|---|---|
+| `pnpm format:check` | **0** | "All matched files use Prettier code style!" |
+| `pnpm lint` | **0** | 14 tasks successful |
+| `pnpm typecheck` | **0** | 14 tasks successful |
+| `pnpm test` | **0** | **100 files / 1709 tests** — matches the report exactly |
+| `pnpm check:specs` | **0** | "128 spec files, each claimed by exactly one" — matches |
+| `pnpm test:integration` (run 1) | **0** | 28 files / 505 tests |
+| `pnpm test:integration` (run 2) | **0** | 28 files / 505 tests |
+| `pnpm build` | **0** | 8 tasks, FULL TURBO |
+| `pnpm check:openapi` | **0** | byte-identical; `openapi.json` has **26 paths** — matches |
+| `pnpm check:registry` | **0** | "15 models, 3 tenant-owned, 1 tenant root, 11 deliberately global" — matches |
+| `pnpm check:secrets` | **0** | "455 tracked files" (report said 453 at `f42729f`; `fa8ffaf` and this review file account for the difference — not a discrepancy) |
+| `npx vitest run --project unit …/invitations.controller.spec.ts` | **0** | 27 tests — matches |
+| `npx vitest run --project integration …/invitations.integration.spec.ts` | **0** | 20 tests, 14.0s — matches |
+| `npx vitest run --project unit packages/db/src/tenant-scope.spec.ts` | **0** | 27 passed (post-restore) |
+| `npx madge --circular --extensions ts …/invitation.service.ts` | **0** | "Processed 46 files", no cycle — matches |
+| `docker compose exec postgres psql …` (roles, procs, grants, probe A-E) | **0** | reproduced ADR-0022's table |
+
+**Two full `test:integration` runs, both green** (ruling 119). Both integration runs, `pnpm test`
+and `pnpm build` were run at `HEAD` on a tree confirmed clean by `git status --short` after every
+mutation was reverted.
+
+## Findings summary
+
+| # | Severity | Finding |
+|---|---|---|
+| F-1 | **High** | `revoke`'s docblock and report §4.7 claim an expired invitation answers 404; it answers **204** and writes an audit row. Measured (`expected 204 to be 404`). No test covers it. |
+| F-9 | **Medium** | The ruling-99 `deletedAt: null` predicate is **not guarded** — the mutation survives on 2/2 runs; the report's mutation table claims 1 red. Redundant with `status: 'ACTIVE'`; only removing both goes red. |
+| F-2 | **Medium** | The tenant limiter pass is skipped by every earlier refusal and `invitations` declares nothing at the edge, so the create route is unlimited for authorization/verification failures. Recorded in the controller, absent from ADR-0023. |
+| Area 2 | **Medium** | ADR-0022's "an opaque organisation id **they cannot act on**" overstates containment: `withTenantTransaction` performs no membership check, so accept will open a fully-privileged tenant transaction into an organisation chosen by a token. Containment is the handler's discipline, not RLS. |
+| F-10 | **Medium** | Nine `.claude/` sentences correctly identified as false are still false at `HEAD`, against `CLAUDE.md`'s same-change rule. |
+| C-2 | **Medium** | `authorization-matrix.integration.spec.ts:45` still says "**Seven** routes … counted from `EXPECTED_GUARDED_ROUTES` below rather than remembered" while that constant now holds **ten**; line 57's "the other five routes" is now eight. |
+| C-1 | Low | `registry.ts:37` "There are NINE members" — there are **ten**. Orchestrator's belief confirmed; the surrounding ordinal narrative is also off by one. |
+| C-3 | Low | Report §5's `@@unique` census: "four declarations" for three, and four comment hits enumerated where there are seven. Conclusion is nonetheless correct. |
+| C-4 | Low | ADR-0022 cites the `Invitation` RLS policy at `migration.sql:18-20`; the predicate it quotes is at line **21**. |
+| F-2b | Low | `invitations.controller.ts` says an **unauthenticated** flood pays tenant resolution and the permission check; it does not — `AuthenticationGuard` refuses it two stages earlier. The exposed population is the authenticated one. |
+| F-3 | Low | When built, `POST /invitations/accept` cannot carry a `perOrganization` class (it would 429 always) and so will ship with no rate limit at all. Recorded nowhere. |
+| F-8b | Low | D4's supersession is observable only as far as a column write; that a superseded **token stops working** is unprovable with no consumer. The report presents D4 as done without that distinction. |
+
+Clean, with what established it: F-4 (token discipline), F-5 (audit events), F-6 (tenant-client test
+resolution — the moved property bites, measured), F-7 (cross-tenant arms exist and the revoke arm
+asserts survival), F-8 (D4/D5 and the lock key), and the "What I checked and found clean" list above.
+
+## Coverage — what I got to, and what I did not
+
+**All eight areas were examined.** In order:
+
+1. **Rate-limiter two-phase split** — done. Read the guard, the config, the module wiring, the guard
+   spec deltas and the app-module assertions; enumerated every `@RateLimit` call site. F-2, F-2b,
+   F-3, and the clean list.
+2. **The `SECURITY DEFINER` function** — done, with live database measurements. Its own section.
+3. **Ruling 100 mutation discipline** — done, five mutations re-run independently, one of which
+   refutes the report (F-9). Tree restored and verified clean after each.
+4. **The tenant-client test resolution** — done, with a measured mutation of `decideScope` (F-6).
+5. **Cross-tenant isolation** — done as far as reading and reasoning goes (F-7). **Not done:** I did
+   not run the three single-layer mutations (drop the explicit `organizationId`; disable the scoping
+   extension; disable RLS) that would show which layer the green test actually depends on. My claim
+   that no single one of them would turn it red is **INFERRED**, not measured.
+6. **D4 supersede and D5 no-minting** — done (F-8), including the lock-key comparison against
+   `TokenService.issue` and the M5 mutation.
+7. **Token discipline** — done (F-4). Single-use is unverifiable because there is no consumer.
+8. **Audit events** — done (F-5), including confirming `INVITATION_EXPIRED`'s absence is honest
+   (`grep -rn "INVITATION_EXPIRED" .claude/` → no hits).
+
+**Other things I deliberately did not do**, so nobody reads their absence as a clean result:
+
+- I did not mutation-test the DMMF sentinel in `tenant-client.integration.spec.ts` (would need a
+  schema change plus `prisma generate`). Its second assertion is read, not run.
+- I did not drive 51 requests at the create route to prove the 50/day refusal end to end — the
+  report already declares that gap (§10.4) and I confirmed no test does it.
+- I did not review `packages/contracts/src/invitations.ts` or its spec beyond confirming the
+  response schema strips a token; the contracts were shipped in Task 2 and are out of this task's
+  diff.
+- I did not audit `invitations.controller.ts`'s OpenAPI prose sentence by sentence against the
+  handler; I read it for the two claims that bear on findings (supersede-including-expired, and the
+  rate-limit paragraph).
+
+**No code was changed by this review.** Every mutation was reverted from a backup copy taken before
+it, `git status --short` was empty after each, and the only file this review committed is
+`docs/superpowers/ledger/phase-2/task-15/review.md`.
+
+**Status of the work under review, in the project's vocabulary:** **Partially Implemented.** Three
+of four endpoints are built, tested and green; `POST /api/v1/invitations/accept` is **Not
+Implemented** and its database blocker is now removed; F-1 is a shipped-docblock falsehood on a
+built endpoint; F-9 means one of D7's two guards does not exist; and the `.claude/` corpus (F-10)
+has not been brought into line with the code.
