@@ -215,10 +215,18 @@ table. Measured by the orchestrator on 2026-09-03, on this branch, at the tip yo
 operation count, and a brief that told you otherwise would be wrong; Task 13's did);
 `check:registry` **15** models; `check:secrets` **434** tracked files.
 
-**Two of those numbers were wrong in the first draft of this brief and are corrected here**: it
-said 440 integration tests where the command prints 443, and 433 tracked files where this branch
-has 434 — 433 was measured on `main`, and the difference is this file. Ruling 108's lesson, landing
-on the document that quotes it.
+**Two of those numbers were wrong in the first draft of this brief. One correction was right and
+one was itself false, and the false one is left standing here with its refutation** rather than
+quietly rewritten, because that is the pattern this phase keeps producing.
+
+- *Right:* it said 440 integration tests where the command prints **443**.
+- *Wrong:* it said `main` was 433 tracked files "and the difference is this file". Both halves are
+  false. `scripts/check-secret-shaped-literals.ts:167` excludes `^docs/superpowers/` by path, so no
+  ledger file can move that count at all; and `origin/main` computes to **434**, not 433. Measured
+  after the fact with the script's own filters over `git ls-tree -r --name-only`: `origin/main`
+  434, this branch's base 434. The 433 came from an older commit's dated evidence in `roadmap.md`,
+  and the orchestrator invented a cause for a number it had not traced. **Found by the implementer,
+  not by the author** — ruling 108 landing on the correction that cites ruling 108.
 
 `check:registry` must still report **15 models** — this task adds no table. A change there means you
 added a model you did not mean to.
