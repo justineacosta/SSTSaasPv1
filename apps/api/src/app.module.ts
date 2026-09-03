@@ -18,6 +18,7 @@ import { RedisModule } from './infrastructure/redis/redis.module.js';
 import { StorageModule } from './infrastructure/storage/storage.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { HealthModule } from './modules/health/health.module.js';
+import { MembershipsModule } from './modules/memberships/memberships.module.js';
 import { OrganizationsModule } from './modules/organizations/organizations.module.js';
 import { ENV } from './infrastructure/tokens.js';
 import { OpenApiModule } from './openapi/openapi.module.js';
@@ -68,6 +69,13 @@ import { OpenApiModule } from './openapi/openapi.module.js';
     // routes can be reached; module order in this array does not decide guard
     // order, which is the `providers` array below.
     OrganizationsModule,
+    // Task 14. The membership routes live under `organizations/:id/members`,
+    // so they read as part of the organisation resource while being a module of
+    // their own — the path is a URL shape, not a module boundary. It imports
+    // `AuthModule` for one method (`revokeAllForUserInOrganization`), which is
+    // the first consumption of `SessionService` from outside `AuthModule` since
+    // Task 6 exported it.
+    MembershipsModule,
     HealthModule,
     OpenApiModule,
   ],

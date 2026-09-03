@@ -2,7 +2,9 @@ import { Global, Module } from '@nestjs/common';
 import { PrismaModule } from '../../infrastructure/prisma/prisma.module.js';
 import { PRISMA } from '../../infrastructure/tokens.js';
 import { MFA_ENROLMENT_POLICY } from '../auth/auth.tokens.js';
-import { TENANT_RESOLVER } from './roles.tokens.js';
+import { roleCatalog, type RoleCatalog } from './role-catalog.store.js';
+import { RolesController } from './roles.controller.js';
+import { ROLE_CATALOG, TENANT_RESOLVER } from './roles.tokens.js';
 import {
   mfaEnrolmentPolicy,
   tenantResolver,
@@ -42,6 +44,13 @@ import {
   // injectable here — the same import `AuthModule` makes. `@Global()` on this
   // module governs what it EXPORTS, not what it can see.
   imports: [PrismaModule],
+  // `GET /api/v1/roles`, added in Task 14. A controller on a `@Global()` module
+  // is registered once like any other — `@Global()` governs what the module
+  // EXPORTS, not how its routes are mounted — and the endpoint lives here
+  // rather than in a module of its own because it answers from the same seeded
+  // reference data `TENANT_RESOLVER` expands a membership through. A second
+  // module would mean two places that know how a role becomes a permission set.
+  controllers: [RolesController],
   providers: [
     {
       provide: TENANT_RESOLVER,
@@ -53,7 +62,15 @@ import {
       inject: [PRISMA],
       useFactory: (prisma: TenantTransactionBase) => mfaEnrolmentPolicy(prisma),
     },
+    {
+      provide: ROLE_CATALOG,
+      inject: [PRISMA],
+      useFactory: (prisma: TenantTransactionBase): RoleCatalog => roleCatalog(prisma),
+    },
   ],
+  // `ROLE_CATALOG` is NOT exported. It is consumed by this module's own
+  // controller and by nothing else; exporting it would put the role catalogue
+  // on every module in the application because this one is `@Global()`.
   exports: [TENANT_RESOLVER, MFA_ENROLMENT_POLICY],
 })
 export class RolesModule {}

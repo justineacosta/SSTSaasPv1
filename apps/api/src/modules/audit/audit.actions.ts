@@ -15,12 +15,14 @@
  * organisation and `AuditEvent.organizationId` is NOT NULL behind an RLS policy
  * that refuses the insert rather than merely rejecting the column.
  *
- * **Only names this task writes.** `security/audit.md` §4's org-and-access
- * group also lists `MEMBER_INVITED`, `INVITATION_ACCEPTED/REVOKED`,
- * `MEMBER_REMOVED`, `ROLE_CHANGED` and `ORGANIZATION_SUSPENDED`; they belong to
- * Tasks 14 and 15 and to Phase 11's platform admin, and adding them here now
- * would be a union of values nothing writes — the same argument
- * `PLATFORM_AUDIT_RESOURCE_TYPES` makes about staying narrow.
+ * **Only names something in this codebase writes.** `security/audit.md` §4's
+ * org-and-access group also lists `MEMBER_INVITED`,
+ * `INVITATION_ACCEPTED/REVOKED` and `ORGANIZATION_SUSPENDED`; they belong to
+ * Task 15 and to Phase 11's platform admin, and adding them here now would be a
+ * union of values nothing writes — the same argument
+ * `PLATFORM_AUDIT_RESOURCE_TYPES` makes about staying narrow. `MEMBER_REMOVED`
+ * and `ROLE_CHANGED` left that group in Task 14, in the same change as the two
+ * handlers that write them.
  *
  * `action` is a plain `String` column in `schema.prisma`, not an enum, so
  * nothing in the database refuses a typo. This union is the only thing that
@@ -94,6 +96,31 @@ export const AUDIT_ACTIONS = [
    * reader asking "who started acting here, and when" will look for it.
    */
   'ORGANIZATION_SWITCHED',
+  /**
+   * A member's role in this organisation was changed. The `resourceId` is the
+   * `Membership` row, and `metadata` carries `before`, `after` and
+   * `memberUserId`.
+   *
+   * The before/after values are role keys, which §5 permits: a role is not a
+   * sensitive field, and "what did this become" is the whole question a role
+   * audit answers. `memberUserId` is recorded because a membership id is
+   * meaningless to a reader six months later, and because a member who has been
+   * removed and re-added has several `Membership` rows for one person.
+   */
+  'ROLE_CHANGED',
+  /**
+   * A member was removed from this organisation. The `resourceId` is the
+   * soft-deleted `Membership` row; `metadata` carries the role they held as
+   * `before`, `null` as `after`, and `memberUserId`.
+   *
+   * **Unlike `ORGANIZATION_DELETED`, whose absence is argued above, this one
+   * commits**, and the
+   * difference is worth stating because the two look alike from a distance. A
+   * membership removal is a soft delete: the row it names is still there, so
+   * `AuditEvent`'s `Restrict` foreign key to `Organization` has nothing to
+   * refuse. Nothing is deleted by this action at all.
+   */
+  'MEMBER_REMOVED',
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
@@ -103,19 +130,24 @@ export type AuditAction = (typeof AUDIT_ACTIONS)[number];
  *
  * Deliberately narrow, on the same rule `PLATFORM_AUDIT_RESOURCE_TYPES`
  * follows: every entry must be a real Prisma model, and a union carrying values
- * nothing writes is a list nobody maintains. All three actions above are events
- * about an `Organization` — including the switch, whose subject is the
- * organisation the member began acting in rather than the session row that
- * carried them there.
+ * nothing writes is a list nobody maintains.
  *
- * "All three", counted: `AUDIT_ACTIONS` holds `ORGANIZATION_CREATED`,
- * `ORGANIZATION_UPDATED` and `ORGANIZATION_SWITCHED`. This sentence said "all
- * four" until Task 13's review, twenty-one lines below the constant it was
- * miscounting and in the same file as the comment explaining why
- * `ORGANIZATION_DELETED` cannot have a producer. It is the same defect
- * `security/audit.md` carried in the same change, and the defence that caught
- * both is the same one: when a sentence states a count, compute the count.
+ * `Organization` is the subject of the first three actions — including the
+ * switch, whose subject is the organisation the member began acting in rather
+ * than the session row that carried them there. `Membership` is the subject of
+ * the last two, and it is a distinct row rather than the organisation for a
+ * reason: a role change and a removal are facts about one person's standing,
+ * and naming the organisation would make every such event in a large tenant
+ * point at the same id.
+ *
+ * The counts, computed rather than remembered — `AUDIT_ACTIONS` holds five
+ * names (`ORGANIZATION_CREATED`, `ORGANIZATION_UPDATED`,
+ * `ORGANIZATION_SWITCHED`, `ROLE_CHANGED`, `MEMBER_REMOVED`) and this constant
+ * holds two. The sentence above said "all three" of a constant holding two, and
+ * before Task 13's review said "all four" of one holding three, twenty-one
+ * lines below the constant it was miscounting. Carry-forward ruling 108: when a
+ * sentence states a count, compute the count.
  */
-export const AUDIT_RESOURCE_TYPES = ['Organization'] as const;
+export const AUDIT_RESOURCE_TYPES = ['Organization', 'Membership'] as const;
 
 export type AuditResourceType = (typeof AUDIT_RESOURCE_TYPES)[number];
