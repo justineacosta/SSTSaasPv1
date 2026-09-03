@@ -400,3 +400,64 @@ of them leaves the test green, because the other two still refuse. So the test g
 much ("three layers, all stated"); I record it so nobody reads a green cross-tenant test as
 evidence that the application-level predicate is load-bearing. **INFERRED** — I did not run the
 three single-layer mutations, which would need an integration run each.
+
+### F-2, correction to my own finding (written after reading the controller)
+
+`invitations.controller.ts`'s class docblock **does** record the cost F-2 describes:
+
+> "The cost of that class having no `perIp` window is worth stating: an unauthenticated flood at
+> this route pays authentication, tenant resolution and the permission check before anything
+> refuses it. That is no worse than the `generalSession` default, which is fail-open and
+> (carry-forward ruling 55) resolves nothing — but it is not better either…"
+
+So F-2 is **not** an undocumented consequence in the codebase; it is undocumented in ADR-0023,
+which is the document a reader goes to for this decision. F-2's severity stands at Medium on that
+basis alone, and its "the ADR presents the placement as a pure win" sentence is the accurate part.
+
+One residual defect in that controller sentence, though: **an unauthenticated flood does not reach
+tenant resolution or the permission check.** `AuthenticationGuard` refuses it at 401, two stages
+earlier. The population that reaches "authentication, tenant resolution and the permission check
+before anything refuses it" is the **authenticated** one — a signed-in member without
+`organization.manage_members`, or with an unverified address. The sentence names the cheaper attack
+and misses the more expensive one. **Low, INFERRED** from the asserted guard order.
+
+### F-8 — D4 (supersede) and D5 (no minting): both hold; the lock key matches `TokenService`'s.
+
+**D5, an `ADMIN` may not invite an `OWNER`.** `invitation.service.ts` `create` reads the offered
+role's permissions from the seeded `RolePermission` rows and calls the imported
+`assertActorMayGrant(ctx, …)` — the same function, not a copy (`import { assertActorMayGrant } from
+'../memberships/membership.service.js'`). The test is a good one
+(`invitations.integration.spec.ts:339`): 403 `PERMISSION_DENIED` naming `organization.delete`,
+**plus** an ADMIN successfully inviting an ADMIN (so the refusal is about the set comparison and not
+about the verb), **plus** an assertion that exactly one `MEMBER_INVITED` row exists afterwards, so
+the refused transaction is proved to have rolled back with its audit row.
+
+**The advisory-lock key derivation matches `TokenService.issue`'s, shape for shape.** MEASURED:
+
+```
+token.service.ts:245
+  await tx.$queryRaw`SELECT 1 AS locked FROM (SELECT pg_advisory_xact_lock(hashtext(${`vtk:${userId}:${purpose}`}))) AS lock_taken`;
+invitation.service.ts (lockInvitationSlot)
+  await tx.$queryRaw`SELECT 1 AS locked FROM (SELECT pg_advisory_xact_lock(hashtext(${`inv:${organizationId}:${email}`}))) AS lock_taken`;
+```
+
+Same function (`pg_advisory_xact_lock`, transaction-scoped, released at commit), same `hashtext`
+derivation, same subquery wrapper for the `void`-deserialisation trap, same tagged-template
+parameterisation. The prefixes differ (`vtk:` / `inv:`), so the two families cannot collide by
+construction on their prefix; `hashtext` is 32-bit so a cross-family collision remains possible and
+its only cost is that two unrelated pairs serialise for the length of one transaction — the same
+trade `TokenService` already accepted and this file's docblock restates. **No finding.**
+
+**Is D4's correctness observable today, with no accept endpoint?** Partly, and the distinction
+matters:
+
+- **Observable:** the superseded row's `revokedAt` is set in the same transaction as the new
+  invitation, exactly one live row survives per `(organizationId, email)`, an expired row is
+  superseded too, and `MEMBER_INVITED.metadata.supersededInvitationId` names the row that died.
+  Tests at `:375`, `:428` and `:571` assert these.
+- **NOT observable:** that the superseded **token stops working**. `security/authentication.md` §6's
+  property is "invalidated by use or by a newer token", and invalidation is only meaningful at the
+  consumer. There is no consumer. So what is proved today is that a column was written; that the
+  column is honoured on acceptance is owed to whoever builds `accept`, alongside D9. The report does
+  not make this distinction — its §1 lists accept-dependent tests but presents D4 as done.
+  **Low, INFERRED.**
