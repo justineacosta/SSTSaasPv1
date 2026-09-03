@@ -150,6 +150,42 @@ function gate(): { wait: Promise<void>; open: () => void } {
   return { wait, open };
 }
 
+/**
+ * A COUNTING BARRIER, BECAUSE A ONE-SIDED GATE IS NOT ONE.
+ *
+ * The first version of the unlocked race test below used a `gate()` opened by
+ * Alice: she opened it and immediately fell through her own `await`, so nothing
+ * made her wait for Bob. `bothCounted` guaranteed "Alice has counted", never
+ * "both have counted". When Bob was slow to acquire a connection or start a
+ * transaction — which is what a loaded lane does — Alice's `UPDATE` landed
+ * first, Bob's snapshot was taken after her commit, and he counted **one**
+ * owner and returned without writing. `expect(seenByBob).toBe(2)` then failed,
+ * intermittently, on the file's own headline evidence. The adversarial review
+ * measured it: one full-lane run red at `:211`, the next green, and red
+ * deterministically with a 500 ms delay inserted before Bob's count.
+ *
+ * `arrive()` resolves for **every** participant only once `parties` of them
+ * have called it, so neither transaction can leave the barrier until both have
+ * taken their snapshot and counted. The interleaving is then arranged, which is
+ * what the paragraph beside it claimed and did not deliver.
+ */
+function barrier(parties: number): { arrive: () => Promise<void> } {
+  let arrived = 0;
+  let release = (): void => undefined;
+  const opened = new Promise<void>((resolve) => {
+    release = (): void => {
+      resolve();
+    };
+  });
+  return {
+    arrive: async (): Promise<void> => {
+      arrived += 1;
+      if (arrived >= parties) release();
+      await opened;
+    },
+  };
+}
+
 const MEMBER_ROLE_ID = async (): Promise<string> =>
   (await owner.role.findUniqueOrThrow({ where: { key: 'MEMBER' }, select: { id: true } })).id;
 
@@ -159,7 +195,8 @@ describe('the race, measured directly against Postgres', () => {
     const memberRoleId = await MEMBER_ROLE_ID();
     expect(await liveOwnerCount(org.organizationId)).toBe(2);
 
-    const bothCounted = gate();
+    // TWO parties, not a gate one of them opens for itself. See `barrier`.
+    const bothCounted = barrier(2);
     const aliceWrote = gate();
 
     const demote = async (
@@ -180,13 +217,13 @@ describe('the race, measured directly against Postgres', () => {
           const owners = counted[0]?.owners ?? 0;
 
           // Both transactions must have counted before either writes, which is
-          // the interleaving that produces the anomaly. Arranged rather than
-          // hoped for — a race test that depends on timing reports green on the
-          // machine that is fast enough.
-          if (after === 'first') {
-            bothCounted.open();
-          }
-          await bothCounted.wait;
+          // the interleaving that produces the anomaly. **Arranged, and this is
+          // the statement that arranges it**: `arrive()` releases nobody until
+          // both participants have reached it, so neither snapshot can be taken
+          // after the other transaction's write. The earlier one-sided version
+          // of this gate let Alice through on her own and reported green only on
+          // a machine fast enough to start Bob before she committed.
+          await bothCounted.arrive();
           if (after === 'second') await aliceWrote.wait;
 
           if (owners <= 1) return owners;
