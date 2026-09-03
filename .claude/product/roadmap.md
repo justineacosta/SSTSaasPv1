@@ -2251,8 +2251,11 @@ switch that is taken back leaves no append-only event saying it happened.
   hand, which is what ruling 114 says to budget for. **A scoped `Bash(gh pr merge:*)` rule would
   remove the manual step**, and adding one is the operator's decision to make, not the agent's.
 
-  Merged as **PR #28** (rebase, 2026-09-03T07:56:59Z), resulting head `43ef446`. Verified rather
-  than assumed: `gh pr view 28` reports `state=MERGED`; `git ls-tree -r origin/main` lists all
+  Merged as **PR #28** (rebase, 2026-09-03T07:56:59Z), resulting head `43ef446`. **CI is green on
+  `main` itself**, not only on the branch: run `33730741558`, event `push`, head `43ef446`, reports
+  `completed / success` read from the run's own `conclusion` field (ruling 105). That is the run
+  that matters, because a rebase-merge rewrites SHAs — the branch runs verified a tree, and this
+  one verifies the commit that is actually on `main`. Verified rather than assumed: `gh pr view 28` reports `state=MERGED`; `git ls-tree -r origin/main` lists all
   eight `modules/memberships/` files and the three new `modules/roles/` files, so `main` carries
   the code and not only the ledger; `git rev-list --count origin/main..main` is `0`; and
   `git ls-remote --heads origin` returns `main` alone, both feature branches having been deleted.
