@@ -8,13 +8,13 @@ code was written.
 Status vocabulary (specification §79): **Implemented** / **Partially Implemented** /
 **Not Implemented** / **Blocked**.
 
-## Current state — 2026-09-02
+## Current state — 2026-09-03
 
 | Phase | Scope | Status |
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Partially Implemented** — Tasks 1–13 of 18 done 2026-09-02, **Checkpoint A passed, and Task 13 is merged into `main` and green on CI**. The identity API is built and the authorization pipeline is enforced end to end: a request is rate-limited, authenticated against an opaque server-side session, CSRF-checked, resolved to a tenant, and authorized against a permission the route declares — and every one of those stages can deny. **Task 13 closed the gap that mattered most: three shipped routes now declare `@RequirePermission()`** — `GET`, `PATCH` and `DELETE /api/v1/organizations/:id` — so layers 2–4 govern production endpoints for the first time, and `POST /api/v1/auth/switch-org` is the first writer of `Session.activeOrganizationId`. **No authentication UI exists, so the E2E journey exit criterion is unmet and the phase is not complete.** Task 13 is **merged, pushed and CI-green** as of 2026-09-02: PR #25 (merge commit `f9664e2`) and the residual sweep as PR #26 (`730ac83`); `main` and `origin/main` are both `730ac83` and `git rev-list --count origin/main..main` is `0`. CI run `33667495207` on `main` reports `completed / success`, read from the run's own `conclusion` field. Evidence table under Phase 2 below |
+| 2 | Identity | **Partially Implemented** — Tasks 1–14 of 18 done 2026-09-03, **Checkpoint A passed, Task 13 merged into `main` and green on CI, and Task 14 built, reviewed, fixed and re-reviewed on a branch that is not yet pushed**. The identity API is built and the authorization pipeline is enforced end to end: a request is rate-limited, authenticated against an opaque server-side session, CSRF-checked, resolved to a tenant, and authorized against a permission the route declares — and every one of those stages can deny. **Task 14 took the permission-guarded route count from three to seven** — the member list, role change and removal under `/organizations/:id/members`, plus `GET /roles` — and made `product/permissions.md`'s invariants 1 and 5 enforced rather than described. **No authentication UI exists, so the E2E journey exit criterion is unmet and the phase is not complete.** Task 14 is **not pushed and CI has not run on it**; branch `feat/phase-2-task-14-memberships`. Evidence table under Phase 2 below |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -2111,6 +2111,158 @@ and count it.
   correctly. Local dev data only; it reaches no Testcontainers run.
 - ~~The remote branch was not deleted.~~ **Deleted 2026-09-03**; `git ls-remote --heads origin`
   returns `main` alone.
+
+## Task 14 — memberships, roles, and the last-owner invariant
+
+*Verified 2026-09-03 at `d7a1dd9` on branch `feat/phase-2-task-14-memberships`.* Every command
+below re-run by the orchestrator on the finished tree rather than taken from a subagent's report,
+with exit codes captured outside a pipe (`out=$(pnpm <cmd> 2>&1); code=$?`).
+
+| Command | Exit | What it proves |
+|---|---|---|
+| `pnpm format:check` | 0 | Prettier style across the workspace. |
+| `pnpm lint` | 0 | 14 tasks. ESLint clean, including the tenant-scoping and no-restricted-imports rules. |
+| `pnpm typecheck` | 0 | 14 tasks. The types compile — and nothing about behaviour. |
+| `pnpm test` | 0 | **99 files / 1673 tests**, up from 95 / 1628 at Task 13. |
+| `pnpm check:specs` | 0 | 126 spec files, each claimed by exactly one Vitest project. |
+| `pnpm test:integration` | 0 | **27 files / 485 tests** against real Postgres 16, up from 25 / 443. **Run three times end to end, each exit 0** — see the flake below for why once is not enough here. |
+| `pnpm build` | 0 | 8 tasks. |
+| `pnpm test:e2e` | 0 | 5 passed against a Playwright-owned production build. Run despite `apps/web` being untouched, because `packages/contracts` was edited — the edit turned out to be comment-only, which a `git diff` over non-comment lines confirms. |
+| `pnpm check:openapi` | 0 | `apps/api/openapi.json` byte-identical to what the contracts generate, at **24 paths**, up from 21. |
+| `pnpm check:registry` | 0 | 15 models, 3 tenant-owned, 1 tenant root, 11 global — **unchanged**, correctly: this task added no table and needed no migration. |
+| `pnpm check:secrets` | 0 | 446 tracked files, no credential-shaped literal. |
+| `docker compose ps` | 0 | postgres, redis, minio, mailpit all `Up (healthy)`. |
+
+What that table licenses and nothing more: the four membership and role endpoints exist, are
+guarded, and behave as their specs pin them, against a real database. **It says nothing about any
+user interface**, because there still is none.
+
+### What Task 14 built
+
+Four endpoints, taking the permission-guarded route count from **three to seven** — computed from
+the `@RequirePermission()` decorators in the controllers, not remembered:
+
+| Route | Permission |
+|---|---|
+| `GET /api/v1/organizations/:id/members` | `organization.manage_members` |
+| `PATCH /api/v1/organizations/:id/members/:membershipId` | `organization.manage_roles` |
+| `DELETE /api/v1/organizations/:id/members/:membershipId` | `organization.manage_members` |
+| `GET /api/v1/roles` | `organization.read` |
+
+All seven are pinned in `authorization-matrix.integration.spec.ts` as `METHOD path -> permission`,
+so a downgrade fails there and not only in a controller's own table.
+
+**`product/permissions.md`'s invariants 1 and 5 moved from described to enforced, and each names
+its mechanism.** Invariant 1 — an organisation always has at least one `OWNER` — is enforced by a
+`SELECT ... FOR UPDATE` on the tenant root row taken at the start of every membership write that
+can reduce the owner count, with the owner count read *inside* that lock. Two concurrent demotions
+of the last two owners therefore serialise: the second waits, re-counts, sees one, and is refused
+422. Invariant 5 — removal revokes that organisation's sessions immediately — reuses Task 6's
+`revokeAllForUserInOrganization`, and deliberately leaves the member's sessions in *other*
+organisations alive, because carry-forward ruling 95 is that removing a member must not leave them
+holding a credential no endpoint will answer, including the one that ends it.
+
+**Why a lock rather than a constraint or a trigger, recorded because it is the task's central
+decision.** "At least one row matching X exists" is not a row-level predicate, so no CHECK can
+express it. A trigger does not fix the race either, and this is the part that is easy to get wrong:
+two concurrent transactions each demoting a different one of the two remaining owners each evaluate
+the trigger under their own snapshot, each see two owners, and both commit. The snapshot is the
+problem, not the check. `SERIALIZABLE` would work and was rejected — it aborts one transaction with
+`40001`, which needs a retry loop, and an unhandled `40001` is a 500 on a routine role change.
+
+**No ADR, and the judgement is recorded rather than left implicit.** The lock is one statement in
+one helper called from two methods, with three tests; replacing it with `SERIALIZABLE` and a retry
+is a contained change in one service and breaks no shipped contract. The same holds for the two
+rulings below: widening either is additive. Task 12 set this precedent for the no-cache decision.
+**What would trigger an ADR is a second enforcement mechanism** — a trigger, or a permission cache —
+because that is the point at which two things have to agree.
+
+### What the review found, and the two rulings that went beyond it
+
+A fresh adversarial reviewer found **0 Critical, 2 High, 3 Medium, 5 Low**. Nine of the ten were
+dispositioned FIX; dispositions in
+[`fix-brief.md`](../../docs/superpowers/ledger/phase-2/task-14/fix-brief.md), closures in
+[`fixes.md`](../../docs/superpowers/ledger/phase-2/task-14/fixes.md).
+
+**The High that mattered most is that the integration lane was red on a coin flip, and this task
+put it there.** The unlocked-race arm's barrier was one-sided: the first transaction opened the
+gate and fell straight through its own wait, so nothing made it wait for the second to have
+counted. On a slow start the first write landed before the second read, the second counted one
+owner, and the arm failed. The comment above the gate claimed the interleaving was "arranged rather
+than hoped for — a race test that depends on timing reports green on the machine that is fast
+enough". It was hoped for, and it failed in exactly the manner its own comment described. **A test
+written to catch a race lost one.**
+
+The second High is the sharper lesson: **the role-change path's lock had no test that could detect
+its removal.** Deleting the lock from `updateRole` alone left the memberships lane 36/36 green, and
+survived one run in four of the file that was supposed to guard it — because the only deterministic
+detector issued a `DELETE`, so it exercised `remove` and never `updateRole`. The demotion race is
+the case the plan names in its own words, and it was the one path nothing reliably guarded. Both
+now have a deterministic detector using a `FOR NO KEY UPDATE` blocker — a plain `FOR UPDATE`
+blocker is *not* a valid detector, because the tenant-scoping extension forces `organizationId`
+into the payload, Postgres re-checks the foreign key and takes `FOR KEY SHARE` on the parent row,
+and that conflicts with the blocker whether or not the handler locks anything.
+
+**Carry-forward ruling 82 came due, and the sentence claiming otherwise was written by this task.**
+`remove` closed with a comment asserting that nothing could mint a session pointed at the
+organisation afterwards, on the grounds that `POST /auth/switch-org` decides membership with the
+guard's own resolver. That decision happens *before* the write, which is precisely the window.
+Measured: with a delay instrumented between the membership read and `rotate`, the switch returned
+200 and left a live, un-revoked session pointed at the organisation the member had just been
+removed from, whose `GET /auth/session` answered 200 with the organisation's name — and whose own
+200 body carried a populated 23-permission set, which the review had not recorded. Closed with
+ruling 82's shape, which is `login.service.ts`'s `credentialStillCurrent` applied to membership:
+`switch` re-reads the membership *after* `rotate`, revokes the session it just issued, and answers
+404. Either the rotate precedes the removal's revocation and is swept by it, or it follows and the
+re-read observes the removal; there is no third ordering. The check sits before the audit row, so a
+switch that is taken back leaves no append-only event saying it happened.
+
+**Two rulings taken by the orchestrator beyond the review's findings.**
+
+- **An `ADMIN` may not remove an `OWNER`, and this was a defect.** D5 enforced "you cannot mint
+  authority you do not hold" on the role change while its mirror went unenforced on removal: an
+  `ADMIN` could not *make* an `OWNER` and could *unmake* one, irreversibly from within their own
+  authority, since no `ADMIN` can promote a replacement. Closed by pointing the same permission-set
+  comparison at the role the target holds. It is a set comparison and never a role ranking, because
+  a ranking is a second model of authority that drifts from `ROLE_PERMISSIONS`. Cost if wrong: if
+  customers need an `ADMIN` who can evict a compromised owner, widening is a one-line change.
+- **Self-removal is permitted and is not a defect.** Leaving an organisation is legitimate, it is
+  bounded by the last-owner invariant, and the sessions are revoked correctly. Only the
+  documentation was missing, and it is now in the handler's OpenAPI description.
+
+### Still owed after Task 14
+
+- **Not pushed, and CI has not run.** The branch is `feat/phase-2-task-14-memberships`, cut from
+  `main` after Task 13 merged. Run `git rev-list --count main..HEAD` for the commit count rather
+  than trusting a number written here — ruling 108's own lesson is that a document inside the range
+  it describes cannot state that range's size and stay true.
+- **Two known surviving mutations, both stated rather than papered over.** Removing `deletedAt:
+  null` from the owner count turns nothing red, and cannot:
+  `Membership_status_deletedAt_agree_check` makes `status = 'ACTIVE'` imply it, so the two
+  predicates select identical rows. Removing the `organizationId`/`deletedAt` predicates from
+  `updateRole`'s `update` likewise turns nothing red, because the row was resolved by
+  `liveMembership` in the same transaction under the organisation lock. Both survivals are recorded
+  beside the code.
+- **The ruling-82 closure has no committed integration test.** The transcript that proves it needed
+  a delay instrumented into `OrganizationSwitchService`, and that instrumentation was scratch. What
+  is committed is a unit spec of the decision, with five arms each asserting `rotate` ran first so
+  the green cannot come from the *first* read refusing. The end-to-end measurement exists only as a
+  transcript in `fixes.md`. **A test that cannot be re-run is evidence about a moment, not a
+  regression guard**, and this one should become one.
+- **The mixed removal-versus-demotion race arm is a `Promise.all` and does not force overlap**, so
+  it is an end-to-end sanity check rather than a deterministic detector. Stated as the limit it is.
+- **No trigger as a second layer on the last-owner invariant.** Judged above; it would need
+  `SECURITY DEFINER` to read `Role` under RLS, dragging in rulings 106 and 107 for a layer that
+  does not close the race anyway.
+- **`security/authorization.md` §4's no-minting rule now has two enforcement points** — the role
+  change and the removal — and Task 15's invitations will be the third. It is a rule three call
+  sites have to remember, which is the shape this phase has repeatedly found to fail.
+- Carried forward and untouched by this task: the promoted session takes the ordinary 7-day
+  lifetime even when "remember me" was ticked; incremental MFA key rotation; ruling 55's
+  per-principal limiter stage; per-account notice throttling (ruling 79); ruling 24's
+  dormant-account rehash half; the denial audit event, which belongs with Phase 3's `/audit-logs`;
+  `Organization.name`'s absent length cap (ruling 86); and `meta.total` on list endpoints, whose
+  natural owner is Phase 3.
 
 ### Phase 3 — SaaS core
 Projects, assets, **asset ownership verification**, scope and scope rules with the
