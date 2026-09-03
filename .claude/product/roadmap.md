@@ -14,7 +14,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Partially Implemented** — Tasks 1–14 of 18 done 2026-09-03, **Checkpoint A passed, Task 13 merged into `main` and green on CI, and Task 14 built, reviewed, fixed, pushed and green on CI but **not merged**. The identity API is built and the authorization pipeline is enforced end to end: a request is rate-limited, authenticated against an opaque server-side session, CSRF-checked, resolved to a tenant, and authorized against a permission the route declares — and every one of those stages can deny. **Task 14 took the permission-guarded route count from three to seven** — the member list, role change and removal under `/organizations/:id/members`, plus `GET /roles` — and made `product/permissions.md`'s invariants 1 and 5 enforced rather than described. **No authentication UI exists, so the E2E journey exit criterion is unmet and the phase is not complete.** Task 14 is **pushed and CI-green, and open as PR #28 against `main`** — CI runs `33729112619` (push) and `33729204932` (pull request), both head `4f863a9`, report `completed / success` read from each run's own `conclusion` field, with all eighteen substantive steps succeeded and only the two failure-only steps skipped. **It is not merged**: `gh pr merge` was refused by the harness permission classifier, which is carry-forward ruling 114 happening a second time. Branch `feat/phase-2-task-14-memberships`. Evidence table under Phase 2 below |
+| 2 | Identity | **Partially Implemented** — Tasks 1–14 of 18 done 2026-09-03, **Checkpoint A passed, and Tasks 13 and 14 are both merged into `main` and green on CI**. The identity API is built and the authorization pipeline is enforced end to end: a request is rate-limited, authenticated against an opaque server-side session, CSRF-checked, resolved to a tenant, and authorized against a permission the route declares — and every one of those stages can deny. **Task 14 took the permission-guarded route count from three to seven** — the member list, role change and removal under `/organizations/:id/members`, plus `GET /roles` — and made `product/permissions.md`'s invariants 1 and 5 enforced rather than described. **No authentication UI exists, so the E2E journey exit criterion is unmet and the phase is not complete.** Task 14 merged as **PR #28** (rebase, 2026-09-03T07:56:59Z, resulting head `43ef446`); `git ls-remote --heads origin` returns `main` alone. Evidence table under Phase 2 below |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -2241,14 +2241,21 @@ switch that is taken back leaves no append-only event saying it happened.
   skipped. CI therefore ran the integration and end-to-end lanes from a clean clone on a Linux
   runner, which no local run proves.
 
-  **The merge itself was refused, and that is carry-forward ruling 114 for the second time.**
-  `gh pr merge 28 --rebase --delete-branch` was denied by the harness permission classifier. The
-  refusal was not worked around: neither a local `git merge` plus `git push origin main` nor an
-  edit to `.claude/settings.json` was attempted, on ruling 114's reasoning that an agent editing
-  the file expressing the operator's authorisation in order to perform an action it was just
-  denied has escalated its own privileges. **The merge is the operator's to perform**, or to
-  unblock with a scoped `Bash(gh pr merge:*)` rule. Until it happens, `main` does not contain Task
-  14 and Task 15 must not branch from `main` expecting it.
+  ~~The merge itself was refused.~~ **Merged by the operator on 2026-09-03**, and the refusal is
+  worth keeping in the record because it is carry-forward ruling 114 for the second time:
+  `gh pr merge 28 --rebase --delete-branch` was denied to the agent by the harness permission
+  classifier. The refusal was **not** worked around — neither a local `git merge` plus
+  `git push origin main` nor an edit to `.claude/settings.json` was attempted, on ruling 114's
+  reasoning that an agent editing the file expressing the operator's authorisation in order to
+  perform an action it was just denied has escalated its own privileges. The operator merged by
+  hand, which is what ruling 114 says to budget for. **A scoped `Bash(gh pr merge:*)` rule would
+  remove the manual step**, and adding one is the operator's decision to make, not the agent's.
+
+  Merged as **PR #28** (rebase, 2026-09-03T07:56:59Z), resulting head `43ef446`. Verified rather
+  than assumed: `gh pr view 28` reports `state=MERGED`; `git ls-tree -r origin/main` lists all
+  eight `modules/memberships/` files and the three new `modules/roles/` files, so `main` carries
+  the code and not only the ledger; `git rev-list --count origin/main..main` is `0`; and
+  `git ls-remote --heads origin` returns `main` alone, both feature branches having been deleted.
 
   Run `git rev-list --count main..HEAD` for the commit count rather than trusting a number written
   here — ruling 108's own lesson is that a document inside the range it describes cannot state that

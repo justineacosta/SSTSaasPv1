@@ -927,6 +927,13 @@ Full reasoning in [`task-10/review.md`](task-10/review.md),
     itself finished while `main` does not contain it, and the next task branches from the wrong
     base — which is precisely what Tasks 13–15's chaining warnings exist to prevent.
 
+    **It happened again in Task 14**, on PR #28, with the same refusal and the same two workarounds
+    declined — this time against an explicit operator instruction in chat to "push and merge", which
+    is the case the ruling's third sentence already anticipated. The operator merged by hand.
+    **Two consecutive tasks stopped at the same step makes this load-bearing rather than
+    cautionary**: plan the checkpoint around a manual merge, or get the permission rule added
+    first.
+
 ### From the Task 13 residual sweep
 
 115. **`REVOKE ... FROM PUBLIC` cannot fail, so a migration that only revokes proves nothing.**
@@ -1072,27 +1079,16 @@ unchanged; `check:secrets` 446; `docker compose ps` four services healthy. The f
 
 **Branching.** `feat/phase-2-task-14-memberships`, cut from `main` after Task 13 merged, and
 rebased onto `0739af9` at the start of this session — the branch pre-existed with three docs
-commits and no code, from a session whose implementer was cancelled. **Pushed: yes. CI: green.
-Merged: NO.**
+commits and no code, from a session whose implementer was cancelled. **Pushed: yes. CI: green. Merged: yes.**
 
-**The merge was refused, and it is ruling 114 for the second time.** PR **#28** is open against
-`main`. CI runs `33729112619` (push) and `33729204932` (pull request), both on head `4f863a9`,
-report `completed / success` read from each run's own `conclusion` field (ruling 105), with all
-eighteen substantive steps succeeded and only the two failure-only steps skipped.
-`gh pr merge 28 --rebase --delete-branch` was then denied by the harness permission classifier.
-**Neither workaround was attempted** — not a local `git merge` plus `git push origin main`, and not
-an edit to `.claude/settings.json` — on ruling 114's own reasoning. The operator merges, or adds a
-scoped `Bash(gh pr merge:*)` rule.
+**Merged as PR #28** (rebase, 2026-09-03T07:56:59Z, resulting head `43ef446`). CI green on the branch at both heads — runs `33729112619`/`33729204932` on `4f863a9` and `33729923028`/`33729926092` on `610f5f6` — every conclusion read from the run's own field (ruling 105), with 22 steps succeeded and only the two failure-only steps skipped. Verified on `main` rather than assumed: `gh pr view 28` reports `state=MERGED`, `git ls-tree -r origin/main` lists all eight `modules/memberships/` files and the three new `modules/roles/` files, `git rev-list --count origin/main..main` is `0`, and `git ls-remote --heads origin` returns `main` alone.
 
-**So `main` does NOT contain Task 14 while this sentence is true.** A session starting Task 15 must
-check before branching: `git log --oneline origin/main -1` and confirm PR #28 is merged. Branching
-from a `main` without the membership routes is exactly the failure Tasks 13–15's chaining warnings
-exist to prevent.
+**The agent could not perform the merge, and that is ruling 114 for the second time.** `gh pr merge 28 --rebase --delete-branch` was denied by the harness permission classifier. Neither workaround was attempted — not a local `git merge` plus `git push origin main`, and not an edit to `.claude/settings.json`. The operator merged by hand, which is exactly what ruling 114 says to budget for. **Ruling 114 stands and should now be read as load-bearing rather than cautionary**: it has stopped two consecutive tasks at the same step. A scoped `Bash(gh pr merge:*)` rule would remove the manual step, and adding it is the operator's call.
 
 *No commit count is written here, deliberately* — ruling 108, and Task 13's pause state learned it
 the hard way twice. Run `git rev-list --count main..HEAD`.
 
-**Next action: the operator merges PR #28.** Then Task 15 — invitations. Read rulings **99** and
+**Next action: Task 15 — invitations.** `main` is at `43ef446` and contains Task 14, so a Task 15 session branches from `main` directly. Read rulings **99** and
 **100** first, because Task 14's removal path is now what produces the multi-row `(organizationId,
 userId)` state and re-invitation is what consumes it; **124** binds the invited role, which is the
 third call site of the no-minting rule and the first one nobody has written yet; and **122** binds
