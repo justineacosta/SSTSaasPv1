@@ -97,5 +97,20 @@ own rules about what it may conclude.
   ("there is no tenant context until Phase 2") describes the old reason and is now stale.
 - **Two Redis round trips are possible for one request** where a class declares scopes in both
   phases. No class does today; the cost arrives with the first one that does.
+- **A request refused by any guard above the tenant pass is never counted, and for a class with no
+  edge scope that means no limit at all.** Found by the adversarial review, and it is the real cost
+  of this placement rather than a detail. `invitations` declares nothing in `'edge'`, so an
+  authenticated caller who lacks `organization.manage_members` is refused by `AuthorizationGuard` —
+  which runs *before* `TenantRateLimitGuard` — and their attempt is never charged against any
+  window. They have an unlimited channel to a 403. The alternative placement, before
+  `AuthorizationGuard`, has the mirror defect: a caller the organisation does not authorise could
+  then spend the organisation's 50/day budget, which is a denial of service against the tenant by
+  anyone holding any session in it. **The chosen order is the better of two imperfect ones**, and
+  it is bounded by the fact that rulings 55 and 90 already leave every authenticated route
+  effectively unlimited — closing those is what would close this.
+- **`POST /api/v1/invitations/accept` cannot carry a `perOrganization` class at all.** No tenant
+  resolves before its handler runs — that is the whole reason ADR-0022 exists — so the tenant pass
+  has nothing to key on. Any abuse limit for that route has to be `perIp` or a body-keyed
+  `perPrincipal` at the edge.
 - `architecture/backend.md` §3's pipeline table and its guard count both change, in the same commit
   as this decision.

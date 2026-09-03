@@ -17,8 +17,9 @@ let it read the row that would tell it which transaction to open.
 
 `Invitation` carries `ENABLE`/`FORCE ROW LEVEL SECURITY` with the policy
 `("organizationId" = current_setting('app.organization_id', true))`
-(`packages/db/prisma/migrations/20260820121229_row_level_security/migration.sql:18-20`), and the
-API connects as `sentinel_app`. **Measured** on 2026-09-03 against the compose Postgres:
+(`packages/db/prisma/migrations/20260820121229_row_level_security/migration.sql:18-22`; the
+`USING` predicate quoted here is line 21), and the API connects as `sentinel_app`. **Measured** on
+2026-09-03 against the compose Postgres:
 
 ```
 SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname='sentinel_app';
@@ -55,11 +56,22 @@ Three properties make this a narrow decision rather than a general RLS escape ha
    ignores RLS.
 2. **The argument is unguessable.** `p_token_hash` is a SHA-256 of a 256-bit random token that
    exists only in the invited person's inbox. A caller who can supply a matching hash already holds
-   the credential, and all they learn is an opaque organisation id they cannot act on — acceptance
-   still requires being authenticated as the invited address. This is the substantive difference
-   from `user_organizations(text)`, whose argument is a user id and whose comment therefore has to
-   insist it comes from the session and never from a path parameter. That warning does not apply
-   here, and the reason is the unguessability of the argument, not a weaker rule.
+   the credential, and what they learn is an opaque organisation id. This is the substantive
+   difference from `user_organizations(text)`, whose argument is a user id and whose comment
+   therefore has to insist it comes from the session and never from a path parameter. That warning
+   does not apply here, and the reason is the unguessability of the argument, not a weaker rule.
+
+   **What that id is not, and this correction is the adversarial review's, against an earlier
+   draft of this ADR.** The first version of this paragraph said the caller learns an organisation
+   id "they cannot act on". That is not true as written, and the mechanism that would make it true
+   does not exist. `withTenantTransaction(base, organizationId, fn)`
+   (`packages/db/src/tenant-transaction.ts:33-45`) takes a **raw** id and issues
+   `set_config('app.organization_id', …)` for it with **no membership check of any kind**. So the
+   accept handler opens a fully privileged tenant transaction into an organisation named by a value
+   that a client-supplied token selected. What keeps that safe is the handler's own discipline —
+   it re-reads the invitation inside that transaction and refuses unless the row is live, unexpired,
+   and addressed to the authenticated user — and **not** RLS, which by then has been told to trust
+   the id. Anyone extending this path must understand which of the two is load-bearing.
 3. **`search_path = public, pg_temp`, with `pg_temp` last, from the first line.**
    [ADR-0021](ADR-0021-definer-search-path-pins-pg-temp-last.md) had to correct
    `user_organizations` for exactly this hijack. This function is written with the pin rather than

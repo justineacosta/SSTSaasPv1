@@ -34,15 +34,28 @@ import {
  * of it by existing** — adding a member below without adding its sample there
  * is a compile error.
  *
- * There are NINE members. Seven were built in Task 5, the invitation Task 15
- * will send among them. The eighth — `registrationAttempt` — is Task 8's, and
- * it is the message an address that is already registered receives instead of a
+ * There are TEN members, and the count below is computed from the record above
+ * rather than remembered — carry-forward ruling 108, which this docblock has
+ * already broken once.
+ *
+ * Seven were built in Task 5 (`7918468`), the invitation Task 15 sends among
+ * them. The eighth — `registrationAttempt` — is Task 8's (`6c769a4`), and it is
+ * the message an address that is already registered receives instead of a
  * verification link, which is what keeps registration's response identical for
- * an address that exists and one that does not. The ninth —
- * `failedLoginBurst` — is Task 9's, and it is the first thing that makes
+ * an address that exists and one that does not. The ninth — `failedLoginBurst`
+ * — is Task 9's (`0013c01`), and it is the first thing that makes
  * `security/authentication.md` §7's "a burst notifies the account owner" true:
  * the sentence has been in that document since Phase 0 with no template that
  * could satisfy it.
+ *
+ * **The tenth is why this paragraph said NINE until Task 15's review caught
+ * it.** `mfaRecoveryCodesRegenerated` arrived on 2026-09-02 in Task 11's fix
+ * round (`7540279`), after the ordinal narrative above was written and while it
+ * was still accurate — the eighth really was the eighth on 2026-08-31, and the
+ * ninth really was the ninth on 2026-09-01. Nobody came back to the census. A
+ * paragraph that counts by narrating its own history stays correct only if
+ * every later writer reads the narration, which is exactly the failure this
+ * comment now records.
  *
  * Each was added by writing one line below and one line in `registry.spec.ts`'s
  * `CASES` table, and inherited every assertion in that file by existing, which
