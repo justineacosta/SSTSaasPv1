@@ -106,6 +106,24 @@ System roles ship seeded and immutable. Custom roles are per-organisation and ma
 subset of permissions the creator themselves holds — you cannot mint authority you do not
 possess, which closes the obvious privilege-escalation path.
 
+> **The no-minting rule has an enforcement point as of Phase 2 Task 14, and it is not custom
+> roles.** Custom roles are Phase 11. What enforces it today is `PATCH
+> /api/v1/organizations/{id}/members/{membershipId}`: a member's role may only be changed to one
+> whose permission set is a **subset of the actor's own effective set**, and the refusal is 403
+> `PERMISSION_DENIED` naming the first permission the actor lacks, in the same `details` shape
+> `AuthorizationGuard` produces. The case is concrete rather than theoretical — an `ADMIN` holds
+> `organization.manage_roles` and not `organization.delete`, so without the check any `ADMIN`
+> could promote a colleague, or a second account of their own, to `OWNER` and have them delete
+> the organisation.
+>
+> **It is a set comparison and deliberately not a role ranking.** A ranking (`OWNER > ADMIN >
+> ...`) is a second model of authority beside the table below, and the two drift the first time a
+> permission moves between roles. The granted role's permissions are read from the seeded
+> `RolePermission` rows — the same rows the guard decides against — so both sides of the
+> comparison have one origin. `membership.service.spec.ts` asserts the rule over all 49 ordered
+> pairs of system roles, deriving the expectation from `ROLE_PERMISSIONS` rather than from a
+> transcribed table.
+
 | Role | Intent | Notes |
 |---|---|---|
 | `OWNER` | Full control, billing, deletion | At least one per org, always; cannot be removed or demoted if last |
@@ -160,12 +178,22 @@ route and asserts each carries an explicit access declaration.
 > banner carried from Task 7 to Task 11 — "read, and enforced by nobody" — is no longer
 > true, and that is why this banner changed.
 >
-> **Three shipped routes declare a permission as of Task 13, and the guard governs them.**
-> `GET`, `PATCH` and `DELETE /api/v1/organizations/:id`, carrying `organization.read`,
-> `organization.update` and `organization.delete`. The guard was registered
-> globally in Task 12 precisely so that they were governed from the moment they were written
-> rather than from the moment somebody remembered to add a guard, and that is what happened:
-> no change to the guard was needed to bring them under it.
+> **Seven shipped routes declare a permission as of Task 14, and the guard governs them.**
+> Task 13 shipped the first three — `GET`, `PATCH` and `DELETE /api/v1/organizations/:id`,
+> carrying `organization.read`, `organization.update` and `organization.delete`. Task 14 added
+> four: `GET /api/v1/organizations/:id/members` and
+> `DELETE /api/v1/organizations/:id/members/:membershipId` carrying
+> `organization.manage_members`, `PATCH` on the same membership path carrying
+> `organization.manage_roles`, and `GET /api/v1/roles` carrying `organization.read`. The guard
+> was registered globally in Task 12 precisely so that routes were governed from the moment they
+> were written rather than from the moment somebody remembered to add a guard, and that is what
+> happened both times: no change to the guard was needed to bring any of the seven under it.
+>
+> The count is pinned in code rather than only stated here.
+> `authorization-matrix.integration.spec.ts` holds `EXPECTED_GUARDED_ROUTES` as an exact
+> `METHOD path -> permission` map and fails if a route is added, removed, or downgraded from
+> `@RequirePermission()` to `@AuthenticatedOnly()` — the last of which the matrix's arms cannot
+> otherwise notice, because a route declaring no permission simply leaves the set they iterate.
 >
 > Proof is in `authorization.guard.spec.ts` (purpose-built controllers through the real guard
 > chain), `authorization.integration.spec.ts` (real seeded rows, real row-level security, over
@@ -175,8 +203,18 @@ route and asserts each carries an explicit access declaration.
 >
 > **One arm is inapplicable rather than passing**, and it is worth naming: every system role
 > holds `organization.read`, so no caller exists who could produce a 403 on `GET
-> /organizations/:id`. The matrix records that arm as evaluated-and-inapplicable rather than
-> as covered. `PATCH` and `DELETE` produce real 403s.
+> /organizations/:id` or on `GET /roles`. The matrix records that arm as
+> evaluated-and-inapplicable rather than as covered. The other five routes produce real 403s.
+>
+> **The cross-tenant arm runs one of two probes, declared per route.** A route with a tenant id
+> in its path is probed by pointing a real, active member of another organisation at their own
+> organisation id — so the only thing that can refuse the request is the handler's
+> path-versus-tenant check. `GET /api/v1/roles` is the first guarded route with no tenant-owned
+> resource in its path, and it is probed instead by pointing a session at an organisation the
+> caller holds no membership in, which is §3's `not-a-member` row and `TenantContextGuard`'s
+> refusal. Neither probe covers a correct path id carrying **another tenant's resource id**;
+> that is proved per resource in the resource's own integration suite, because the matrix cannot
+> know what a resource of an arbitrary future route looks like.
 >
 > **`@RequireEntitlement` in the example above does not exist and is deliberately not
 > built.** Phase 10 ships the decorator and its evaluation in one change. A decorator that
@@ -236,28 +274,35 @@ cannot exceed creator's permissions, API key cannot exceed its scopes, last owne
 demoted, guest cannot reach ungranted projects, and revocation of session or key takes
 effect on the next request.
 
-**What is built, as of Task 12, and what the green tick does not cover.**
+**What is built, as of Task 14, and what the green tick does not cover.**
 `apps/api/src/common/authorization-matrix.integration.spec.ts` enumerates the live route
 inventory, asserts the arms each route's declaration implies, and — the part that makes it
 a matrix rather than a checklist — **fails on any route it did not exercise**. A new
 endpoint is therefore covered the moment it is written.
 
-Two limits, stated because the tick would otherwise imply more than it proves:
+Two things the tick would otherwise imply more about than it proves — the first of which was a
+limit through Task 13 and is now closed:
 
-- **The 403 and cross-tenant-404 arms run over three shipped routes as of Task 13** — `GET`,
-  `PATCH` and `DELETE /api/v1/organizations/{id}`, the first endpoints in this product to declare
-  a permission. Before Task 13 they ran over none, and the sentence here said so. One limit
-  survives and is worth keeping in view: the matrix fails when the guarded set becomes *empty*,
-  but it cannot detect a *single* route being downgraded to `@AuthenticatedOnly()`, because such a
-  route simply leaves the set it iterates. That case is covered instead by the per-route access
-  table in `organizations.controller.spec.ts` and by the scoped 403 arm — measured, by downgrading
-  each guarded route in turn and confirming what went red.
+- **The 403 and cross-tenant-404 arms run over seven shipped routes as of Task 14** — the three
+  on `/api/v1/organizations/{id}` (Task 13, the first endpoints in this product to declare a
+  permission), the three on `/api/v1/organizations/{id}/members`, and `GET /api/v1/roles`. Before
+  Task 13 they ran over none, and the sentence here said so. The downgrade limit this bullet used
+  to record is **closed**: the matrix now pins `EXPECTED_GUARDED_ROUTES` as an exact
+  `METHOD path -> permission` map, so a single route dropped to `@AuthenticatedOnly()` fails it by
+  name rather than silently leaving the set the arms iterate. Measured in Task 14 by downgrading
+  `DELETE /api/v1/organizations/{id}/members/{membershipId}`: the matrix's pin went red, as did
+  the per-route access table in `memberships.controller.spec.ts` and the scoped 403 arm.
 - **It drives the application as `sentinel_app`, not as the schema owner.** The default
   integration harness connects as a superuser that bypasses row-level security, under which
   an authorization suite proves that Postgres has policies rather than that this code obeys
   them. Measured: removing the tenant transaction from the resolver turns 9 of the 18
   assertions in `authorization.integration.spec.ts` red, and would not have under the owner.
 
-Everything after "Plus:" in the paragraph above is **Not Implemented**: custom roles are
-Phase 11, API keys are not issued in Phase 2, the last-owner invariant is Task 14's, and
-`GUEST` project grants need projects, which are Phase 3.
+Of the list after "Plus:" in the paragraph above, **two are now built and two are not**. The
+**last-owner invariant** is enforced and tested as of Task 14 — under a row lock, with the
+unlocked version measured against real Postgres to prove the race is real
+(`memberships/last-owner.integration.spec.ts`). **"A role cannot exceed its granter's
+permissions"** is enforced for role changes (§4's banner) and tested exhaustively over all 49
+ordered pairs of system roles, although *custom roles* themselves remain Phase 11. Still **Not
+Implemented**: API key scopes, because Phase 2 issues no keys, and `GUEST` project grants, which
+need projects and are Phase 3.

@@ -197,6 +197,17 @@ async function liveMembership(
  * anything, and counting them would let an organisation's only real owner leave
  * on the strength of an invitation nobody has accepted.
  *
+ * **`deletedAt: null` here is a KNOWN SURVIVING MUTATION, and it is stated
+ * rather than removed.** Deleting it turns nothing red, because
+ * `Membership_status_deletedAt_agree_check` makes `status = 'ACTIVE'` imply
+ * `deletedAt IS NULL` — so no test can distinguish the two predicates while the
+ * constraint holds, and a test written to try would be a test of the
+ * constraint, which `membership-soft-delete.integration.spec.ts` already owns.
+ * It stays because every other `Membership` read in this file carries it
+ * (ruling 99) and a count that did not would read as an oversight; and because
+ * the day someone relaxes the constraint, this predicate is the difference
+ * between an owner count and a guess.
+ *
  * **The refusal fires only when the write is what breaks the invariant.** An
  * organisation that already has no live owner — which nothing in this API can
  * produce, since creation mints one in the same transaction — is not made worse

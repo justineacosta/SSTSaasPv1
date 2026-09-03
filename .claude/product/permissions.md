@@ -90,7 +90,29 @@ a guest with no grants sees nothing.
 ## Invariants
 
 1. An organisation always has **at least one `OWNER`**. The last owner cannot be removed or
-   demoted; the API rejects it.
+   demoted; the API rejects it with **422 `INVALID_STATE_TRANSITION`**.
+
+   **Enforced since Phase 2 Task 14, by a row lock rather than by a count.**
+   `PATCH` and `DELETE` on `/api/v1/organizations/{id}/members/{membershipId}` each open a
+   transaction, take `SELECT id FROM "Organization" WHERE id = $1 FOR UPDATE` as their first
+   statement, and count the live `ACTIVE` `OWNER` memberships inside that lock. A count taken
+   outside it enforces nothing: two transactions demoting the two remaining owners each count
+   under their own snapshot, each see two, and both commit —
+   `apps/api/src/modules/memberships/last-owner.integration.spec.ts` runs exactly that against
+   real Postgres and measures the organisation ending with **zero** owners, which is what makes
+   the locked version's green tick mean something.
+
+   The mechanism is a lock and not a constraint because there is no declarative form: "at least
+   one row matching X exists" is not a row-level predicate, so a CHECK constraint cannot express
+   it, and a trigger inherits the same snapshot problem the naive count has. `SERIALIZABLE`
+   would close it and was rejected — it aborts one transaction with `40001`, which needs a retry
+   loop, and an unhandled `40001` is a 500 on a routine role change.
+
+   An `INVITED` membership holding `OWNER` does not count, and neither does a removed one.
+   **Every future writer of `Membership` must take the same lock** — Task 15's invitation
+   acceptance is the next one — because a writer outside the serialisation reopens the race for
+   everyone.
+
 2. A custom role can hold **only permissions its creator holds**.
 3. An API key can hold **only a subset of its creator's permissions**, and never
    `organization.delete`, `organization.manage_roles`, `billing.manage`, or `apikey.create`.
@@ -109,5 +131,42 @@ a guest with no grants sees nothing.
 
    Proved rather than asserted: `authorization.integration.spec.ts` promotes a member, demotes
    one and removes one, each time over the **same session cookie** with no sign-in in between,
-   and asserts the next request reflects it.
+   and asserts the next request reflects it. Phase 2 Task 14 added the same assertion over the
+   *shipped* role-change endpoint: `memberships.integration.spec.ts` promotes a `VIEWER` to
+   `ADMIN` and then reads the member list over that member's own unchanged cookie, which a
+   `VIEWER` could not have done a moment earlier.
+
+   **`security/authorization.md` §4's no-minting-authority rule now has a second enforcement
+   point, and it is the role change.** A role may only be granted if every permission it carries
+   is one the actor already holds — so an `ADMIN`, who holds `organization.manage_roles` but not
+   `organization.delete`, cannot promote anybody to `OWNER`. Refused with 403
+   `PERMISSION_DENIED` naming the first permission the actor lacks. It is a comparison of
+   permission **sets**, deliberately, and not a role ranking: a ranking is a second model of
+   authority beside this table and it drifts the first time a permission moves between roles.
 5. Removing a member revokes their sessions for that organisation immediately.
+
+   **Enforced since Phase 2 Task 14.** `DELETE
+   /api/v1/organizations/{id}/members/{membershipId}` soft-deletes the membership and then calls
+   `SessionService.revokeAllForUserInOrganization`, which filters on
+   `Session.activeOrganizationId` — so a consultant removed from one organisation keeps the
+   sessions pointed at the others, and keeps the one pointed at none. That narrowing is a
+   control, not an optimisation: a member whose every session was revoked would hold a valid
+   credential that no endpoint answers, including `POST /api/v1/auth/logout`, which is the one
+   that ends it. Both directions are asserted in
+   `apps/api/src/modules/memberships/memberships.integration.spec.ts`.
+
+   **The revocation runs after the transaction commits, and the removal does not depend on it.**
+   There is no permission cache (see invariant 4), so `TenantContextGuard` re-reads the
+   membership on every request naming an organisation and answers 404 the moment the row is
+   soft-deleted. What the revocation adds is that the session itself is dead rather than merely
+   powerless. Revoking inside the transaction would sign out a member whose removal then rolled
+   back, which is the failure that has no compensating layer.
+
+   Nothing can mint a replacement session pointed at that organisation afterwards:
+   `Session.activeOrganizationId` is written by `POST /api/v1/auth/switch-org` and by nothing
+   else, and that endpoint decides membership with `TenantContextGuard`'s own resolver, which
+   reads `deletedAt: null`. Signing in creates sessions with a null active organisation. That is
+   what closes the residual `session.service.ts` records against member removal — the
+   "credential re-read on the path that issues sessions" that a password change needs has no
+   equivalent here, because authority is re-read per request rather than carried in the
+   session.
