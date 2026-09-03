@@ -424,6 +424,28 @@ describe('PATCH /api/v1/organizations/:id/members/:membershipId', () => {
     expect(codeOf(response.body)).toBe('INVALID_STATE_TRANSITION');
   });
 
+  it('does not count an INVITED owner towards the invariant either', async () => {
+    // The OTHER half of the count's predicate, and the one the CHECK constraint
+    // does not imply. `Membership_status_deletedAt_agree_check` ties `REMOVED`
+    // to soft-deleted, so `deletedAt: null` already excludes a removed row —
+    // but `INVITED` is neither removed nor soft-deleted. Without `status:
+    // 'ACTIVE'` in the owner count an organisation's only real owner could
+    // demote themselves on the strength of an invitation nobody has accepted,
+    // leaving nobody who can act.
+    await clearRateLimits(harness.redis);
+    const { actor, organizationId, membershipId } = await acting('OWNER');
+    const invited = await user();
+    await membership({ organizationId, userId: invited.id, role: 'OWNER', status: 'INVITED' });
+
+    const response = await request(server)
+      .patch(`${membersPath(organizationId)}/${membershipId}`)
+      .set(csrf(actor))
+      .send({ roleKey: 'ADMIN' });
+
+    expect(response.status).toBe(422);
+    expect(codeOf(response.body)).toBe('INVALID_STATE_TRANSITION');
+  });
+
   it('answers 404 for a membership belonging to another tenant', async () => {
     await clearRateLimits(harness.redis);
     const { actor, organizationId } = await acting('OWNER');
