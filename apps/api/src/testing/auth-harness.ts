@@ -216,6 +216,16 @@ export const AUTH_RATE_LIMIT_CLASSES = [
   // several times over without this.
   'mfaVerify',
   'mfaManagement',
+  // Task 15's invite route. 50/day PER ORGANISATION and fail-closed, and it is
+  // the first class in this codebase whose limit actually applies to a shipped
+  // route — `perOrganization` had no resolvable identifier until the limiter
+  // gained its tenant-phase pass. Every test in
+  // `invitations.integration.spec.ts` creates a fresh organisation, so the
+  // windows do not overlap between tests; this entry is here so a suite that
+  // deliberately spends one organisation's budget can hand the next test a
+  // clean one, and so the lane does not carry a day-long window between runs
+  // on a developer's compose Redis.
+  'invitations',
 ] as const;
 
 export async function clearRateLimits(redis: RedisLike): Promise<void> {

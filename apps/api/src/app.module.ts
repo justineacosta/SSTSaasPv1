@@ -18,6 +18,7 @@ import { RedisModule } from './infrastructure/redis/redis.module.js';
 import { StorageModule } from './infrastructure/storage/storage.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { HealthModule } from './modules/health/health.module.js';
+import { InvitationsModule } from './modules/invitations/invitations.module.js';
 import { MembershipsModule } from './modules/memberships/memberships.module.js';
 import { OrganizationsModule } from './modules/organizations/organizations.module.js';
 import { ENV } from './infrastructure/tokens.js';
@@ -76,6 +77,13 @@ import { OpenApiModule } from './openapi/openapi.module.js';
     // the first consumption of `SessionService` from outside `AuthModule` since
     // Task 6 exported it.
     MembershipsModule,
+    // Task 15. Invitations sit under `organizations/:id/invitations` for the
+    // same reason the membership routes do: the path is a URL shape, not a
+    // module boundary. It imports `AuthModule` for `TokenService`'s two
+    // configuration readers, and `MailModule` for `MAILER` — `AuthMailer` is
+    // deliberately not exported by `AuthModule`, so the invitation message is
+    // rendered by this module's own adapter over the shared template.
+    InvitationsModule,
     HealthModule,
     OpenApiModule,
   ],

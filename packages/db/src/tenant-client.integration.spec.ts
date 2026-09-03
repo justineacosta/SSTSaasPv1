@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createUnscopedPrismaClient, Prisma, type PrismaClient } from './unscoped.js';
 import { startPostgresHarness, type PostgresHarness } from './testing/postgres-harness.js';
 import { createTenantClient, NEVER_MATCHES_ID } from './tenant-client.js';
+import { datamodelModels } from './datamodel.js';
+import { isTenantOwnedModel } from './tenant-resources.js';
 import { MissingTenantContextError } from './errors.js';
 import { newId } from './id.js';
 
@@ -71,51 +73,74 @@ describe('tenant-scoped client', () => {
     expect(row?.id).toBe(membershipB);
   });
 
-  it('rewrites findUnique by a compound unique key, not just by id', async () => {
-    // M3 (review): a compound `@@unique` is exactly the shape Phase 2's
-    // lookups will use — findUnique's `where` for it is a nested compound
-    // object (`{ organizationId_email: { organizationId, email } }`), not a
-    // flat `id`. The old findFirst-rewrite merged the scope predicate as a
-    // sibling of that nested object, which findFirst's WhereInput has no
-    // field for. The current design (run the original query unmodified, check
-    // the result) never touches `where` at all, so this shape was never at
-    // risk — this test is what proves that.
-    //
-    // Phase 2 Task 1: this was written against
-    // `Membership.@@unique([organizationId, userId])`, which no longer exists
-    // — Membership's uniqueness is now a partial unique index in SQL, so
-    // Prisma generates no compound `where` input for it. Retargeted to
-    // Invitation's `@@unique([organizationId, email])`, the other compound
-    // unique on a tenant-owned model. The property under test is the shape of
-    // the `where`, not which table carries it.
-    const invitationB = newId('inv');
-    await root.invitation.create({
-      data: {
-        id: invitationB,
-        organizationId: orgB,
-        email: 'compound-unique@example.test',
-        roleId,
-        tokenHash: `hash_${invitationB}`,
-        invitedByUserId: userB,
-        expiresAt: new Date(Date.now() + 86_400_000),
-      },
-    });
+  /**
+   * WHAT WAS HERE, WHY IT IS GONE, AND WHAT REPLACES IT.
+   *
+   * The deleted test was "rewrites findUnique by a compound unique key, not
+   * just by id". Its property is the one this whole file exists for: the
+   * extension runs the original `findUnique` **unmodified** and checks the
+   * scope column on the result, rather than merging a predicate into `where`.
+   * A compound `@@unique` was the subject because Prisma generates a NESTED
+   * `where` input for one — `{ organizationId_email: { organizationId, email }
+   * }` — and the old findFirst-rewrite had no field to merge into beside it.
+   *
+   * It had already been retargeted once: written against
+   * `Membership.@@unique([organizationId, userId])`, moved to `Invitation`'s
+   * `@@unique([organizationId, email])` when Phase 2 Task 1 made Membership's
+   * uniqueness a partial index in SQL. Task 15's migration
+   * `20260903160000_invitation_partial_unique` did the same to Invitation's, so
+   * **there is no compound `@@unique` left on any tenant-owned model** and the
+   * test stopped compiling: `TS2561: 'organizationId_email' does not exist in
+   * type 'InvitationWhereUniqueInput'`, twice, on `pnpm typecheck`.
+   *
+   * There is no third table to move it to. `TENANT_OWNED_MODELS` is
+   * `['Membership', 'Invitation', 'AuditEvent']`; the sentinel below reads that
+   * from the DMMF rather than asserting it from memory. Adding a constraint to
+   * the schema so a test has something to point at would be inventing a
+   * database invariant for a test's benefit, and deleting it silently would
+   * lose the record of a property that is still true and still worth proving.
+   *
+   * **What is lost, stated plainly.** The nested-`where` shape is no longer
+   * exercised against a real Prisma client and a real database. What replaces
+   * it is two things, and neither is as strong as what went:
+   *
+   *   1. `tenant-scope.spec.ts` asserts the same property one layer down, on
+   *      `decideScope` — that a nested compound `where` comes back byte-for-byte
+   *      in `plan.args`. That is where the decision is actually made, and it is
+   *      a real guard; what it cannot show is that Prisma then issues the query
+   *      the plan describes.
+   *   2. The sentinel below, which fails on the day a tenant-owned model gains
+   *      a compound `@@unique` again — and names what to restore rather than
+   *      only asserting an empty set, which is carry-forward ruling 101's rule
+   *      about sentinels that invite deletion.
+   */
+  it('has no compound @@unique left on a tenant-owned model, which is why the test above is gone', () => {
+    const withCompound = datamodelModels()
+      .filter((model) => isTenantOwnedModel(model.name))
+      .filter((model) => model.compoundUniques.length > 0)
+      .map(
+        (model) => `${model.name}(${model.compoundUniques.map((c) => c.join(', ')).join('; ')})`,
+      );
 
-    const asOrgA = createTenantClient(root, { organizationId: orgA });
-    const deniedToA = await asOrgA.invitation.findUnique({
-      where: {
-        organizationId_email: { organizationId: orgB, email: 'compound-unique@example.test' },
-      },
-    });
-    expect(deniedToA).toBeNull();
+    expect(
+      withCompound,
+      'A tenant-owned model has gained a compound `@@unique`: ' +
+        `${withCompound.join(' ')}. Restore the deleted "rewrites findUnique by a compound ` +
+        'unique key" test against it — create a row for Tenant B, then assert that a client ' +
+        'scoped to Tenant A gets null from `findUnique({ where: { <compound>: {...} } })` and ' +
+        'a client scoped to Tenant B gets the row. See the comment above this test for what ' +
+        'the property is and why it lost its subject.',
+    ).toEqual([]);
 
-    const asOrgB = createTenantClient(root, { organizationId: orgB });
-    const grantedToB = await asOrgB.invitation.findUnique({
-      where: {
-        organizationId_email: { organizationId: orgB, email: 'compound-unique@example.test' },
-      },
-    });
-    expect(grantedToB?.id).toBe(invitationB);
+    // Both directions, so the sentinel cannot pass because the filter is
+    // broken. Something in the schema does carry a compound unique — it is just
+    // not tenant-owned — and if that stops being true this assertion says so
+    // instead of the empty set above quietly meaning nothing.
+    const anyCompound = datamodelModels().filter((model) => model.compoundUniques.length > 0);
+    expect(anyCompound.map((model) => model.name).sort()).toEqual([
+      'IdentityProviderLink',
+      'MfaFactor',
+    ]);
   });
 
   it('scopes count', async () => {

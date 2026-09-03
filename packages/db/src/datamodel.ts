@@ -62,6 +62,24 @@ export interface DatamodelModel {
   readonly fields: readonly string[];
   /** Only the relations whose foreign key column lives on *this* model. */
   readonly relations: readonly DatamodelRelation[];
+  /**
+   * The names of every multi-column `@@unique` on this model, each as its
+   * component field names in declaration order.
+   *
+   * Single-column uniques (`@unique` on a field) are excluded: they generate a
+   * flat `where` input and are not what the caller of this field is asking
+   * about. A **compound** unique is, because Prisma generates a *nested*
+   * `where` input for it — `{ organizationId_email: { organizationId, email } }`
+   * — and that nested shape is the one the tenant client's design is built
+   * around never rewriting.
+   *
+   * Added in Phase 2 Task 15 for a sentinel rather than for a check: when the
+   * `Invitation` compound unique became partial, **no tenant-owned model had a
+   * compound unique left**, and the integration test that proved the nested
+   * shape survived the extension lost its subject. See
+   * `tenant-client.integration.spec.ts`.
+   */
+  readonly compoundUniques: readonly (readonly string[])[];
 }
 
 /**
@@ -85,6 +103,13 @@ export function datamodelModels(): readonly DatamodelModel[] {
         parentModel: field.type,
         onDelete: field.relationOnDelete,
       })),
+    // `uniqueIndexes` carries only the model-level `@@unique` declarations;
+    // a field-level `@unique` does not appear there. The length filter is
+    // belt-and-braces for a one-column `@@unique([x])`, which is legal Prisma
+    // and generates a flat input like a field-level one.
+    compoundUniques: model.uniqueIndexes
+      .map((index) => [...index.fields])
+      .filter((fields) => fields.length > 1),
   }));
 }
 

@@ -16,13 +16,13 @@
  * that refuses the insert rather than merely rejecting the column.
  *
  * **Only names something in this codebase writes.** `security/audit.md` §4's
- * org-and-access group also lists `MEMBER_INVITED`,
- * `INVITATION_ACCEPTED/REVOKED` and `ORGANIZATION_SUSPENDED`; they belong to
- * Task 15 and to Phase 11's platform admin, and adding them here now would be a
- * union of values nothing writes — the same argument
- * `PLATFORM_AUDIT_RESOURCE_TYPES` makes about staying narrow. `MEMBER_REMOVED`
- * and `ROLE_CHANGED` left that group in Task 14, in the same change as the two
- * handlers that write them.
+ * org-and-access group also lists `ORGANIZATION_SUSPENDED`, which belongs to
+ * Phase 11's platform admin; adding it here now would be a union of values
+ * nothing writes — the same argument `PLATFORM_AUDIT_RESOURCE_TYPES` makes
+ * about staying narrow. `MEMBER_REMOVED` and `ROLE_CHANGED` left that group in
+ * Task 14, and `MEMBER_INVITED`, `INVITATION_REVOKED` and
+ * `INVITATION_ACCEPTED` in Task 15, each in the same change as the handler that
+ * writes it.
  *
  * `action` is a plain `String` column in `schema.prisma`, not an enum, so
  * nothing in the database refuses a typo. This union is the only thing that
@@ -121,6 +121,90 @@ export const AUDIT_ACTIONS = [
    * refuse. Nothing is deleted by this action at all.
    */
   'MEMBER_REMOVED',
+  /**
+   * An invitation was sent. The `resourceId` is the new `Invitation` row.
+   *
+   * `metadata` carries the invited `email`, the `roleKey` offered, and
+   * `supersededInvitationId` — the id of the live invitation for the same
+   * `(organizationId, email)` that this one revoked, or `null` when there was
+   * none.
+   *
+   * **The superseded row gets no `INVITATION_REVOKED` event of its own, and
+   * that is a decision rather than an omission.** `INVITATION_REVOKED` below
+   * means a person revoked an invitation, and a reader who found one would look
+   * for the actor who did it. Supersession has no such actor: it is what
+   * re-inviting the same address *means*, the same way `TokenService.issue`
+   * writes `consumedAt` on the token it replaces without claiming anybody used
+   * it. Recording it as a field of the event that caused it keeps one fact in
+   * one row.
+   *
+   * The address is written into the row because it is the only durable record
+   * of who was invited — an invitation that is never accepted creates no
+   * `Membership` and may name an address with no `User`. `security/audit.md`
+   * §5 permits it: an email address is not one of the fields that section
+   * forbids, and an invitation trail that did not say who was invited would
+   * answer none of the questions it exists for.
+   */
+  'MEMBER_INVITED',
+  /**
+   * A person revoked a pending invitation. The `resourceId` is the
+   * `Invitation` row; `metadata` carries the invited `email` and the `roleKey`
+   * that is no longer on offer.
+   *
+   * **Written only for a deliberate revocation through
+   * `DELETE /organizations/:id/invitations/:invitationId`.** Supersession by a
+   * newer invitation to the same address sets the same column and does not
+   * write this event — see `MEMBER_INVITED` above for why.
+   */
+  'INVITATION_REVOKED',
+  /**
+   * An invitation was accepted and the `Membership` it offered was created, in
+   * one transaction.
+   *
+   * The `resourceId` is the **`Invitation`**, not the membership, because this
+   * event is the end of the invitation's life and a reader following an
+   * invitation forwards needs the two events on one id. `metadata` carries
+   * `membershipId`, `roleKey` and `memberUserId`, which is the join to the
+   * `Membership` side and matches the keys `ROLE_CHANGED` and `MEMBER_REMOVED`
+   * already use.
+   *
+   * There is one event rather than two, on the same rule
+   * `ORGANIZATION_CREATED` states: the membership is not a separate fact a
+   * reader could act on, and a second row would say the same thing twice while
+   * suggesting the two could have happened apart.
+   */
+  'INVITATION_ACCEPTED',
+  //
+  // `INVITATION_EXPIRED` IS DELIBERATELY ABSENT, AND IT IS NOT AN OVERSIGHT.
+  //
+  // The Phase 2 plan's Task 15 asks for "audit events for invitation sent,
+  // revoked, accepted, and expired". The first three are above. The fourth has
+  // **no producer that could ever commit**, for a different reason from
+  // `ORGANIZATION_DELETED`'s and worth stating in its own words:
+  //
+  // Expiry is not an event. It is the absence of one. `Invitation.expiresAt`
+  // is a timestamp and nothing observes it passing — there is no sweeper, no
+  // scheduler and no queue in this codebase (the queue arrives in Phase 4), so
+  // there is no transaction in which such a row could be written. Every other
+  // name in this constant is written inside the transaction that makes its
+  // change, which is `CLAUDE.md` rule 10 and `security/audit.md` §2; an expiry
+  // has no change and no transaction to be inside.
+  //
+  // Nor is there an actor. `AuditEvent` requires `actorType` and every row
+  // here names the person who acted. The only honest value would be `SYSTEM`
+  // for something no part of the system did.
+  //
+  // What a reader actually wants — "why did this invitation stop working" — is
+  // answerable from the row itself: `expiresAt` in the past with `acceptedAt`
+  // and `revokedAt` both null is exactly and only an expired invitation. A
+  // periodic sweeper writing one row per expiry would add a table scan and a
+  // write per expired invitation to say what a single `WHERE` clause already
+  // says.
+  //
+  // `security/audit.md` §4 does not list `INVITATION_EXPIRED` either, so
+  // nothing is owed to that document. If a later phase adds a sweeper — Phase 4
+  // brings the queue that could carry one — this is where the name goes, in the
+  // same change as the job that writes it.
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
@@ -132,18 +216,26 @@ export type AuditAction = (typeof AUDIT_ACTIONS)[number];
  * follows: every entry must be a real Prisma model, and a union carrying values
  * nothing writes is a list nobody maintains.
  *
- * `Organization` is the subject of the first three actions — including the
- * switch, whose subject is the organisation the member began acting in rather
- * than the session row that carried them there. `Membership` is the subject of
- * the last two, and it is a distinct row rather than the organisation for a
- * reason: a role change and a removal are facts about one person's standing,
- * and naming the organisation would make every such event in a large tenant
- * point at the same id.
+ * `Organization` is the subject of `ORGANIZATION_CREATED`,
+ * `ORGANIZATION_UPDATED` and `ORGANIZATION_SWITCHED` — the switch included,
+ * whose subject is the organisation the member began acting in rather than the
+ * session row that carried them there. `Membership` is the subject of
+ * `ROLE_CHANGED` and `MEMBER_REMOVED`, and it is a distinct row rather than the
+ * organisation for a reason: a role change and a removal are facts about one
+ * person's standing, and naming the organisation would make every such event in
+ * a large tenant point at the same id.
  *
- * The counts, computed rather than remembered — `AUDIT_ACTIONS` holds five
+ * `Invitation` arrived in Task 15 and is the subject of `MEMBER_INVITED`,
+ * `INVITATION_REVOKED` and `INVITATION_ACCEPTED` — the acceptance included,
+ * although that transaction also creates a `Membership`. The invitation is what
+ * a reader follows from one end to the other, and the membership id is in the
+ * event's `metadata` for the join.
+ *
+ * The counts, computed rather than remembered — `AUDIT_ACTIONS` holds eight
  * names (`ORGANIZATION_CREATED`, `ORGANIZATION_UPDATED`,
- * `ORGANIZATION_SWITCHED`, `ROLE_CHANGED`, `MEMBER_REMOVED`) and this constant
- * holds two.
+ * `ORGANIZATION_SWITCHED`, `ROLE_CHANGED`, `MEMBER_REMOVED`, `MEMBER_INVITED`,
+ * `INVITATION_REVOKED`, `INVITATION_ACCEPTED`) and this constant holds three
+ * (`Organization`, `Membership`, `Invitation`).
  *
  * **This paragraph has been wrong once and has since claimed to have been wrong
  * twice, so here is the history as `git show` reports it.** Before Task 13's
@@ -156,6 +248,6 @@ export type AuditAction = (typeof AUDIT_ACTIONS)[number];
  * the first one rhyme. Carry-forward ruling 108: when a sentence states a count,
  * compute the count — including a count of the times somebody miscounted.
  */
-export const AUDIT_RESOURCE_TYPES = ['Organization', 'Membership'] as const;
+export const AUDIT_RESOURCE_TYPES = ['Organization', 'Membership', 'Invitation'] as const;
 
 export type AuditResourceType = (typeof AUDIT_RESOURCE_TYPES)[number];

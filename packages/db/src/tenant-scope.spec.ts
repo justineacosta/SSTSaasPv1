@@ -51,6 +51,39 @@ describe('decideScope', () => {
     });
   });
 
+  it('passes a NESTED compound `where` through byte-for-byte, never merging into it', () => {
+    // THIS IS THE PROPERTY THE DELETED INTEGRATION TEST HELD, MOVED DOWN A
+    // LAYER. `tenant-client.integration.spec.ts` used to prove it against a
+    // real `findUnique` on a model with a compound `@@unique`, and Task 15's
+    // partial-index migration left no tenant-owned model carrying one — see
+    // the comment above the sentinel in that file for the full history and for
+    // what is lost.
+    //
+    // The shape is what matters, not which model declares it. A compound
+    // unique's `where` is a nested object, so the failure mode the run-and-check
+    // design exists to avoid is merging `organizationId` in as a *sibling* of
+    // that nested key — which would compile against a `WhereInput` and be a
+    // completely different query. `decideScope` is typed over `args: unknown`,
+    // so the shape can be stated here directly rather than borrowed from
+    // whichever model happens to declare one this month.
+    //
+    // Asserted with `toEqual` on the whole plan AND with an identity check on
+    // the `where`, because deep equality alone is satisfied by a defensive copy
+    // that a later "normalisation" step could then mutate.
+    const where = { organizationId_email: { organizationId: 'org_b', email: 'a@example.test' } };
+    const plan = decideScope('Invitation', 'findUnique', { where }, 'org_a');
+
+    expect(plan).toEqual({
+      kind: 'run-and-check',
+      args: { where },
+      checkField: 'organizationId',
+      expected: 'org_a',
+      notFoundIsThrow: false,
+      stripCheckField: false,
+    });
+    expect(plan.kind === 'run-and-check' && (plan.args as { where: unknown }).where).toBe(where);
+  });
+
   it('marks findUniqueOrThrow so a scope mismatch throws instead of returning null', () => {
     const plan = decideScope(
       'Membership',

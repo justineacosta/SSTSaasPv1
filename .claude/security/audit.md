@@ -195,7 +195,7 @@ transaction the audit row lives in — see §2, and `security/authentication.md`
 credential must be written before anything is revoked.
 
 Org and access: `ORGANIZATION_CREATED/UPDATED/DELETED/SUSPENDED`, `ORGANIZATION_SWITCHED`,
-`MEMBER_INVITED`, `INVITATION_ACCEPTED/REVOKED`, `MEMBER_REMOVED`, `ROLE_CHANGED`,
+`MEMBER_INVITED`, `INVITATION_ACCEPTED`, `INVITATION_REVOKED`, `MEMBER_REMOVED`, `ROLE_CHANGED`,
 `ROLE_CREATED/UPDATED/DELETED`, `PERMISSION_DENIED`.
 
 `ORGANIZATION_SWITCHED` was added to this list by Phase 2 Task 13, in the same change as the
