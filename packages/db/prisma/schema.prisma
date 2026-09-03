@@ -556,7 +556,37 @@ model Invitation {
   role         Role         @relation(fields: [roleId], references: [id], onDelete: Restrict)
   invitedBy    User         @relation("InvitationInvitedBy", fields: [invitedByUserId], references: [id], onDelete: Restrict)
 
-  @@unique([organizationId, email])
+  // UNIQUENESS LIVES IN SQL, NOT HERE — the same decision `model Membership`
+  // above documents at length, for the same reason, and there is no
+  // `@@unique([organizationId, email])` line below by design.
+  //
+  // The rule is "at most one LIVE invitation per (organizationId, email)".
+  // `Invitation` has no delete path: acceptance sets `acceptedAt`, revocation
+  // sets `revokedAt`, and the row stays for the audit trail. A full unique
+  // index counts those spent rows, so the first invitation ever sent to an
+  // address permanently consumes that address's only slot in the organisation
+  // and re-inviting a removed member fails with a duplicate key — the case the
+  // Membership comment above predicts and the case Task 15 exists to make
+  // work. The constraint is a partial unique index created by hand in
+  // `migrations/20260903160000_invitation_partial_unique/migration.sql`:
+  // `Invitation_organizationId_email_live_key`, ON ("organizationId", "email")
+  // WHERE "acceptedAt" IS NULL AND "revokedAt" IS NULL.
+  //
+  // EXPIRY IS NOT IN THE PREDICATE AND CANNOT BE. A partial index predicate
+  // must be IMMUTABLE; `"expiresAt" > now()` is not, and Postgres refuses the
+  // index. An expired-but-unconsumed row therefore still holds the slot, and
+  // `InvitationService.create` supersedes it — advisory lock, revoke whatever
+  // is live, insert, one transaction — which is `security/authentication.md`
+  // §6's "invalidated by use or by a newer token" and the same shape
+  // `TokenService.issue` uses for `VerificationToken`.
+  //
+  // Everything the Membership comment says about what Prisma does with a
+  // partial index applies here unchanged (carry-forward ruling 4): it creates
+  // neither and drops neither. **Do not "restore" the `@@unique` line.** That
+  // builds a full unique index alongside this partial one and re-breaks
+  // re-invitation; `apps/api/src/modules/invitations/invitations.integration.spec.ts`
+  // goes red on the re-invite case, which is the signal to come back and read
+  // this.
   @@index([organizationId, createdAt(sort: Desc)])
 }
 

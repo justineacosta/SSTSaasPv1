@@ -1,0 +1,75 @@
+-- One LIVE invitation per (organization, email), enforced by the database.
+--
+-- This is the Membership story from Task 1, in the sibling table, and the
+-- comment beside `model Membership` in `schema.prisma` predicted it in so many
+-- words: "a full unique index counts removed rows too and re-inviting a removed
+-- member fails with a duplicate key". `Invitation` shipped in
+-- `20260820111003_init_identity_and_tenancy` with exactly that full unique
+-- index — `Invitation_organizationId_email_key` on ("organizationId", "email")
+-- with no predicate — so the same defect has been sitting in the schema since
+-- Phase 2 Task 1 with nothing writing to the table to expose it.
+--
+-- WHAT IT BREAKS, CONCRETELY. `Invitation` has no delete path: acceptance sets
+-- `acceptedAt` and revocation sets `revokedAt`, and the row stays for the audit
+-- trail. Under a full unique index the FIRST invitation ever sent to an address
+-- permanently consumes that address's only slot in the organisation. A member
+-- who joins, is removed by Task 14's `DELETE .../members/:membershipId`, and is
+-- then invited back gets a P2002 — which is the precise case the Phase 2 plan
+-- names for Task 15 ("Re-inviting a removed member must work") and the case
+-- Task 1's Membership partial index was built to unblock. The Membership half
+-- of that journey was fixed in Task 1; the Invitation half is fixed here.
+--
+-- THE PREDICATE, AND WHAT IS DELIBERATELY NOT IN IT. "Live" means neither
+-- accepted nor revoked. Expiry is NOT in the predicate, and cannot be: a
+-- partial index predicate must be IMMUTABLE and `"expiresAt" > now()` is not,
+-- so Postgres refuses the index outright. An expired-but-unconsumed row
+-- therefore still occupies the slot, and re-inviting that address must first
+-- take the old row out of the live set. That is not a gap left for the caller
+-- to trip over — it is the same discipline `security/authentication.md` §6
+-- already states for all three token families, "invalidated by use or by a
+-- newer token", and it is the same shape as
+-- `VerificationToken_userId_purpose_live_key` in
+-- `20260828051500_verification_token_partial_unique`: the issuing service takes
+-- an advisory lock, supersedes whatever is live, and inserts, all in one
+-- transaction. `InvitationService.create` does that here.
+--
+-- Hand-written because Prisma cannot express a partial index in
+-- `schema.prisma`, and carry-forward ruling 4 measured what it does about one:
+-- nothing, in either direction. It will not create this index and it will not
+-- offer to drop it. The `@@unique([organizationId, email])` line is removed
+-- from `model Invitation` in the same change, which IS something Prisma sees —
+-- that is what the DROP below corresponds to. **Do not "restore" that line.**
+-- Restoring it re-creates a full unique index alongside this partial one and
+-- re-breaks re-invitation, and the Membership comment already carries the same
+-- warning for the same reason.
+--
+-- WHAT THIS COSTS IF IT FIRES. The loser of a race between two concurrent
+-- invitations to one address in one organisation becomes a Prisma P2002. It
+-- should not fire for `InvitationService.create`, because that method
+-- serialises the supersede-and-insert pair for one (organizationId, email)
+-- behind an advisory lock, and the concurrent-create case in
+-- `invitations.integration.spec.ts` asserts that rather than assuming it.
+--
+-- ORDER MATTERS AND THE TWO STATEMENTS ARE NOT INTERCHANGEABLE. The DROP comes
+-- first. Running the CREATE first would be harmless but pointless — the full
+-- index is strictly stronger, so the partial one would be redundant until the
+-- DROP landed, and a database stopped between the two statements in that order
+-- would still refuse a legitimate re-invitation. In the order below, a database
+-- stopped between them holds NO uniqueness constraint on (organizationId,
+-- email) at all, which admits two live invitations to one address. Both
+-- statements therefore run in one migration, which Prisma wraps in a single
+-- transaction; there is no window in practice.
+--
+-- This migration is sound on its own and touches no data. On a database already
+-- holding two live invitations for one pair the CREATE would fail rather than
+-- corrupt anything, which is the correct direction for an invariant. No such
+-- rows can exist today: nothing in the codebase has ever inserted into
+-- `Invitation` outside a test.
+
+-- DropIndex
+DROP INDEX "Invitation_organizationId_email_key";
+
+-- CreateIndex (hand-written: not expressible in schema.prisma)
+CREATE UNIQUE INDEX "Invitation_organizationId_email_live_key"
+  ON "Invitation" ("organizationId", "email")
+  WHERE "acceptedAt" IS NULL AND "revokedAt" IS NULL;
