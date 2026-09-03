@@ -455,3 +455,158 @@ describe('ADR-0020: user_organizations(text)', () => {
     }
   });
 });
+
+/**
+ * ADR-0022 — THE SECOND DEFINER LOOKUP, ASSERTED THE SAME WAY AS THE FIRST.
+ *
+ * `20260904020000_invitation_lookup_function` was verified by hand when it was
+ * applied, and a hand verification is evidence about a moment (carry-forward
+ * ruling 125). Everything it established is re-established here on every run, on
+ * a database built from the migrations alone: without these, a later migration
+ * could drop the `pg_temp` pin, hand the function to a different owner, or leave
+ * `EXECUTE` with PUBLIC, and nothing would notice.
+ *
+ * The block above is the template. What differs is the argument: this function
+ * takes the SHA-256 of a 256-bit token that exists only in the invited person's
+ * inbox, where `user_organizations(text)` takes a user id and therefore needs
+ * its comment to insist the id comes from the session. The difference is the
+ * unguessability of the argument, not a weaker rule.
+ */
+describe('ADR-0022: invitation_organization_by_token_hash(text)', () => {
+  it('is a SECURITY DEFINER function owned by sentinel_org_lookup with pg_temp pinned LAST', async () => {
+    const admin = createUnscopedPrismaClient(container.getConnectionUri());
+    try {
+      const rows = await admin.$queryRaw<
+        { prosecdef: boolean; owner: string; proconfig: string[] | null }[]
+      >`
+        SELECT p.prosecdef, pg_get_userbyid(p.proowner) AS owner, p.proconfig
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.proname = 'invitation_organization_by_token_hash'
+      `;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.prosecdef).toBe(true);
+      // The role ADR-0020 provisioned. ADR-0022 records the widening from "owns
+      // one function" to "owns two" rather than editing an immutable ADR, and
+      // the operator's reasoning for not adding a second BYPASSRLS role is in
+      // the migration: what contains the bypass is the fixed predicate and the
+      // single returned column in each body, not the number of owners.
+      expect(rows[0]?.owner).toBe('sentinel_org_lookup');
+      // ADR-0021's attack, closed from the first line this time rather than
+      // corrected forward: `search_path = public` alone leaves the temporary
+      // schema implicitly ahead of it for relation names, so a caller holding
+      // TEMPORARY could shadow `"Invitation"` with a temp table and have a
+      // BYPASSRLS function read it. Written with the pin from the start.
+      expect(rows[0]?.proconfig).toEqual(['search_path=public, pg_temp']);
+    } finally {
+      await admin.$disconnect();
+    }
+  });
+
+  it('grants EXECUTE to sentinel_app and revokes it from PUBLIC', async () => {
+    const admin = createUnscopedPrismaClient(container.getConnectionUri());
+    try {
+      const rows = await admin.$queryRaw<{ app: boolean; anyone: boolean }[]>`
+        SELECT has_function_privilege(
+                 'sentinel_app',
+                 'public.invitation_organization_by_token_hash(text)',
+                 'EXECUTE') AS app,
+               has_function_privilege(
+                 'public',
+                 'public.invitation_organization_by_token_hash(text)',
+                 'EXECUTE') AS anyone
+      `;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.app).toBe(true);
+      // Postgres grants EXECUTE to PUBLIC on every new function by default, so
+      // the REVOKE is what makes the grant above mean anything at all.
+      expect(rows[0]?.anyone).toBe(false);
+      // And the owner must be able to READ the table it reads, or the function
+      // fails with `relation "Invitation" does not exist` — an error naming a
+      // missing table rather than a missing privilege, which is what the
+      // previous migration measured and recorded.
+      const granted = await admin.$queryRaw<{ ok: boolean }[]>`
+        SELECT has_table_privilege('sentinel_org_lookup', '"Invitation"', 'SELECT') AS ok
+      `;
+      expect(granted[0]?.ok).toBe(true);
+    } finally {
+      await admin.$disconnect();
+    }
+  });
+
+  it('answers for sentinel_app where a direct read returns nothing, and NULL for a hash nothing matches', async () => {
+    const admin = createUnscopedPrismaClient(container.getConnectionUri());
+    const app = createUnscopedPrismaClient(sentinelAppUrl(container));
+    try {
+      await seedReferenceData(admin);
+      const role = await admin.role.findUniqueOrThrow({
+        where: { key: 'MEMBER' },
+        select: { id: true },
+      });
+      const userId = newId('usr');
+      await admin.user.create({ data: { id: userId, email: `adr22-${userId}@example.test` } });
+      const organizationId = newId('org');
+      await admin.organization.create({
+        data: { id: organizationId, slug: `adr22-${organizationId}`, name: 'ADR-0022' },
+      });
+      // Not a real token: this spec asserts the lookup, not the hashing, and a
+      // literal that looked like a credential would be a `check:secrets` finding
+      // for no gain. Any 64-character hex value is a well-formed `tokenHash`.
+      const tokenHash = 'a'.repeat(64);
+      await admin.invitation.create({
+        data: {
+          id: newId('inv'),
+          organizationId,
+          email: `adr22-invitee-${organizationId}@example.test`,
+          roleId: role.id,
+          tokenHash,
+          invitedByUserId: userId,
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        },
+      });
+
+      // THE MEASUREMENT ADR-0022 TURNS ON, as the role the API really uses.
+      // `sentinel_app` reading `Invitation` by its token hash, with no tenant
+      // context, sees nothing — this is the naive implementation, and it
+      // compiles, passes review, and returns null for every invitation ever
+      // sent.
+      const direct = await app.$queryRaw<{ id: string }[]>`
+        SELECT id FROM "Invitation" WHERE "tokenHash" = ${tokenHash}
+      `;
+      expect(direct).toEqual([]);
+
+      // The same role, through the function, gets the organisation id — and
+      // nothing else. One column is the whole containment: liveness, expiry and
+      // the invited-address binding are decided by the handler afterwards,
+      // under RLS, in a transaction scoped to this id.
+      const found = await app.$queryRaw<{ organizationId: string | null }[]>`
+        SELECT public.invitation_organization_by_token_hash(${tokenHash}) AS "organizationId"
+      `;
+      expect(found).toHaveLength(1);
+      expect(found[0]?.organizationId).toBe(organizationId);
+
+      // A hash nothing matches is NULL rather than an error or a row, which is
+      // what makes "no such invitation" indistinguishable from every other
+      // unredeemable token at the endpoint.
+      const missing = await app.$queryRaw<{ organizationId: string | null }[]>`
+        SELECT public.invitation_organization_by_token_hash(${'b'.repeat(64)}) AS "organizationId"
+      `;
+      expect(missing).toHaveLength(1);
+      expect(missing[0]?.organizationId).toBeNull();
+
+      // AND IT IS STILL ONLY A ROUTING HINT. Holding the id changes nothing
+      // about what `sentinel_app` can read without setting it: the direct read
+      // above is still empty, and RLS is still what admits the row once
+      // `app.organization_id` is set. Asserted rather than argued, because the
+      // sentence "an opaque organisation id they cannot act on" was the one the
+      // Task 15 review judged an overstatement.
+      const stillBlind = await app.$queryRaw<{ id: string }[]>`
+        SELECT id FROM "Invitation" WHERE "organizationId" = ${organizationId}
+      `;
+      expect(stillBlind).toEqual([]);
+    } finally {
+      await app.$disconnect();
+      await admin.$disconnect();
+    }
+  });
+});
