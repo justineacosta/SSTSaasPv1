@@ -415,8 +415,8 @@ describe('the guard is registered, and what it can refuse is bounded', () => {
     const controllers = globSync('**/*.controller.ts', { cwd: root }).map((relative) =>
       join(root, relative),
     );
-    // Auth, health, OpenAPI, organizations.
-    expect(controllers).toHaveLength(4);
+    // Auth, health, memberships, OpenAPI, organizations, roles.
+    expect(controllers).toHaveLength(6);
 
     const declaring = controllers.filter((file) =>
       readFileSync(file, 'utf8')
@@ -424,7 +424,14 @@ describe('the guard is registered, and what it can refuse is bounded', () => {
         .replace(/^\s*\/\/.*$/gm, '')
         .includes('@RequirePermission('),
     );
-    expect(declaring.map((file) => basename(file))).toEqual(['organizations.controller.ts']);
+    // Named and sorted, not counted. Task 14 added two of these three:
+    // `memberships.controller.ts` (three routes) and `roles.controller.ts`
+    // (one), so the set this guard governs grew from three routes to seven.
+    expect(declaring.map((file) => basename(file)).sort()).toEqual([
+      'memberships.controller.ts',
+      'organizations.controller.ts',
+      'roles.controller.ts',
+    ]);
   });
 
   it('is not exempted by any handler, so the gate applies to every guarded route', () => {

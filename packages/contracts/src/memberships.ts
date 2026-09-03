@@ -30,9 +30,24 @@ export const membershipStatusSchema = z.enum(MEMBERSHIP_STATUSES);
 
 /**
  * Just enough of the user to render a member row. Deliberately not the whole
- * `User`: a member list is readable by anyone with `organization.read`, and
- * fields like `lastLoginAt`, `failedLoginCount` and `lockedUntil` are the
- * account owner's business, not their colleagues'.
+ * `User`: fields like `lastLoginAt`, `failedLoginCount` and `lockedUntil` are
+ * the account owner's business, not their colleagues'.
+ *
+ * **CORRECTED IN PHASE 2 TASK 14.** This docblock used to justify the narrow
+ * projection with the words "a member list is readable by anyone with
+ * `organization.read`". That was never true of any shipped route:
+ * `GET /api/v1/organizations/{id}/members` declares
+ * `organization.manage_members`, which the Phase 2 plan specified and Task 14
+ * implemented. The sentence is corrected here rather than left standing,
+ * because a shipped contract asserting a permission the API does not use is a
+ * client's reason to build the wrong screen.
+ *
+ * The reasoning behind the narrower permission, recorded so it is not
+ * re-opened: widening a route from `manage_members` to `organization.read`
+ * later is additive and breaks no client, while narrowing it is a breaking
+ * change to a shipped contract. And the argument for the narrow projection is
+ * *stronger* under the narrower permission, not weaker — so the projection
+ * stays exactly as it was.
  */
 export const membershipUserSchema = z.object({
   id: userIdSchema,

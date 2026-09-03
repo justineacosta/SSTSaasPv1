@@ -317,10 +317,12 @@ describe('what this guard governs today', () => {
     // wrong directory shipped once already, which is why the guard is here at
     // all — and the pin earned its keep again in Task 13, going red at
     // `expected [ …(4) ] to have a length of 3` when
-    // `organizations.controller.ts` arrived.
+    // `organizations.controller.ts` arrived, and again in Task 14 at
+    // `expected [ …(6) ] to have a length of 4` when the memberships and roles
+    // controllers did.
     //
-    // Auth, health, OpenAPI, organizations.
-    expect(controllers).toHaveLength(4);
+    // Auth, health, memberships, OpenAPI, organizations, roles.
+    expect(controllers).toHaveLength(6);
 
     const decorated = controllers.filter((file) =>
       readFileSync(file, 'utf8')
@@ -329,8 +331,15 @@ describe('what this guard governs today', () => {
         .includes('@RequireVerifiedEmail('),
     );
     // Named, not counted. `security/authentication.md` §6 gates organisation
-    // creation specifically, and Tasks 14-15 add inviting — each of which is a
+    // creation specifically, and Task 15 adds inviting — each of which is a
     // deliberate addition to this list rather than a number that drifts up.
+    //
+    // **Task 14 added three membership routes and did NOT add itself here**,
+    // which is the list working rather than a gap. The gate is for creating
+    // something from outside an organisation; a role change and a removal act
+    // inside one the caller has already been admitted to, and gating them would
+    // refuse a member whose address was verified when they joined and has since
+    // been changed.
     expect(decorated.map((file) => basename(file))).toEqual(['organizations.controller.ts']);
   });
 });
