@@ -4,8 +4,13 @@ import {
   normaliseIp,
   RateLimitGuard,
   resolveIdentifier,
+  TenantRateLimitGuard,
 } from './rate-limit.guard.js';
-import { RATE_LIMIT_CLASSES } from './rate-limit.config.js';
+import {
+  RATE_LIMIT_CLASSES,
+  RATE_LIMIT_SCOPE_PHASES,
+  RATE_LIMIT_SCOPES,
+} from './rate-limit.config.js';
 
 describe('normaliseIp', () => {
   it('treats an IPv4-mapped IPv6 address as the IPv4 address it is', () => {
@@ -257,5 +262,117 @@ describe('the unresolvable-scope warning is suppressed per scope, not per class'
     for (let i = 0; i < 5; i += 1) await run({ ip: '203.0.113.1', body: {} });
 
     expect(warned.flat().filter((scope) => scope === 'perPrincipal')).toHaveLength(1);
+  });
+});
+
+/**
+ * THE TWO-PHASE SPLIT, WHICH IS WHAT MAKES `perOrganization` REACHABLE AT ALL.
+ *
+ * Task 15. Before it, `RATE_LIMIT_SCOPE_PHASES` did not exist and the limiter
+ * ran once, before authentication — so a fail-closed class whose only scope is
+ * `perOrganization` refused **every** request with 429, which
+ * `rate-limit.integration.spec.ts` asserts against `@RateLimit('invitations')`
+ * on a fixture route and has done since Phase 1.
+ *
+ * Each test below names the mutation it fails under, because a phase filter is
+ * the kind of change whose two halves each look harmless alone: dropping the
+ * early return makes the edge pass refuse every invitation; dropping the filter
+ * makes both passes charge every window twice.
+ */
+describe('the limiter runs in two phases and each scope belongs to exactly one', () => {
+  /** Every command the guard actually issued, so double-charging is visible. */
+  function phaseHarness(className: string) {
+    const keys: string[] = [];
+    const logger = { warn: () => undefined, debug: () => undefined };
+    const reflector = {
+      get: () => undefined,
+      getAllAndOverride: (key: string) => (key === 'sentinel:rate-limit' ? className : undefined),
+    };
+    const redis = {
+      eval: (_script: unknown, _numKeys: unknown, key: string) => {
+        keys.push(key);
+        return Promise.resolve([1, 1, '-1']);
+      },
+    };
+    const edge = new RateLimitGuard(reflector as never, redis as never, logger as never);
+    const tenant = new TenantRateLimitGuard(reflector as never, redis as never, logger as never);
+
+    const run = (guard: RateLimitGuard, request: Record<string, unknown>): Promise<boolean> =>
+      guard.canActivate({
+        getType: () => 'http',
+        getHandler: () => () => undefined,
+        getClass: () => class {},
+        switchToHttp: () => ({
+          getRequest: () => request,
+          getResponse: () => ({ setHeader: () => undefined }),
+        }),
+      } as never);
+
+    return { edge, tenant, run, keys };
+  }
+
+  it('partitions every scope between the two phases, with none in both and none in neither', () => {
+    // The table is the whole of the difference between the two passes, so the
+    // partition is the property to pin rather than the individual assignments.
+    // A scope in both phases is a window charged twice per request; a scope in
+    // neither is a limit that silently stops applying.
+    for (const scope of RATE_LIMIT_SCOPES) {
+      expect(['edge', 'tenant']).toContain(RATE_LIMIT_SCOPE_PHASES[scope]);
+    }
+    expect(Object.keys(RATE_LIMIT_SCOPE_PHASES).sort()).toEqual([...RATE_LIMIT_SCOPES].sort());
+    expect(RATE_LIMIT_SCOPE_PHASES.perOrganization).toBe('tenant');
+  });
+
+  it('lets a fail-CLOSED per-organisation class through the edge pass untouched', async () => {
+    // The mutation this fails under is deleting the phase filter, which makes
+    // the edge pass see one declared scope, resolve nothing, and apply the fail
+    // mode — 429 on every request to the only route that carries this class,
+    // which is what the API did before this split existed.
+    //
+    // It does NOT fail under deleting an early `return true` for a phase with
+    // no declared scope: that guard was written here first, measured
+    // redundant (29/29 still green without it) and removed. The line that
+    // carries the property is `declared` counting this phase's scopes only.
+    const { edge, run, keys } = phaseHarness('invitations');
+    await expect(run(edge, { ip: '203.0.113.1' })).resolves.toBe(true);
+    // And it reached Redis for nothing, which is the second half of "this pass
+    // has nothing to say".
+    expect(keys).toEqual([]);
+  });
+
+  it('still refuses in the TENANT pass when the organisation cannot be resolved', async () => {
+    // The fail-closed promise is not weakened, only moved to the stage that can
+    // keep it. An unauthenticated request reaches this pass with no
+    // `organizationId` — every declared scope unresolvable, so 429.
+    const { tenant, run } = phaseHarness('invitations');
+    await expect(run(tenant, { ip: '203.0.113.1' })).rejects.toMatchObject({ status: 429 });
+  });
+
+  it('charges the per-organisation window in the tenant pass once the tenant is resolved', async () => {
+    const { tenant, run, keys } = phaseHarness('invitations');
+    await expect(run(tenant, { ip: '203.0.113.1', organizationId: 'org_1' })).resolves.toBe(true);
+    expect(keys).toEqual(['ratelimit:invitations:perOrganization:org_1']);
+  });
+
+  it('does not charge a per-IP window twice across the two passes', async () => {
+    // The mutation this fails under is deleting the phase filter from the loop.
+    // Both passes would then evaluate `perIp`, so `registration`'s 3/hour would
+    // become 1.5/hour and every figure in `abuse-prevention.md` §1 would be
+    // half what the document says.
+    const { edge, tenant, run, keys } = phaseHarness('registration');
+    await run(edge, { ip: '203.0.113.1' });
+    await run(tenant, { ip: '203.0.113.1' });
+    expect(keys).toEqual(['ratelimit:registration:perIp:203.0.113.1']);
+  });
+
+  it('lets a class with no tenant-phase scope through the tenant pass without a command', async () => {
+    // The other direction of the same partition: `generalSession` is
+    // `perPrincipal` only, so the tenant pass must issue nothing and refuse
+    // nothing — including for a request that resolved an organisation.
+    const { tenant, run, keys } = phaseHarness('generalSession');
+    await expect(
+      run(tenant, { ip: '203.0.113.1', principalId: 'usr_1', organizationId: 'org_1' }),
+    ).resolves.toBe(true);
+    expect(keys).toEqual([]);
   });
 });

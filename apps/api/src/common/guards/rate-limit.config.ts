@@ -340,3 +340,46 @@ export type RateLimitClass = keyof typeof RATE_LIMIT_CLASSES;
 export const RATE_LIMIT_SCOPES = ['perIp', 'perPrincipal', 'perOrganization'] as const;
 
 export type RateLimitScope = (typeof RATE_LIMIT_SCOPES)[number];
+
+/**
+ * WHICH STAGE OF THE GUARD PIPELINE EVALUATES EACH SCOPE.
+ *
+ * The limiter runs twice, and this table is the only thing that decides which
+ * scopes each pass owns. Every scope belongs to exactly one phase, so no window
+ * is charged twice for one request.
+ *
+ * **`'edge'` runs before authentication**, which is `architecture/backend.md`
+ * §3's ordering and Task 7's ruling A: an unauthenticated flood carrying a
+ * garbage cookie must be refused before it buys a Redis read and a Postgres
+ * read. `perIp` is resolvable there, and so is a `perPrincipal` keyed on a body
+ * field — `login`, `passwordReset` and `emailVerificationResend` all read the
+ * account being *attempted* out of the request body, which the body parser has
+ * already produced by then.
+ *
+ * **`'tenant'` runs after the tenant is resolved and the permission checked.**
+ * `perOrganization` cannot be resolved any earlier: the organisation comes from
+ * `Session.activeOrganizationId` by way of `TenantContextGuard`, and before
+ * Task 15 nothing populated `request.organizationId` at all. A fail-closed
+ * class whose only scope is `perOrganization` therefore refused **every**
+ * request with 429 — measured, and asserted since Phase 1 by
+ * `rate-limit.integration.spec.ts`'s "refuses when a fail-closed class has no
+ * resolvable scope", which drives `@RateLimit('invitations')` on a fixture
+ * route and expects 429. That was correct behaviour for a class no route
+ * carried; it is unshippable for `POST /organizations/:id/invitations`, which
+ * is the first route in this codebase to carry one.
+ *
+ * **`perPrincipal` with `principalSource: 'authenticated'` stays in `'edge'`,
+ * where it still resolves nothing.** That is carry-forward rulings 55 and 90
+ * and it remains open: `generalSession`'s 1000/min per principal is applied to
+ * no request. Moving it here would silently switch on a limit that has never
+ * been enforced, on every authenticated route in the API, in a change nobody
+ * reviewed for that. The stage it needs now exists; turning it on is a separate
+ * decision with its own blast radius.
+ */
+export const RATE_LIMIT_SCOPE_PHASES = {
+  perIp: 'edge',
+  perPrincipal: 'edge',
+  perOrganization: 'tenant',
+} as const satisfies Record<RateLimitScope, 'edge' | 'tenant'>;
+
+export type RateLimitPhase = (typeof RATE_LIMIT_SCOPE_PHASES)[RateLimitScope];

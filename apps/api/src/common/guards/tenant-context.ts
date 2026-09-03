@@ -37,6 +37,22 @@ declare module 'express' {
      * reading anything.
      */
     tenant?: TenantContext;
+    /**
+     * THE RATE LIMITER'S `perOrganization` KEY, AND NOTHING ELSE READS IT.
+     *
+     * Set here, from `tenant.organizationId`, on a request that resolved a
+     * live membership in a live organisation — so it is written only where
+     * `tenant` is, and carries the same value. Two fields for one value
+     * because the reader is in a different package of concerns:
+     * `RateLimitGuard`'s `KeyableRequest` is a structural interface over three
+     * primitive fields and deliberately does not import `TenantContext`.
+     *
+     * **It is read only by the `'tenant'` phase of the limiter**, which
+     * `app.module.ts` registers after `AuthorizationGuard`. The edge phase has
+     * already run by the time this line executes, which is exactly what
+     * `authentication.guard.ts` says about not writing it there.
+     */
+    organizationId?: string | undefined;
   }
 }
 
@@ -261,6 +277,11 @@ export class TenantContextGuard implements CanActivate {
 
     if (resolution.outcome === 'resolved') {
       request.tenant = resolution.context;
+      // The limiter's `perOrganization` key, for the `'tenant'` phase that runs
+      // after `AuthorizationGuard`. Written from the resolved context rather
+      // than from `request.activeOrganizationId`, so a request that named an
+      // organisation it is not entitled to act in charges nobody's window.
+      request.organizationId = resolution.context.organizationId;
       return true;
     }
 

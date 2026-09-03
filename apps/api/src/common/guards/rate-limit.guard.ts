@@ -12,9 +12,11 @@ import {
 import { DomainError } from '../errors/domain-error.js';
 import {
   RATE_LIMIT_CLASSES,
+  RATE_LIMIT_SCOPE_PHASES,
   RATE_LIMIT_SCOPES,
   type RateLimitClass,
   type RateLimitClassConfig,
+  type RateLimitPhase,
   type RateLimitScope,
 } from './rate-limit.config.js';
 import { consumeSlidingWindow, slidingWindowKey, type WindowDecision } from './sliding-window.js';
@@ -22,10 +24,15 @@ import { consumeSlidingWindow, slidingWindowKey, type WindowDecision } from './s
 /**
  * The request properties the guard keys on.
  *
- * `principalId` and `organizationId` are set by authentication, which arrives in
- * Phase 2 — in Phase 1 they are always absent, and the guard's behaviour when
- * they are absent is therefore a shipped, tested property rather than something
- * discovered later. See `resolveIdentifier`.
+ * **`principalId` is written by nothing.** Carry-forward rulings 55 and 90: the
+ * edge stage runs before authentication, so `generalSession`'s per-principal
+ * limit resolves nothing on every request. Still open, and
+ * `RATE_LIMIT_SCOPE_PHASES` records why Task 15 did not close it while it was
+ * building the stage that could.
+ *
+ * **`organizationId` is written by `TenantContextGuard`, and only the `'tenant'`
+ * phase reads it.** Writing it earlier would be pointless — the edge stage has
+ * already run — which is the prohibition `authentication.guard.ts` states.
  */
 interface KeyableRequest {
   ip?: string | undefined;
@@ -219,6 +226,14 @@ export class RateLimitGuard implements CanActivate {
    */
   private readonly unresolvedWarned = new Set<string>();
 
+  /**
+   * Which stage of the pipeline this instance is. `'edge'` here and `'tenant'`
+   * in the subclass below — a field rather than a constructor parameter so a
+   * Nest provider cannot be registered with the wrong one by passing an extra
+   * argument, and so `app.module.ts` names the phase by naming the class.
+   */
+  protected readonly phase: RateLimitPhase = 'edge';
+
   constructor(
     @Inject(Reflector) private readonly reflector: Reflector,
     @Inject(REDIS) private readonly redis: Redis,
@@ -259,12 +274,33 @@ export class RateLimitGuard implements CanActivate {
     const response = http.getResponse<HeaderResponse>();
     const now = Date.now();
 
+    // THE SCOPES THIS PASS OWNS, AND NOTHING ELSE. See
+    // `RATE_LIMIT_SCOPE_PHASES`: the limiter is registered twice and every
+    // scope belongs to exactly one phase, so no window is charged twice for
+    // one request.
+    //
+    // **`declared` below counts scopes in THIS phase**, and that is what keeps
+    // the fail-closed branch honest rather than a separate early return. A
+    // class with no scope in this phase declares nothing here, so
+    // `declared > 0 && decisions.length === 0` is false and the request passes
+    // without a Redis command — which is the difference between "this stage has
+    // nothing to say" and "every declared scope was unresolvable". `invitations`
+    // is exactly that shape: no scope in `'edge'`, one in `'tenant'`.
+    //
+    // An early `if (no scope in this phase) return true` was written here first
+    // and **deleting it left all 29 tests green** — it was already implied by
+    // the line below. Removed rather than kept with a comment claiming it was
+    // load-bearing, which is carry-forward ruling 103's shape.
+    const scopes = RATE_LIMIT_SCOPES.filter(
+      (scope) => RATE_LIMIT_SCOPE_PHASES[scope] === this.phase,
+    );
+
     const decisions: WindowDecision[] = [];
     const unresolved: RateLimitScope[] = [];
     let declared = 0;
 
     try {
-      for (const scope of RATE_LIMIT_SCOPES) {
+      for (const scope of scopes) {
         const window = config[scope];
         if (window === undefined) continue;
         declared += 1;
@@ -407,5 +443,51 @@ export class RateLimitGuard implements CanActivate {
       // real breach from a backend outage.
       { rateLimitClass: className },
     );
+  }
+}
+
+/**
+ * THE SECOND STAGE OF THE LIMITER, RUN AFTER THE TENANT IS RESOLVED AND THE
+ * PERMISSION CHECKED.
+ *
+ * The same guard, the same table, the same Redis keys — only the phase differs,
+ * so there is no second implementation of a limiter to drift from the first.
+ * `RATE_LIMIT_SCOPE_PHASES` is the whole of the difference and it is the one
+ * place to read.
+ *
+ * **Why it exists.** `perOrganization`'s identifier is
+ * `Session.activeOrganizationId`, resolved by `TenantContextGuard`, and the
+ * edge stage runs before authentication — so a fail-closed class whose only
+ * scope is `perOrganization` refused every request with 429. Phase 1 shipped
+ * that as a tested property because no route carried such a class;
+ * `POST /organizations/:id/invitations` is the first that does.
+ *
+ * **Why it sits AFTER `AuthorizationGuard` rather than immediately after the
+ * tenant resolves.** A per-organisation window is a budget belonging to the
+ * organisation — 50 invitations a day, `abuse-prevention.md` §1 — and a request
+ * the organisation's own authorization rules refuse must not spend it. Placed
+ * any earlier, a `GUEST` who cannot invite anybody could still exhaust their
+ * organisation's daily invitation budget by posting until it was gone. The edge
+ * stage keeps the cheap-and-early property for the scopes that have it; this
+ * one deliberately pays for authentication, tenant resolution and the
+ * permission check first, because what it is protecting is not this process's
+ * CPU but a tenant's quota.
+ *
+ * Registered as its own `APP_GUARD` provider in `app.module.ts`, which is where
+ * the order is visible. It is a distinct class rather than a second
+ * registration of `RateLimitGuard` with a different argument because Nest
+ * resolves an `APP_GUARD` by class, so two registrations of one class would be
+ * one instance in two positions, running the same phase twice.
+ */
+@Injectable()
+export class TenantRateLimitGuard extends RateLimitGuard {
+  protected override readonly phase: RateLimitPhase = 'tenant';
+
+  constructor(
+    @Inject(Reflector) reflector: Reflector,
+    @Inject(REDIS) redis: Redis,
+    @Inject(LOGGER) logger: Logger,
+  ) {
+    super(reflector, redis, logger);
   }
 }

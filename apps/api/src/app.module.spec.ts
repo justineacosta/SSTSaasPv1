@@ -7,7 +7,7 @@ import { CrossSiteGuard } from './common/guards/cross-site.guard.js';
 import { CsrfGuard } from './common/guards/csrf.guard.js';
 import { EmailVerifiedGuard } from './common/guards/email-verified.guard.js';
 import { EntitlementGuard } from './common/guards/entitlement.guard.js';
-import { RateLimitGuard } from './common/guards/rate-limit.guard.js';
+import { RateLimitGuard, TenantRateLimitGuard } from './common/guards/rate-limit.guard.js';
 import { TenantContextGuard } from './common/guards/tenant-context.js';
 import { MfaEnrolmentGuard } from './modules/auth/require-mfa.js';
 import { AuthModule } from './modules/auth/auth.module.js';
@@ -59,7 +59,7 @@ function globalGuardClasses(): unknown[] {
 }
 
 describe('the global guard pipeline', () => {
-  it('runs the nine stages of backend.md §3 in the documented order', () => {
+  it('runs the ten stages of backend.md §3 in the documented order', () => {
     expect(globalGuardClasses()).toEqual([
       RateLimitGuard,
       AuthenticationGuard,
@@ -69,6 +69,7 @@ describe('the global guard pipeline', () => {
       EmailVerifiedGuard,
       MfaEnrolmentGuard,
       AuthorizationGuard,
+      TenantRateLimitGuard,
       EntitlementGuard,
     ]);
   });
@@ -140,11 +141,36 @@ describe('the global guard pipeline', () => {
     expect(positionOf(EntitlementGuard)).toBeGreaterThan(positionOf(AuthorizationGuard));
   });
 
-  it('registers exactly nine global guards', () => {
-    // A tenth arriving unnoticed is a stage nobody chose the position of.
+  it('runs the limiter twice, and the second pass is after the permission check', () => {
+    // Task 15. `perOrganization`'s identifier is `Session.activeOrganizationId`,
+    // which `TenantContextGuard` resolves, so the edge pass cannot see it — a
+    // fail-closed class whose only scope is `perOrganization` refuses every
+    // request with 429 from there. Both bounds are asserted, because each is a
+    // separate decision: after the tenant resolves is what makes the identifier
+    // available at all, and after `AuthorizationGuard` is what stops a caller
+    // the organisation's own rules refuse from spending the organisation's
+    // window.
+    expect(positionOf(TenantRateLimitGuard)).toBeGreaterThan(positionOf(TenantContextGuard));
+    expect(positionOf(TenantRateLimitGuard)).toBeGreaterThan(positionOf(AuthorizationGuard));
+    expect(positionOf(TenantRateLimitGuard)).toBeLessThan(positionOf(EntitlementGuard));
+  });
+
+  it('registers the two limiter passes as two DIFFERENT classes', () => {
+    // Nest resolves an `APP_GUARD` by class, so registering `RateLimitGuard`
+    // twice would be one instance in two positions running the same phase
+    // twice — every `perIp` window charged twice per request, and
+    // `perOrganization` still never evaluated. The distinct subclass is what
+    // makes the two positions two behaviours.
+    expect(TenantRateLimitGuard).not.toBe(RateLimitGuard);
+    expect(Object.getPrototypeOf(TenantRateLimitGuard)).toBe(RateLimitGuard);
+  });
+
+  it('registers exactly ten global guards', () => {
+    // An eleventh arriving unnoticed is a stage nobody chose the position of.
     // Phase 10's real entitlement check replaces the stub rather than adding to
     // this number; Phase 3's audit stage is service-level and is not a guard.
-    expect(globalGuardClasses()).toHaveLength(9);
+    // The tenth is Task 15's second limiter pass.
+    expect(globalGuardClasses()).toHaveLength(10);
   });
 });
 

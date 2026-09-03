@@ -7,7 +7,7 @@ import { CrossSiteGuard, WEB_ORIGIN } from './common/guards/cross-site.guard.js'
 import { CsrfGuard } from './common/guards/csrf.guard.js';
 import { EmailVerifiedGuard } from './common/guards/email-verified.guard.js';
 import { EntitlementGuard } from './common/guards/entitlement.guard.js';
-import { RateLimitGuard } from './common/guards/rate-limit.guard.js';
+import { RateLimitGuard, TenantRateLimitGuard } from './common/guards/rate-limit.guard.js';
 import { TenantContextGuard } from './common/guards/tenant-context.js';
 import { MfaEnrolmentGuard } from './modules/auth/require-mfa.js';
 import { RolesModule } from './modules/roles/roles.module.js';
@@ -125,9 +125,17 @@ import { OpenApiModule } from './openapi/openapi.module.js';
     // `dist/main.js`: 0 lines of "not being applied", 16 of "could not be
     // resolved", all DEBUG, and only because that `.env` set `LOG_LEVEL=debug`.
     //
-    // Splitting the limiter into an early per-IP stage and a late per-principal
-    // stage is the real fix and is not this task's. No warn was invented here to
-    // make the old sentence true: an accurate record of the gap is the fix.
+    // Splitting the limiter into an early stage and a late one is the real fix.
+    // No warn was invented here to make the old sentence true: an accurate
+    // record of the gap is the fix.
+    //
+    // **The split now exists, and it did not close this gap.** Task 15 needed a
+    // late stage for `perOrganization` and built one — `TenantRateLimitGuard`,
+    // registered further down this array — but `RATE_LIMIT_SCOPE_PHASES` leaves
+    // `perPrincipal` at the edge deliberately. Moving it would switch on a
+    // 1000/min limit that has never been enforced, on every authenticated route
+    // at once, which is a different change with a different blast radius.
+    // Rulings 55 and 90 stay open and the stage they need is now here.
     { provide: APP_GUARD, useClass: AuthenticationGuard },
     // **Tenant resolve, immediately after authenticate**, which is the row
     // `architecture/backend.md` §3's table has held since Phase 0 and the first
@@ -184,6 +192,24 @@ import { OpenApiModule } from './openapi/openapi.module.js';
     // This comment read "which no shipped route does yet" until 2026-09-03,
     // having survived two sweeps of that exact sentence in this very file.
     { provide: APP_GUARD, useClass: AuthorizationGuard },
+    // **The limiter's SECOND stage, after the permission check.** Task 15. The
+    // limiter is registered twice and `RATE_LIMIT_SCOPE_PHASES` splits the
+    // scopes between the two passes, so no window is charged twice: `perIp` and
+    // `perPrincipal` at the edge above, `perOrganization` here.
+    //
+    // It has to be here rather than at the edge because `perOrganization`'s
+    // identifier is `Session.activeOrganizationId`, which `TenantContextGuard`
+    // resolves — a fail-closed class whose only scope is `perOrganization`
+    // otherwise refuses every request with 429, which
+    // `rate-limit.integration.spec.ts` has asserted since Phase 1 against
+    // `@RateLimit('invitations')` on a fixture route.
+    //
+    // It has to be after `AuthorizationGuard` rather than immediately after the
+    // tenant resolves because a per-organisation window is the *tenant's*
+    // budget — 50 invitations a day — and a request the organisation's own
+    // rules refuse must not spend it. Otherwise a `GUEST` who cannot invite
+    // anybody could still exhaust the organisation's daily budget.
+    { provide: APP_GUARD, useClass: TenantRateLimitGuard },
     // **Entitlement last**, layer 6, a Phase 10 stub that admits every request.
     // Its position is the decision it exists to record: 402 after 403, so a
     // caller who was never permitted the action does not learn what the

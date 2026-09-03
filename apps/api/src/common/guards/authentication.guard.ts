@@ -23,13 +23,22 @@ declare module 'express' {
      * `architecture/backend.md` §3 the limiter runs *before* this guard, so a
      * value written here has already missed its only reader. Writing it anyway
      * would make `generalSession`'s per-principal limit look wired while
-     * resolving nothing on every request. **That is still true after Task 12**:
-     * `request.activeOrganizationId`, which this guard now does set, is a
-     * different field with a different reader that runs *after* it, and it must
-     * never be assigned to `request.organizationId` to "wire up" the limiter's
-     * per-organisation scope — that scope is unresolvable for the same ordering
-     * reason as `perPrincipal`, and pretending otherwise is carry-forward
-     * ruling 55 exactly.
+     * resolving nothing on every request. **That is still true after Task 12**,
+     * and it is still true for `principalId` after Task 15: carry-forward
+     * rulings 55 and 90 remain open.
+     *
+     * **`organizationId` is no longer in that sentence, and the change is Task
+     * 15's.** The clause here used to read that it "must never be assigned to
+     * `request.organizationId` to 'wire up' the limiter's per-organisation
+     * scope", on the reasoning that the scope is unresolvable for the same
+     * ordering reason as `perPrincipal`. The reasoning was about *this guard*
+     * and it still holds here: a value written at this point has already missed
+     * the edge stage. What changed is that the limiter now runs a **second**
+     * time — `TenantRateLimitGuard`, registered after `AuthorizationGuard` —
+     * and `TenantContextGuard` writes the field for it there, after the tenant
+     * has actually been resolved. So the prohibition is unchanged as a rule
+     * about where the field may be written, and its justification is no longer
+     * "nothing can ever read it".
      */
     principal?: UserPrincipal;
   }
