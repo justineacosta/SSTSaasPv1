@@ -87,6 +87,16 @@ why the plan's permission cache was not built, is in
 | Organisation suspended | 403 | `ORGANIZATION_SUSPENDED` | Task 12 |
 | Entitlement exhausted | 402 | `QUOTA_EXCEEDED` | Phase 10 |
 | Plan does not include the feature | 402 | `FEATURE_NOT_AVAILABLE` | Phase 10 |
+| Granting a role whose permissions you lack | 403 | `PERMISSION_DENIED` | Task 14 |
+| A write that would leave an organisation with no owner | **422** | `INVALID_STATE_TRANSITION` | Task 14 |
+
+**The two Task 14 rows are refusals from inside a handler, not from a guard**, and they are the
+first of that kind in this API. The 403 carries the same `details` shape §4 documents — it is
+built by the same function `AuthorizationGuard` uses — and names the first permission the actor
+lacks, so `ADMIN` promoting somebody to `OWNER` reads `"required": "organization.delete"`. The
+422 is `api/conventions.md` §2's "valid shape, failed a domain rule": the body parsed, the
+membership exists, and the caller holds the permission; what refuses is the state of the
+organisation.
 
 **Row three is new and it is the same response as row two, byte for byte.** A session that
 has chosen no organisation and a session pointed at an organisation the caller does not
@@ -152,11 +162,16 @@ function bound to the resolved `organizationId` that runs its callback inside
 silently drop layer 2 (row-level security), which is activated by `SET LOCAL
 app.organization_id` inside a transaction — the exact defect `withTenantTransaction`'s own
 docblock records having shipped once. The organisation id is closed over rather than passed,
-so a handler cannot scope to one it read off the request. **`@Ctx()` is used by three shipped
-handlers** as of Task 13 — the `:id` routes on `OrganizationsController`. Those handlers open
-their tenant transactions through `withTenantTransaction` directly rather than through
-`tenantRunnerFor`, because they need the same transaction to carry the audit write; the runner
-remains the shape for a handler that only reads.
+so a handler cannot scope to one it read off the request. **`@Ctx()` is used by six shipped
+handlers** as of Task 14 — the three `:id` routes on `OrganizationsController` and the three on
+`MembershipsController`. All six open their tenant transactions through `withTenantTransaction`
+directly rather than through `tenantRunnerFor`, because they need the same transaction to carry
+the audit write — and, on the membership writes, the `SELECT ... FOR UPDATE` that serialises the
+last-owner check. The runner remains the shape for a handler that only reads.
+`GET /api/v1/roles` takes no `@Ctx()` at all: it answers from deliberately-global reference data
+(`Role`, `Permission`, `RolePermission`), which carries no `organizationId` and no row-level
+security, so there is no tenant predicate for a transaction to supply. It still declares
+`organization.read`, so a caller reaches it only once a tenant has been resolved.
 
 **The `GUEST` half of this section is Not Implemented.** Project- and team-level grants need
 projects, which are Phase 3. `PROJECT_SCOPED_PERMISSIONS` exists in `packages/contracts` and
@@ -170,3 +185,19 @@ authenticated without the permission → 403; authenticated in a different tenan
 permission → success. Plus: API key scope intersection, custom roles not exceeding their
 creator, last-owner protection, guest project restriction, and immediate effect of revocation
 and role change.
+
+**Of that "plus" list, three are built as of Task 14.** *Last-owner protection* is enforced under
+a row lock on the organisation and tested against real Postgres in both directions — the unlocked
+algorithm is run on two concurrent connections and measured leaving the organisation with zero
+owners, which is what makes the locked version's pass mean anything. *Roles not exceeding their
+granter* is enforced on the role-change endpoint and asserted over all 49 ordered pairs of system
+roles, though custom roles themselves are Phase 11. *Immediate effect of a role change* is
+asserted over the promoted member's own unchanged session cookie, and *immediate effect of
+revocation* over a removed member's next request. API key scopes and guest project restrictions
+have nothing to test yet — Phase 2 issues no keys and Phase 3 brings projects.
+
+**A route with no tenant-owned resource in its path takes a different cross-tenant probe**, and
+`GET /api/v1/roles` is the first. The matrix declares per route which of the two applies rather
+than deriving it, because an arm that cannot reach the check it is named after passes while
+proving nothing. What neither probe covers — a correct path id carrying another tenant's
+*resource* id — is proved in each resource's own integration suite.

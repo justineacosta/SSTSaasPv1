@@ -205,10 +205,33 @@ and had it rotated, and it is written into the organisation being switched **to*
 where a reader asking "who started acting here, and when" will look. Without it, an
 organisation's own log begins mid-sentence with whatever the member touched first.
 
-The three names an `AuditEvent` row may carry today are `ORGANIZATION_CREATED`,
-`ORGANIZATION_UPDATED` and `ORGANIZATION_SWITCHED`
-(`apps/api/src/modules/audit/audit.actions.ts`). Every other name in this section is either a
-`PlatformAuditEvent` name with a producer, or a name in the taxonomy with no producer yet.
+`MEMBER_REMOVED` and `ROLE_CHANGED` gained producers in Phase 2 Task 14, in the same change as
+the two handlers that write them — `DELETE` and `PATCH` on
+`/api/v1/organizations/{id}/members/{membershipId}`. Both name the **`Membership`** row rather
+than the organisation, because a role change and a removal are facts about one person's standing
+and naming the organisation would make every such event in a large tenant point at the same id.
+Both carry `before`, `after` and `memberUserId` in `metadata`: role keys, which §5 permits
+because a role is not a sensitive field, and the member's user id because a membership id means
+nothing to a reader six months later and a member who has been removed and re-added has several
+`Membership` rows for one person. `MEMBER_REMOVED` writes `after: null` — the member holds no
+role here any more — so one reader can read both events with the same two keys.
+
+The five names an `AuditEvent` row may carry today are `ORGANIZATION_CREATED`,
+`ORGANIZATION_UPDATED`, `ORGANIZATION_SWITCHED`, `ROLE_CHANGED` and `MEMBER_REMOVED`, and the two
+`resourceType` values are `Organization` and `Membership`
+(`apps/api/src/modules/audit/audit.actions.ts`). Both figures are computed from that file rather
+than counted by eye, which is carry-forward ruling 108 — this paragraph said "three" before Task
+14 and "four" before Task 13's review, and only the second of those was ever wrong about the file
+as it then stood. The command:
+
+```
+node -e "const m=/AUDIT_ACTIONS = \[([\s\S]*?)\] as const;/.exec(
+  require('fs').readFileSync('apps/api/src/modules/audit/audit.actions.ts','utf8'))[1];
+  console.log([...m.matchAll(/^\s*'([A-Z_]+)',/gm)].length)"
+```
+
+Every other name in this section is either a `PlatformAuditEvent` name with a producer, or a name
+in the taxonomy with no producer yet.
 
 **`ORGANIZATION_DELETED` is one of those names, and it is not reachable in Phase 2 —
 deliberately.** `AuditEvent.organizationId` references `Organization.id` with `onDelete:

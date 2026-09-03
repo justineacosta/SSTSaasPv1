@@ -29,14 +29,28 @@ src/
 
 Each module owns `*.controller.ts`, `*.service.ts`, `*.repository.ts`, `dto/`, and tests.
 
-**A module may legitimately have fewer of those, and two do.** `auth/` shipped in Phase 2 Task 3
-with two services, no controller and no repository — shipping a controller before the
-authentication guard (Task 7) would have meant an unguarded route standing for several tasks —
-and it gained `auth.controller.ts` in Task 8, once that guard, the CSRF guard, the rate limiter
-and the boot-time access assertion were all in the pipeline ahead of it. `audit/` arrived in the
-same task with one service and no controller: `PlatformAuditService` writes into a caller's
-transaction and the tenant-facing audit query API is Phase 3. The list above is what a module
-owns *when it has that concern*, not a checklist every directory must satisfy.
+**A module may legitimately have fewer of those, and as of Task 14 only one of the six that exist
+has all of them.** Counted from the tree rather than remembered — `for d in
+apps/api/src/modules/*/; do ls "$d" | grep -cE '\.(controller|service|repository)\.ts$'; done`
+gives: `auth/` 1 controller, 15 services, 1 repository; `audit/` 2 services and nothing else;
+`health/`, `organizations/` and `memberships/` a controller and a service each with no
+repository; `roles/` a controller and no service at all.
+
+Two of those are worth the sentence they take. `auth/` shipped in Phase 2 Task 3 with two
+services, no controller and no repository — shipping a controller before the authentication
+guard (Task 7) would have meant an unguarded route standing for several tasks — and it gained
+`auth.controller.ts` in Task 8, once that guard, the CSRF guard, the rate limiter and the
+boot-time access assertion were all in the pipeline ahead of it. `audit/` arrived in the same
+task with one service and no controller: `PlatformAuditService` writes into a caller's
+transaction and the tenant-facing audit query API is Phase 3.
+
+**Where a repository would be, `organizations/`, `memberships/` and `roles/` have narrow
+function ports instead** — `USER_ORGANIZATION_LOOKUP`, `MEMBER_SESSION_REVOKER`,
+`TENANT_RESOLVER`, `ROLE_CATALOG`. Each is a closure over the base Prisma client provided by the
+module, exposing one question rather than a client, so a service cannot reach `$queryRaw` for
+anything it was not given. `roles/` has no service because it has no business logic: the
+controller returns the catalogue the port answers with. The list above is what a module owns
+*when it has that concern*, not a checklist every directory must satisfy.
 
 **`audit/` also has no repository and no Prisma client**, which is worth naming because it looks
 like an omission. `security/audit.md` §2 requires an audit event and the change it describes to
@@ -78,18 +92,18 @@ and are unaffected; anything that must cover *every* response, routed or not, be
 | CORS | Middleware, third; one configured origin, exact match, credentials ([ADR-0017](../decisions/ADR-0017-cors-allowlist-with-credentials.md)) | **Implemented (Task 7)**. Middleware rather than a guard so a preflight is answered before the rate limiter and the authentication guard, and so the headers reach error responses. **A preflight therefore reaches neither the limiter nor `LoggingInterceptor`**: every unsafe browser request generates one request that no limit counts and no log line records — see below |
 | Rate limit | Guard, Redis-backed, every declared scope | Implemented (global `APP_GUARD`) |
 | Authenticate | Guard, session cookie or API key -> `Principal` | **Implemented (Task 7)** for the session-cookie half: `AuthenticationGuard`, global `APP_GUARD`, constructs a `UserPrincipal` onto `request.principal`. The API-key half is Not Implemented — no key can be issued in Phase 2 |
-| Tenant resolve | Guard, membership + org state -> `TenantContext` | **Implemented (Task 12)**: `TenantContextGuard`, global `APP_GUARD`, immediately after Authenticate. Reads `Session.activeOrganizationId` and nothing else, resolves membership and organisation state under `withTenantTransaction`, and puts a `TenantContext` on `request.tenant`. **It denies only on a route declaring `@RequirePermission()`** — an `@AuthenticatedOnly()` route proceeds with no tenant, so a removed member can still sign out. **It performs a real query as of Task 13**, which shipped `POST /api/v1/auth/switch-org`, the first writer of `activeOrganizationId`. Before that the first branch short-circuited on every request |
+| Tenant resolve | Guard, membership + org state -> `TenantContext` | **Implemented (Task 12)**: `TenantContextGuard`, global `APP_GUARD`, immediately after Authenticate. Reads `Session.activeOrganizationId` and nothing else, resolves membership and organisation state under `withTenantTransaction`, and puts a `TenantContext` on `request.tenant`. **It denies only on a route declaring `@RequirePermission()`** — an `@AuthenticatedOnly()` route proceeds with no tenant, so a removed member can still sign out. **It performs a real query as of Task 13**, which shipped `POST /api/v1/auth/switch-org`, the first writer of `activeOrganizationId`. Before that the first branch short-circuited on every request. **Task 14 gave it a second way to deny**: removing a member soft-deletes their `Membership`, and because there is no permission cache the resolver's next read finds no live row and answers 404 on every permission-guarded route — the removal takes effect on the member's next request whether or not the session revocation that accompanies it succeeded |
 | CSRF | Guard, cookie-authenticated unsafe methods only | **Implemented (Task 7)**: `CsrfGuard`, global `APP_GUARD`, after Authenticate. **Governs `POST /api/v1/auth/logout` since Task 9** — the first cookie-authenticated unsafe route this product has published |
 | Cross-site refusal | Guard, opt-in per handler, for public unsafe routes | **Implemented (Task 9)**: `CrossSiteGuard`, global `APP_GUARD`, last. Applies only to handlers carrying `@RefuseCrossSite()`, which today is `POST /api/v1/auth/login` alone — see below |
 | Validate | Zod pipe against `packages/contracts` schemas | Implemented; no consumer until Phase 2 |
-| Authorize | Guard reading `@RequirePermission` | **Implemented (Task 12)**: `AuthorizationGuard`, global `APP_GUARD`. It compares the declared permission against `request.tenant.permissions` and refuses with 403 `PERMISSION_DENIED` naming the permission, the caller's role and the roles that hold it; with no tenant at all it fails closed as **404**, not 403, so a misconfiguration cannot become an existence oracle. **It governs three shipped routes as of Task 13** — `GET`, `PATCH` and `DELETE /api/v1/organizations/{id}`, declaring `organization.read`, `organization.update` and `organization.delete`. They are the first endpoints in this product to declare a permission at all |
+| Authorize | Guard reading `@RequirePermission` | **Implemented (Task 12)**: `AuthorizationGuard`, global `APP_GUARD`. It compares the declared permission against `request.tenant.permissions` and refuses with 403 `PERMISSION_DENIED` naming the permission, the caller's role and the roles that hold it; with no tenant at all it fails closed as **404**, not 403, so a misconfiguration cannot become an existence oracle. **It governs seven shipped routes as of Task 14** — the three on `/api/v1/organizations/{id}` declaring `organization.read`, `organization.update` and `organization.delete` (Task 13, the first endpoints in this product to declare a permission at all), plus `GET /api/v1/organizations/{id}/members` and `DELETE /api/v1/organizations/{id}/members/{membershipId}` declaring `organization.manage_members`, `PATCH` on that membership path declaring `organization.manage_roles`, and `GET /api/v1/roles` declaring `organization.read`. The count is pinned by `EXPECTED_GUARDED_ROUTES` in `authorization-matrix.integration.spec.ts` rather than only stated here |
 | Email verified | Guard, opt-in per handler via `@RequireVerifiedEmail()` | **Registered (Task 12)**, `EmailVerifiedGuard`, global `APP_GUARD`. **Governs one route as of Task 13**: `POST /api/v1/organizations` carries `@RequireVerifiedEmail()`, the first handler in this product to do so, so an unverified caller cannot create an organisation. The spec that asserted the empty set now names what replaced it rather than being deleted |
 | MFA enrolment | Guard, `Organization.requireMfa` | **Registered (Task 12)**, `MfaEnrolmentGuard` — written in Task 11 and left in no module, placed here ahead of Authorize so a member with no factor hears `MFA_ENROLMENT_REQUIRED` rather than `PERMISSION_DENIED`. **Task 13 supplied one of its two preconditions and not the other.** Routes now declare a permission, so the guard's early exit no longer fires on every request — but `MFA_ENROLMENT_REQUIRED` **still has no producer**, because nothing writes `Organization.requireMfa`: the column defaults to `false`, `updateOrganizationRequestSchema` deliberately omits it (Task 2's docblock, carry-forward ruling 15), and no endpoint sets it. A claim that Task 13 made the code reachable appeared in its report, this table and `roadmap.md`, and was false in all three; corrected 2026-09-03. The early exit on a request naming no organisation is unchanged, and is what keeps a member with no factor able to reach their own MFA enrolment, session document and logout |
 | Entitlement | Guard, no decorator | **Stub (Task 12)**, `EntitlementGuard`, global `APP_GUARD`, **last**. Admits every request. Registered so the layer exists and its position is recorded — 402 after 403, so a caller who was never permitted the action does not learn what the plan includes. `@RequireEntitlement` deliberately **does not exist**; Phase 10 ships the decorator and its evaluation together |
 | Handle | Controller -> service | Implemented |
 | Serialise | Interceptor, explicit DTO | Not Implemented |
 | Errors | Global filter -> shared error envelope | Implemented |
-| Audit | Service-level, in the mutation's transaction | Not Implemented (Phase 3) |
+| Audit | Service-level, in the mutation's transaction | **Implemented (Task 8 for `PlatformAuditEvent`, Task 13 for `AuditEvent`)**. `AuditService.record` and `PlatformAuditService.record` each take the caller's transaction handle and hold no client of their own, so an event cannot be written for a change that then rolls back — `security/audit.md` §2. **This row read "Not Implemented (Phase 3)" until Task 14**, which was already false when Task 13 shipped `ORGANIZATION_CREATED`, `ORGANIZATION_UPDATED` and `ORGANIZATION_SWITCHED`; Task 14 added `ROLE_CHANGED` and `MEMBER_REMOVED` and corrected the row rather than adding to a claim that was wrong. What is genuinely Phase 3 is the *domain* half of `security/audit.md` §4's taxonomy — every `PROJECT_*`, `ASSET_*`, `SCAN_*` and `FINDING_*` name — because none of those resources exists |
 | Logging | Interceptor, structured, redacted | Implemented |
 
 A route without an explicit access declaration **fails a startup assertion**. Missing
