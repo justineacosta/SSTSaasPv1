@@ -414,6 +414,72 @@ describe('the shipped endpoints hold the invariant under contention', () => {
     expect(await liveOwnerCount(org.organizationId)).toBe(1);
   }, 60_000);
 
+  /**
+   * THE SAME DETECTOR, ON THE ROLE-CHANGE PATH — AND IT IS NOT REDUNDANT.
+   *
+   * The detector above issues a `DELETE`, so it exercises `remove` and nothing
+   * else. The adversarial review measured what that leaves uncovered: with
+   * `await lockOrganization(...)` deleted from `updateRole` **alone** the whole
+   * memberships lane passed, 36/36, exit 0, and the file above survived one run
+   * in four. So the path the plan names in its own words — "two concurrent
+   * demotions of the two remaining owners must not both succeed" — was the one
+   * whose lock nothing could reliably detect the loss of. `M1` deleted
+   * `FOR UPDATE` from the shared helper, which measures the helper; it does not
+   * measure that both callers call it.
+   *
+   * The mechanism is the one the docblock above explains and it matters here
+   * for the same reason: the blocker takes `FOR NO KEY UPDATE`, which conflicts
+   * with the handler's own `FOR UPDATE` and **not** with the `FOR KEY SHARE`
+   * Postgres takes on the parent row when it re-checks
+   * `Membership_organizationId_fkey`. A plain `FOR UPDATE` blocker would stall
+   * this request whether or not the handler took a lock, and would therefore
+   * measure the foreign key again.
+   */
+  it('a role change waits for a lock held on the organisation row', async () => {
+    await clearRateLimits(harness.redis);
+    const org = await organizationWithTwoOwners();
+    const actor = await sessionFor(org.first.userId, org.organizationId);
+
+    const released = gate();
+    let requestSettled = false;
+
+    const blocker = alice.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT set_config('app.organization_id', ${org.organizationId}, true)`;
+        await tx.$queryRaw`SELECT id FROM "Organization" WHERE id = ${org.organizationId} FOR NO KEY UPDATE`;
+        await released.wait;
+      },
+      { timeout: 20_000, maxWait: 20_000 },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    const pending = request(server)
+      .patch(`/api/v1/organizations/${org.organizationId}/members/${org.second.membershipId}`)
+      .set(headers(actor))
+      .send({ roleKey: 'ADMIN' })
+      .then((response) => {
+        requestSettled = true;
+        return response;
+      });
+
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    expect(
+      requestSettled,
+      'The role change answered while another transaction held the organisation row lock, so it ' +
+        'never took that lock. The demotion race in the first describe block of this file is then ' +
+        'open through PATCH, which is the path the plan names.',
+    ).toBe(false);
+
+    released.open();
+    await blocker;
+
+    const response = await pending;
+    expect(response.status).toBe(200);
+    expect((response.body as { roleKey: string }).roleKey).toBe('ADMIN');
+    expect(await liveOwnerCount(org.organizationId)).toBe(1);
+  }, 60_000);
+
   it('two concurrent demotions of the two remaining owners leave the organisation with one', async () => {
     await clearRateLimits(harness.redis);
     const org = await organizationWithTwoOwners();
@@ -451,6 +517,44 @@ describe('the shipped endpoints hold the invariant under contention', () => {
 
     const statuses = [a.status, b.status].sort((x, y) => x - y);
     expect(statuses).toEqual([204, 422]);
+    expect(await liveOwnerCount(org.organizationId)).toBe(1);
+  }, 60_000);
+
+  /**
+   * A REMOVAL RACING A DEMOTION — THE MIXED PAIR, WHICH THE OTHER TWO DO NOT COVER.
+   *
+   * Every other arm pairs like with like. The invariant is "an organisation
+   * always has at least one `OWNER`", not "two demotions do not both succeed":
+   * a removal racing a demotion takes the owner count down by the same two,
+   * through **two different methods**, each of which takes the lock in its own
+   * body. "They share `lockOrganization`" is exactly the assumption a per-path
+   * regression breaks — measured, in the review that asked for this arm, when
+   * the lock was deleted from `updateRole` alone and the lane stayed green.
+   *
+   * The winner is whichever transaction takes the lock first, so the successful
+   * status is 204 or 200 rather than a fixed one. What is asserted is the shape
+   * that holds either way: exactly one write succeeded, the other was refused
+   * **422** by the invariant rather than by a deadlock or a 500, and one live
+   * owner is left.
+   */
+  it('a removal racing a demotion of the other remaining owner leaves the organisation with one', async () => {
+    await clearRateLimits(harness.redis);
+    const org = await organizationWithTwoOwners();
+    const one = await sessionFor(org.first.userId, org.organizationId);
+    const two = await sessionFor(org.second.userId, org.organizationId);
+    const path = `/api/v1/organizations/${org.organizationId}/members`;
+
+    const [removal, demotion] = await Promise.all([
+      request(server).delete(`${path}/${org.second.membershipId}`).set(headers(one)),
+      request(server)
+        .patch(`${path}/${org.first.membershipId}`)
+        .set(headers(two))
+        .send({ roleKey: 'ADMIN' }),
+    ]);
+
+    const statuses = [removal.status, demotion.status];
+    expect(statuses.filter((status) => status === 422)).toHaveLength(1);
+    expect(statuses.filter((status) => status === 204 || status === 200)).toHaveLength(1);
     expect(await liveOwnerCount(org.organizationId)).toBe(1);
   }, 60_000);
 });
