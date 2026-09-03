@@ -88,12 +88,14 @@ why the plan's permission cache was not built, is in
 | Entitlement exhausted | 402 | `QUOTA_EXCEEDED` | Phase 10 |
 | Plan does not include the feature | 402 | `FEATURE_NOT_AVAILABLE` | Phase 10 |
 | Granting a role whose permissions you lack | 403 | `PERMISSION_DENIED` | Task 14 |
+| Removing a member whose role holds permissions you lack | 403 | `PERMISSION_DENIED` | Task 14 fix round |
 | A write that would leave an organisation with no owner | **422** | `INVALID_STATE_TRANSITION` | Task 14 |
 
-**The two Task 14 rows are refusals from inside a handler, not from a guard**, and they are the
-first of that kind in this API. The 403 carries the same `details` shape §4 documents — it is
-built by the same function `AuthorizationGuard` uses — and names the first permission the actor
-lacks, so `ADMIN` promoting somebody to `OWNER` reads `"required": "organization.delete"`. The
+**The three Task 14 rows are refusals from inside a handler, not from a guard**, and they are the
+first of that kind in this API. The two 403s carry the same `details` shape §4 documents — they
+are built by the same function `AuthorizationGuard` uses, and by the same helper as each other —
+and name the first permission the actor lacks, so `ADMIN` promoting somebody to `OWNER`, or
+removing an `OWNER`, both read `"required": "organization.delete"`. The
 422 is `api/conventions.md` §2's "valid shape, failed a domain rule": the body parsed, the
 membership exists, and the caller holds the permission; what refuses is the state of the
 organisation.
