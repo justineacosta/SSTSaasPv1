@@ -42,6 +42,18 @@ just the fix.**
 | `DELETE /organizations/:id/members/:membershipId` | `@RequirePermission('organization.manage_members')` | Soft delete |
 | `GET /roles` | `@RequirePermission('organization.read')` | Seeded system roles and their permissions |
 
+**The member list's permission contradicts a docblock in the contracts, and the plan wins.**
+`memberships.ts`'s `membershipUserSchema` justifies its narrow user projection with the words *"a
+member list is readable by anyone with `organization.read`"*. The plan says all three membership
+routes require `organization.manage_members`. Implement the **plan** — and correct that sentence in
+the same change, per the documentation rule, rather than leaving a shipped file asserting a
+permission the API does not use. The reasoning, so you do not re-open it: widening a route from
+`manage_members` to `organization.read` later is additive and breaks no client, while narrowing it
+is a breaking change to a shipped contract; and the docblock's actual argument — that a colleague's
+`lastLoginAt` and `lockedUntil` are not their team's business — is *stronger* under the narrower
+permission, not weaker. If you conclude the plan is wrong, report it with the reasoning and stop;
+do not silently pick the other one.
+
 **Contracts exist and must not be rewritten.** `packages/contracts/src/memberships.ts` ships
 `membershipResponseSchema`, `updateMembershipRequestSchema`, `listMembershipsQuerySchema`,
 `membershipCollectionSchema`, `roleResponseSchema` and `roleCollectionSchema`. Read that file first.
@@ -197,10 +209,16 @@ Run all of these, capturing the **real exit code outside a pipe** —
 `pnpm check:secrets`, `docker compose ps`.
 
 **Baselines at the merge commit** — re-measure them yourself before you start, do not trust this
-table: `pnpm test` 95 files / 1628 tests; `check:specs` 120 spec files; `test:integration` 25 files
-/ 440 tests; `check:openapi` **21 paths / 24 operations** (the command logs *paths* — it does not
-print the operation count, and a brief that told you otherwise would be wrong; Task 13's did);
-`check:registry` 15 models; `check:secrets` 433 tracked files.
+table. Measured by the orchestrator on 2026-09-03, on this branch, at the tip you start from:
+`pnpm test` 95 files / **1628** tests; `check:specs` **120** spec files; `test:integration` 25 files
+/ **443** tests; `check:openapi` **21 paths** (the command logs *paths* — it does not print an
+operation count, and a brief that told you otherwise would be wrong; Task 13's did);
+`check:registry` **15** models; `check:secrets` **434** tracked files.
+
+**Two of those numbers were wrong in the first draft of this brief and are corrected here**: it
+said 440 integration tests where the command prints 443, and 433 tracked files where this branch
+has 434 — 433 was measured on `main`, and the difference is this file. Ruling 108's lesson, landing
+on the document that quotes it.
 
 `check:registry` must still report **15 models** — this task adds no table. A change there means you
 added a model you did not mean to.
