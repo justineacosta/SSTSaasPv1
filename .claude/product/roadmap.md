@@ -14,7 +14,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Partially Implemented** — Tasks 1–13 of 18 done 2026-09-02, **Checkpoint A passed and Task 13 merged into the branch, not yet into `main`**. The identity API is built and the authorization pipeline is enforced end to end: a request is rate-limited, authenticated against an opaque server-side session, CSRF-checked, resolved to a tenant, and authorized against a permission the route declares — and every one of those stages can deny. **Task 13 closed the gap that mattered most: three shipped routes now declare `@RequirePermission()`** — `GET`, `PATCH` and `DELETE /api/v1/organizations/:id` — so layers 2–4 govern production endpoints for the first time, and `POST /api/v1/auth/switch-org` is the first writer of `Session.activeOrganizationId`. **No authentication UI exists, so the E2E journey exit criterion is unmet and the phase is not complete.** Task 13 is **not pushed and CI has not run on it**. Evidence table under Phase 2 below |
+| 2 | Identity | **Partially Implemented** — Tasks 1–13 of 18 done 2026-09-02, **Checkpoint A passed, and Task 13 is merged into `main` and green on CI**. The identity API is built and the authorization pipeline is enforced end to end: a request is rate-limited, authenticated against an opaque server-side session, CSRF-checked, resolved to a tenant, and authorized against a permission the route declares — and every one of those stages can deny. **Task 13 closed the gap that mattered most: three shipped routes now declare `@RequirePermission()`** — `GET`, `PATCH` and `DELETE /api/v1/organizations/:id` — so layers 2–4 govern production endpoints for the first time, and `POST /api/v1/auth/switch-org` is the first writer of `Session.activeOrganizationId`. **No authentication UI exists, so the E2E journey exit criterion is unmet and the phase is not complete.** Task 13 is **merged, pushed and CI-green** as of 2026-09-02: PR #25 (merge commit `f9664e2`) and the residual sweep as PR #26 (`730ac83`); `main` and `origin/main` are both `730ac83` and `git rev-list --count origin/main..main` is `0`. CI run `33667495207` on `main` reports `completed / success`, read from the run's own `conclusion` field. Evidence table under Phase 2 below |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -2056,8 +2056,13 @@ and count it.
 
 ### Still owed after Task 13
 
-- **Not pushed, and CI has not run.** Every figure above is local. This must be green on a Linux
-  runner before Task 14 branches from a merged `main`.
+- ~~Not pushed, and CI has not run.~~ **Closed 2026-09-02, re-verified 2026-09-03.** Task 13
+  merged as PR #25 (`f9664e2`, 16:28:42Z) and the residual sweep as PR #26 (`730ac83`,
+  18:29:10Z). `main` and `origin/main` are both `730ac83`, and `git rev-list --count
+  origin/main..main` is `0`. CI run `33667495207` — head `730ac83`, branch `main`, created
+  2026-09-02T18:29:18Z — reports `completed / success`, read from the run's own `conclusion`
+  field rather than a watcher's exit status (ruling 105). Task 14 therefore branches from a
+  merged, green `main`, which it does.
 - **The fix round has not itself been reviewed** — the same status Tasks 10, 11 and 12 carried.
   Sent to a fresh adversarial reviewer in the 2026-09-03 residual sweep, together with that
   sweep's own changes.
