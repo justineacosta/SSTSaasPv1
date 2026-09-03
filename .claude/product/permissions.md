@@ -162,11 +162,29 @@ a guest with no grants sees nothing.
    powerless. Revoking inside the transaction would sign out a member whose removal then rolled
    back, which is the failure that has no compensating layer.
 
-   Nothing can mint a replacement session pointed at that organisation afterwards:
-   `Session.activeOrganizationId` is written by `POST /api/v1/auth/switch-org` and by nothing
-   else, and that endpoint decides membership with `TenantContextGuard`'s own resolver, which
-   reads `deletedAt: null`. Signing in creates sessions with a null active organisation. That is
-   what closes the residual `session.service.ts` records against member removal — the
-   "credential re-read on the path that issues sessions" that a password change needs has no
-   equivalent here, because authority is re-read per request rather than carried in the
-   session.
+   **A switch racing the removal cannot leave a session pointed there, and the ordering alone
+   was not what made that true.** `Session.activeOrganizationId` is written by
+   `POST /api/v1/auth/switch-org` and by nothing else; signing in creates sessions with a null
+   active organisation. But that endpoint reads the membership, *then* calls `rotate`, which
+   **inserts a new `Session` row** — and `revokeAllForUserInOrganization` is one `updateMany`
+   whose predicate is evaluated at execution time, so it cannot revoke a row that does not exist
+   yet. An earlier version of this paragraph argued from the resolver's `deletedAt: null`
+   predicate that no such session could be minted. That was measured false: with a 2 s delay
+   instrumented between the read and the rotation, the switch answered 200 and left a live,
+   `ACTIVE`, un-revoked session pointed at the organisation the member had just been removed
+   from, which `GET /api/v1/auth/session` then answered 200 for with that organisation's `id`,
+   `slug` and `name`. It is carry-forward ruling 82's shape — writing first and revoking after is
+   necessary and not sufficient.
+
+   What makes the invariant hold is the second read: `OrganizationSwitchService` re-resolves the
+   membership **after** `rotate` returns, and revokes the session it has just issued when that
+   read no longer resolves. Either the insert precedes the revocation and is swept by it, or it
+   follows and the re-read observes the removal; there is no third ordering. It is
+   `login.service.ts`'s `credentialStillCurrent` applied to membership instead of to a password
+   hash, and it is the equivalent `session.service.ts` records against this path. The decision is
+   held by `apps/api/src/modules/auth/organization-switch.service.spec.ts`.
+
+   The compensating layer is worth stating separately, because it is what bounded the defect
+   while it stood: authority is re-read per request rather than carried in the session, so every
+   *guarded* route answered 404 for that session throughout and no tenant data was reachable
+   through it. What the re-read stops is the session existing at all.
