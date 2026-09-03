@@ -355,7 +355,40 @@ template for one.
 ## 6. Email verification, reset, invitations
 
 > **Status of the email-verification row: Implemented (Phase 2 Task 8). The password-reset row:
-> Implemented (Phase 2 Task 10).** The invitation row is Task 15's and remains Designed only.
+> Implemented (Phase 2 Task 10). The invitation row: Implemented (Phase 2 Task 15).**
+
+### The invitation token, as Task 15 actually built it
+
+- **7-day TTL, 256-bit, hashed at rest, single-use, delivered only by email.** The raw token is
+  generated server-side and never appears in a response body — `createInvitationRequestSchema`
+  has no `token` field and `invitationResponseSchema` has no `token` field, so a handler that
+  passed a token-bearing row through the response schema has it stripped rather than serialised.
+- **"Invalidated by use or by a newer token" is enforced by the database, not only by the
+  service.** `Invitation_organizationId_email_live_key` is a partial unique index — UNIQUE
+  `("organizationId", "email")` WHERE `"acceptedAt" IS NULL AND "revokedAt" IS NULL` — added in
+  `20260903160000_invitation_partial_unique`. Re-inviting an address supersedes whatever is live
+  for it, under an advisory lock, in one transaction, exactly as `TokenService.issue` does for
+  `VerificationToken`.
+- **Expiry is deliberately outside that index and cannot be inside it.** A partial index predicate
+  must be `IMMUTABLE` and `"expiresAt" > now()` is not, so Postgres refuses it. An
+  expired-but-unconsumed row still holds the slot and the supersede path is what frees it.
+- **Bound to the invited address, compared to the authenticated user's and never to a body
+  field.** `acceptInvitationRequestSchema` carries the token alone. A different signed-in user
+  presenting a valid token receives the same bytes as one presenting a token that matches
+  nothing.
+- **Accepting does not require a verified email**, and that omission is the point: possession of
+  a token delivered to that address is the same proof of address control the verification guard
+  exists to obtain. Creating an invitation does require one, per §6's "cannot create
+  organisations, invite, or scan".
+- **The acceptor is a member of no organisation, so no tenant context can be resolved before the
+  row is read.** That is what [ADR-0022](../decisions/ADR-0022-invitation-acceptance-definer-lookup.md)
+  exists to solve, and the containment argument there is worth reading before extending the path.
+
+**One window is open and is recorded rather than claimed closed.** D5's no-minting check runs when
+an invitation is created and nowhere else, so an invitation offering `OWNER` survives its issuer
+being removed and still mints an `OWNER` — measured, and pinned by a test named to be read as a
+defect. The remedy belongs on the other side, in `MembershipService.remove` and `updateRole`. See
+`roadmap.md`'s "Still owed after Task 15".
 
 All three use the same token discipline: 256-bit random, **hashed at rest**, single-use,
 expiring, invalidated by use or by a newer token, and delivered only by email.

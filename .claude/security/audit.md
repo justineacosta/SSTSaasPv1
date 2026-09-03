@@ -198,6 +198,20 @@ Org and access: `ORGANIZATION_CREATED/UPDATED/DELETED/SUSPENDED`, `ORGANIZATION_
 `MEMBER_INVITED`, `INVITATION_ACCEPTED`, `INVITATION_REVOKED`, `MEMBER_REMOVED`, `ROLE_CHANGED`,
 `ROLE_CREATED/UPDATED/DELETED`, `PERMISSION_DENIED`.
 
+**Three of that group gained producers in Phase 2 Task 15**, in the same change as the handlers
+that write them: `MEMBER_INVITED`, `INVITATION_REVOKED` and `INVITATION_ACCEPTED`. All three are
+`AuditEvent` rows on resource type `Invitation`, and all three are written inside the same
+transaction as the change they describe, per §2.
+
+**A fourth invitation event was asked for and does not exist, in this list or in the code.** The
+Phase 2 plan's Task 15 says "audit events for invitation sent, revoked, accepted, and expired".
+The first three are above; there is no `INVITATION_EXPIRED`, and adding one was refused rather
+than forgotten. Expiry is a passive fact: no actor performs it, no transaction contains it, and
+this codebase has no sweeper that would notice the moment it happens. `audit.actions.ts` names
+only what something writes — the same argument it makes for `ORGANIZATION_DELETED` — and a union
+carrying values nothing emits is a list nobody maintains. A future sweeper, or a Phase 3 audit
+query that materialises expiry on read, is what would earn the name.
+
 `ORGANIZATION_SWITCHED` was added to this list by Phase 2 Task 13, in the same change as the
 endpoint that writes it, exactly as Task 9 added `ACCOUNT_LOCKED` and Task 10
 `PASSWORD_CHANGE_FAILED`. It records that a member pointed their session at this organisation

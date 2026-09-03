@@ -96,7 +96,7 @@ and are unaffected; anything that must cover *every* response, routed or not, be
 | CSRF | Guard, cookie-authenticated unsafe methods only | **Implemented (Task 7)**: `CsrfGuard`, global `APP_GUARD`, after Authenticate. **Governs `POST /api/v1/auth/logout` since Task 9** — the first cookie-authenticated unsafe route this product has published |
 | Cross-site refusal | Guard, opt-in per handler, for public unsafe routes | **Implemented (Task 9)**: `CrossSiteGuard`, global `APP_GUARD`, last. Applies only to handlers carrying `@RefuseCrossSite()`, which today is `POST /api/v1/auth/login` alone — see below |
 | Validate | Zod pipe against `packages/contracts` schemas | Implemented; no consumer until Phase 2 |
-| Authorize | Guard reading `@RequirePermission` | **Implemented (Task 12)**: `AuthorizationGuard`, global `APP_GUARD`. It compares the declared permission against `request.tenant.permissions` and refuses with 403 `PERMISSION_DENIED` naming the permission, the caller's role and the roles that hold it; with no tenant at all it fails closed as **404**, not 403, so a misconfiguration cannot become an existence oracle. **It governs seven shipped routes as of Task 14** — the three on `/api/v1/organizations/{id}` declaring `organization.read`, `organization.update` and `organization.delete` (Task 13, the first endpoints in this product to declare a permission at all), plus `GET /api/v1/organizations/{id}/members` and `DELETE /api/v1/organizations/{id}/members/{membershipId}` declaring `organization.manage_members`, `PATCH` on that membership path declaring `organization.manage_roles`, and `GET /api/v1/roles` declaring `organization.read`. The count is pinned by `EXPECTED_GUARDED_ROUTES` in `authorization-matrix.integration.spec.ts` rather than only stated here |
+| Authorize | Guard reading `@RequirePermission` | **Implemented (Task 12)**: `AuthorizationGuard`, global `APP_GUARD`. It compares the declared permission against `request.tenant.permissions` and refuses with 403 `PERMISSION_DENIED` naming the permission, the caller's role and the roles that hold it; with no tenant at all it fails closed as **404**, not 403, so a misconfiguration cannot become an existence oracle. **It governs ten shipped routes as of Task 15** — the three on `/api/v1/organizations/{id}` declaring `organization.read`, `organization.update` and `organization.delete` (Task 13, the first endpoints in this product to declare a permission at all), plus `GET /api/v1/organizations/{id}/members` and `DELETE /api/v1/organizations/{id}/members/{membershipId}` declaring `organization.manage_members`, `PATCH` on that membership path declaring `organization.manage_roles`, `GET /api/v1/roles` declaring `organization.read`, and the three invitation routes on `/api/v1/organizations/{id}/invitations` (Task 15) all declaring `organization.manage_members`. **`POST /api/v1/invitations/accept` is deliberately not among them** — it declares no permission because the acceptor is a member of nothing, so there is no tenant to authorize against; see ADR-0022. The count is pinned by `EXPECTED_GUARDED_ROUTES` in `authorization-matrix.integration.spec.ts` rather than only stated here |
 | Email verified | Guard, opt-in per handler via `@RequireVerifiedEmail()` | **Registered (Task 12)**, `EmailVerifiedGuard`, global `APP_GUARD`. **Governs one route as of Task 13**: `POST /api/v1/organizations` carries `@RequireVerifiedEmail()`, the first handler in this product to do so, so an unverified caller cannot create an organisation. The spec that asserted the empty set now names what replaced it rather than being deleted |
 | MFA enrolment | Guard, `Organization.requireMfa` | **Registered (Task 12)**, `MfaEnrolmentGuard` — written in Task 11 and left in no module, placed here ahead of Authorize so a member with no factor hears `MFA_ENROLMENT_REQUIRED` rather than `PERMISSION_DENIED`. **Task 13 supplied one of its two preconditions and not the other.** Routes now declare a permission, so the guard's early exit no longer fires on every request — but `MFA_ENROLMENT_REQUIRED` **still has no producer**, because nothing writes `Organization.requireMfa`: the column defaults to `false`, `updateOrganizationRequestSchema` deliberately omits it (Task 2's docblock, carry-forward ruling 15), and no endpoint sets it. A claim that Task 13 made the code reachable appeared in its report, this table and `roadmap.md`, and was false in all three; corrected 2026-09-03. The early exit on a request naming no organisation is unchanged, and is what keeps a member with no factor able to reach their own MFA enrolment, session document and logout |
 | Entitlement | Guard, no decorator | **Stub (Task 12)**, `EntitlementGuard`, global `APP_GUARD`, **last**. Admits every request. Registered so the layer exists and its position is recorded — 402 after 403, so a caller who was never permitted the action does not learn what the plan includes. `@RequireEntitlement` deliberately **does not exist**; Phase 10 ships the decorator and its evaluation together |
@@ -137,9 +137,14 @@ raw `@SetMetadata` on a fixture controller. Full rule in
 
 **Guard order is the order of the `APP_GUARD` providers in `app.module.ts`, and nothing
 else makes it visible** — a reordering is a one-line diff to an array that changes no type
-and still runs every guard. `app.module.spec.ts` asserts it, and as of Task 12 there are
-**nine**: rate limit, authenticate, tenant resolve, CSRF, cross-site refusal, email
-verified, MFA enrolment, authorize, entitlement.
+and still runs every guard. `app.module.spec.ts` asserts it, and as of Task 15 there are
+**ten**: rate limit, authenticate, tenant resolve, CSRF, cross-site refusal, email
+verified, MFA enrolment, authorize, **tenant rate limit**, entitlement.
+
+The tenth is Task 15's and it is the same guard class registered a second time —
+`TenantRateLimitGuard extends RateLimitGuard` with `phase = 'tenant'`. See
+[ADR-0023](../decisions/ADR-0023-rate-limiter-runs-in-two-phases.md) and the
+paragraph below on what putting the limiter first costs.
 
 Four of those positions are decisions rather than conveniences, and each is asserted
 separately so that a reordering fails for a reason a reader can act on:
@@ -172,8 +177,20 @@ reads before the authentication guard could set it — so that scope is unresolv
 limiter's `unresolvedWarned` warn is gated on a fail-**closed** class with at least one
 resolved scope, and `generalSession` is fail-open with `perPrincipal` as its only scope, so
 neither conjunct holds. The line that does fire is at `debug`, and `LOG_LEVEL` defaults to
-`info`. Splitting the limiter into an early per-IP stage and a late per-principal one is the
-fix, and it is not built.
+`info`.
+
+**The split this paragraph names as the fix is built as of Task 15, and it does not close
+the residual above.** `RATE_LIMIT_SCOPE_PHASES` puts `perIp` and body-keyed `perPrincipal`
+in an `'edge'` pass before authentication and `perOrganization` in a `'tenant'` pass after
+authorization, because `invitations` is `perOrganization`-only and fail-closed and would
+otherwise have answered 429 to every request. But `perPrincipal` with
+`principalSource: 'authenticated'` **deliberately stayed at the edge**, where it still
+resolves nothing: moving it would switch on a limit that has never been enforced, across
+every authenticated route at once, inside a change reviewed for something else. So
+`generalSession`'s per-principal limit is still applied to no request, and carry-forward
+rulings 55 and 90 are still open. The stage it needs now exists; turning it on is a separate
+decision. [ADR-0023](../decisions/ADR-0023-rate-limiter-runs-in-two-phases.md), including the
+cost the adversarial review found — a request refused above the tenant pass is never charged.
 
 **Status: Implemented.** The declaration — `@Public()`, `@AuthenticatedOnly()` and
 `@RequirePermission()`, all three keyed on `ACCESS_METADATA_KEY` — lives in

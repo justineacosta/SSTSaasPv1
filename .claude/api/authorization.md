@@ -1,18 +1,26 @@
 # API authorization
 
-> **Status: Partially Implemented (Phase 2, Tasks 12, 13 and 14).** §1's declarations exist and
+> **Status: Partially Implemented (Phase 2, Tasks 12 through 15).** §1's declarations exist and
 > `@RequirePermission()` is evaluated; §3's status codes are produced by
 > `TenantContextGuard` and `AuthorizationGuard`; §4's envelope is what a 403 actually
-> carries. **Seven shipped endpoints declare a permission** as of Task 14 — the three on
+> carries. **Ten shipped endpoints declare a permission** as of Task 15 — the three on
 > `/api/v1/organizations/:id` from Task 13, carrying `organization.read`, `organization.update`
 > and `organization.delete`; the three on `/api/v1/organizations/:id/members`, carrying
 > `organization.manage_members`, `organization.manage_roles` and `organization.manage_members`;
-> and `GET /api/v1/roles`, carrying `organization.read`. So §3's rows are reachable by a caller.
+> `GET /api/v1/roles`, carrying `organization.read`; and the three on
+> `/api/v1/organizations/:id/invitations` from Task 15, all three carrying
+> `organization.manage_members`. So §3's rows are reachable by a caller.
+>
+> **An eleventh route exists and declares no permission on purpose.**
+> `POST /api/v1/invitations/accept` is `@AuthenticatedOnly()`: the acceptor is a member of
+> nothing, so there is no tenant to authorize against and any `@RequirePermission()` would deny
+> by construction. It is deliberately absent from `EXPECTED_GUARDED_ROUTES`, and the boot-time
+> access assertion still requires it to declare *something*.
 > The sentence this banner carried through Task 12, "no shipped endpoint declares a permission",
 > is what changed at Task 13, and the count is computed from the `@RequirePermission()`
 > decorators rather than remembered — this banner said "three" for one task longer than it was
 > true, which is why it now says how it was counted. `authorization-matrix.integration.spec.ts`
-> pins the same seven as `METHOD path -> permission`. Task 15 adds the invitation routes.
+> pins the same ten as `METHOD path -> permission`.
 > `@RequireEntitlement` in §1's example does not exist (Phase 10). §5's project-scoped
 > half is not built.
 > Model and permission list: [`../security/authorization.md`](../security/authorization.md)

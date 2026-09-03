@@ -149,10 +149,16 @@ control is commonly built wrong:
   per-account budget of every account it named and lock out arbitrarily many of them. Bounding
   the damage a single address can do is the reason both scopes exist.
 - **An unresolvable scope is not a free pass.** `invitations` and `scanCreate` are keyed only
-  per organisation, and there is no tenant context before Phase 2. If the guard simply skipped
-  a scope it could not resolve, those fail-closed classes would carry no limit at all. When
-  every declared scope is unresolvable the class's `failMode` applies, exactly as it does for a
-  Redis outage.
+  per organisation. If the guard simply skipped a scope it could not resolve, those fail-closed
+  classes would carry no limit at all. When every declared scope is unresolvable the class's
+  `failMode` applies, exactly as it does for a Redis outage.
+
+  **"There is no tenant context before Phase 2" was true when this was written and stopped being
+  true in Task 15**, which shipped the first route to carry `invitations`. The limiter now runs
+  in two passes and `perOrganization` is evaluated in the second, after the tenant resolves — see
+  [ADR-0023](../decisions/ADR-0023-rate-limiter-runs-in-two-phases.md). The rule above is
+  unchanged and still decides what happens when the tenant does *not* resolve; what changed is
+  that it is no longer the only outcome available to a `perOrganization` class.
 
 One row above is **not** yet transcribed into configuration: webhook test delivery. Its scope
 is a webhook endpoint ID, which is neither an IP, a principal, nor an organisation, and nothing

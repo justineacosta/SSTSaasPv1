@@ -106,7 +106,7 @@ System roles ship seeded and immutable. Custom roles are per-organisation and ma
 subset of permissions the creator themselves holds — you cannot mint authority you do not
 possess, which closes the obvious privilege-escalation path.
 
-> **The no-minting rule has two enforcement points as of Phase 2 Task 14, and neither is custom
+> **The no-minting rule has three enforcement points as of Phase 2 Task 15, and none is custom
 > roles.** Custom roles are Phase 11. What enforces it today is `PATCH
 > /api/v1/organizations/{id}/members/{membershipId}`: a member's role may only be changed to one
 > whose permission set is a **subset of the actor's own effective set**, and the refusal is 403
@@ -298,9 +298,10 @@ endpoint is therefore covered the moment it is written.
 Two things the tick would otherwise imply more about than it proves — the first of which was a
 limit through Task 13 and is now closed:
 
-- **The 403 and cross-tenant-404 arms run over seven shipped routes as of Task 14** — the three
+- **The 403 and cross-tenant-404 arms run over ten shipped routes as of Task 15** — the three
   on `/api/v1/organizations/{id}` (Task 13, the first endpoints in this product to declare a
-  permission), the three on `/api/v1/organizations/{id}/members`, and `GET /api/v1/roles`. Before
+  permission), the three on `/api/v1/organizations/{id}/members`, `GET /api/v1/roles`, and the
+  three on `/api/v1/organizations/{id}/invitations` (Task 15). Before
   Task 13 they ran over none, and the sentence here said so. The downgrade limit this bullet used
   to record is **closed**: the matrix now pins `EXPECTED_GUARDED_ROUTES` as an exact
   `METHOD path -> permission` map, so a single route dropped to `@AuthenticatedOnly()` fails it by

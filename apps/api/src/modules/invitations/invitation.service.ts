@@ -650,7 +650,10 @@ export class InvitationService {
    *    closed.** D5's no-minting check runs in `create` and nowhere else, so an
    *    invitation offering `OWNER` survives its issuer being demoted or
    *    removed, and accepting it still mints an `OWNER`. Measured, and pinned
-   *    by `records the OPEN D9 window` in `invitations.integration.spec.ts`.
+   *    by `D9 — RECORDS AN OPEN WINDOW: an invitation outlives its issuer's
+   *    authority` in `invitations.integration.spec.ts` — cited by its exact
+   *    name, because the first version of this line paraphrased it and a grep
+   *    for the citation found nothing.
    *    The remedy ruling 122 actually prescribes is on the *other* side — the
    *    moment the fact moves, which is `MembershipService.remove` and
    *    `updateRole`, where the invitations that member issued and could no

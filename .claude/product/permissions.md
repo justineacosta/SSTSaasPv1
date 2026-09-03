@@ -110,8 +110,9 @@ a guest with no grants sees nothing.
 
    An `INVITED` membership holding `OWNER` does not count, and neither does a removed one.
    **Every future writer of `Membership` must take the same lock** — Task 15's invitation
-   acceptance is the next one — because a writer outside the serialisation reopens the race for
-   everyone.
+   acceptance took it, and is the third — because a writer outside the serialisation reopens the
+   race for everyone. `lockOrganization` is exported from `membership.service.ts` for exactly
+   that reason rather than being reimplemented per caller.
 
 2. A custom role can hold **only permissions its creator holds**.
 3. An API key can hold **only a subset of its creator's permissions**, and never
@@ -124,7 +125,8 @@ a guest with no grants sees nothing.
    request that names an organisation, so the transaction that follows a role change is the
    one that observes it. The reasoning — a cache satisfies this only for as long as every
    future writer remembers to invalidate it, and Task 14's role change and Task 15's
-   invitation acceptance are both still unwritten — is in
+   invitation acceptance were both unwritten when it was taken; both are written now, and
+   both read the membership fresh — is in
    [`../security/authorization.md`](../security/authorization.md) §4. The operator took the
    decision on 2026-09-02. Adding a cache later is additive, and would put the "invalidated on
    write" clause back into force as a requirement on whoever adds it.
