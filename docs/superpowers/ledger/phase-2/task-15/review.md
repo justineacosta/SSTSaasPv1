@@ -461,3 +461,87 @@ matters:
   column is honoured on acceptance is owed to whoever builds `accept`, alongside D9. The report does
   not make this distinction — its §1 lists accept-dependent tests but presents D4 as done.
   **Low, INFERRED.**
+
+---
+
+## Area 3 — mutation discipline, re-run independently
+
+Baseline first: `npx vitest run --project integration apps/api/src/modules/invitations/invitations.integration.spec.ts`
+→ **EXIT=0, 20 passed (20)**, 14.0s wall. Every mutation below was applied to the working tree, the
+suite re-run, then the file restored from a backup copy taken before the first mutation, and
+`git status --short` confirmed empty. Final restore verified with a green re-run (EXIT=0, 20/20).
+
+| # | Mutation | Runs | Result | Report's claim | Verdict |
+|---|---|---|---|---|---|
+| M1 | `lockInvitationSlot` body replaced with a no-op | 3 | **1 red every run** (`BLOCKS while another session holds the advisory lock…`); the `Promise.all` arm also went red on **1 of 3** | "1 red on every one of 3 runs once the advisory-lock detector was added" | **reproduces** |
+| M2 | `deletedAt: null` removed from `assertNotAlreadyAMember` | 2 | **GREEN both runs, 20/20** | "**1 red** — the ruling 99/100 test" | **DOES NOT REPRODUCE — F-9** |
+| M3 | `status: 'ACTIVE'` removed, `deletedAt: null` kept | 1 | **GREEN, 20/20** | not claimed | new measurement |
+| M4 | **both** predicates removed | 1 | **1 red** (`RULING 99/100 — re-invites a REMOVED member…`) | — | this is the real guard |
+| M5 | supersede `updateMany` disabled (`if (false && superseded !== null)`) | 1 | **3 red** — supersede, expired-supersede, and the two-at-once arm | "**3 red** — supersede, expired-supersede, and the two-at-once arm" | **reproduces exactly** |
+
+### F-9 — the ruling-99 `deletedAt` predicate is NOT guarded, and the report's mutation row for it is false. **Medium. MEASURED.**
+
+Report §9 row 1:
+
+> | `deletedAt: null` removed from `assertNotAlreadyAMember` | invitations integration | **1 red** — the ruling 99/100 test |
+
+Re-run:
+
+```
+$ python -c "…replace   where: { organizationId, userId: user.id, status: 'ACTIVE', deletedAt: null },
+                  with   where: { organizationId, userId: user.id, status: 'ACTIVE' },…"
+MUTATED: deletedAt predicate removed
+$ npx vitest run --project integration …/invitations.integration.spec.ts     RUN 1 EXIT=0   Tests 20 passed (20)
+$ npx vitest run --project integration …/invitations.integration.spec.ts     RUN 2 EXIT=0   Tests 20 passed (20)
+```
+
+**The mutation survives.** The reason is measurable and I measured it: the two terms in that
+predicate are mutually redundant for the scenario the test arranges. Dropping `status: 'ACTIVE'`
+and keeping `deletedAt: null` is **also** green (M3); only dropping **both** goes red (M4). A
+removed membership is `status: 'REMOVED'` *and* soft-deleted — the CHECK constraint the service's
+own docblock cites ties the two together — so either term alone excludes the removed row and the
+test cannot tell which one is doing the work.
+
+Consequences, in order of importance:
+
+1. **Ruling 100 is violated on the exact predicate D7 exists to protect.** "A test that passes under
+   the mutation is not a guard" — the brief says it, the service docblock says it
+   (`assertNotAlreadyAMember`'s comment: "A test arranged the other way passes under the mutation"),
+   and the guard the sentence describes does not exist. Delete `deletedAt: null` tomorrow and CI
+   stays green.
+2. **The report asserts a red run that does not happen.** This is a fabricated measurement in a
+   mutation table, which is the highest-trust kind of claim in this project's reports — the whole
+   point of ruling 100 is that the table is the evidence.
+3. The *behaviour* is currently correct; the second term is redundant belt-and-braces, and the
+   service docblock explicitly anticipates the day it stops being redundant ("Nothing writes
+   `MembershipStatus.INVITED` today … the day something does, an invitation is not a membership and
+   must not block a second one"). That is exactly the future in which the untested term matters,
+   which is why this is Medium rather than Low.
+
+A test that would bite: arrange a membership that is `deletedAt: NOT NULL` but **not** `REMOVED`, or
+one that is `INVITED` and live. Neither is currently producible through the API — which is itself
+the honest answer, and would have been a better report row than a red run that did not occur.
+
+### F-1 upgraded to MEASURED — an expired invitation's revoke answers 204
+
+I added one temporary probe to `invitations.integration.spec.ts` asserting the docblock's claimed
+404 for an expired invitation, ran the file, and removed the probe:
+
+```
+× DELETE /api/v1/organizations/:id/invitations/:invitationId
+  > REVIEW PROBE — what does revoking an EXPIRED invitation actually answer?
+  → expected 204 to be 404 // Object.is equality
+Tests  1 failed | 20 passed (21)
+```
+
+**The endpoint answers 204 and writes an `INVITATION_REVOKED` audit event.** The docblock on
+`InvitationService.revoke` and report §4 item 7 are both false. Spec file restored;
+`git status --short` empty; re-run green (EXIT=0, 20/20).
+
+### M1's incidental result, worth carrying
+
+With the lock disabled, the `Promise.all` arm ("does not leave two live invitations for one
+address") went red on **1 run of 3**. That independently corroborates the report's central
+finding — that arm alone is a coin flip and the session-level advisory-lock blocker is what made
+the guard deterministic. The replacement detector went red on 3 of 3. **The report's headline
+mutation claim is sound and the added detector is a real guard.**
