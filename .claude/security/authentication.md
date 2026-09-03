@@ -534,9 +534,16 @@ login, and an extra verification only when the row actually moved.
 timing rather than by construction — review measured 0 survivors out of 16, but that is an accident
 of the change path paying a verification *and* a hash before its transaction, which lands its
 revoke after the racing logins have already inserted. The same post-issue check belongs on any path
-that issues a session after verifying a credential; **Task 14's member removal is the next one**,
-and its equivalent does not exist. Carry-forward ruling 51 carries the original overstatement and
-moves with this.
+that issues a session after verifying a credential.
+
+**Task 14's member removal was the next one, and it now has its equivalent.**
+`POST /api/v1/auth/switch-org` is the path that issues a session pointed at an organisation, and
+it re-resolves the membership *after* `SessionService.rotate` returns, revoking the session it has
+just issued when that read no longer resolves. Added in Task 14's fix round, not in Task 14: the
+window was measured open with a 2 s delay instrumented between the switch's membership read and
+the rotation, and it left a live, `ACTIVE`, un-revoked session pointed at the organisation the
+member had just been removed from, which `GET /api/v1/auth/session` answered 200 for. Carry-forward
+ruling 51 carries the original overstatement and moves with this.
 
 **One residual, measured, and not closed.**
 
