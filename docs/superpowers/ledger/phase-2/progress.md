@@ -1035,8 +1035,8 @@ Full reasoning in [`task-10/review.md`](task-10/review.md),
 
 ## Pause state
 
-**2026-09-03 — Task 14 built, reviewed, fixed, and NOT pushed. CI has not run on it. Task 15 is
-next.**
+**2026-09-03 — Task 14 built, reviewed, fixed, pushed, CI-green and MERGED into `main`. Task 15 is
+next, and it branches from `main` directly.**
 
 Task 14 shipped **four endpoints** and took the permission-guarded route count from three to seven:
 `GET /organizations/:id/members`, `PATCH` and `DELETE` on `.../members/:membershipId`, and
