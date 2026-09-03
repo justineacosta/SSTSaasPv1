@@ -143,10 +143,18 @@ export type AuditAction = (typeof AUDIT_ACTIONS)[number];
  * The counts, computed rather than remembered — `AUDIT_ACTIONS` holds five
  * names (`ORGANIZATION_CREATED`, `ORGANIZATION_UPDATED`,
  * `ORGANIZATION_SWITCHED`, `ROLE_CHANGED`, `MEMBER_REMOVED`) and this constant
- * holds two. The sentence above said "all three" of a constant holding two, and
- * before Task 13's review said "all four" of one holding three, twenty-one
- * lines below the constant it was miscounting. Carry-forward ruling 108: when a
- * sentence states a count, compute the count.
+ * holds two.
+ *
+ * **This paragraph has been wrong once and has since claimed to have been wrong
+ * twice, so here is the history as `git show` reports it.** Before Task 13's
+ * review the sentence read "All four actions above are events about an
+ * `Organization`" while `AUDIT_ACTIONS` held **three** names (`21f629f`) — that
+ * is the one miscount, and `c10eeab` corrected it to "All three". Task 14 then
+ * rewrote this paragraph and asserted a **second** historical error, "all three"
+ * of a constant holding two: there was no such sentence. "All three" described
+ * the actions, and it was right about them. Do not invent a second error to make
+ * the first one rhyme. Carry-forward ruling 108: when a sentence states a count,
+ * compute the count — including a count of the times somebody miscounted.
  */
 export const AUDIT_RESOURCE_TYPES = ['Organization', 'Membership'] as const;
 
