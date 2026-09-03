@@ -2232,8 +2232,9 @@ switch that is taken back leaves no append-only event saying it happened.
 
 ### Still owed after Task 14
 
-- ~~Not pushed, and CI has not run.~~ **Pushed and CI-green on 2026-09-03; not merged.** The
-  branch is `feat/phase-2-task-14-memberships`, cut from `main` after Task 13 merged, and open as
+- ~~Not pushed, and CI has not run.~~ ~~Pushed and CI-green; not merged.~~ **Closed 2026-09-03:
+  pushed, CI-green, and merged.** The branch was `feat/phase-2-task-14-memberships`, cut from
+  `main` after Task 13 merged, and it went in as
   **PR #28**. CI runs `33729112619` (push) and `33729204932` (pull request), both on head
   `4f863a9`, report `completed / success` — read from each run's own `conclusion` field rather than
   a watcher's exit status (ruling 105) — with all eighteen substantive steps succeeded and only the
