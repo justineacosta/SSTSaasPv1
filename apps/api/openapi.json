@@ -1860,6 +1860,386 @@
         }
       }
     },
+    "/api/v1/organizations/{id}/invitations": {
+      "get": {
+        "operationId": "InvitationsController_list",
+        "tags": [
+          "Invitations"
+        ],
+        "summary": "List an organisation’s invitations.",
+        "description": "Every invitation the organisation the session is currently acting in has issued, newest first — pending, accepted, revoked and expired alike, so that a reader can answer \"was this address ever invited\". A client rendering pending invitations filters on `acceptedAt === null && revokedAt === null && expiresAt` in the future. Requires `organization.manage_members`. **No row carries a token**: only a SHA-256 hash of it is ever stored, and neither the hash nor the token is published here. The `:id` in the path is checked **against** the session's active organisation rather than used to select one. Cursor paginated: `limit` defaults to 50 and is **clamped** to 100 rather than rejected, and `pagination.limit` echoes the limit that was applied. `pagination.nextCursor` is opaque and its encoding is not part of this contract; a cursor this endpoint did not issue is a 400.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Path parameter.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of invitations.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "organizationId": {
+                            "type": "string"
+                          },
+                          "email": {
+                            "type": "string",
+                            "format": "email",
+                            "maxLength": 254
+                          },
+                          "roleKey": {
+                            "type": "string",
+                            "enum": [
+                              "OWNER",
+                              "ADMIN",
+                              "SECURITY_LEAD",
+                              "MEMBER",
+                              "VIEWER",
+                              "AUDITOR",
+                              "GUEST"
+                            ]
+                          },
+                          "invitedByUserId": {
+                            "type": "string"
+                          },
+                          "expiresAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "acceptedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "nullable": true
+                          },
+                          "revokedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "nullable": true
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "organizationId",
+                          "email",
+                          "roleKey",
+                          "invitedByUserId",
+                          "expiresAt",
+                          "acceptedAt",
+                          "revokedAt",
+                          "createdAt"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "pagination": {
+                      "type": "object",
+                      "properties": {
+                        "nextCursor": {
+                          "type": "string",
+                          "nullable": true
+                        },
+                        "hasMore": {
+                          "type": "boolean"
+                        },
+                        "limit": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 100
+                        }
+                      },
+                      "required": [
+                        "nextCursor",
+                        "hasMore",
+                        "limit"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "total"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "pagination"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The query did not validate, or the cursor was malformed."
+          },
+          "401": {
+            "description": "No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`)."
+          },
+          "403": {
+            "description": "The role lacks `organization.manage_members`, or the organisation is suspended."
+          },
+          "404": {
+            "description": "The path id is not the session's active organisation (`RESOURCE_NOT_FOUND`)."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "permission",
+          "permission": "organization.manage_members"
+        }
+      },
+      "post": {
+        "operationId": "InvitationsController_create",
+        "tags": [
+          "Invitations"
+        ],
+        "summary": "Invite an address to an organisation.",
+        "description": "Creates an invitation to the organisation the session is currently acting in and emails a single-use link to the address named. Requires `organization.manage_members` **and a verified email address** — `security/authentication.md` §6 says an unverified account cannot invite. Writes a `MEMBER_INVITED` audit event in the same transaction. The invitation is bound to the address it names, expires in 7 days, and only a SHA-256 hash of its token is stored: **the raw token appears in the email and nowhere else, including in this response**. **The role offered may not hold a permission the caller does not hold themselves** — an `ADMIN` cannot invite an `OWNER`, because `OWNER` holds `organization.delete` and `ADMIN` does not; that is refused with 403 `PERMISSION_DENIED` naming the permission that is missing. **Re-inviting an address supersedes**: any invitation to that address in this organisation that has not been accepted or revoked is revoked in the same transaction, including an expired one, and the new invitation records the superseded id in its audit metadata. That is what makes re-inviting somebody who was removed from the organisation work. An address that is already a live member is refused with 409 `DUPLICATE_RESOURCE`. Rate limited to 50 per day per organisation. Requires `X-CSRF-Token`.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Path parameter.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "The address to invite and the role to offer. The schema is strict, so an unknown key is a 400 — in particular there is no `expiresAt` and no `token`, both of which are the server's.",
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "maxLength": 254
+                  },
+                  "roleKey": {
+                    "type": "string",
+                    "enum": [
+                      "OWNER",
+                      "ADMIN",
+                      "SECURITY_LEAD",
+                      "MEMBER",
+                      "VIEWER",
+                      "AUDITOR",
+                      "GUEST"
+                    ]
+                  }
+                },
+                "required": [
+                  "email",
+                  "roleKey"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The invitation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "organizationId": {
+                      "type": "string"
+                    },
+                    "email": {
+                      "type": "string",
+                      "format": "email",
+                      "maxLength": 254
+                    },
+                    "roleKey": {
+                      "type": "string",
+                      "enum": [
+                        "OWNER",
+                        "ADMIN",
+                        "SECURITY_LEAD",
+                        "MEMBER",
+                        "VIEWER",
+                        "AUDITOR",
+                        "GUEST"
+                      ]
+                    },
+                    "invitedByUserId": {
+                      "type": "string"
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "acceptedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "nullable": true
+                    },
+                    "revokedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "nullable": true
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "organizationId",
+                    "email",
+                    "roleKey",
+                    "invitedByUserId",
+                    "expiresAt",
+                    "acceptedAt",
+                    "revokedAt",
+                    "createdAt"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body did not validate (`VALIDATION_ERROR`, `UNKNOWN_FIELD`)."
+          },
+          "401": {
+            "description": "No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`)."
+          },
+          "403": {
+            "description": "The role lacks `organization.manage_members`, the caller’s own address is unverified (`EMAIL_NOT_VERIFIED`), the role offered exceeds the caller’s own permissions (`PERMISSION_DENIED`), the organisation is suspended, or a CSRF failure."
+          },
+          "404": {
+            "description": "The path id is not the session's active organisation (`RESOURCE_NOT_FOUND`)."
+          },
+          "409": {
+            "description": "That address is already a live member (`DUPLICATE_RESOURCE`)."
+          },
+          "429": {
+            "description": "More than 50 invitations in a day (`RATE_LIMITED`)."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "permission",
+          "permission": "organization.manage_members"
+        }
+      }
+    },
+    "/api/v1/organizations/{id}/invitations/{invitationId}": {
+      "delete": {
+        "operationId": "InvitationsController_revoke",
+        "tags": [
+          "Invitations"
+        ],
+        "summary": "Revoke a pending invitation.",
+        "description": "Marks one invitation in the organisation the session is currently acting in as revoked and writes an `INVITATION_REVOKED` audit event in the same transaction. The link that was emailed stops working immediately. Requires `organization.manage_members`. The row is retained with a `revokedAt` timestamp rather than deleted, which is what keeps the trail of who was invited and what happened to it. An invitation that has already been accepted, one that has already been revoked, one that does not exist and one belonging to another organisation all answer the same 404. **Superseding is not revoking**: inviting the same address again also clears the older invitation, and records that as metadata on the new `MEMBER_INVITED` event rather than as a second `INVITATION_REVOKED` event with no actor. Requires `X-CSRF-Token`.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Path parameter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "invitationId",
+            "in": "path",
+            "required": true,
+            "description": "Path parameter.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked."
+          },
+          "401": {
+            "description": "No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`)."
+          },
+          "403": {
+            "description": "The role lacks `organization.manage_members`, the organisation is suspended, or a CSRF failure."
+          },
+          "404": {
+            "description": "The path id is not the session’s active organisation, or no live invitation with that id exists in it (`RESOURCE_NOT_FOUND`)."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "permission",
+          "permission": "organization.manage_members"
+        }
+      }
+    },
     "/api/v1/organizations/{id}/members": {
       "get": {
         "operationId": "MembershipsController_list",

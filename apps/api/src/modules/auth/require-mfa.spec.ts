@@ -415,8 +415,8 @@ describe('the guard is registered, and what it can refuse is bounded', () => {
     const controllers = globSync('**/*.controller.ts', { cwd: root }).map((relative) =>
       join(root, relative),
     );
-    // Auth, health, memberships, OpenAPI, organizations, roles.
-    expect(controllers).toHaveLength(6);
+    // Auth, health, invitations, memberships, OpenAPI, organizations, roles.
+    expect(controllers).toHaveLength(7);
 
     const declaring = controllers.filter((file) =>
       readFileSync(file, 'utf8')
@@ -424,10 +424,12 @@ describe('the guard is registered, and what it can refuse is bounded', () => {
         .replace(/^\s*\/\/.*$/gm, '')
         .includes('@RequirePermission('),
     );
-    // Named and sorted, not counted. Task 14 added two of these three:
+    // Named and sorted, not counted. Task 14 added two of these four:
     // `memberships.controller.ts` (three routes) and `roles.controller.ts`
-    // (one), so the set this guard governs grew from three routes to seven.
+    // (one), which grew the set this guard governs from three routes to seven.
+    // Task 15 added `invitations.controller.ts` (three), taking it to ten.
     expect(declaring.map((file) => basename(file)).sort()).toEqual([
+      'invitations.controller.ts',
       'memberships.controller.ts',
       'organizations.controller.ts',
       'roles.controller.ts',

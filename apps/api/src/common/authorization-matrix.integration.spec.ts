@@ -119,6 +119,19 @@ interface Actor {
    * reason — a refusal that looks exactly like the one arm 3 is asserting.
    */
   readonly membershipId: string;
+  /**
+   * A LIVE invitation in that organisation.
+   *
+   * Added in Task 15, for the same reason `membershipId` was added in Task 14:
+   * `:invitationId` has to substitute to a row that exists inside the resolved
+   * tenant and is not yet accepted or revoked, or arm 4's `DELETE` answers 404
+   * for a reason that has nothing to do with authorization — a refusal that
+   * looks exactly like the one arm 3 is asserting (carry-forward ruling 97).
+   *
+   * One per actor, and every arm builds its own actor, so arm 4 consuming it is
+   * not a problem the other arms inherit.
+   */
+  readonly invitationId: string;
 }
 
 async function member(options: { role: SystemRole }): Promise<Actor> {
@@ -169,12 +182,29 @@ async function member(options: { role: SystemRole }): Promise<Actor> {
     },
   });
 
+  const invitation = await owner.invitation.create({
+    data: {
+      id: newId('inv'),
+      organizationId: organization.id,
+      email: `matrix-invitee-${suffix}@example.test`,
+      roleId: role.id,
+      // A hash of a value no test knows, so nothing here can accidentally
+      // become a working credential. The matrix never consumes an invitation
+      // by token — arm 4 revokes this row by id.
+      tokenHash: mintSecretToken().tokenHash,
+      invitedByUserId: user.id,
+      expiresAt: new Date(now + 7 * 24 * 60 * 60 * 1000),
+    },
+    select: { id: true },
+  });
+
   return {
     cookie: `${SESSION_COOKIE_NAME}=${minted.token}`,
     token: minted.token,
     userId: user.id,
     organizationId: organization.id,
     membershipId: membership.id,
+    invitationId: invitation.id,
   };
 }
 
@@ -266,6 +296,11 @@ function substitutePathParameters(path: string, actor: Actor): string {
       // 2 and 3 is the guard chain, which is what they are named after.
       case 'membershipId':
         return actor.membershipId;
+      // Task 15, and the argument is `membershipId`'s exactly: their own LIVE
+      // invitation, because a made-up id answers 404 on every arm and 404 is
+      // the fail-closed direction.
+      case 'invitationId':
+        return actor.invitationId;
       default:
         throw new Error(
           `The matrix does not know what to substitute for ":${name}" in ${path}. ` +
@@ -331,6 +366,16 @@ function bodyFor(route: RegisteredRoute): Record<string, unknown> {
       // Setting the role a member already holds is applied and audited rather
       // than refused (`membership.service.ts`), so this is a real success.
       return { roleKey: 'OWNER' };
+    case 'POST /api/v1/organizations/:id/invitations':
+      // `createInvitationRequestSchema` is `.strict()` and requires both
+      // fields. `VIEWER` deliberately: `rolesFor` always returns `OWNER` as the
+      // holder, and D5's no-minting check refuses a role whose permission set
+      // exceeds the actor's — so a role the holder does not strictly dominate
+      // would answer 403 from inside the handler and look exactly like arm 2's
+      // refusal. The address is fixed rather than unique because every actor
+      // gets a fresh organisation, so no two calls collide on the partial
+      // unique index.
+      return { email: 'matrix-probe@example.test', roleKey: 'VIEWER' };
     default:
       return {};
   }
@@ -382,6 +427,9 @@ function crossTenantProbeFor(route: RegisteredRoute): 'path' | 'session' {
     case 'GET /api/v1/organizations/:id/members':
     case 'PATCH /api/v1/organizations/:id/members/:membershipId':
     case 'DELETE /api/v1/organizations/:id/members/:membershipId':
+    case 'GET /api/v1/organizations/:id/invitations':
+    case 'POST /api/v1/organizations/:id/invitations':
+    case 'DELETE /api/v1/organizations/:id/invitations/:invitationId':
       return 'path';
     case 'GET /api/v1/roles':
       return 'session';
@@ -600,6 +648,15 @@ describe('every permission-guarded route runs all four arms', () => {
       // guarded route in this API with no tenant-owned resource in its path,
       // which is why `crossTenantProbeFor` exists.
       'GET /api/v1/roles': 'organization.read',
+      // Task 15. All three take `organization.manage_members`: an invitation
+      // offers a role, and what stops an `ADMIN` offering `OWNER` is D5's
+      // no-minting check inside the handler rather than a second permission.
+      // The invite route additionally carries `@RequireVerifiedEmail()`, which
+      // is not part of this map because it is not an access declaration — it is
+      // asserted per handler in `invitations.controller.spec.ts`.
+      'POST /api/v1/organizations/:id/invitations': 'organization.manage_members',
+      'GET /api/v1/organizations/:id/invitations': 'organization.manage_members',
+      'DELETE /api/v1/organizations/:id/invitations/:invitationId': 'organization.manage_members',
     };
 
     // Built by hand rather than with `Object.fromEntries`, which is typed

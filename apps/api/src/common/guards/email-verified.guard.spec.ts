@@ -321,8 +321,8 @@ describe('what this guard governs today', () => {
     // `expected [ …(6) ] to have a length of 4` when the memberships and roles
     // controllers did.
     //
-    // Auth, health, memberships, OpenAPI, organizations, roles.
-    expect(controllers).toHaveLength(6);
+    // Auth, health, invitations, memberships, OpenAPI, organizations, roles.
+    expect(controllers).toHaveLength(7);
 
     const decorated = controllers.filter((file) =>
       readFileSync(file, 'utf8')
@@ -331,7 +331,7 @@ describe('what this guard governs today', () => {
         .includes('@RequireVerifiedEmail('),
     );
     // Named, not counted. `security/authentication.md` §6 gates organisation
-    // creation specifically, and Task 15 adds inviting — each of which is a
+    // creation specifically, and Task 15 added inviting — each of which is a
     // deliberate addition to this list rather than a number that drifts up.
     //
     // **Task 14 added three membership routes and did NOT add itself here**,
@@ -340,6 +340,19 @@ describe('what this guard governs today', () => {
     // inside one the caller has already been admitted to, and gating them would
     // refuse a member whose address was verified when they joined and has since
     // been changed.
-    expect(decorated.map((file) => basename(file))).toEqual(['organizations.controller.ts']);
+    //
+    // **Task 15 added `invitations.controller.ts` and only its `create`
+    // handler carries the decorator** — §6's sentence lists inviting beside
+    // creating an organisation, and inviting is the one that makes this product
+    // send mail to a third party on the caller's say-so. Listing and revoking
+    // do not carry it, for the reason the membership routes do not: the split
+    // is asserted per handler in `invitations.controller.spec.ts`, which is the
+    // file that can see it. This list is per FILE, so a class-level decorator
+    // would satisfy it while gating all three — which is why that spec asserts
+    // the controller carries none.
+    expect(decorated.map((file) => basename(file)).sort()).toEqual([
+      'invitations.controller.ts',
+      'organizations.controller.ts',
+    ]);
   });
 });
