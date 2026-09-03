@@ -708,8 +708,17 @@ export class SessionService {
    * (`login.service.ts`'s `credentialStillCurrent`), which revokes a session it
    * has just issued when the credential moved underneath it. **Any future caller
    * of this method that needs "and nothing survives" must pair it with an
-   * equivalent check on whatever path issues sessions** — Task 14's member
-   * removal is the next one, and its equivalent does not exist yet.
+   * equivalent check on whatever path issues sessions.**
+   *
+   * Member removal was the next one, and it now has its equivalent:
+   * `organization-switch.service.ts` re-resolves the membership after `rotate`
+   * returns and revokes the session it has just issued when that read no longer
+   * resolves. It was added in Task 14's fix round rather than in Task 14 —
+   * the sentence here said the equivalent did not exist, and it was right; the
+   * membership service three files away said the residual was closed, and it was
+   * not. The window was measured open with a 2 s delay instrumented between the
+   * switch's membership read and the rotation: a live, `ACTIVE`, un-revoked
+   * session pointed at the organisation the member had just been removed from.
    *
    * Carry-forward ruling 51 carries the same overstatement and moves with this.
    */

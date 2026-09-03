@@ -1,9 +1,14 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { ERROR_CODES, type SessionResponse } from '@sentinel/contracts';
+import { ERROR_CODES, type SessionResponse, type TenantContext } from '@sentinel/contracts';
 import { withTenantTransaction } from '@sentinel/db';
+import type { Logger } from '@sentinel/observability';
 import { DomainError } from '../../common/errors/domain-error.js';
-import { resolveTenant, type TenantResolver } from '../../common/guards/tenant-context.js';
-import { PRISMA } from '../../infrastructure/tokens.js';
+import {
+  resolveTenant,
+  type TenantResolution,
+  type TenantResolver,
+} from '../../common/guards/tenant-context.js';
+import { LOGGER, PRISMA } from '../../infrastructure/tokens.js';
 import { AuditService } from '../audit/audit.service.js';
 import { TENANT_RESOLVER } from '../roles/roles.tokens.js';
 import type { AuthRequestContext } from './request-context.js';
@@ -34,6 +39,11 @@ export interface SwitchedOrganization {
 /**
  * The slice of `SessionService` this uses — the same narrow-port shape
  * `SessionRevoker` takes in `logout.service.ts`.
+ *
+ * `revoke` is here for one caller and one reason: the post-rotate membership
+ * re-read below takes back a session it has just issued. Like
+ * `login.service.ts`'s `SessionIssuer`, this is not a general capability handed
+ * to this service, it is the second half of one check.
  */
 export interface SessionRotator {
   rotate(input: {
@@ -47,6 +57,51 @@ export interface SessionRotator {
     readonly token: string;
     readonly cookieMaxAgeSeconds: number | null;
   } | null>;
+  revoke(sessionId: string): Promise<boolean>;
+}
+
+/**
+ * The one method of `SessionDocumentService` this service calls.
+ *
+ * A narrow port for the same reason `SessionRotator` is one, plus a second that
+ * is specific to it: `SessionDocumentService` holds private collaborators, so a
+ * spec cannot stand in for it without a type assertion. Declared as an
+ * interface here, injected as the class in the constructor — the pattern this
+ * file already uses for `SessionService`.
+ */
+export interface SessionDocumentBuilder {
+  forPrincipal(
+    principal: { userId: string; sessionId: string },
+    tenant: TenantContext | undefined,
+  ): Promise<SessionResponse>;
+}
+
+/**
+ * The refusal for an unresolved tenant, built once and thrown from **both**
+ * membership reads.
+ *
+ * One function rather than two copies, for the reason `tenant-context.ts` gives
+ * about its own pair: two constructors with the same arguments is how two
+ * responses drift apart in a later edit. It matters more here than usual — the
+ * second caller is the post-rotate re-read, and a caller who could tell the two
+ * refusals apart would learn from the difference that their membership was live
+ * when the request started.
+ *
+ * `not-a-member` and `no-active-organization` are 404 `RESOURCE_NOT_FOUND`,
+ * byte-identical, because `api/authorization.md` §3 maps them onto one row: a
+ * 403 would confirm the organisation exists. `organization-suspended` is 403
+ * with the code, status and message `TenantContextGuard` gives, because the
+ * caller *is* a member and the suspension is not somebody else's secret.
+ */
+function refusalFor(outcome: Exclude<TenantResolution['outcome'], 'resolved'>): DomainError {
+  if (outcome === 'organization-suspended') {
+    return new DomainError(
+      ERROR_CODES.ORGANIZATION_SUSPENDED,
+      'This organisation is suspended. Contact your organisation owner or Sentinel support to restore access.',
+      403,
+    );
+  }
+  return new DomainError(ERROR_CODES.RESOURCE_NOT_FOUND, 'Not found.', 404);
 }
 
 /**
@@ -122,15 +177,63 @@ export interface SessionRotator {
  * transaction on it. `AuditEvent` carries RLS keyed on `organizationId` and the
  * API connects as `sentinel_app`, so a write outside that transaction is
  * refused by the policy rather than merely mis-scoped.
+ *
+ * # THE MEMBERSHIP IS READ TWICE, AND THE SECOND READ IS THE CONTROL
+ *
+ * Carry-forward ruling 82, and it is `login.service.ts`'s
+ * `credentialStillCurrent` applied to membership instead of to a password hash.
+ *
+ * `rotate` **inserts a new `Session` row**. A member removal running
+ * concurrently revokes sessions with one `updateMany`, whose predicate is
+ * evaluated at execution time — so it cannot revoke a row that does not exist
+ * yet. A switch whose membership read preceded the removal's commit and whose
+ * insert follows the removal's revocation was therefore never swept. Measured
+ * on this file, with a 2 s delay instrumented between the read and `rotate`:
+ * the switch answered **200** with a populated permission set and left a live,
+ * `ACTIVE`, un-revoked session pointed at the organisation the member had just
+ * been removed from, which `GET /auth/session` then answered **200** for with
+ * that organisation's `id`, `slug` and `name`.
+ *
+ * Writing the membership change before revoking is necessary and **not
+ * sufficient** — that is the exact overstatement ruling 82 corrected on the
+ * login path, and `session.service.ts` names this route as the next one to carry
+ * the equivalent. What makes the promise true is a re-read *after* the
+ * credential is issued: either the insert precedes the revocation and is swept
+ * by it, or it follows and this read observes the removal. There is no third
+ * ordering.
+ *
+ * It re-resolves through the **same** `TENANT_RESOLVER` and `resolveTenant` the
+ * first read uses, so the property this file is built on — a switch succeeds
+ * exactly when the guard would resolve on the next request — is re-asserted
+ * rather than approximated by a second query. The refusal is built by the same
+ * function as the first one, so a caller cannot tell the two apart, and the
+ * session just issued is revoked before it is thrown.
+ *
+ * **The caller is signed out entirely when this fires, and that is stated
+ * rather than hidden.** `rotate` has already revoked the predecessor, so a
+ * refusal here leaves the caller with no live session and a dead cookie; they
+ * sign in again. It is a stricter end state than the removal's own revocation
+ * would have produced — that one spares a session pointed elsewhere — and it is
+ * the safe direction. Ruling 95 is not violated: the account is untouched and
+ * signing in works.
+ *
+ * **What this does not claim.** The window is not closed by being made small,
+ * it is closed by the re-read. And the blast radius was bounded in the other
+ * direction already: `TenantContextGuard` re-reads membership on every request
+ * with no cache (ruling 94), so every *guarded* route answered 404 for that
+ * session throughout. What this stops is the session existing at all, and
+ * `GET /auth/session` disclosing the organisation's name to somebody who is no
+ * longer in it.
  */
 @Injectable()
 export class OrganizationSwitchService {
   constructor(
     @Inject(TENANT_RESOLVER) private readonly resolve: TenantResolver,
     @Inject(SessionService) private readonly sessions: SessionRotator,
-    @Inject(SessionDocumentService) private readonly sessionDocument: SessionDocumentService,
+    @Inject(SessionDocumentService) private readonly sessionDocument: SessionDocumentBuilder,
     @Inject(PRISMA) private readonly base: TenantTransactionBase,
     @Inject(AuditService) private readonly audit: AuditService,
+    @Inject(LOGGER) private readonly logger: Logger,
   ) {}
 
   async switch(command: SwitchOrganizationCommand): Promise<SwitchedOrganization> {
@@ -142,16 +245,7 @@ export class OrganizationSwitchService {
       })),
     });
 
-    if (resolution.outcome === 'organization-suspended') {
-      throw new DomainError(
-        ERROR_CODES.ORGANIZATION_SUSPENDED,
-        'This organisation is suspended. Contact your organisation owner or Sentinel support to restore access.',
-        403,
-      );
-    }
-    if (resolution.outcome !== 'resolved') {
-      throw new DomainError(ERROR_CODES.RESOURCE_NOT_FOUND, 'Not found.', 404);
-    }
+    if (resolution.outcome !== 'resolved') throw refusalFor(resolution.outcome);
 
     const rotated = await this.sessions.rotate({
       sessionId: command.sessionId,
@@ -171,6 +265,35 @@ export class OrganizationSwitchService {
         'That session is no longer active. Sign in again.',
         401,
       );
+    }
+
+    // RULING 82. THE SESSION NOW EXISTS; CHECK THAT THE MEMBERSHIP IT RESTS ON
+    // STILL DOES. Before the audit row, so a switch that is taken back does not
+    // leave an append-only event saying it happened.
+    const stillAMember = resolveTenant({
+      activeOrganizationId: command.organizationId,
+      ...(await this.resolve({
+        userId: command.userId,
+        organizationId: command.organizationId,
+      })),
+    });
+    if (stillAMember.outcome !== 'resolved') {
+      await this.sessions.revoke(rotated.session.id);
+      // The user id, the organisation and the session id, and nothing else. A
+      // session id is an identifier; the token is the secret and it appears
+      // nowhere here (critical security rule 6). An operator needs the fact
+      // that a session was taken back, because the response the caller sees is
+      // the ordinary refusal and says nothing about it.
+      this.logger.warn(
+        {
+          userId: command.userId,
+          organizationId: command.organizationId,
+          sessionId: rotated.session.id,
+          outcome: stillAMember.outcome,
+        },
+        'membership changed while this organisation switch was in flight; the session it issued was revoked',
+      );
+      throw refusalFor(stillAMember.outcome);
     }
 
     await withTenantTransaction(this.base, command.organizationId, (tx) =>
@@ -193,7 +316,7 @@ export class OrganizationSwitchService {
         // a credential — the token is the secret and it appears nowhere here.
         // `roleKey` records what the member switched in AS, which is the fact a
         // later role change makes impossible to reconstruct from current state.
-        metadata: { sessionId: rotated.session.id, roleKey: resolution.context.roleKey },
+        metadata: { sessionId: rotated.session.id, roleKey: stillAMember.context.roleKey },
         ip: command.ip,
         userAgent: command.userAgent,
         requestId: command.requestId,
@@ -212,7 +335,11 @@ export class OrganizationSwitchService {
       // lines up.
       document: await this.sessionDocument.forPrincipal(
         { userId: command.userId, sessionId: rotated.session.id },
-        resolution.context,
+        // The RE-READ's context, not the first read's. Both are resolutions of
+        // the same membership and the second is the fresher of the two, so the
+        // document and the audit row report the role the member holds now
+        // rather than the one they held when the request started.
+        stillAMember.context,
       ),
       token: rotated.token,
       cookieMaxAgeSeconds: rotated.cookieMaxAgeSeconds,

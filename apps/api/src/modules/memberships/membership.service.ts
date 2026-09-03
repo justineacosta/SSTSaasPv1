@@ -583,14 +583,27 @@ export class MembershipService {
     // a removed member holds a valid credential that no endpoint will answer,
     // including `POST /auth/logout`, which is the one that ends it.
     //
-    // Nothing can mint a replacement session pointed here afterwards:
-    // `Session.activeOrganizationId` is written by `POST /auth/switch-org` and
-    // by nothing else, and that endpoint decides membership with the guard's own
-    // resolver — which reads `deletedAt: null`. Sign-in creates sessions with a
-    // null active organisation. That is what closes the residual
-    // `session.service.ts` names against this task ("Task 14 owns the
-    // equivalent"): there is no path that issues a session already pointed at an
-    // organisation the caller has just been removed from.
+    // A SWITCH ALREADY IN FLIGHT CAN STILL MINT ONE, AND THIS `updateMany` IS
+    // NOT WHAT STOPS IT. `Session.activeOrganizationId` is written by
+    // `POST /auth/switch-org` and by nothing else, and sign-in creates sessions
+    // with a null active organisation — but that endpoint reads the membership
+    // and *then* calls `rotate`, which inserts a new row. This call is one
+    // `updateMany` whose predicate is evaluated at execution time, so it cannot
+    // revoke a row that does not exist yet.
+    //
+    // An earlier version of this comment argued from the switch endpoint's
+    // `deletedAt: null` predicate that no such session could exist. It was
+    // measured false — carry-forward ruling 82's shape exactly, which is the
+    // ruling that struck the same reasoning down on the password-reset path:
+    // writing the change before revoking is necessary and NOT sufficient.
+    //
+    // What closes it is on the other side, and it is ruling 82's remedy:
+    // `OrganizationSwitchService` re-resolves the membership AFTER `rotate`
+    // returns and revokes the session it has just issued when that read no
+    // longer resolves. Either the insert precedes this revocation and is swept
+    // by it, or it follows and the re-read observes this soft delete. There is
+    // no third ordering — but the second half of that sentence lives in
+    // `organization-switch.service.ts`, not here.
     await this.revokeSessions(removedUserId, ctx.organizationId);
   }
 }
