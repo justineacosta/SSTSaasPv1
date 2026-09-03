@@ -39,3 +39,21 @@ export interface InvitationMailer {
     readonly organizationName: string;
   }): Promise<void>;
 }
+
+/**
+ * "Which organisation does this invitation token belong to?"
+ *
+ * A port over `invitationOrganizationLookup`, provided as a token for the
+ * reason `USER_ORGANIZATION_LOOKUP` is: the query behind it is one of the two
+ * in this product that run **outside** a tenant transaction, against a
+ * `SECURITY DEFINER` function that bypasses row-level security (ADR-0022). A
+ * service that received the base Prisma client could make any other query with
+ * it; a service whose collaborator is a single function taking a token hash and
+ * returning an organisation id can make exactly this one.
+ *
+ * **It returns a routing hint, not a permission.** See
+ * `invitation-organization.store.ts`: liveness, expiry and the invited-address
+ * binding are all decided afterwards, under RLS, inside the tenant transaction
+ * the returned id opens.
+ */
+export const INVITATION_ORGANIZATION_LOOKUP = 'SENTINEL_INVITATION_ORGANIZATION_LOOKUP';

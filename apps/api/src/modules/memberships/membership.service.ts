@@ -59,8 +59,13 @@ export interface RemoveMembershipCommand extends AuthRequestContext {
  * One `select` with a nested relation is one query, not one per row — Prisma
  * emits a join for `select` on a to-one relation — so the list endpoint has no
  * N+1 to assert away.
+ *
+ * **Exported for Task 15's acceptance handler**, which creates a `Membership`
+ * and returns it through `acceptInvitationResponseSchema` — which *is*
+ * `membershipResponseSchema` (`packages/contracts/src/invitations.ts`). Two
+ * column lists feeding one wire schema is how the two drift, so there is one.
  */
-const MEMBERSHIP_COLUMNS = {
+export const MEMBERSHIP_COLUMNS = {
   id: true,
   organizationId: true,
   status: true,
@@ -152,8 +157,21 @@ function lastOwner(action: 'demoted' | 'removed'): DomainError {
  * **Do not "optimise" this into a conditional lock.** A branch that decides
  * when to lock is a branch that can be wrong, and an unexplained
  * lock-before-read is exactly the shape a later reader tidies away.
+ *
+ * # It is EXPORTED, and the third taker is invitation acceptance
+ *
+ * The sentence above — "tomorrow is Task 15's invitation acceptance" — is now
+ * today. `InvitationService.accept` creates a `Membership`, which changes the
+ * owner count whenever the invitation offered `OWNER`, so it is inside the set
+ * this lock serialises and a writer that skipped it would reopen the race for
+ * everybody else. It imports this function rather than writing a second one,
+ * for the reason D5 gives for `assertActorMayGrant`: two functions taking
+ * "the organisation lock" are two locks the day one of them is edited.
  */
-async function lockOrganization(tx: TenantTransaction, organizationId: string): Promise<void> {
+export async function lockOrganization(
+  tx: TenantTransaction,
+  organizationId: string,
+): Promise<void> {
   const locked = await tx.$queryRaw<{ id: string }[]>`
     SELECT id FROM "Organization" WHERE id = ${organizationId} FOR UPDATE
   `;
@@ -440,7 +458,7 @@ export class MembershipService {
     const page = hasMore ? rows.slice(0, limit) : rows;
     const last = page.at(-1);
     return {
-      data: page.map(toResponse),
+      data: page.map(toMembershipResponse),
       pagination: {
         nextCursor:
           hasMore && last !== undefined
@@ -553,7 +571,7 @@ export class MembershipService {
         requestId: command.requestId,
       });
 
-      return toResponse(updated);
+      return toMembershipResponse(updated);
     });
   }
 
@@ -693,8 +711,14 @@ export class MembershipService {
  * reason `organization.service.ts` gives: the wire contract says
  * `isoTimestampSchema`, and a `Date` reaching the serialiser would be formatted
  * to the same characters by accident rather than by decision.
+ *
+ * **Exported, and named `toMembershipResponse` rather than `toResponse`
+ * because it now crosses a module boundary.** `InvitationService.accept`
+ * returns the membership it created, and `acceptInvitationResponseSchema` is
+ * `membershipResponseSchema` itself — so the two endpoints must serialise a
+ * membership identically or one of them is lying about its schema.
  */
-function toResponse(row: {
+export function toMembershipResponse(row: {
   id: string;
   organizationId: string;
   // `MembershipStatus` (Prisma) and `MembershipStatus` (contracts) are the same

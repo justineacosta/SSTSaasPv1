@@ -1,9 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common';
 import {
+  emailSchema,
   ERROR_CODES,
   LIST_LIMIT_MAX,
   type InvitationCollection,
   type InvitationResponse,
+  type MembershipResponse,
   type SystemRole,
   type TenantContext,
 } from '@sentinel/contracts';
@@ -12,12 +14,23 @@ import { DomainError } from '../../common/errors/domain-error.js';
 import { PRISMA } from '../../infrastructure/tokens.js';
 import { AuditService } from '../audit/audit.service.js';
 import type { AuthRequestContext } from '../auth/request-context.js';
-import { mintSecretToken } from '../auth/secret-token.js';
+import { hashSecretToken, mintSecretToken } from '../auth/secret-token.js';
+import { TokenInvalidError } from '../auth/token-invalid.error.js';
 import { TokenService } from '../auth/token.service.js';
-import { assertActorMayGrant } from '../memberships/membership.service.js';
+import {
+  assertActorMayGrant,
+  lockOrganization,
+  MEMBERSHIP_COLUMNS,
+  toMembershipResponse,
+} from '../memberships/membership.service.js';
 import { encodeListCursor, type ListCursor } from '../organizations/list-cursor.js';
 import { assertPathIsActiveTenant, notFound } from '../organizations/organization.service.js';
-import { INVITATION_MAILER, type InvitationMailer } from './invitations.tokens.js';
+import type { InvitationOrganizationLookup } from './invitation-organization.store.js';
+import {
+  INVITATION_MAILER,
+  INVITATION_ORGANIZATION_LOOKUP,
+  type InvitationMailer,
+} from './invitations.tokens.js';
 
 /**
  * The base Prisma client, named through the function that consumes it.
@@ -46,6 +59,20 @@ export interface CreateInvitationCommand extends AuthRequestContext {
 
 export interface RevokeInvitationCommand extends AuthRequestContext {
   readonly actorUserId: string;
+}
+
+export interface AcceptInvitationCommand extends AuthRequestContext {
+  /**
+   * The authenticated caller, from `request.principal` and from nowhere else.
+   *
+   * **D11 lives on this field.** The invited address is compared to *this*
+   * user's address; there is no address in the body and
+   * `acceptInvitationRequestSchema` has no field for one, by design — its own
+   * docblock calls a body-supplied address "the whole attack".
+   */
+  readonly actorUserId: string;
+  /** The raw token from the emailed link. Hashed here, never stored, never logged. */
+  readonly token: string;
 }
 
 /**
@@ -142,10 +169,7 @@ async function lockInvitationSlot(
 }
 
 /**
- * INVITATIONS: CREATE, LIST, REVOKE.
- *
- * `POST /api/v1/invitations/accept` is **not here**, and its absence is
- * measured rather than deferred. See `invitations.controller.ts`.
+ * INVITATIONS: CREATE, LIST, REVOKE, ACCEPT.
  *
  * # Every write is one transaction and the audit row is inside it
  *
@@ -165,6 +189,14 @@ async function lockInvitationSlot(
  * setting, **1** with the owning organisation set, and **0** with a different
  * organisation set. Every method below runs inside `withTenantTransaction`.
  *
+ * **`accept` is the one exception, and only for its first statement.** The
+ * person accepting is a member of nothing, so there is no id to open a
+ * transaction with — the invitation row is what names it. That one lookup goes
+ * through `INVITATION_ORGANIZATION_LOOKUP`, a `SECURITY DEFINER` function that
+ * returns an organisation id and nothing else (ADR-0022,
+ * `invitation-organization.store.ts`); everything the handler then decides
+ * happens under RLS inside `withTenantTransaction(<that id>)`.
+ *
  * # Mail is sent after the transaction commits
  *
  * Carry-forward ruling 44, and `AuthMailer`'s own docblock. A send inside the
@@ -182,6 +214,8 @@ export class InvitationService {
     @Inject(AuditService) private readonly audit: AuditService,
     @Inject(TokenService) private readonly tokens: TokenService,
     @Inject(INVITATION_MAILER) private readonly sendInvitation: InvitationMailer,
+    @Inject(INVITATION_ORGANIZATION_LOOKUP)
+    private readonly organizationOfInvitation: InvitationOrganizationLookup,
   ) {}
 
   /**
@@ -431,13 +465,35 @@ export class InvitationService {
    * revocation. The same shape `TokenService.consume` uses and for the same
    * reason.
    *
-   * **An invitation that is already accepted, already revoked, expired, or
-   * belongs to another organisation all answer the same 404.** Cross-tenant is
-   * 404 and never 403 (`security/authorization.md` §6 — a 403 confirms the
-   * resource exists), and `notFound()` is imported rather than rebuilt so the
-   * three cannot drift apart. An expired invitation answering 404 rather than a
-   * successful revocation is deliberate: there is nothing to revoke, and a 204
-   * would tell the caller they had changed something they had not.
+   * **An invitation that is already accepted, already revoked, or belongs to
+   * another organisation all answer the same 404.** Cross-tenant is 404 and
+   * never 403 (`security/authorization.md` §6 — a 403 confirms the resource
+   * exists), and `notFound()` is imported rather than rebuilt so the three
+   * cannot drift apart.
+   *
+   * **AN EXPIRED INVITATION IS A 204, NOT A 404, AND THAT IS THE DECISION.**
+   * `LIVE_INVITATION` carries no `expiresAt` term — it cannot, for the reason
+   * that constant records — so an expired-but-unconsumed row matches both
+   * statements below, `revokedAt` is written, an `INVITATION_REVOKED` event is
+   * recorded, and the caller gets 204. This docblock previously claimed the
+   * opposite and the claim was false; the review measured 204 with a probe and
+   * the ruling is that the code is right.
+   *
+   * Two reasons, and the first is the one that settles it:
+   *
+   * 1. **`list` applies no liveness filter.** `GET .../invitations` selects on
+   *    `organizationId` and the cursor alone, so an expired invitation is in
+   *    the list a holder of `organization.manage_members` can read. Telling
+   *    that caller 404 when they ask to revoke a row they can see is two
+   *    contradictory answers about one row.
+   * 2. **The write has a real effect.** Setting `revokedAt` takes the row out
+   *    of `Invitation_organizationId_email_live_key`'s live set and frees the
+   *    `(organizationId, email)` slot immediately, rather than leaving it held
+   *    until somebody re-invites. "There is nothing to revoke" was false.
+   *
+   * What the caller learns is that an expired invitation existed — which they
+   * could already read in the list, holding the permission this route requires.
+   * Pinned by the expiry case in `invitations.integration.spec.ts`.
    *
    * 204 with no body, per `api/conventions.md` §2.
    */
@@ -481,6 +537,271 @@ export class InvitationService {
       });
     });
   }
+
+  /**
+   * `POST /api/v1/invitations/accept` — consume the token, become a member.
+   *
+   * # It is tenant-less, and the first statement is the one that finds a tenant
+   *
+   * D1: the acceptor is a member of nothing, so `TenantContextGuard` resolves
+   * no organisation and there is no `TenantContext` to take. The organisation
+   * is looked up from the token hash through `INVITATION_ORGANIZATION_LOOKUP`
+   * — a `SECURITY DEFINER` function that returns one column and decides nothing
+   * (ADR-0022). A `null` return is "no such invitation" and produces the same
+   * `TokenInvalidError` every other refusal below produces.
+   *
+   * **Everything after that runs inside `withTenantTransaction`, under RLS.**
+   * The invitation is re-read there by `tokenHash`, and liveness, expiry and
+   * the address binding are decided on *that* row. Nothing the definer function
+   * implied is trusted: it was asked which organisation, and it answered that
+   * and no more.
+   *
+   * # ONE REFUSAL, AND THE ADDRESS IS CHECKED BEFORE THE STATE (D11)
+   *
+   * `TokenInvalidError` — 422 `TOKEN_INVALID` — for **every** unredeemable
+   * token: unknown, expired, revoked, already accepted, superseded, and *not
+   * yours*. `error-codes.ts` states the rule ("one code for four outcomes") and
+   * `token-invalid.error.ts` names invitation acceptance as one of its callers.
+   * A different signed-in user presenting somebody else's valid token gets
+   * byte-identical bytes to one presenting a token that matches nothing, which
+   * is the property D11 exists for and the one the plan calls "the interesting
+   * attack, not the happy path".
+   *
+   * The address is compared **before** liveness and expiry are examined, so a
+   * stranger holding a stolen link learns nothing about the invitation's state
+   * either — not even whether it is still open. It costs one read to order it
+   * this way, and the ordering is the difference between one refusal and an
+   * oracle with one bit in it.
+   *
+   * **The address compared is the authenticated user's, read from `User` inside
+   * the transaction, and never a body field.** `acceptInvitationRequestSchema`
+   * carries the token alone: there is no field for an address to arrive in.
+   * Both sides go through `emailSchema` before the comparison — the same
+   * `.trim().toLowerCase()` normalisation both rows were written under — so a
+   * casing difference cannot lock out the person the invitation was for.
+   * `User` is not tenant-owned (`TENANT_OWNED_MODELS` is
+   * `['Membership', 'Invitation', 'AuditEvent']`), carries no RLS policy, and
+   * the tenant client passes the query through untouched.
+   *
+   * # The consume is conditional, and that is what makes two accepts one member
+   *
+   * D8. `updateMany` compiles to a single `UPDATE ... WHERE`, so the database
+   * arbitrates: of two requests presenting one token, the first to acquire the
+   * row's lock writes `acceptedAt` and reports `count: 1`, and the second
+   * re-evaluates `acceptedAt IS NULL` against the committed row and reports
+   * `count: 0`. A `SELECT` then an `UPDATE` passes every sequential test and
+   * lets both through — two `Membership` rows for one invitation, of which the
+   * partial unique index would refuse the second with a P2002 and a 500. The
+   * expiry term is in the `WHERE` as well as in the branch above it, so the row
+   * that is consumed is the row that was judged.
+   *
+   * `count !== 1` rather than `count === 0`: `updateMany` on a unique id cannot
+   * affect two rows, and asserting the number the code believes rather than the
+   * one it fears is what makes a future non-unique predicate fail loudly.
+   *
+   * # The organisation lock, and why acceptance is inside the set that takes it
+   *
+   * `lockOrganization` is imported from `membership.service.ts` rather than
+   * written a second time — its docblock already named this method as its third
+   * taker. Creating a `Membership` at `OWNER` changes the live owner count, so
+   * acceptance is inside the window `product/permissions.md` invariant 1 is
+   * about; a writer outside the serialisation reopens the race for the two
+   * writers that are inside it.
+   *
+   * It is taken **before** the invitation is read, matching the order the two
+   * membership writes use and for the same reason: a decision read before the
+   * lock is a decision from the wrong snapshot.
+   *
+   * # D9 / RULING 122 — WHAT THIS TRANSACTION CLOSES, AND WHAT IT DOES NOT
+   *
+   * The rule: where a credential is issued against a fact that can change, the
+   * fact must be re-read *after* the issue and the credential revoked if it
+   * moved. "The endpoint checks first" is the argument rulings 82 and 122 both
+   * struck down and it is not available here. Three facts, three answers:
+   *
+   * 1. **The invitation's liveness — CLOSED, and not by the check above.** The
+   *    conditional `updateMany` here and `revoke`'s conditional `updateMany`
+   *    write the same row under the same predicate, so Postgres serialises them
+   *    at row level: whichever commits second re-evaluates
+   *    `acceptedAt IS NULL AND revokedAt IS NULL` against the committed row and
+   *    affects nothing. There is no interleaving in which both succeed, and
+   *    none in which a membership stands for an invitation that was revoked
+   *    first. Measured in `invitations.integration.spec.ts` with a
+   *    session-level advisory-lock blocker rather than a `Promise.all`
+   *    (ruling 119).
+   * 2. **The organisation's state — NOT closed, cannot be, and survivable
+   *    because a `Membership` is not a bearer credential.** Nothing in this API
+   *    writes `Organization.status`, so a suspension is an operator statement
+   *    and it can land one microsecond after any re-read this method could add
+   *    — a re-read would move the window, not close it. What makes that
+   *    survivable is that a `Membership` grants nothing on its own: there is no
+   *    permission cache (carry-forward ruling 94), and `TenantContextGuard`
+   *    re-resolves the membership *and* the organisation's status on every
+   *    request that names an organisation, answering 403
+   *    `ORGANIZATION_SUSPENDED`. Pinned by a test that suspends the
+   *    organisation after a successful accept and finds the new member refused.
+   *    This is the structural difference from ruling 82's `Session`, which *is*
+   *    a bearer credential carrying a captured privilege for up to 30 days:
+   *    acceptance mints no session and does not touch
+   *    `Session.activeOrganizationId`. The acceptor must still call
+   *    `POST /auth/switch-org`, which carries ruling 82's re-read after
+   *    `rotate` in `organization-switch.service.ts`.
+   * 3. **The inviter's authority — OPEN, and recorded rather than claimed
+   *    closed.** D5's no-minting check runs in `create` and nowhere else, so an
+   *    invitation offering `OWNER` survives its issuer being demoted or
+   *    removed, and accepting it still mints an `OWNER`. Measured, and pinned
+   *    by `records the OPEN D9 window` in `invitations.integration.spec.ts`.
+   *    The remedy ruling 122 actually prescribes is on the *other* side — the
+   *    moment the fact moves, which is `MembershipService.remove` and
+   *    `updateRole`, where the invitations that member issued and could no
+   *    longer issue would be revoked in the same transaction as the demotion.
+   *    That is a change to Task 14's writes, not to this one, and it is handed
+   *    up rather than taken here. Re-running `assertActorMayGrant` at this
+   *    point instead would refuse every invitation from a colleague who has
+   *    since legitimately left, which is a lock-out with no recovery path for
+   *    the invitee.
+   *
+   * # No `@RequireVerifiedEmail()`, and no D5 check
+   *
+   * D2, recorded at the route. The role was authorised when the invitation was
+   * issued; the acceptor is offered it rather than granting it, and holds no
+   * permissions in this organisation to compare it against.
+   */
+  async accept(command: AcceptInvitationCommand): Promise<MembershipResponse> {
+    // The raw token is hashed here and is not passed further. `hashSecretToken`
+    // is the same function `create` used to write the column — one function, so
+    // the two cannot drift into hashing differently.
+    const tokenHash = hashSecretToken(command.token);
+
+    // THE ONE STATEMENT OUTSIDE A TENANT TRANSACTION. See the class docblock
+    // and `invitation-organization.store.ts`. It answers "which organisation",
+    // which is the question no tenant context can be scoped to.
+    const organizationId = await this.organizationOfInvitation.find(tokenHash);
+    if (organizationId === null) throw new TokenInvalidError();
+
+    return withTenantTransaction(this.base, organizationId, async (tx) => {
+      await lockOrganization(tx, organizationId);
+
+      // Re-read under RLS. `organizationId` is named as well as `tokenHash`
+      // although `tokenHash` is unique and the policy would refuse a foreign
+      // row anyway: three layers, all stated, for the reason
+      // `membership.service.ts` gives. A row the definer function found but
+      // this read cannot see would mean the id it returned did not match the
+      // row it came from, and this branch refuses rather than proceeding.
+      const invitation = await tx.invitation.findFirst({
+        where: { tokenHash, organizationId },
+        select: {
+          id: true,
+          email: true,
+          roleId: true,
+          expiresAt: true,
+          acceptedAt: true,
+          revokedAt: true,
+          role: { select: { key: true } },
+        },
+      });
+      if (invitation === null) throw new TokenInvalidError();
+
+      // D11, AND IT IS FIRST. The invited address against the AUTHENTICATED
+      // user's, never against a body field — there is no address in the body
+      // and the request schema has no field for one. `User` is not tenant-owned
+      // and carries no policy, so this read is unaffected by the transaction's
+      // organisation setting. A principal with no `User` row is unreachable —
+      // `AuthenticationGuard` resolved the session from it — and is refused
+      // rather than coalesced.
+      const account = await tx.user.findUnique({
+        where: { id: command.actorUserId },
+        select: { email: true },
+      });
+      if (account === null) throw new TokenInvalidError();
+      // Both sides through the shared normalisation. Both rows were written
+      // under it already, so this is belt-and-braces against a row that
+      // predates the schema or arrived by some other path — and it is the
+      // comparison D11 names, so it is written where D11 is enforced rather
+      // than assumed two files away.
+      if (emailSchema.parse(account.email) !== emailSchema.parse(invitation.email)) {
+        throw new TokenInvalidError();
+      }
+
+      // Liveness and expiry, decided here rather than by the definer function,
+      // which deliberately filters on neither. `expiresAt` is compared against
+      // one `now` that is also written as `acceptedAt` and used in the
+      // conditional consume, so the three cannot disagree about when this
+      // request happened.
+      const now = new Date();
+      if (invitation.acceptedAt !== null || invitation.revokedAt !== null) {
+        throw new TokenInvalidError();
+      }
+      if (invitation.expiresAt.getTime() <= now.getTime()) throw new TokenInvalidError();
+
+      // D7 / ruling 99, at its second call site. Reached only by the invited
+      // person, so the 409 discloses their own membership to themselves. It is
+      // a real branch rather than a formality: without it the partial unique
+      // index `Membership_organizationId_userId_active_key` would
+      // raise P2002 and the caller would see a 500 instead of a 409.
+      await assertUserIsNotAlreadyAMember(tx, organizationId, command.actorUserId);
+
+      // D8's conditional consume. The predicate repeats the three facts judged
+      // above, so the row that is written is the row that was judged and no
+      // interleaving can put a different one between them.
+      const consumed = await tx.invitation.updateMany({
+        where: {
+          id: invitation.id,
+          organizationId,
+          ...LIVE_INVITATION,
+          expiresAt: { gt: now },
+        },
+        data: { acceptedAt: now },
+      });
+      if (consumed.count !== 1) throw new TokenInvalidError();
+
+      const membership = await tx.membership.create({
+        data: {
+          id: newId('mbr'),
+          organizationId,
+          userId: command.actorUserId,
+          roleId: invitation.roleId,
+          status: 'ACTIVE',
+          // Carry-forward ruling 10: `status` and `deletedAt` are one fact,
+          // held together by `Membership_status_deletedAt_agree_check`. Written
+          // explicitly rather than defaulted, so a later `status: 'REMOVED'`
+          // without its partner looks wrong at the call site rather than at the
+          // database.
+          deletedAt: null,
+        },
+        select: MEMBERSHIP_COLUMNS,
+      });
+
+      await this.audit.record(tx, {
+        organizationId,
+        actorType: 'USER',
+        actorId: command.actorUserId,
+        action: 'INVITATION_ACCEPTED',
+        // The INVITATION, not the membership — `audit.actions.ts` records why:
+        // this event is the end of the invitation's life, and a reader
+        // following an invitation forwards needs its two events on one id.
+        resourceType: 'Invitation',
+        resourceId: invitation.id,
+        // The three keys `audit.actions.ts` specifies, and `memberUserId`
+        // matches what `ROLE_CHANGED` and `MEMBER_REMOVED` already use so one
+        // reader can read all three. The raw token is not here and is not
+        // reachable from this object (ruling 38).
+        metadata: {
+          membershipId: membership.id,
+          roleKey: invitation.role.key,
+          memberUserId: command.actorUserId,
+        },
+        ip: command.ip,
+        userAgent: command.userAgent,
+        requestId: command.requestId,
+      });
+
+      // `acceptInvitationResponseSchema` IS `membershipResponseSchema`, so the
+      // serialiser is imported from `membership.service.ts` rather than written
+      // again — two functions rendering one wire schema is how the two drift.
+      return toMembershipResponse(membership);
+    });
+  }
 }
 
 /**
@@ -519,19 +840,15 @@ const LIVE_INVITATION = { acceptedAt: null, revokedAt: null } as const;
  * predicate returns the removed one. A test arranged the other way passes under
  * the mutation.
  *
- * `status: 'ACTIVE'` as well as `deletedAt: null`, on the reasoning
- * `assertOrganizationKeepsAnOwner` records for its own pair: the CHECK
- * constraint ties `REMOVED` to soft-deleted, but `INVITED` is neither. Nothing
- * writes `MembershipStatus.INVITED` today — see the controller's D10 note — so
- * the two predicates cannot currently disagree, and the day something does, an
- * invitation is not a membership and must not block a second one.
- *
  * The `User` lookup is unscoped on purpose. `User` is not a tenant-owned model
  * (`TENANT_OWNED_MODELS` is `['Membership', 'Invitation', 'AuditEvent']`), it
  * carries no `organizationId` and no RLS policy, and the tenant client passes
  * the query through untouched. An address with no account is not a member, which
  * is the common case for an invitation and is why this returns rather than
  * refusing.
+ *
+ * The predicate itself lives one function down, because `accept` asks the same
+ * question of a user id it already holds.
  */
 async function assertNotAlreadyAMember(
   tx: TenantTransaction,
@@ -540,9 +857,59 @@ async function assertNotAlreadyAMember(
 ): Promise<void> {
   const user = await tx.user.findUnique({ where: { email }, select: { id: true } });
   if (user === null) return;
+  await assertUserIsNotAlreadyAMember(tx, organizationId, user.id);
+}
 
+/**
+ * THE PREDICATE ITSELF, WRITTEN ONCE FOR BOTH CALL SITES.
+ *
+ * `create` reaches it through the address, `accept` through the authenticated
+ * user's own id. One function because it is one rule, and because the paragraph
+ * below has to be true of both.
+ *
+ * # F-9 — `status: 'ACTIVE'` AND `deletedAt: null` ARE GUARDED AS A PAIR AND
+ * NEITHER TERM ALONE CAN BE. DO NOT "SIMPLIFY" ONE AWAY.
+ *
+ * The CHECK constraint `Membership_status_deletedAt_agree_check` makes
+ * `("deletedAt" IS NULL) = (status <> 'REMOVED')` a database invariant, so for
+ * every row that can exist today the two terms are **equivalent by
+ * construction**. That has a consequence a reader must be told rather than
+ * discover: **no test can distinguish them.** The Task 15 reviewer measured it
+ * on this exact function, three mutations against the invitations integration
+ * file:
+ *
+ *     `deletedAt: null` removed, `status` kept   -> GREEN, 20/20, twice
+ *     `status: 'ACTIVE'` removed, `deletedAt` kept -> GREEN, 20/20
+ *     BOTH removed                                -> RED (the ruling 99/100 test)
+ *
+ * So a mutation deleting one term cannot go red, and a report claiming it did
+ * is reporting something that did not happen. The guard is the pair, and the
+ * test that holds it is `RULING 99/100 — re-invites a REMOVED member, with the
+ * live rows arranged to lose` together with `F-9 — the ruling-99 predicate is
+ * guarded as a PAIR`, which removes both.
+ *
+ * **What the second term buys, and the dependency that makes it matter.** The
+ * two terms are equivalent *only while the CHECK holds*. Drop or relax that
+ * constraint and they part company immediately: `INVITED` is neither `ACTIVE`
+ * nor soft-deleted, and a row that is `INVITED` and live would be admitted by
+ * `deletedAt: null` alone and refused by `status: 'ACTIVE'` alone — opposite
+ * answers to "is this address already a member". Nothing writes
+ * `MembershipStatus.INVITED` today (D10, and the controller's note on it), so
+ * the day something does, the untested term becomes the live one. That is the
+ * whole reason both stay, and it is why the comment names the constraint rather
+ * than merely asserting redundancy.
+ *
+ * The same argument is written beside `assertOrganizationKeepsAnOwner`'s own
+ * copy of the pair in `membership.service.ts`, which reached it first and by a
+ * different route.
+ */
+async function assertUserIsNotAlreadyAMember(
+  tx: TenantTransaction,
+  organizationId: string,
+  userId: string,
+): Promise<void> {
   const membership = await tx.membership.findFirst({
-    where: { organizationId, userId: user.id, status: 'ACTIVE', deletedAt: null },
+    where: { organizationId, userId, status: 'ACTIVE', deletedAt: null },
     select: { id: true },
   });
   if (membership !== null) throw alreadyAMember();

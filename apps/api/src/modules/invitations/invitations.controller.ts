@@ -35,42 +35,37 @@ import { InvitationService } from './invitation.service.js';
 /**
  * THE THREE TENANT-SCOPED INVITATION ROUTES.
  *
- * # `POST /api/v1/invitations/accept` IS NOT HERE, AND IT IS BLOCKED RATHER
- * THAN FORGOTTEN
+ * # `POST /api/v1/invitations/accept` IS NOT HERE, AND IT IS NO LONGER BLOCKED
  *
- * The plan and this task's brief both ask for a fourth route: an authenticated,
- * tenant-less `POST /api/v1/invitations/accept` taking the token in the body
- * (D1). It is not shipped, and the reason is a measurement rather than a
- * preference.
+ * It is shipped, on `InvitationAcceptanceController` in this module. It is not
+ * on *this* controller because it is tenant-less and permission-less by
+ * construction (D1): the acceptor is a member of nothing, so
+ * `TenantContextGuard` resolves no organisation and every route here declares
+ * `organization.manage_members`, which such a caller cannot hold anywhere.
  *
- * The acceptor is not a member of anything yet, so `TenantContextGuard`
- * resolves no organisation and `withTenantTransaction` has no id to set
- * `app.organization_id` to. `Invitation` carries `FORCE ROW LEVEL SECURITY`
- * with `USING ("organizationId" = current_setting('app.organization_id',
- * true))` (`20260820121229_row_level_security`), and `sentinel_app` is neither
- * a superuser nor `BYPASSRLS` (`pg_roles`: `rolsuper = f`, `rolbypassrls = f`).
- * So the handler cannot read the invitation its own token names.
- *
- * Measured against the compose Postgres on 2026-09-04, one transaction,
- * `SET LOCAL ROLE sentinel_app`, `SELECT count(*) FROM "Invitation" WHERE
- * "tokenHash" = '<a known hash>'`:
+ * **What blocked it, and what unblocked it**, kept because the measurement is
+ * the reason the design is what it is. `Invitation` carries `FORCE ROW LEVEL
+ * SECURITY` with `USING ("organizationId" = current_setting(
+ * 'app.organization_id', true))` (`20260820121229_row_level_security`), and
+ * `sentinel_app` is neither a superuser nor `BYPASSRLS` (`pg_roles`:
+ * `rolsuper = f`, `rolbypassrls = f`). Measured against the compose Postgres,
+ * one transaction, `SET LOCAL ROLE sentinel_app`, `SELECT count(*) FROM
+ * "Invitation" WHERE "tokenHash" = '<a known hash>'`:
  *
  *     no app.organization_id set  -> 0
  *     owning organisation set     -> 1
  *     a different organisation set-> 0
  *
- * There is no query this endpoint can make. The two ways out both need a
- * decision this task was not given: a second migration adding a
- * `SECURITY DEFINER` lookup beside `user_organizations()` (ADR-0021), which the
- * operator reviews as SQL before it is applied (execution protocol §5); or
- * changing the invitation token's format so the organisation id travels in it,
- * which makes one endpoint's tenant context derive from client input and
- * changes a credential shape ruling 41 already fixed. Handed up rather than
- * chosen.
- *
- * Everything the acceptance path would consume is in place and unused:
- * `acceptInvitationRequestSchema`, `acceptInvitationResponseSchema`,
- * `INVITATION_ACCEPTED` in `AUDIT_ACTIONS`, and the `LIVE_INVITATION` predicate.
+ * So the handler could not read the invitation its own token names, and there
+ * was no query it could make. The resolution is ADR-0022's
+ * `SECURITY DEFINER` lookup — `20260904020000_invitation_lookup_function`,
+ * operator-approved and applied — which answers *which organisation* and
+ * nothing else; every policy decision stays in the handler, under RLS, inside
+ * a tenant transaction scoped to the id it returned. See
+ * `invitation-organization.store.ts`. The rejected alternative, kept because a
+ * later reader will think of it: putting the organisation id inside the token,
+ * which would make one endpoint's tenant context derive from client input and
+ * would change a credential shape ruling 41 already fixed.
  *
  * # D10 — `MembershipStatus.INVITED` GETS NO PRODUCER, DELIBERATELY
  *
@@ -110,7 +105,11 @@ import { InvitationService } from './invitation.service.js';
  * would bound it is the one §1 does not give this row.
  *
  * `list` and `revoke` carry `generalSession` explicitly, exactly as the
- * membership and organisation routes do.
+ * membership and organisation routes do — and so does `accept`, which **cannot
+ * carry `invitations`**: that class's only scope is `perOrganization`, no
+ * tenant resolves before an accept handler runs, and a fail-closed class with
+ * nothing to key on answers 429 to everything. F-3, recorded in full on
+ * `InvitationAcceptanceController`.
  */
 @Controller({ path: 'organizations/:id/invitations', version: '1' })
 export class InvitationsController {

@@ -3,10 +3,21 @@ import { PrismaModule } from '../../infrastructure/prisma/prisma.module.js';
 import { AuditModule } from '../audit/audit.module.js';
 import { AuthModule } from '../auth/auth.module.js';
 import { MailModule } from '../../infrastructure/mail/mail.module.js';
+import { PRISMA } from '../../infrastructure/tokens.js';
+import { InvitationAcceptanceController } from './invitation-acceptance.controller.js';
 import { InvitationMailerAdapter } from './invitation.mailer.js';
+import {
+  invitationOrganizationLookup,
+  type InvitationOrganizationLookup,
+  type TenantTransactionBase,
+} from './invitation-organization.store.js';
 import { InvitationService } from './invitation.service.js';
 import { InvitationsController } from './invitations.controller.js';
-import { INVITATION_MAILER, type InvitationMailer } from './invitations.tokens.js';
+import {
+  INVITATION_MAILER,
+  INVITATION_ORGANIZATION_LOOKUP,
+  type InvitationMailer,
+} from './invitations.tokens.js';
 
 /**
  * The invitation endpoints.
@@ -36,6 +47,16 @@ import { INVITATION_MAILER, type InvitationMailer } from './invitations.tokens.j
  * single function — on the discipline `memberships.module.ts` applies to
  * `SessionService`. `MailModule` is imported for `MAILER`, which is not global.
  *
+ * # Two controllers, one service
+ *
+ * `InvitationsController` holds the three tenant-scoped routes under
+ * `organizations/:id/invitations`; `InvitationAcceptanceController` holds
+ * `POST /invitations/accept` alone, because that route is tenant-less and
+ * permission-less by construction (D1) and cannot be mounted under a path that
+ * names an organisation the caller is not yet a member of. Both reach the same
+ * service, so acceptance and revocation cannot come to disagree about what
+ * "live" means.
+ *
  * **`InvitationService` is deliberately NOT exported**, on the rule
  * `OrganizationService` and `MembershipService` follow: a consumer elsewhere
  * holding it could invite somebody without going through the route that carries
@@ -44,7 +65,7 @@ import { INVITATION_MAILER, type InvitationMailer } from './invitations.tokens.j
  */
 @Module({
   imports: [PrismaModule, AuditModule, AuthModule, MailModule],
-  controllers: [InvitationsController],
+  controllers: [InvitationsController, InvitationAcceptanceController],
   providers: [
     InvitationMailerAdapter,
     {
@@ -53,6 +74,20 @@ import { INVITATION_MAILER, type InvitationMailer } from './invitations.tokens.j
       useFactory: (mailer: InvitationMailerAdapter): InvitationMailer => {
         return (input) => mailer.send(input);
       },
+    },
+    {
+      // A NARROW PORT OVER THE ONE QUERY IN THIS MODULE THAT BYPASSES RLS.
+      //
+      // The same discipline `organizations.module.ts` applies to
+      // `USER_ORGANIZATION_LOOKUP`, and it matters here for the same reason:
+      // the query behind this token runs against a `SECURITY DEFINER` function
+      // owned by a `BYPASSRLS` role (ADR-0022). `InvitationService` receives a
+      // function taking a token hash and returning an organisation id, so the
+      // widest thing it can do with the bypass is ask that one question.
+      provide: INVITATION_ORGANIZATION_LOOKUP,
+      inject: [PRISMA],
+      useFactory: (prisma: TenantTransactionBase): InvitationOrganizationLookup =>
+        invitationOrganizationLookup(prisma),
     },
     InvitationService,
   ],
