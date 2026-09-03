@@ -321,8 +321,11 @@ describe('what this guard governs today', () => {
     // `expected [ …(6) ] to have a length of 4` when the memberships and roles
     // controllers did.
     //
-    // Auth, health, invitations, memberships, OpenAPI, organizations, roles.
-    expect(controllers).toHaveLength(7);
+    // Auth, health, invitation-acceptance, invitations, memberships, OpenAPI,
+    // organizations, roles. Task 15's fix round added the eighth: acceptance is
+    // tenant-less and permission-less (D1), so it cannot live on the tenant-
+    // scoped invitations controller.
+    expect(controllers).toHaveLength(8);
 
     const decorated = controllers.filter((file) =>
       readFileSync(file, 'utf8')
@@ -350,6 +353,15 @@ describe('what this guard governs today', () => {
     // file that can see it. This list is per FILE, so a class-level decorator
     // would satisfy it while gating all three — which is why that spec asserts
     // the controller carries none.
+    //
+    // **`invitation-acceptance.controller.ts` is deliberately NOT in this
+    // list**, and its absence is D2 rather than an omission. §6's sentence does
+    // not name accepting, and it must not be added: possession of a token
+    // delivered to that address is the same proof of address control this guard
+    // exists to obtain, so gating acceptance would demand the proof twice and
+    // lock out the exact person the invitation was for. The day somebody
+    // "tidies" the decorator onto that controller, this assertion is what goes
+    // red.
     expect(decorated.map((file) => basename(file)).sort()).toEqual([
       'invitations.controller.ts',
       'organizations.controller.ts',

@@ -18,6 +18,7 @@ import {
   RATE_LIMIT_SCOPE_PHASES,
   type RateLimitClass,
 } from '../../common/guards/rate-limit.config.js';
+import { InvitationAcceptanceController } from './invitation-acceptance.controller.js';
 import { InvitationsController } from './invitations.controller.js';
 
 /**
@@ -41,6 +42,18 @@ import { InvitationsController } from './invitations.controller.js';
  * carries `@RequireVerifiedEmail()` and the other two do not, and the split is
  * `security/authentication.md` §6's sentence rather than a preference — so it
  * is asserted per handler rather than per controller.
+ *
+ * # It covers BOTH invitation controllers, because the interesting facts are
+ * the differences between them
+ *
+ * `InvitationsController` holds the three tenant-scoped routes;
+ * `InvitationAcceptanceController` holds `POST /invitations/accept` alone. The
+ * assertions that matter are the ones that would be vacuous in a file that saw
+ * only one of them: accept is `@AuthenticatedOnly()` where the other three name
+ * a permission (D1), it carries **no** `@RequireVerifiedEmail()` where `create`
+ * does (D2), and it carries `generalSession` rather than `invitations` because
+ * a `perOrganization` class on a tenant-less route answers 429 to everything
+ * (F-3).
  */
 
 type HandlerName = 'create' | 'list' | 'revoke';
@@ -231,14 +244,109 @@ describe('the controller as a whole', () => {
   });
 
   it('exposes exactly the three handlers in the table above', () => {
-    // **There is no `accept` handler, and its absence is a measured blocker
-    // rather than an oversight** — see the controller's docblock. When it is
-    // built it will live on a different controller (it is tenant-less and
-    // carries no permission, D1), so this assertion is about this controller
-    // staying the tenant-scoped three.
+    // **There is no `accept` handler HERE, and that is the design rather than a
+    // gap.** Acceptance is shipped, on `InvitationAcceptanceController` below:
+    // it is tenant-less and carries no permission (D1), so it cannot live on a
+    // controller mounted at `organizations/:id/invitations` where every route
+    // declares `organization.manage_members`. This assertion is what keeps this
+    // controller the tenant-scoped three.
     const handlers = Object.getOwnPropertyNames(InvitationsController.prototype).filter(
       (name) => name !== 'constructor',
     );
     expect(handlers.sort()).toEqual([...ROUTES].map((route) => route.handler).sort());
+  });
+});
+
+/**
+ * `POST /api/v1/invitations/accept`, READ OFF THE REAL CONTROLLER.
+ *
+ * Every assertion here is about a way this route DIFFERS from the three above,
+ * because a route that merely resembled them would be wrong in a specific way:
+ * a permission it can never hold, a verified-email gate that locks out the
+ * person it was sent to, or a fail-closed per-organisation limit on a request
+ * with no organisation.
+ */
+describe('POST /invitations/accept', () => {
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- read as a metadata target, never invoked.
+  const acceptHandler: object = InvitationAcceptanceController.prototype.accept;
+
+  it('is registered as POST accept on a controller mounted at `invitations`', () => {
+    expect(Reflect.getMetadata(PATH_METADATA, acceptHandler)).toBe('accept');
+    expect(Reflect.getMetadata(METHOD_METADATA, acceptHandler)).toBe(RequestMethod.POST);
+    // NOT `organizations/:id/invitations`. D1: the acceptor is a member of
+    // nothing, so a path naming an organisation would ask them to name the
+    // tenant they are joining — a fact the token already carries and one a
+    // client could then get wrong or lie about.
+    expect(Reflect.getMetadata(PATH_METADATA, InvitationAcceptanceController)).toBe('invitations');
+  });
+
+  it('D1 — is `@AuthenticatedOnly()`, not permission-guarded', () => {
+    // The whole point: `TenantContextGuard` resolves no organisation for this
+    // caller, so any `@RequirePermission()` would deny by construction. This is
+    // also what keeps the route out of the authorization matrix's arms 2-4,
+    // which iterate on `access.kind === 'permission'` — see that file's
+    // docblock for where it IS exercised.
+    const declared = Reflect.getMetadata(ACCESS_METADATA_KEY, acceptHandler) as AccessDeclaration;
+    expect(declared).toEqual({ kind: 'authenticated' });
+  });
+
+  it('D2 — carries NO verified-email gate, on the handler or on the controller', () => {
+    // Both directions, because the assertion that matters is the ABSENCE and a
+    // class-level decorator would gate the handler while leaving the
+    // per-handler read `undefined` on some other route.
+    //
+    // `security/authentication.md` §6 says an unverified user "cannot create
+    // organisations, invite, or scan". Accepting is not in that list and must
+    // not be added: holding a token that was emailed to an address is the same
+    // proof of address control the guard exists to obtain, so gating this route
+    // would demand the proof twice and lock out the exact person invited.
+    expect(Reflect.getMetadata(REQUIRE_VERIFIED_EMAIL_KEY, acceptHandler)).toBeUndefined();
+    expect(
+      Reflect.getMetadata(REQUIRE_VERIFIED_EMAIL_KEY, InvitationAcceptanceController),
+    ).toBeUndefined();
+  });
+
+  it('F-3 — carries `generalSession`, because no `perOrganization` class could work here', () => {
+    // `invitations` declares `perOrganization` and nothing else, and that scope
+    // is evaluated in the `'tenant'` phase against `request.organizationId` —
+    // which `TenantContextGuard` writes only in its `resolved` arm. No tenant
+    // resolves before this handler, so the tenant pass would see one declared
+    // scope, zero decisions and `failMode: 'closed'`, and answer 429 to every
+    // request. Both halves are asserted, so this stays red if either the class
+    // on the route or the shape of that class changes.
+    expect(Reflect.getMetadata(RATE_LIMIT_METADATA_KEY, acceptHandler)).toBe('generalSession');
+    expect(Object.keys(RATE_LIMIT_CLASSES.invitations)).toEqual(['perOrganization', 'failMode']);
+    expect(RATE_LIMIT_SCOPE_PHASES.perOrganization).toBe('tenant');
+  });
+
+  it('is not exempt from rate limiting, refuses nothing cross-site, and admits no PENDING_MFA session', () => {
+    expect(Reflect.getMetadata(RATE_LIMIT_EXEMPT_KEY, acceptHandler)).toBeUndefined();
+    expect(Reflect.getMetadata(REFUSE_CROSS_SITE_KEY, acceptHandler)).toBeUndefined();
+    // A `PENDING_MFA` session has proved a password and not a second factor.
+    // Letting one accept an invitation would let a stolen password join an
+    // organisation.
+    expect(Reflect.getMetadata(ALLOW_PENDING_MFA_KEY, acceptHandler)).toBeUndefined();
+    expect(
+      Reflect.getMetadata(ALLOW_PENDING_MFA_KEY, InvitationAcceptanceController),
+    ).toBeUndefined();
+  });
+
+  it('exposes exactly one handler', () => {
+    const handlers = Object.getOwnPropertyNames(InvitationAcceptanceController.prototype).filter(
+      (name) => name !== 'constructor',
+    );
+    expect(handlers).toEqual(['accept']);
+  });
+
+  it('declares no class-level rate limit, exemption or access override', () => {
+    expect(
+      Reflect.getMetadata(RATE_LIMIT_METADATA_KEY, InvitationAcceptanceController),
+    ).toBeUndefined();
+    expect(
+      Reflect.getMetadata(RATE_LIMIT_EXEMPT_KEY, InvitationAcceptanceController),
+    ).toBeUndefined();
+    expect(
+      Reflect.getMetadata(ACCESS_METADATA_KEY, InvitationAcceptanceController),
+    ).toBeUndefined();
   });
 });

@@ -41,11 +41,24 @@ import { describeRoutes, type RegisteredRoute } from './route-inventory.js';
  *
  * Through Task 12 the honest version of this paragraph read: "no route in this
  * API declares `@RequirePermission()`, so the 403 and cross-tenant-404 arms
- * below run against zero shipped routes". Task 13 changed that and Task 14
- * widened it. **Seven** routes now declare one, counted from
- * `EXPECTED_GUARDED_ROUTES` below rather than remembered: three on
- * `/organizations/:id` (Task 13), three on `/organizations/:id/members` and
- * `GET /roles` (Task 14).
+ * below run against zero shipped routes". Task 13 changed that, Task 14 widened
+ * it and Task 15 widened it again. **TEN** routes now declare one — three on
+ * `/organizations/:id` (Task 13), three on `/organizations/:id/members` plus
+ * `GET /roles` (Task 14), three on `/organizations/:id/invitations` (Task 15).
+ *
+ * **Both numbers in this docblock are computed, not remembered**, which is
+ * carry-forward ruling 108 and which this docblock got wrong once: it said
+ * "seven … counted from `EXPECTED_GUARDED_ROUTES` below rather than remembered"
+ * while that constant held ten, so the sentence was false about itself. The
+ * commands, so a later reader can re-derive both rather than trust them:
+ *
+ *     $ node -e "…parse EXPECTED_GUARDED_ROUTES from this file…"
+ *     EXPECTED_GUARDED_ROUTES entries = 10
+ *     by permission: {"organization.read":2,"organization.update":1,
+ *                     "organization.delete":1,"organization.manage_members":5,
+ *                     "organization.manage_roles":1}
+ *
+ * Ten total, two of them `organization.read`, so **eight** produce real 403s.
  *
  * Three limits on that claim, all worth naming rather than leaving to be
  * inferred:
@@ -54,7 +67,8 @@ import { describeRoutes, type RegisteredRoute } from './route-inventory.js';
  *   it, so no caller exists who could produce a 403 on `GET
  *   /organizations/:id` or on `GET /roles`. `rolesFor` returns `undefined` for
  *   the lacker and the arm records itself as run and evaluated rather than
- *   skipped. The other five routes produce real 403s.
+ *   skipped. The other **eight** routes produce real 403s — 10 minus those
+ *   two, from the census above.
  * - **Arm 3 runs one of two probes, declared per route.** See
  *   `crossTenantProbeFor`: a route with a tenant id in its path is probed
  *   against `assertPathIsActiveTenant`, and a route without one — `GET /roles`
@@ -66,6 +80,19 @@ import { describeRoutes, type RegisteredRoute } from './route-inventory.js';
  *   membership answers 422; both are correct answers that say authorization
  *   admitted the request. Asserting 2xx would make the matrix refuse any
  *   endpoint whose business logic legitimately declines.
+ *
+ * # Where `POST /api/v1/invitations/accept` is exercised, and why not below
+ *
+ * Task 15's fourth route is `@AuthenticatedOnly()` — tenant-less and
+ * permission-less by construction (D1), because the acceptor is a member of
+ * nothing — so it is **not** in `EXPECTED_GUARDED_ROUTES`, not in
+ * `crossTenantProbeFor`, and not iterated by arms 2–4, all of which filter on
+ * `access?.kind !== 'permission'`. It is covered by the 401 block above and by
+ * the whole-inventory assertions at the bottom, which is the correct treatment
+ * and not a gap: there is no permission it could refuse and no tenant it could
+ * be pointed at the wrong one of. Its own refusals — a token that is not
+ * redeemable, and a token issued to a different address — are proved in
+ * `invitations.integration.spec.ts`, which is the file that can construct them.
  *
  * # It drives the application as `sentinel_app`
  *

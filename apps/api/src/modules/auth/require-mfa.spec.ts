@@ -415,8 +415,9 @@ describe('the guard is registered, and what it can refuse is bounded', () => {
     const controllers = globSync('**/*.controller.ts', { cwd: root }).map((relative) =>
       join(root, relative),
     );
-    // Auth, health, invitations, memberships, OpenAPI, organizations, roles.
-    expect(controllers).toHaveLength(7);
+    // Auth, health, invitation-acceptance, invitations, memberships, OpenAPI,
+    // organizations, roles.
+    expect(controllers).toHaveLength(8);
 
     const declaring = controllers.filter((file) =>
       readFileSync(file, 'utf8')
@@ -427,7 +428,16 @@ describe('the guard is registered, and what it can refuse is bounded', () => {
     // Named and sorted, not counted. Task 14 added two of these four:
     // `memberships.controller.ts` (three routes) and `roles.controller.ts`
     // (one), which grew the set this guard governs from three routes to seven.
-    // Task 15 added `invitations.controller.ts` (three), taking it to ten.
+    // Task 15 added `invitations.controller.ts` (three), taking it to ten —
+    // recomputed from `EXPECTED_GUARDED_ROUTES` in
+    // `authorization-matrix.integration.spec.ts`, which holds exactly those ten
+    // entries, rather than carried forward.
+    //
+    // `invitation-acceptance.controller.ts` is the eighth controller file and
+    // declares no permission at all: `POST /invitations/accept` is
+    // `@AuthenticatedOnly()`, because the acceptor is a member of nothing and
+    // any `@RequirePermission()` would deny by construction (D1). That is why
+    // the count above moved and this list did not.
     expect(declaring.map((file) => basename(file)).sort()).toEqual([
       'invitations.controller.ts',
       'memberships.controller.ts',
