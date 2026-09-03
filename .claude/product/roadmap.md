@@ -14,7 +14,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Partially Implemented** — Tasks 1–14 of 18 done 2026-09-03, **Checkpoint A passed, Task 13 merged into `main` and green on CI, and Task 14 built, reviewed, fixed and re-reviewed on a branch that is not yet pushed**. The identity API is built and the authorization pipeline is enforced end to end: a request is rate-limited, authenticated against an opaque server-side session, CSRF-checked, resolved to a tenant, and authorized against a permission the route declares — and every one of those stages can deny. **Task 14 took the permission-guarded route count from three to seven** — the member list, role change and removal under `/organizations/:id/members`, plus `GET /roles` — and made `product/permissions.md`'s invariants 1 and 5 enforced rather than described. **No authentication UI exists, so the E2E journey exit criterion is unmet and the phase is not complete.** Task 14 is **not pushed and CI has not run on it**; branch `feat/phase-2-task-14-memberships`. Evidence table under Phase 2 below |
+| 2 | Identity | **Partially Implemented** — Tasks 1–14 of 18 done 2026-09-03, **Checkpoint A passed, Task 13 merged into `main` and green on CI, and Task 14 built, reviewed, fixed, pushed and green on CI but **not merged**. The identity API is built and the authorization pipeline is enforced end to end: a request is rate-limited, authenticated against an opaque server-side session, CSRF-checked, resolved to a tenant, and authorized against a permission the route declares — and every one of those stages can deny. **Task 14 took the permission-guarded route count from three to seven** — the member list, role change and removal under `/organizations/:id/members`, plus `GET /roles` — and made `product/permissions.md`'s invariants 1 and 5 enforced rather than described. **No authentication UI exists, so the E2E journey exit criterion is unmet and the phase is not complete.** Task 14 is **pushed and CI-green, and open as PR #28 against `main`** — CI runs `33729112619` (push) and `33729204932` (pull request), both head `4f863a9`, report `completed / success` read from each run's own `conclusion` field, with all eighteen substantive steps succeeded and only the two failure-only steps skipped. **It is not merged**: `gh pr merge` was refused by the harness permission classifier, which is carry-forward ruling 114 happening a second time. Branch `feat/phase-2-task-14-memberships`. Evidence table under Phase 2 below |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -2232,10 +2232,27 @@ switch that is taken back leaves no append-only event saying it happened.
 
 ### Still owed after Task 14
 
-- **Not pushed, and CI has not run.** The branch is `feat/phase-2-task-14-memberships`, cut from
-  `main` after Task 13 merged. Run `git rev-list --count main..HEAD` for the commit count rather
-  than trusting a number written here — ruling 108's own lesson is that a document inside the range
-  it describes cannot state that range's size and stay true.
+- ~~Not pushed, and CI has not run.~~ **Pushed and CI-green on 2026-09-03; not merged.** The
+  branch is `feat/phase-2-task-14-memberships`, cut from `main` after Task 13 merged, and open as
+  **PR #28**. CI runs `33729112619` (push) and `33729204932` (pull request), both on head
+  `4f863a9`, report `completed / success` — read from each run's own `conclusion` field rather than
+  a watcher's exit status (ruling 105) — with all eighteen substantive steps succeeded and only the
+  two failure-only steps (`Stack logs on failure`, `Upload Playwright artefacts on failure`)
+  skipped. CI therefore ran the integration and end-to-end lanes from a clean clone on a Linux
+  runner, which no local run proves.
+
+  **The merge itself was refused, and that is carry-forward ruling 114 for the second time.**
+  `gh pr merge 28 --rebase --delete-branch` was denied by the harness permission classifier. The
+  refusal was not worked around: neither a local `git merge` plus `git push origin main` nor an
+  edit to `.claude/settings.json` was attempted, on ruling 114's reasoning that an agent editing
+  the file expressing the operator's authorisation in order to perform an action it was just
+  denied has escalated its own privileges. **The merge is the operator's to perform**, or to
+  unblock with a scoped `Bash(gh pr merge:*)` rule. Until it happens, `main` does not contain Task
+  14 and Task 15 must not branch from `main` expecting it.
+
+  Run `git rev-list --count main..HEAD` for the commit count rather than trusting a number written
+  here — ruling 108's own lesson is that a document inside the range it describes cannot state that
+  range's size and stay true.
 - **Two known surviving mutations, both stated rather than papered over.** Removing `deletedAt:
   null` from the owner count turns nothing red, and cannot:
   `Membership_status_deletedAt_agree_check` makes `status = 'ACTIVE'` imply it, so the two

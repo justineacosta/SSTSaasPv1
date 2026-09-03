@@ -1072,13 +1072,27 @@ unchanged; `check:secrets` 446; `docker compose ps` four services healthy. The f
 
 **Branching.** `feat/phase-2-task-14-memberships`, cut from `main` after Task 13 merged, and
 rebased onto `0739af9` at the start of this session — the branch pre-existed with three docs
-commits and no code, from a session whose implementer was cancelled. **Pushed: no. CI: not run.
-Merged: no.**
+commits and no code, from a session whose implementer was cancelled. **Pushed: yes. CI: green.
+Merged: NO.**
+
+**The merge was refused, and it is ruling 114 for the second time.** PR **#28** is open against
+`main`. CI runs `33729112619` (push) and `33729204932` (pull request), both on head `4f863a9`,
+report `completed / success` read from each run's own `conclusion` field (ruling 105), with all
+eighteen substantive steps succeeded and only the two failure-only steps skipped.
+`gh pr merge 28 --rebase --delete-branch` was then denied by the harness permission classifier.
+**Neither workaround was attempted** — not a local `git merge` plus `git push origin main`, and not
+an edit to `.claude/settings.json` — on ruling 114's own reasoning. The operator merges, or adds a
+scoped `Bash(gh pr merge:*)` rule.
+
+**So `main` does NOT contain Task 14 while this sentence is true.** A session starting Task 15 must
+check before branching: `git log --oneline origin/main -1` and confirm PR #28 is merged. Branching
+from a `main` without the membership routes is exactly the failure Tasks 13–15's chaining warnings
+exist to prevent.
 
 *No commit count is written here, deliberately* — ruling 108, and Task 13's pause state learned it
 the hard way twice. Run `git rev-list --count main..HEAD`.
 
-**Next action:** push, get CI green, merge. Then Task 15 — invitations. Read rulings **99** and
+**Next action: the operator merges PR #28.** Then Task 15 — invitations. Read rulings **99** and
 **100** first, because Task 14's removal path is now what produces the multi-row `(organizationId,
 userId)` state and re-invitation is what consumes it; **124** binds the invited role, which is the
 third call site of the no-minting rule and the first one nobody has written yet; and **122** binds
