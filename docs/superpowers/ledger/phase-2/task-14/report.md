@@ -273,6 +273,27 @@ descending order of how much they matter:
    than deriving it; the alternative, letting it fall through to a session pointed nowhere, is the
    silent pass ruling 109 is about.
 
+5. **The brief's §7 correction about `check:secrets` is itself wrong, and it is wrong in exactly
+   the way ruling 108 is about.** §7 says the first draft "said ... 433 tracked files where this
+   branch has 434 — 433 was measured on `main`, and the difference is this file". The 434 is right;
+   the explanation is not. `scripts/check-secret-shaped-literals.ts` excludes `^docs/superpowers/`
+   by path — the comment beside the rule says why, ledgers are dated records that are never
+   rewritten — so `task-14/brief.md` cannot move the count at all. Measured, with the script's own
+   glob and exclusion list applied to three trees:
+
+   ```
+   count () { git ls-tree -r --name-only "$1" | grep -E '\.(ts|tsx|md|json|yaml)$'      | grep -vE '^docs/superpowers/ledger/phase-1/review-diffs/|^pnpm-lock\.yaml$|(^|/)package-lock\.json$|^docs/superpowers/'      | wc -l; }
+   origin/main       434
+   branch base 01dfe99  434
+   HEAD              445
+   ```
+
+   `origin/main` reports **434**, not 433, and `git diff --name-only origin/main 01dfe99` returns
+   two files, both under `docs/superpowers/` and both excluded. So whatever produced 433 was
+   measured against a different tree, and the sentence explaining the discrepancy invented a cause.
+   The +11 from 434 to 445 is exactly the eleven new source files this task adds; the report you are
+   reading adds none, because it is a ledger file.
+
 ### The contracts docblock: the brief was right, and I checked before agreeing
 
 The brief instructed me to implement the plan (`organization.manage_members`) and correct
