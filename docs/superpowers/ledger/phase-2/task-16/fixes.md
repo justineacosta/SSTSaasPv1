@@ -227,3 +227,64 @@ uncommitted, so the `git checkout --` that restored mutation L-a also deleted
 the fix; L-b and L-d then ran against the unfixed file and their numbers were
 meaningless. The implementation was committed first and all four re-run. The
 table above is the re-run.
+
+## Step 4 — verification
+
+`pnpm format:check` failed first (exit 1, both new spec files). `npx prettier
+--write` on the two files, then the list below was run in order on the
+resulting tree, which is what `ba2f429` commits. Exit codes captured outside a
+pipe: `out=$(pnpm <cmd> 2>&1); code=$?`.
+
+| Command | Exit | Numbers |
+|---|---|---|
+| `pnpm format:check` | 0 | `All matched files use Prettier code style!` (was exit 1 on 2 files before `prettier --write`) |
+| `pnpm lint` | 0 | 14 tasks successful, 14 total |
+| `pnpm typecheck` | 0 | 14 tasks successful, 14 total |
+| `pnpm test` | 0 | **109 files, 1882 tests passed** |
+| `pnpm check:specs` | 0 | 137 spec files, each claimed by exactly one of unit/integration/ui |
+| `pnpm build` | 0 | 8 tasks successful, 8 total; `/login`, `/login/mfa`, `/register`, `/reset-password`, `/verify-email` all built |
+| `pnpm test:e2e` | 0 | 22 passed (12.3s), 6 workers |
+
+Test-count arithmetic, stated so it can be checked rather than believed:
+
+| Suite | Before this round | After | Delta |
+|---|---|---|---|
+| `apps/web/src/api/redirect.spec.ts` | 33 | 48 | +15 |
+| `apps/web/src/security-headers.spec.ts` | 15 | 39 | +24 |
+| whole repo (`pnpm test`) | 109 files / 1843 tests | 109 files / **1882** | +0 files / **+39** |
+
+1843 is the reviewer's re-measured branch figure, not the report's. 33 + 15 +
+39 tests reconcile exactly; no new spec file was added, which is why the file
+count is unchanged.
+
+## Diff
+
+```
+$ git diff --stat 606030b..HEAD -- apps/
+ apps/web/src/api/redirect.spec.ts     | 160 ++++++++++++++++++++++---------
+ apps/web/src/api/redirect.ts          |  24 ++++-
+ apps/web/src/security-headers.spec.ts | 103 ++++++++++++++++++++
+ apps/web/src/security-headers.ts      |  54 ++++++++++-
+ 4 files changed, 315 insertions(+), 26 deletions(-)
+```
+
+Four files, all under `apps/web/src`. `.claude/`, `roadmap.md`, `report.md`,
+`review.md`, `apps/api`, `packages/db` and `vitest.workspace.ts` are untouched
+by every commit in `606030b..HEAD` authored by this round; `report.md` is
+changed in the range only by the orchestrator's own `00e7526`, which landed on
+the branch alongside this work.
+
+## Not done, and why
+
+- **`apps/web/e2e/auth-screens.spec.ts:122-152`**, the second half of M1's
+  finding — the e2e test that asserts no DOM attribute carries `evil.example`
+  and so cannot observe a `router.replace` navigation. The brief scopes M1 to
+  `redirect.spec.ts` and the `loginHrefForDestination` composition, and scopes
+  the round to three files. Left as the reviewer found it: it remains a test
+  that reads stronger than it is, and the class it was delegating to
+  `redirect.spec.ts` is now actually covered there.
+- **`proxy.ts:44`** still passes `new URL(env.API_BASE_URL).origin`. Now
+  redundant — `apiOriginSource` would reduce `env.API_BASE_URL` itself — but
+  the brief says keep L1 small and the call site is not in scope.
+- Mutation **M-b** (`if (!path.startsWith('/'))` in `safeRedirectPath`)
+  survives and is untestable. See Step 2.
