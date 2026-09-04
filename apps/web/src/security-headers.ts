@@ -61,10 +61,57 @@
  */
 
 /**
+ * The one API origin `connect-src` is widened by, reduced to an origin here
+ * rather than trusted to arrive as one.
+ *
+ * Today's only caller passes `new URL(env.API_BASE_URL).origin`, which is
+ * correct — and that is the point: the correctness lives at the call site, one
+ * careless second call site away from being wrong. A value interpolated into a
+ * CSP directive decides what the browser is allowed to connect to; `'*'`,
+ * `'https:'` or `"'self' data:"` reaching this string would widen the policy
+ * silently, and no test that supplies a well-formed origin would notice.
+ *
+ * Three rejections, each of which a test drives:
+ *
+ * - it must parse as an absolute URL — `'*'`, `'https:'`, `"'self' data:"`,
+ *   `'api.sentinel.example'`, and anything carrying a space or a semicolon
+ *   (the two characters that would end the source or the directive) do not;
+ * - its scheme must be `http:` or `https:` — `javascript:` and `data:` parse
+ *   perfectly well, and their `.origin` is the opaque string `null`, which is
+ *   not a thing to put in a source list;
+ * - and the resulting origin must contain no `*` — `https://*` parses, and its
+ *   `.origin` really is `https://*`, so taking `.origin` is not on its own the
+ *   check it looks like.
+ *
+ * Where a value fails, the source is **omitted** rather than emitted raw: the
+ * policy falls back to `connect-src 'self'`, which is the narrow default. A
+ * misconfiguration then breaks the API call visibly instead of widening the
+ * policy quietly.
+ */
+function apiOriginSource(apiOrigin: string | undefined): string | undefined {
+  if (apiOrigin === undefined) return undefined;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(apiOrigin);
+  } catch {
+    return undefined;
+  }
+
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return undefined;
+  if (parsed.origin.includes('*')) return undefined;
+
+  return parsed.origin;
+}
+
+/**
  * The header value sent with every response.
  *
  * @param enforceCsp Everything here is identical in both modes except
  *                   `upgrade-insecure-requests` — see the note above.
+ * @param apiOrigin  Already reduced by `apiOriginSource`. `undefined` means
+ *                   there is nothing to allow, or that the caller supplied
+ *                   something which is not one http(s) origin.
  */
 function buildContentSecurityPolicy(
   nonce: string,
@@ -119,13 +166,18 @@ function buildContentSecurityPolicy(
  *                text minus `upgrade-insecure-requests`, which a report-only
  *                policy is specified to ignore. Derived from `APP_ENV` in one
  *                place (`src/env.ts`) so it cannot drift per call site.
+ * @param apiOrigin The ONE origin `connect-src` is widened by. Any absolute
+ *                http(s) URL will do: it is reduced to its origin here rather
+ *                than trusted to arrive as one, and anything that is not one
+ *                http(s) origin omits the source instead of widening the
+ *                policy. See `apiOriginSource`.
  */
 export function buildSecurityHeaders(
   nonce: string,
   enforceCsp: boolean,
   apiOrigin?: string,
 ): Record<string, string> {
-  const policy = buildContentSecurityPolicy(nonce, enforceCsp, apiOrigin);
+  const policy = buildContentSecurityPolicy(nonce, enforceCsp, apiOriginSource(apiOrigin));
 
   return {
     'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload',

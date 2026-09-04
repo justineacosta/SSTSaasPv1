@@ -134,4 +134,107 @@ describe('buildSecurityHeaders', () => {
       expect(differing).toEqual(["connect-src 'self' https://api.sentinel.example"]);
     });
   });
+
+  /**
+   * L1. The three tests above supply well-formed origins and then assert
+   * properties of the values they chose; none of them is a property of the
+   * function. Today's only caller passes `new URL(env.API_BASE_URL).origin`,
+   * which is correct — and that correctness lives at the call site, one
+   * careless second call site away from being wrong.
+   *
+   * So the parameter is reduced to an origin *inside* the function, and these
+   * assert that reduction rather than the caller's manners.
+   */
+  describe('connect-src — the API origin is normalised inside the function', () => {
+    const connectSrc = (apiOrigin: string): string | undefined =>
+      (buildSecurityHeaders('abc123', true, apiOrigin)['Content-Security-Policy'] ?? '')
+        .split('; ')
+        .find((entry) => entry.startsWith('connect-src'));
+
+    const narrowPolicy = (): string[] =>
+      (buildSecurityHeaders('abc123', true)['Content-Security-Policy'] ?? '').split('; ');
+
+    /** Well-formed inputs, and the single origin each must be reduced to. */
+    const reduced: readonly [string, string, string][] = [
+      ['an origin already in origin form', 'https://api.sentinel.example', 'https://api.sentinel.example'],
+      ['a trailing slash', 'http://localhost:3001/', 'http://localhost:3001'],
+      ['a path', 'https://api.sentinel.example/v1/auth', 'https://api.sentinel.example'],
+      [
+        'a query string and a fragment',
+        'https://api.sentinel.example/v1?a=b#c',
+        'https://api.sentinel.example',
+      ],
+      [
+        'credentials, which an origin does not carry',
+        'https://user:pass@api.sentinel.example',
+        'https://api.sentinel.example',
+      ],
+      ['the scheme default port', 'https://api.sentinel.example:443', 'https://api.sentinel.example'],
+      ['a non-default port, which is part of the origin', 'https://api.sentinel.example:8443', 'https://api.sentinel.example:8443'],
+    ];
+
+    for (const [label, input, origin] of reduced) {
+      it(`reduces ${label} to one origin`, () => {
+        expect(connectSrc(input)).toBe(`connect-src 'self' ${origin}`);
+      });
+    }
+
+    /**
+     * Values a second call site could plausibly pass. Each must leave the
+     * directive exactly as narrow as it is with no API origin at all — the
+     * source is *omitted*, not emitted raw. `https://*` and
+     * `javascript:alert(1)` are in the list because both survive `new URL`:
+     * the first parses to the origin `https://*`, the second to the opaque
+     * origin `null`. Parsing alone is not the check.
+     */
+    const refused: readonly [string, string][] = [
+      ['a bare wildcard', '*'],
+      ['a wildcard host', 'https://*'],
+      ['a wildcard subdomain', 'https://*.sentinel.example'],
+      ['a scheme-only source', 'https:'],
+      ['a CSP source list', "'self' data:"],
+      ['the keyword self', "'self'"],
+      ['a second origin smuggled in by a space', 'https://api.example https://evil.example'],
+      ['a second directive smuggled in by a semicolon', 'https://api.example; script-src *'],
+      ['a bare host with no scheme', 'api.sentinel.example'],
+      ['a protocol-relative URL', '//evil.example'],
+      ['a javascript: URL, whose origin parses as the opaque "null"', 'javascript:alert(1)'],
+      ['a data: URL, likewise opaque', 'data:text/html,<script>alert(1)</script>'],
+      ['a path with no origin at all', '/api'],
+      ['the empty string', ''],
+      ['whitespace', '   '],
+    ];
+
+    for (const [label, input] of refused) {
+      it(`omits the source for ${label}`, () => {
+        expect(connectSrc(input)).toBe("connect-src 'self'");
+      });
+    }
+
+    it('emits no wildcard, no scheme-only source and no second source, for any of them', () => {
+      for (const [, input] of refused) {
+        const directive = connectSrc(input) ?? '';
+        const where = `input ${JSON.stringify(input)} produced ${JSON.stringify(directive)}`;
+        expect(directive, where).not.toContain('*');
+        expect(directive, where).not.toContain('evil.example');
+        expect(directive.split(' ').length, where).toBe(2);
+      }
+    });
+
+    it('leaves every other directive untouched whatever it is given', () => {
+      const narrow = narrowPolicy();
+      for (const [, input] of [...reduced.map(([l, i]) => [l, i] as const), ...refused]) {
+        const policy = (
+          buildSecurityHeaders('abc123', true, input)['Content-Security-Policy'] ?? ''
+        ).split('; ');
+        const where = `input ${JSON.stringify(input)}`;
+        expect(policy.length, where).toBe(narrow.length);
+        const differing = policy.filter((entry, index) => entry !== narrow[index]);
+        expect(differing.length, where).toBeLessThanOrEqual(1);
+        for (const entry of differing) {
+          expect(entry.startsWith("connect-src 'self' "), where).toBe(true);
+        }
+      }
+    });
+  });
 });
