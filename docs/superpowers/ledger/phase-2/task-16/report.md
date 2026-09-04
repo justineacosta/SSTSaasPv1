@@ -432,3 +432,86 @@ re-rendered the component and asserted one request. Deleting the guard left it g
 was not reproducing the case the guard exists for. Rewritten to render inside `<StrictMode>`,
 which mounts, unmounts and remounts (`next.config.ts` sets `reactStrictMode: true`). The
 mutation now fails it with `expected [2 requests] to have a length of 1`.
+
+## Step 9 — the brief's verification list, run in full
+
+Every command run at the repository root, exit code captured outside a pipe
+(`out=$(pnpm <cmd> 2>&1); code=$?`). Run on 2026-09-04 against
+`feat/phase-2-task-16-auth-screens` at `469a903`, with the compose stack up
+(`sentinel-postgres-1`, `sentinel-redis-1`, `sentinel-minio-1`, `sentinel-mailpit-1`, all
+`Up 9 hours (healthy)`).
+
+| Command | Exit | Numbers |
+|---|---|---|
+| `pnpm format:check` | **0** | "All matched files use Prettier code style!" |
+| `pnpm lint` | **0** | 14 of 14 turbo tasks successful |
+| `pnpm typecheck` | **0** | 14 of 14 turbo tasks successful |
+| `pnpm test` | **0** | **109 files, 1843 tests passed** (was 98 files / 1672 before this task) |
+| `pnpm check:specs` | **0** | **137 spec files**, each claimed by exactly one of unit / integration / ui (was 126) |
+| `pnpm build` | **0** | 8 of 8 turbo tasks; `apps/web` emits 11 routes, all `f (Dynamic)` |
+| `pnpm test:e2e` | **0** | **22 passed** (5 pre-existing + 17 added) |
+| `pnpm test:integration` | **0** | **28 files, 521 tests passed** — unchanged by this task, as expected |
+| `pnpm check:openapi` | **0** | **27 routes**, byte-identical. No endpoint added. |
+| `pnpm check:secrets` | **0** | 496 tracked files, no credential-shaped literals |
+| `pnpm check:registry` | **0** | 15 models, 3 tenant-owned, 1 tenant root, 11 global (run although not on the list) |
+
+### What changed, in files
+
+`git diff --stat main...HEAD`: **50 files changed, 4688 insertions, 19 deletions** — that count
+includes the orchestrator's own two pre-existing commits on this branch (ADR-0024 and the
+brief). The eight commits made by this implementer are `220cfb3`, `cfe1a1b`, `04c6d50`,
+`0488c16`, `337e035`, `9ff7e1e`, `83d76e9`, `469a903`.
+
+Verified by walking each of those eight commits' file lists: **none touches `.claude/`,
+`roadmap.md`, `apps/api/`, or `packages/db/`.** The only `.claude/` commit on the branch is
+`5cd6e73`, which predates this implementer.
+
+Files outside `apps/web` that were changed, and why:
+
+- `packages/ui/src/components/Field.tsx` — the `exactOptionalPropertyTypes` defect (brief:
+  "fix them in `packages/ui` rather than working around them in the page").
+- `vitest.workspace.ts` — the `ui` project's JSX transform.
+- `pnpm-lock.yaml` — the six dependencies.
+
+## What is NOT done, and is not claimed
+
+1. **The human-in-a-browser pass is outstanding.** The plan's verify line ends "and a human
+   loads each screen in a browser". That cannot be performed here and is not substituted for.
+   Playwright renders these pages in a real Chromium and asserts structure, headers and console
+   errors — it does not look at them. The Phase 1 note that five of the eight `packages/ui`
+   primitives have never been painted by a browser is **still open**; `Card`, `Input`, `Label`,
+   `Skeleton` and `Alert` are exercised by these screens under jsdom and Chromium but nobody has
+   looked at the result. Visual defects — contrast, spacing, focus-ring visibility, dark mode —
+   are exactly the class no test here covers.
+
+2. **No form has ever successfully talked to the API.** There is no API server behind either the
+   component specs or the E2E suite. The request paths, methods and bodies are asserted against
+   `apps/api/openapi.json`'s published surface and against the contract schemas, but the
+   round trip is Task 18's.
+
+3. **Redirect-back on session expiry is built as a mechanism, not yet wired to a caller.**
+   `isSessionExpiry` and `loginHrefForDestination` exist and are tested (redirect.spec.ts), and
+   `/login` honours a `next` parameter. Nothing calls `loginHrefForDestination` yet, because
+   there is no authenticated screen to be expired out of — the first one arrives with the app
+   shell. The consuming half is not claimed as done.
+
+4. **Not built, and not in the brief's table:** `/mfa/enroll` (Task 17) and
+   `/invitations/[token]`. `page-map.md` also lists a separate `/recovery`, which this task
+   deliberately did not build — one endpoint serves both code types, so it is one screen with a
+   mode switch. The brief says the orchestrator will correct `page-map.md`; this implementer did
+   not touch it.
+
+5. **`registerRequestSchema.name` is not collected** by `/register`. Reasoning in
+   `RegisterScreen.tsx`'s docblock: an empty text input submits `""`, which the contract's
+   `.min(1)` refuses, and massaging the value before validation would make this app the
+   authority on what a valid name is.
+
+6. **`axe-core` is not run.** `accessibility.md` §7 wants it in component tests and in
+   Playwright. It is not a dependency of this workspace and adding one is outside the brief's
+   approved list. Accessibility here is asserted by hand: labelled controls, `aria-describedby`
+   on errors, `aria-invalid`, focus to the first invalid field, a live region for form errors,
+   tab order, and no horizontal scroll at 375px.
+
+7. **The `apps/web` bundle-size budget** (`frontend.md` §7, "enforced in CI") does not exist yet
+   and this task did not add one. `react-hook-form` and `@hookform/resolvers` are new runtime
+   dependencies and nothing measured their cost.
