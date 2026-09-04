@@ -340,3 +340,38 @@ $ pnpm format:check                        EXIT=1 -> pnpm format -> EXIT=0
 $ pnpm vitest run --project ui --project unit apps/web
 EXIT=0   Test Files 11 passed (11)   Tests 171 passed (171)
 ```
+
+## Step 7 — end-to-end
+
+`apps/web/e2e/auth-screens.spec.ts`, 17 tests, alongside the existing 5 in `smoke.spec.ts`.
+
+```
+$ pnpm test:e2e
+EXIT=0
+22 passed (14.0s)
+```
+
+What it asserts, with no API server behind it (Playwright starts `apps/web` alone): each of the
+six routes renders its `<h1>`, produces **zero** console errors under an enforcing CSP, carries
+the security header table, and does not scroll horizontally at 375px; the login form's inputs
+are labelled and tab in visual order; and `connect-src` on a real response names the API origin
+and contains no wildcard.
+
+The full register -> verify -> login -> MFA journey is **Task 18's** and is not claimed here.
+
+### One e2e assertion was wrong, and the correction is worth recording
+
+The first version asserted the whole page HTML contained no `evil.example` after
+`/login?next=https://evil.example/login`. It failed, and the failure was the assertion's, not
+the code's: Next's RSC flight payload carries the raw parameter as the client component's
+`redirectTo` prop — measured in the failure output as
+`{"redirectTo":"https://evil.example/login"}`. That is the unvalidated value on its way to
+`safeRedirectPath`, and it belongs there.
+
+The assertion now checks what actually matters: no `href`, `src`, `action` or `meta[http-equiv]`
+on the page carries it, so nothing a browser will follow references it. The navigation itself is
+covered by `redirect.spec.ts` and `LoginScreen.spec.tsx`.
+
+The same failure output is independent evidence that ADR-0024's wiring works end to end: the
+payload contains `"apiBaseUrl":"http://localhost:3001"`, the value from `webEnvSchema`, reaching
+the client tree as a prop.
