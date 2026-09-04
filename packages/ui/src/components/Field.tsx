@@ -10,8 +10,19 @@ interface ControllableProps {
 
 export interface FieldProps extends Omit<HTMLAttributes<HTMLDivElement>, 'children'> {
   label: string;
-  description?: string;
-  error?: string;
+  /**
+   * `| undefined` is written out, and it is not noise.
+   *
+   * `tsconfig.base.json` sets `exactOptionalPropertyTypes`, under which
+   * `description?: string` means "absent, or a string" and REFUSES an explicit
+   * `undefined`. The natural call site for both of these is
+   * `error={errors.email?.message}` — a `string | undefined` — so without this
+   * the component could not be used the way every form in this product uses
+   * it, and the workaround would be spread-conditionals at each call site.
+   * Found by Task 16, the first task to render a real form against it.
+   */
+  description?: string | undefined;
+  error?: string | undefined;
   /** The form control. Wired to the label and to the description/error via aria-describedby. */
   children: ReactElement<ControllableProps>;
 }

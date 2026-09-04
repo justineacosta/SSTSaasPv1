@@ -194,3 +194,80 @@ EXIT=0
  Test Files  5 passed (5)
       Tests  121 passed (121)
 ```
+
+## Step 5 — the six screens
+
+Created under `apps/web/src/auth/` (components, so a `.spec.tsx` can reach them) and
+`apps/web/app/(auth)/` (thin route files):
+
+| Route file | Screen component | Endpoint |
+|---|---|---|
+| `app/(auth)/register/page.tsx` | `src/auth/RegisterScreen.tsx` | `POST /api/v1/auth/register` |
+| `app/(auth)/verify-email/page.tsx` | `src/auth/VerifyEmailScreen.tsx` | `verify-email` + `resend-verification` |
+| `app/(auth)/login/page.tsx` | `src/auth/LoginScreen.tsx` | `POST /api/v1/auth/login` |
+| `app/(auth)/login/mfa/page.tsx` | `src/auth/MfaScreen.tsx` | `POST /api/v1/auth/mfa/verify` |
+| `app/(auth)/forgot-password/page.tsx` | `src/auth/ForgotPasswordScreen.tsx` | `POST /api/v1/auth/forgot-password` |
+| `app/(auth)/reset-password/page.tsx` | `src/auth/ResetPasswordScreen.tsx` | `POST /api/v1/auth/reset-password` |
+
+Supporting modules: `src/auth/AuthCard.tsx` (shell + `FormErrorRegion`, which renders the
+request ID), `src/auth/PasswordField.tsx` (reveal toggle, no paste blocking),
+`src/auth/MfaChallengeProvider.tsx` (the in-memory `pendingToken` hand-off),
+`src/auth/server-errors.ts`, `src/auth/search-params.ts`.
+
+Wiring changed: `app/layout.tsx` passes `env.API_BASE_URL` to `Providers`; `app/providers.tsx`
+takes `apiBaseUrl` and wraps the tree in `ApiClientProvider`; `app/(auth)/layout.tsx` wraps its
+children in `MfaChallengeProvider`.
+
+### `pendingToken` does not go in the URL
+
+`MfaChallengeProvider` is rendered by the `(auth)` layout, which `/login` and `/login/mfa`
+share, so `router.push('/login/mfa')` keeps it mounted and the token crosses in memory. The
+cost is stated rather than hidden: a reload or a direct visit to `/login/mfa` loses the
+challenge, which is why that screen has a real empty state sending the user back to `/login`.
+The brief's escape hatch ("stop and report if you cannot make an in-memory hand-off survive the
+navigation") was **not** needed.
+
+### Two defects found in `packages/ui` by the first real form rendered against it
+
+1. **`FieldProps.description` and `FieldProps.error` were `?: string`.** Under
+   `tsconfig.base.json`'s `exactOptionalPropertyTypes`, that **refuses** an explicit
+   `undefined`, so the natural call site `error={errors.email?.message}` — a
+   `string | undefined` — does not compile. Eight `TS2375` errors across six screens, all from
+   this one declaration. Fixed in `packages/ui/src/components/Field.tsx` by writing
+   `| undefined` out, per the brief's instruction to fix `packages/ui` rather than work around
+   it in the page.
+
+```
+$ pnpm --filter @sentinel/web typecheck     # before the fix
+EXIT=2   9 errors (8 x TS2375 on FieldProps, 1 x TS2493 in a spec fixture)
+$ pnpm build:packages && pnpm --filter @sentinel/web typecheck    # after
+EXIT=0
+```
+
+2. Nothing else in `packages/ui` needed changing for these screens. Its API was otherwise
+   usable as written.
+
+### Build
+
+```
+$ pnpm --filter @sentinel/web build
+EXIT=0
+Route (app)
+ f /  f /_not-found  f /api/csp-report  f /api/health  f /dashboard
+ f /forgot-password  f /login  f /login/mfa  f /register  f /reset-password  f /verify-email
+```
+
+All six new routes present; all `f (Dynamic)`, which is what `force-dynamic` in the root layout
+requires of them (`architecture/frontend.md` §2).
+
+### Lint fixes made during this step
+
+- `apps/web/src/api/redirect.ts` needed an `eslint-disable-next-line no-control-regex` with a
+  written reason: the pattern matches control characters on purpose, which is what the rule
+  exists to catch happening by accident.
+- Two `no-unnecessary-type-assertion` errors in `client.spec.ts`, removed by `eslint --fix`.
+
+```
+$ npx eslint .    # in apps/web
+EXIT=0
+```

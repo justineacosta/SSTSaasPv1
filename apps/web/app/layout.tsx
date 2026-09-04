@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
 import './globals.css';
+import { env } from '../src/env';
 import { fontVariables } from './fonts';
 import { Providers } from './providers';
 
@@ -55,7 +56,11 @@ export default function RootLayout({ children }: { children: ReactNode }): React
   return (
     <html lang="en" className={fontVariables}>
       <body className="min-h-screen bg-[var(--color-bg)] text-[var(--color-text)] antialiased">
-        <Providers>{children}</Providers>
+        {/* ADR-0024: the API origin is read here, on the server, from the one
+            schema-validated declaration of it, and handed to the client tree as
+            a prop. Nothing in the browser bundle reads an environment
+            variable. */}
+        <Providers apiBaseUrl={env.API_BASE_URL}>{children}</Providers>
       </body>
     </html>
   );

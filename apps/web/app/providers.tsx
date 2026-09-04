@@ -2,6 +2,8 @@
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createApiClient } from '../src/api/client';
+import { ApiClientProvider } from '../src/api/provider';
 
 /** `system` follows the OS; the other two override it in both directions. */
 export type ThemePreference = 'light' | 'dark' | 'system';
@@ -48,11 +50,28 @@ function createQueryClient(): QueryClient {
   });
 }
 
-export function Providers({ children }: { children: ReactNode }): ReactNode {
+export function Providers({
+  apiBaseUrl,
+  children,
+}: {
+  /**
+   * The API origin, handed down from the root layout — a **server** component
+   * that read it from `webEnvSchema` (ADR-0024). It is a prop rather than a
+   * `NEXT_PUBLIC_` variable so there is one schema-validated declaration of the
+   * value, and so a missing one is a TypeScript error at build time rather than
+   * a `fetch` to `undefined/api/v1/auth/login` in somebody's browser.
+   */
+  apiBaseUrl: string;
+  children: ReactNode;
+}): ReactNode {
   // Created once per browser session, inside state rather than at module
   // scope: a module-scope client is shared across every request on the server
   // and would leak one user's cached data into another's render.
   const [queryClient] = useState(createQueryClient);
+
+  // Same reasoning, and the same lazy initialiser: one client per browser
+  // session, never one per render.
+  const [apiClient] = useState(() => createApiClient({ baseUrl: apiBaseUrl }));
 
   const [theme, setTheme] = useState<ThemePreference>('system');
   const [density, setDensity] = useState<Density>('comfortable');
@@ -84,7 +103,9 @@ export function Providers({ children }: { children: ReactNode }): ReactNode {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <AppearanceContext.Provider value={appearance}>{children}</AppearanceContext.Provider>
+      <ApiClientProvider client={apiClient}>
+        <AppearanceContext.Provider value={appearance}>{children}</AppearanceContext.Provider>
+      </ApiClientProvider>
     </QueryClientProvider>
   );
 }

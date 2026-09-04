@@ -20,6 +20,7 @@ export const REDIRECT_PARAM = 'next';
  * navigated to as `//evil.example`. Refusing the whole class outright is
  * cheaper than reasoning about which of them each browser strips.
  */
+/* eslint-disable-next-line no-control-regex -- matching control characters is the entire purpose of this pattern; the rule fires on them appearing by accident, which is the opposite of the case here. */
 const UNSAFE_CHARACTERS = new RegExp('[\\s\\u0000-\\u001F\\u007F-\\u009F]');
 
 /**

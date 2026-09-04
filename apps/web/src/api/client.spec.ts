@@ -152,16 +152,17 @@ describe('createApiClient — the wire', () => {
     const fetchImpl = vi.fn(() => Promise.resolve(jsonResponse({ status: 'OK' })));
     const client = createApiClient({
       baseUrl: 'https://api.sentinel.test/',
-      fetchImpl: fetchImpl as unknown as typeof fetch,
+      fetchImpl: fetchImpl,
       readCookieHeader: () => '',
     });
     await client.request({ method: 'GET', path: '/api/v1/thing', responseSchema: okSchema });
-    expect(fetchImpl.mock.calls.at(-1)?.[0]).toBe('https://api.sentinel.test/api/v1/thing');
+    const call = fetchImpl.mock.calls.at(-1) as unknown[] | undefined;
+    expect(call?.[0]).toBe('https://api.sentinel.test/api/v1/thing');
   });
 
   it('serialises the body as JSON and sets the content type only when there is one', async () => {
     const fetchImpl = vi.fn(() => Promise.resolve(jsonResponse({ status: 'OK' })));
-    const client = clientWith(fetchImpl as unknown as typeof fetch);
+    const client = clientWith(fetchImpl);
 
     await client.request({
       method: 'POST',
