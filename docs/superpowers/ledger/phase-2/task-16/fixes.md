@@ -99,3 +99,56 @@ AssertionError: input "/..//evil.example" returned "//evil.example": expected tr
 AssertionError: input "/..//evil.example" produced "/login?next=%2F%2Fevil.example":
   expected '/login?next=%2F%2Fevil.example' not to contain 'evil.example'
 ```
+
+## Step 2 — H1's fix, and the mutations that prove the tests bite
+
+`apps/web/src/api/redirect.ts`, inside the `try`, after the origin check
+(`75a4c90`):
+
+```ts
+    const path = `${resolved.pathname}${resolved.search}${resolved.hash}`;
+    if (!path.startsWith('/')) return fallback;
+    if (path.startsWith('//')) return fallback;
+    return path;
+```
+
+Two lines added, one `return` split into a named value. No guard above it
+changed, no blacklist added. The docblock gains the paragraph saying the shape
+rule is applied a second time to the returned value and why the input guards
+cannot cover the class.
+
+```
+$ npx vitest run --project unit apps/web/src/api/redirect.spec.ts
+EXIT=0
+ Test Files  1 passed (1)
+      Tests  48 passed (48)
+```
+
+Mutations, each applied to the tree at `75a4c90` with `perl -0pi -e`, run, then
+`git checkout --` to restore:
+
+| # | Mutation | Result | Exit |
+|---|---|---|---|
+| M-a | delete `if (path.startsWith('//')) return fallback;` | **15 failed \| 33 passed (48)** — killed | 1 |
+| M-b | delete `if (!path.startsWith('/')) return fallback;` | 48 passed (48) — **survives** | 0 |
+| M-c | delete both output checks (the fix, fully reverted) | **15 failed \| 33 passed (48)** — killed | 1 |
+| M-d | pre-fix-round spec against pre-fix-round `redirect.ts` | 33 passed (33) — the defect, green | 0 |
+| M-e | pre-fix-round spec against fixed `redirect.ts` | 33 passed (33) | 0 |
+
+M-a and M-c are the proof the new tests bite: with the fix reverted the 15
+tests added in `f7c34d3` go red, and they name the input in the failure
+message.
+
+**M-b survives, and it is reported rather than hidden.** No input can kill it.
+`URL.pathname` for a special-scheme URL is specified always to begin with `/`,
+so `path.startsWith('/')` cannot be false after the origin check has passed,
+and no test can distinguish the line's presence. It is kept because the brief's
+rule is a shape — starts with `/`, does not start with `//` — and half a shape
+rule invites the next reader to ask which half mattered. It is a second line
+against a future parser, not a tested behaviour, and is recorded here as an
+untested line rather than claimed as a covered one.
+
+**M-d and M-e together are M1.** The pre-fix-round spec is green on the
+vulnerable implementation *and* green on the fixed one: 33 passed both times,
+identical. It could not distinguish them. That is what "the test that looks
+like the guard and is not" means, measured rather than argued.
