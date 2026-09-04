@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { enforceCsp } from './src/env';
+import { apiOrigin, enforceCsp } from './src/env';
 import { buildSecurityHeaders } from './src/security-headers';
 
 /**
@@ -37,7 +37,11 @@ export function proxy(request: NextRequest): NextResponse {
   // randomUUID() is CSPRNG-backed; base64 keeps it to the token grammar
   // `nonce-` expects.
   const nonce = Buffer.from(crypto.randomUUID()).toString('base64');
-  const headers = buildSecurityHeaders(nonce, enforceCsp);
+  // The third argument widens `connect-src` by exactly the API origin. Without
+  // it the policy is `connect-src 'self'` and every cross-origin call the auth
+  // screens make is blocked by the browser before it leaves — see the directive's
+  // comment in src/security-headers.ts.
+  const headers = buildSecurityHeaders(nonce, enforceCsp, apiOrigin);
 
   const cspHeaderName = enforceCsp
     ? 'Content-Security-Policy'
