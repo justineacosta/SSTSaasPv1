@@ -152,3 +152,78 @@ untested line rather than claimed as a covered one.
 vulnerable implementation *and* green on the fixed one: 33 passed both times,
 identical. It could not distinguish them. That is what "the test that looks
 like the guard and is not" means, measured rather than argued.
+
+## Step 3 — L1, the third parameter reduced to an origin inside the function
+
+Measured first, because two of the three rejections exist only because of what
+this measurement says. `new URL(x).origin` for the values a second call site
+could plausibly pass:
+
+```
+$ node <scratchpad>/origin.mjs
+EXIT=0
+"http://localhost:3001/"                      -> "http://localhost:3001"
+"https://api.sentinel.example/v1/auth"        -> "https://api.sentinel.example"
+"https://api.sentinel.example:443"            -> "https://api.sentinel.example"
+"https://api.sentinel.example:8443"           -> "https://api.sentinel.example:8443"
+"https://user:pass@api.sentinel.example"      -> "https://api.sentinel.example"
+"*"                                           -> THROWS (TypeError)
+"https:"                                      -> THROWS (TypeError)
+"'self' data:"                                -> THROWS (TypeError)
+"api.sentinel.example"                        -> THROWS (TypeError)
+"//evil.example"                              -> THROWS (TypeError)
+"https://api.example https://evil.example"    -> THROWS (TypeError)
+"https://api.sentinel.example; script-src *"  -> THROWS (TypeError)
+"https://*"                                   -> "https://*"
+"javascript:alert(1)"                         -> "null"
+"data:text/html,x"                            -> "null"
+```
+
+The last three are the reason "parse it and take `.origin`" is not by itself
+the check it looks like: a wildcard host parses and its origin *is* the
+wildcard, and a `javascript:`/`data:` URL parses to the opaque origin `null`.
+So the function is parse + http(s) scheme + no `*`, and omits the source when
+any of the three fails.
+
+`apps/web/src/security-headers.ts` (`d8e244d`): new module-private
+`apiOriginSource()`; `buildSecurityHeaders` now calls
+`buildContentSecurityPolicy(nonce, enforceCsp, apiOriginSource(apiOrigin))`.
+No directive other than `connect-src` is touched, and `proxy.ts` is unchanged.
+
+`apps/web/src/security-headers.spec.ts`: 24 tests added in one new `describe`
+— 7 well-formed inputs with the origin each must reduce to, 15 refused values
+each asserted to leave `connect-src 'self'` exactly as narrow as with no API
+origin at all, and 2 class-wide assertions (no `*`, no second source, exactly
+two tokens; and a whole-list diff proving every other directive is byte-equal
+to the narrow policy for all 22 inputs).
+
+```
+$ npx vitest run --project unit apps/web/src/security-headers.spec.ts   # before the fix
+EXIT=1
+ Test Files  1 failed (1)
+      Tests  22 failed | 17 passed (39)
+
+$ npx vitest run --project unit apps/web/src/security-headers.spec.ts   # after
+EXIT=0
+ Test Files  1 passed (1)
+      Tests  39 passed (39)
+```
+
+Mutations, each applied to the tree at `d8e244d`, run, then `git checkout --`:
+
+| # | Mutation | Result | Exit |
+|---|---|---|---|
+| L-a | drop `if (parsed.protocol !== 'https:' && !== 'http:')` | 3 failed \| 36 passed — killed | 1 |
+| L-b | drop `if (parsed.origin.includes('*'))` | 3 failed \| 36 passed — killed | 1 |
+| L-c | drop the `try`/`catch` around `new URL` | 13 failed \| 26 passed — killed | 1 |
+| L-d | pass `apiOrigin` through raw (the fix, fully reverted) | 22 failed \| 17 passed — killed | 1 |
+
+Every line of `apiOriginSource` is killed by at least one test. Baseline for
+the arithmetic: the file held 15 tests before this round, 39 after.
+
+**Procedural note, recorded because it invalidated a measurement.** The first
+attempt at these four mutations ran with the L1 implementation still
+uncommitted, so the `git checkout --` that restored mutation L-a also deleted
+the fix; L-b and L-d then ran against the unfixed file and their numbers were
+meaningless. The implementation was committed first and all four re-run. The
+table above is the re-run.
