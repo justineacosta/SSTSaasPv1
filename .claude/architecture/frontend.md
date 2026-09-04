@@ -2,14 +2,34 @@
 
 > **Status: Partially Implemented.** `apps/web` exists (Task 13): a Next.js 16 App Router
 > shell with the three route groups from §1, self-hosted IBM Plex through `next/font`, the
-> design system's tokens, TanStack Query and an appearance context (§3 partially — the
-> provider is wired, no query is issued because there is no API to call), and the security
-> header table with a per-request CSP nonce. §4 (forms), §5 (permissions), §6 (the six
-> required states), §7 (performance budgets) and §8 (the component tree) are **Not
-> Implemented** — they arrive with the features that need them. The only pages are a
-> marketing landing page and an `(app)` placeholder that says the product is not built.
+> design system's tokens, TanStack Query and an appearance context, and the security header
+> table with a per-request CSP nonce.
 >
-> **§2 is not yet honoured, deliberately — see the note at the end of §2.**
+> **Task 16 added the six authentication screens** — `/register`, `/verify-email`, `/login`,
+> `/login/mfa`, `/forgot-password`, `/reset-password` — and with them the first real API
+> client: `credentials: 'include'`, `X-CSRF-Token` echoed from the `__Host-csrf` cookie on
+> unsafe methods, every response parsed with its `packages/contracts` schema, and the error
+> envelope's `details.fields` mapped to field-level errors. **§4 (forms) is now Implemented for
+> these screens**, and **§6's four applicable states** — loading, empty, error, success — are
+> built on each of them; permission and partial do not apply to an unauthenticated form.
+> **§5 (permissions) and §7 (performance budgets) remain Not Implemented**, and §8's component
+> tree is only partly populated: these screens live under `apps/web/src/auth/` rather than the
+> `components/` layout §8 describes, because `vitest.workspace.ts`'s specs globs reach
+> `apps/*/src` and not `apps/*/app`.
+>
+> **No form here has yet talked to a running API.** Neither test suite has one behind it; the
+> live round trip is Task 18's. **§3 is still unexercised** — TanStack Query is wired and these
+> screens issue no query, because an unauthenticated form posts rather than reads.
+>
+> **§2 is not yet honoured, deliberately — see the note at the end of §2.** Every route,
+> including the six new ones, is `force-dynamic`.
+>
+> **One security control lives on these screens**, stated here because the rest of this
+> document's "the UI is not a security boundary" framing would otherwise make it invisible:
+> the post-login redirect target is attacker-controlled input the server never sees, so
+> `safeRedirectPath` validates it. Task 16's review found it returning `//evil.example` for
+> `/..//evil.example` — the guards ran against the input and the function returned a
+> *normalised* value. Fixed by re-applying the shape rule to what is returned.
 
 Next.js App Router, TypeScript strict, Tailwind, shadcn/ui, TanStack Query, React Hook Form
 with Zod.

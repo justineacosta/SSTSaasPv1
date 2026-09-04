@@ -136,9 +136,22 @@ The report that produced it named
 `/invitations/9f8b7c6d5e4f3a2b1c0d9e8f?token=live-secret` as its `document-uri` and
 `/reset-password?token=another` as its `referrer`. Neither token reached the log.
 
-The web origin's `connect-src` is also `'self'` today. `API_BASE_URL` is a different origin
-(`:3001`) in local development, so the first browser fetch to the API will need it added —
-Phase 2's problem, noted here so it is not a surprise. `Cache-Control:
+**The web origin's `connect-src` names the API origin as of Task 16, and it had to.** It was
+`'self'` alone until then, which was correct only while no page called the API: `API_BASE_URL`
+is a different origin (`:3001` locally), so ADR-0017's direct cross-origin fetch was blocked by
+this policy in **every environment where the CSP enforces** — which includes the Playwright
+suite, because `start:e2e` pins `APP_ENV=test` and `enforceCsp` is `APP_ENV !== 'development'`.
+The screens could not have reached the API anywhere but `pnpm dev`.
+
+`buildSecurityHeaders` therefore takes an optional third argument, and reduces it to an origin
+**inside the function** rather than trusting the caller: it parses the value, requires an
+`http:` or `https:` scheme, rejects a host containing `*`, and omits the source entirely if any
+of that fails. Both rejections are there because measurement contradicted the obvious "just take
+`.origin`" — `new URL('https://*').origin` is `https://*`, and `new URL('javascript:alert(1)').origin`
+is the string `null`. With the argument omitted the emitted header is byte-identical to what it
+was before, verified against the extracted pre-change implementation in both enforcing and
+report-only mode. One directive changes when it is supplied; no other directive was touched, and
+`'unsafe-inline'` and `'unsafe-eval'` remain absent throughout. `Cache-Control:
 no-store` is sent on every API response rather than only authenticated ones, and Express's
 default `ETag` is disabled: a revalidation token for a response the client was told not to
 store is a contradiction, and computing it means hashing tenant data on every request.

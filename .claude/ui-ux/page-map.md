@@ -9,8 +9,9 @@ Two URLs now answer, and neither counts as a shipped route. `/` renders a market
 page that describes the product and says outright that nothing on it is a demo. `/dashboard`
 renders a placeholder that says the product is not built and names the current phase — it is
 not the `/dashboard` in the `(app)` table below, which is a live-metrics view committed to
-Phase 5, and it deliberately shows no mock product UI. `(auth)` has a layout and no routes at
-all. See [`../product/roadmap.md`](../product/roadmap.md).
+Phase 5, and it deliberately shows no mock product UI. **`(auth)` holds six routes as of Task
+16** — `/register`, `/verify-email`, `/login`, `/login/mfa`, `/forgot-password` and
+`/reset-password`. See [`../product/roadmap.md`](../product/roadmap.md).
 
 ## Marketing — `(marketing)`
 
@@ -43,11 +44,20 @@ SEO: per-route metadata, OpenGraph and Twitter cards, JSON-LD (`Organization`,
 | `/register` | 2 |
 | `/forgot-password`, `/reset-password` | 2 |
 | `/verify-email` | 2 |
-| `/mfa` — challenge against the pending session | 2 |
+| `/login/mfa` — challenge against the pending session, **and recovery-code entry** | 2 |
 | `/mfa/enroll` — QR, verify, recovery codes shown once | 2 |
-| `/recovery` — recovery code entry | 2 |
 | `/invitations/[token]` — accept, sign in or register as the invited address | 2 |
 | `/sso/[slug]` — SSO initiation | 11 |
+
+**Two rows in this table were wrong until Task 16 built them, and the corrections are recorded
+rather than silently applied.** The challenge screen is `/login/mfa`, not `/mfa` — it is reached
+only from `/login`, and the pending credential crosses that step in memory through the shared
+`(auth)` layout, which is what keeps a credential out of the URL. And **`/recovery` is not a
+separate route**: `POST /api/v1/auth/mfa/verify` accepts a six-digit TOTP code *or* one of the
+ten recovery codes on the same field, so recovery is a mode switch on the challenge screen —
+one that also swaps the input's `inputMode` and `autocomplete`, since a recovery code is not
+numeric and is not a one-time-code. Two routes for one endpoint would have been two screens to
+keep in step for no gain.
 
 ## Onboarding — `(onboarding)`
 
