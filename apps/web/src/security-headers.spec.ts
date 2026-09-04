@@ -104,9 +104,8 @@ describe('buildSecurityHeaders', () => {
 
     it('names the API origin exactly once when one is supplied', () => {
       const csp =
-        buildSecurityHeaders('abc123', true, 'http://localhost:3001')[
-          'Content-Security-Policy'
-        ] ?? '';
+        buildSecurityHeaders('abc123', true, 'http://localhost:3001')['Content-Security-Policy'] ??
+        '';
       expect(csp.split('; ')).toContain("connect-src 'self' http://localhost:3001");
     });
 

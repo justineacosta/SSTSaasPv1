@@ -70,6 +70,7 @@ export function MfaChallengeProvider({ children }: { children: ReactNode }): Rea
  */
 export function useMfaChallenge(): MfaChallengeStore {
   const store = useContext(MfaChallengeContext);
-  if (store === null) throw new Error('useMfaChallenge must be used inside <MfaChallengeProvider>.');
+  if (store === null)
+    throw new Error('useMfaChallenge must be used inside <MfaChallengeProvider>.');
   return store;
 }

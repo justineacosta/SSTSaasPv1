@@ -89,7 +89,8 @@ export function VerifyEmailScreen({ token }: { token: string | null }): ReactNod
     );
   }
 
-  const heading = status === 'no-token' ? 'This link is incomplete' : 'We could not verify that link';
+  const heading =
+    status === 'no-token' ? 'This link is incomplete' : 'We could not verify that link';
 
   return (
     <AuthCard
