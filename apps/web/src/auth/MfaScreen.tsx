@@ -10,7 +10,7 @@ import { useForm } from 'react-hook-form';
 import { verifyMfa } from '../api/auth-endpoints';
 import { useApiClient } from '../api/provider';
 import { AuthCard } from './AuthCard';
-import { useMfaChallenge } from './MfaChallengeProvider';
+import { useMfaChallenge, type MfaChallenge } from './MfaChallengeProvider';
 import { applyServerErrors, type FormFailure } from './server-errors';
 
 const FIELDS = ['code'] as const;
@@ -37,9 +37,47 @@ const FIELDS = ['code'] as const;
 type CodeMode = 'totp' | 'recovery';
 
 export function MfaScreen(): ReactNode {
+  const { challenge, clearChallenge } = useMfaChallenge();
+
+  // The empty state, and a real one rather than a defensive branch. The pending
+  // credential lives in memory only (MfaChallengeProvider), so a reload or a
+  // direct visit arrives here with nothing to verify. Saying so and offering the
+  // way back beats a form that can only fail.
+  if (challenge === null) {
+    return (
+      <AuthCard title="Start again" footer={<Link href="/login">Back to sign in</Link>}>
+        <Alert variant="warning">
+          <span>
+            This sign-in attempt is no longer in progress. For your security the pending credential
+            is held in memory only, so reloading this page or opening it directly ends it. Sign in
+            again to get a new challenge.
+          </span>
+        </Alert>
+      </AuthCard>
+    );
+  }
+
+  // A separate component, and the split is load-bearing rather than tidiness.
+  //
+  // React Hook Form reads `defaultValues` ONCE, on the render that first
+  // creates the form. With the hook in the outer component it ran while
+  // `challenge` was still null, so `pendingToken` was permanently `''` and the
+  // contract's `.min(1)` refused every submission — a form that could only ever
+  // fail client-side, on a screen whose whole job is to submit that token.
+  // Mounting the form only once there is a challenge means its default is the
+  // real value. Found by LoginScreen.spec.tsx's hand-off test, not by reading.
+  return <MfaChallengeForm challenge={challenge} onVerified={clearChallenge} />;
+}
+
+function MfaChallengeForm({
+  challenge,
+  onVerified,
+}: {
+  challenge: MfaChallenge;
+  onVerified: () => void;
+}): ReactNode {
   const client = useApiClient();
   const router = useRouter();
-  const { challenge, clearChallenge } = useMfaChallenge();
   const [failure, setFailure] = useState<FormFailure | null>(null);
   const [mode, setMode] = useState<CodeMode>('totp');
 
@@ -51,34 +89,16 @@ export function MfaScreen(): ReactNode {
     formState: { errors, isSubmitting },
   } = useForm<MfaVerifyRequest>({
     resolver: zodResolver(mfaVerifyRequestSchema),
-    defaultValues: { pendingToken: challenge?.pendingToken ?? '', code: '' },
+    defaultValues: { pendingToken: challenge.pendingToken, code: '' },
     mode: 'onBlur',
     reValidateMode: 'onChange',
   });
-
-  // The empty state, and a real one rather than a defensive branch. The pending
-  // credential lives in memory only (MfaChallengeProvider), so a reload or a
-  // direct visit arrives here with nothing to verify. Saying so and offering the
-  // way back beats a form that can only fail.
-  if (challenge === null) {
-    return (
-      <AuthCard title="Start again" footer={<Link href="/login">Back to sign in</Link>}>
-        <Alert variant="warning">
-          <span>
-            This sign-in attempt is no longer in progress. For your security the pending
-            credential is held in memory only, so reloading this page or opening it directly ends
-            it. Sign in again to get a new challenge.
-          </span>
-        </Alert>
-      </AuthCard>
-    );
-  }
 
   const submit = handleSubmit(async (values) => {
     setFailure(null);
     try {
       await verifyMfa(client, values);
-      clearChallenge();
+      onVerified();
       router.replace(challenge.redirectTo);
     } catch (error) {
       setFailure(applyServerErrors<MfaVerifyRequest>(error, FIELDS, setError));

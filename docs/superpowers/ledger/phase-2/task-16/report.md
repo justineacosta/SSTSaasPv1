@@ -271,3 +271,72 @@ requires of them (`architecture/frontend.md` §2).
 $ npx eslint .    # in apps/web
 EXIT=0
 ```
+
+## Step 6 — component specs
+
+Six `*.spec.tsx` under `apps/web/src/auth/`, plus `render-helpers.tsx` (test-only, not a spec,
+not reachable from any route).
+
+```
+$ pnpm vitest run --project ui apps/web/src/auth
+EXIT=0
+ Test Files  6 passed (6)
+      Tests  50 passed (50)
+```
+
+Coverage per the brief: each screen's four states; the login `mfaRequired` branch both ways;
+a server field error landing on the right input with `aria-describedby` intact; the redirect
+rejection cases at the screen level as well as in the validator's own spec.
+
+The stub client **parses every fixture with the endpoint's contract schema** before returning
+it, so a spec cannot assert against a shape the API is incapable of sending.
+
+### Two more defects, both found by running the specs rather than by reading
+
+**1. `apps/web` component specs were compiled with the CLASSIC JSX transform.** Vitest's esbuild
+reads `jsx` from the nearest tsconfig. `packages/ui` sets `"jsx": "react-jsx"` and got the
+automatic runtime; `apps/web` sets `"jsx": "preserve"` — correct for it, since Next's SWC
+pipeline does the transform — so esbuild emitted `React.createElement` into files that never
+import React.
+
+```
+$ pnpm vitest run --project ui apps/web/src/auth     # first run
+EXIT=1
+ Tests  14 failed (14)     all with: ReferenceError: React is not defined
+```
+
+Fixed in `vitest.workspace.ts` by declaring `esbuild: { jsx: 'automatic' }` on the `ui`
+project, so the answer is the same for every spec that project runs instead of depending on
+which package the spec happens to live in. `packages/ui`'s specs were already getting exactly
+this; the line makes it explicit. All 137 spec files still resolve to exactly one project
+(`pnpm check:specs`).
+
+**2. `MfaScreen` could never submit.** React Hook Form reads `defaultValues` once, on the render
+that creates the form. The hook ran while `challenge` was still `null`, so `pendingToken` was
+permanently `''`, and `mfaVerifyRequestSchema`'s `.min(1)` refused every submission client-side
+— a screen whose only job is to submit that token could not submit it. Caught by
+`LoginScreen.spec.tsx`'s hand-off test:
+
+```
+× LoginScreen — the pending credential never reaches a URL
+  > hands the challenge to /login/mfa, which then verifies with the same token
+  -> expected "spy" to be called with arguments: [ '/assets' ]
+```
+
+Fixed by splitting the form into `MfaChallengeForm`, mounted only once a challenge exists.
+
+**3. jest-dom's matcher types did not reach `apps/web`.** They are registered at runtime by
+`packages/ui/src/test-setup.ts`, whose type augmentation is scoped to packages/ui's tsconfig.
+`tsc` reported 60 `TS2339` errors on assertions that all pass at runtime. Fixed with
+`apps/web/src/vitest-matchers.d.ts`, a one-line side-effect import.
+
+### After the fixes
+
+```
+$ pnpm --filter @sentinel/web typecheck   EXIT=0
+$ pnpm lint                                EXIT=0
+$ pnpm check:specs                         EXIT=0  (137 spec files, each claimed by exactly one project)
+$ pnpm format:check                        EXIT=1 -> pnpm format -> EXIT=0
+$ pnpm vitest run --project ui --project unit apps/web
+EXIT=0   Test Files 11 passed (11)   Tests 171 passed (171)
+```

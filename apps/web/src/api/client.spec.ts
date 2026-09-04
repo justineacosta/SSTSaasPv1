@@ -1,4 +1,8 @@
-import { errorEnvelopeSchema, loginResponseSchema, sessionResponseSchema } from '@sentinel/contracts';
+import {
+  errorEnvelopeSchema,
+  loginResponseSchema,
+  sessionResponseSchema,
+} from '@sentinel/contracts';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {

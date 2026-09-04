@@ -75,6 +75,22 @@ export default defineWorkspace([
   // still need that package added as an apps/web devDependency; that's
   // Task 13's to add when the app package exists.
   {
+    // The JSX transform, declared here rather than inherited from whichever
+    // package a spec happens to live in. Vitest's esbuild reads `jsx` out of
+    // the nearest tsconfig: packages/ui sets `"jsx": "react-jsx"` and got the
+    // automatic runtime for free, while apps/web sets `"jsx": "preserve"`
+    // (correct for it — Next's own SWC pipeline does the transform, see
+    // apps/web/tsconfig.json) and esbuild fell back to the CLASSIC transform,
+    // which emits `React.createElement` into a file that never imported React.
+    // Measured on the first apps/web component spec: 14 of 14 tests failed with
+    // `ReferenceError: React is not defined`, at the `render(...)` call.
+    //
+    // Declared at the project level so the answer is the same for every spec
+    // this project runs, and so a package's own build-time JSX setting — which
+    // is its business, and differs for good reasons — cannot decide how its
+    // tests are compiled. packages/ui's specs were already getting exactly
+    // this; the line makes that explicit rather than incidental.
+    esbuild: { jsx: 'automatic' },
     test: {
       name: 'ui',
       include: ['packages/*/src/**/*.spec.tsx', 'apps/*/src/**/*.spec.tsx'],
