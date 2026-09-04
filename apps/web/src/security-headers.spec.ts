@@ -156,7 +156,11 @@ describe('buildSecurityHeaders', () => {
 
     /** Well-formed inputs, and the single origin each must be reduced to. */
     const reduced: readonly [string, string, string][] = [
-      ['an origin already in origin form', 'https://api.sentinel.example', 'https://api.sentinel.example'],
+      [
+        'an origin already in origin form',
+        'https://api.sentinel.example',
+        'https://api.sentinel.example',
+      ],
       ['a trailing slash', 'http://localhost:3001/', 'http://localhost:3001'],
       ['a path', 'https://api.sentinel.example/v1/auth', 'https://api.sentinel.example'],
       [
@@ -169,8 +173,16 @@ describe('buildSecurityHeaders', () => {
         'https://user:pass@api.sentinel.example',
         'https://api.sentinel.example',
       ],
-      ['the scheme default port', 'https://api.sentinel.example:443', 'https://api.sentinel.example'],
-      ['a non-default port, which is part of the origin', 'https://api.sentinel.example:8443', 'https://api.sentinel.example:8443'],
+      [
+        'the scheme default port',
+        'https://api.sentinel.example:443',
+        'https://api.sentinel.example',
+      ],
+      [
+        'a non-default port, which is part of the origin',
+        'https://api.sentinel.example:8443',
+        'https://api.sentinel.example:8443',
+      ],
     ];
 
     for (const [label, input, origin] of reduced) {
