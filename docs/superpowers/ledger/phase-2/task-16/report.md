@@ -95,3 +95,57 @@ matching Vitest project. `vitest.workspace.ts`'s `ui` project include glob is
 `apps/*/src/**/*.spec.tsx`. A `.spec.tsx` placed under `apps/web/app/` would match **zero**
 projects and fail `pnpm check:specs`. Therefore the screen components live under
 `apps/web/src/` and `app/(auth)/*/page.tsx` are thin route files.
+
+## Step 2 — dependencies added
+
+```
+$ pnpm --filter @sentinel/web add @sentinel/contracts@workspace:* react-hook-form@^7.54.0 @hookform/resolvers@^3.10.0
+EXIT=0
+$ pnpm --filter @sentinel/web add -D @testing-library/react@^16.0.0 @testing-library/jest-dom@^6.6.0 @testing-library/user-event@^14.5.0
+EXIT=0
+```
+
+Resolved into `apps/web/package.json`:
+
+- dependencies: `@hookform/resolvers ^3.10.0`, `@sentinel/contracts workspace:*`,
+  `react-hook-form ^7.87.0`
+- devDependencies: `@testing-library/jest-dom ^6.10.0`, `@testing-library/react ^16.3.2`,
+  `@testing-library/user-event ^14.6.5`
+
+All six are on the brief's expected list. Nothing beyond it was added. No
+`ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION` (ADR-0013); both installs exited 0.
+`pnpm-workspace.yaml` was **not** modified — no `minimumReleaseAgeExclude` entry appeared.
+
+## Step 3 — the API client and its unit tests
+
+Files created under `apps/web/src/api/`:
+
+| File | What it is |
+|---|---|
+| `client.ts` | `createApiClient`, `readCookie`, `isSafeMethod`, `CSRF_COOKIE_NAME`, `CSRF_HEADER_NAME` |
+| `errors.ts` | `ApiError` (kind / status / code / requestId / fieldErrors), `toApiError`, `readFieldErrors` |
+| `field-errors.ts` | `rootSegment`, `distributeFieldErrors`, `formLevelMessage`, `serverFormErrors` |
+| `redirect.ts` | `safeRedirectPath`, `loginHrefForDestination`, `isSessionExpiry` |
+| `auth-endpoints.ts` | the eight auth calls, each bound to its contract response schema |
+| `provider.tsx` | `ApiClientProvider` / `useApiClient` (ADR-0024's context) |
+| `client.spec.ts`, `field-errors.spec.ts`, `redirect.spec.ts` | unit tests |
+
+```
+$ pnpm vitest run --project unit apps/web/src/api
+EXIT=0
+ apps/web/src/api/field-errors.spec.ts (15 tests)
+ apps/web/src/api/redirect.spec.ts     (33 tests)
+ apps/web/src/api/client.spec.ts       (24 tests)
+ Test Files  3 passed (3)
+      Tests  72 passed (72)
+```
+
+One test failed on first run and the failure was real, not a harness problem:
+`sessionResponseSchema` rejected the fixture's `userId` because
+`packages/contracts/src/ids.ts:8` requires 26 Crockford-base32 characters after the prefix and
+the fixture had 25. Fixed the fixture, not the schema. Recorded because it is direct evidence
+that the client parses responses rather than casting them.
+
+No `NEXT_PUBLIC_` variable was introduced and no module in `apps/web/src/api` reads
+`process.env` (ADR-0024): `grep -rn "process.env\|NEXT_PUBLIC" apps/web/src/api` returns
+nothing.
