@@ -48,6 +48,22 @@ const UNSAFE_CHARACTERS = new RegExp('[\\s\\u0000-\\u001F\\u007F-\\u009F]');
  * - and must still resolve to the same origin under the platform's own URL
  *   parser, which is the authority on what the browser will actually do.
  *
+ * **And then the same shape rule is applied a second time, to the value being
+ * returned.** This is not belt-and-braces; it is the rule that was missing.
+ * Every guard above inspects `raw`, and `raw` is not what this function
+ * returns — it returns the *resolved* path, which the URL parser has
+ * normalised. Dot-segment removal can manufacture a leading `//` that appeared
+ * nowhere in the string the guards saw: `/..//evil.example` passes all five
+ * guards, resolves same-origin (correctly — the resolution genuinely is
+ * same-origin), and normalises to `//evil.example`, which every browser then
+ * reads as another host. A validator that checks its input and returns
+ * something else has not validated what it returned.
+ *
+ * The re-check is deliberately the same whitelist and not a blacklist of
+ * dot-segment spellings. `/..//`, `/.//`, `/%2e%2e//`, `/a/../..//` and
+ * whatever the next parser revision normalises are all one class, and only the
+ * output check covers the class.
+ *
  * Anything else is replaced by the fallback rather than refused: the user asked
  * to sign in, and should end up signed in.
  */
@@ -67,7 +83,13 @@ export function safeRedirectPath(
   try {
     const resolved = new URL(raw, probeOrigin);
     if (resolved.origin !== probeOrigin) return fallback;
-    return `${resolved.pathname}${resolved.search}${resolved.hash}`;
+
+    // The output check. `resolved.pathname` is normalised, `raw` is not, and
+    // every guard above ran against `raw`. See the docblock.
+    const path = `${resolved.pathname}${resolved.search}${resolved.hash}`;
+    if (!path.startsWith('/')) return fallback;
+    if (path.startsWith('//')) return fallback;
+    return path;
   } catch {
     return fallback;
   }
