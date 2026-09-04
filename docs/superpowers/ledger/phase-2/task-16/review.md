@@ -12,8 +12,8 @@ appear before they are complete; the final commit is the complete document.
 ## Status
 
 - [~] Pass 1 — citation: every factual claim in `report.md` re-verified
-- [ ] Pass 2 — `0488c16`, the unauthorised CSP change
-- [ ] Pass 3 — the two surviving redirect mutations
+- [x] Pass 2 — `0488c16`, the unauthorised CSP change — **keep**, with L1
+- [x] Pass 3 — the two surviving redirect mutations — see H1
 - [ ] Pass 4 — CSRF, `pendingToken`, response parsing, secrets in logs
 - [ ] Pass 5 — the four claimed defect fixes
 - [ ] Pass 6 — documentation the change makes false
@@ -143,6 +143,80 @@ the report read them as a signal that the code was over-protected.
 Not fixed here (reviewers do not fix). For the fix round, the shape of the defect is that the
 function validates `raw` and then returns a *different* string; whatever guards are chosen, the
 **returned** value is what must be re-checked.
+
+### Verdict on `0488c16` (the unauthorised CSP change): **keep it**
+
+Judged on the four questions the review brief poses.
+
+**1. Is the stated problem real? Yes.** `apps/web/src/security-headers.ts` at `e6a9c68` emitted
+`connect-src 'self'` unconditionally, and `enforceCsp` is `env.APP_ENV !== 'development'`
+(`apps/web/src/env.ts:34`), while `apps/web/package.json:11` pins `start:e2e` to
+`-v APP_ENV=test`. So the Playwright suite runs under an **enforcing** policy, and ADR-0017's
+cross-origin `fetch` to `API_BASE_URL` would have been blocked in every environment except a
+developer's laptop. Confirmed by the built directive list below: the base policy has exactly
+`connect-src 'self'` and nothing else.
+
+**2. Is the fix minimal? Yes — and byte-identity is now proved against the base commit, which
+is more than the spec proves.** `git show e6a9c68:apps/web/src/security-headers.ts` was extracted
+to a file and both implementations were called side by side:
+
+```
+$ node --experimental-strip-types cmp.mts
+enforce=true  identical-headers=true
+  policy identical (apiOrigin omitted): true
+  widened-vs-base differing directives: ["connect-src 'self' https://api.example"]
+  same directive count: true 12
+  unsafe-inline present: false | unsafe-eval present: false
+enforce=false identical-headers=true
+  policy identical (apiOrigin omitted): true
+  widened-vs-base differing directives: ["connect-src 'self' https://api.example"]
+  same directive count: true 11
+  unsafe-inline present: false | unsafe-eval present: false
+```
+
+The whole `Record<string, string>` of headers is identical when `apiOrigin` is omitted, in both
+enforcing and report-only mode; with it supplied, exactly one of 12 (resp. 11) directives differs;
+`'unsafe-inline'` and `'unsafe-eval'` are absent in every combination. **No other directive
+changed.**
+
+**3. Can the new parameter widen the policy unintendedly? Not at today's only call site.**
+`apps/web/proxy.ts:44` passes `apiOrigin` from `apps/web/src/env.ts:48`,
+`new URL(env.API_BASE_URL).origin`. `API_BASE_URL` is the `httpUrl` schema
+(`packages/config/src/env.ts:29-55`): `z.string().url()` plus a `superRefine` that rejects any
+scheme other than `http:`/`https:`. For an http(s) URL, `.origin` is exactly
+`scheme://host[:port]` — userinfo, path, query and fragment are all dropped by the parser, and
+host is percent/punycode-normalised — so it can never be `*`, a scheme-only source, an empty
+string, a value with a trailing `/`, or a value carrying a path. See L1 for the residual gap.
+
+**4. If reverted, what breaks?** Every cross-origin call from the six new screens, in `test`,
+`staging` and `production` — i.e. the whole task outside `pnpm dev`. Reverting is not an option
+that leaves the task working.
+
+### L1 (Low) — `buildSecurityHeaders`' third parameter is unvalidated, and the spec that appears to guard it does not
+
+`apps/web/src/security-headers.ts:120-124` takes `apiOrigin?: string` and interpolates it into the
+directive with no check. It is safe **because of the call site**, not because of the function.
+A later caller passing `'*'`, `'https:'`, `'self' data:` or an attacker-influenced value widens
+the policy silently.
+
+The spec that reads like a guard is not one. `apps/web/src/security-headers.spec.ts` (added by
+`0488c16`):
+
+- `'never emits a wildcard or a scheme-only source in connect-src'` supplies
+  `'https://api.sentinel.example'` and then asserts the result contains no `*`. It is asserting a
+  property of the **input it chose**, not of the function; passing `'*'` would still produce
+  `connect-src 'self' *` and no test would fail.
+- `'widens connect-src and nothing else'` compares `buildSecurityHeaders(...)` against
+  `buildSecurityHeaders(...)` — two outputs of the **same, current** implementation. It pins that
+  the parameter is confined to one directive; it does **not** pin the policy against the
+  pre-change one, so an edit that changed, say, `script-src` in both branches would leave it
+  green. The report's phrase "a whole-list diff proving the widened policy differs from the narrow
+  one in `connect-src` and nowhere else" is accurate about what the test does, but the sentence
+  it is offered in support of — "byte-identical to before" — is a claim about the *base commit*
+  that this test cannot make. (That claim is nonetheless true; see the measurement above. It was
+  true by luck of the reviewer measuring it, not because the suite pins it.)
+
+Neither is a defect in the shipped policy today. Both are a control that reads stronger than it is.
 
 ### C2 (Citation) — the `apps/web` suite is 172 tests, not 171; the `auth` specs are 51, not 50
 
