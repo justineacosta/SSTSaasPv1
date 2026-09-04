@@ -66,7 +66,11 @@
  * @param enforceCsp Everything here is identical in both modes except
  *                   `upgrade-insecure-requests` — see the note above.
  */
-function buildContentSecurityPolicy(nonce: string, enforceCsp: boolean): string {
+function buildContentSecurityPolicy(
+  nonce: string,
+  enforceCsp: boolean,
+  apiOrigin: string | undefined,
+): string {
   return [
     "default-src 'self'",
     // 'strict-dynamic' means scripts loaded *by* a nonced script inherit
@@ -78,7 +82,24 @@ function buildContentSecurityPolicy(nonce: string, enforceCsp: boolean): string 
     // True rather than aspirational because next/font self-hosts IBM Plex at
     // build time — see app/fonts.ts.
     "font-src 'self'",
-    "connect-src 'self'",
+    // `'self'` plus the ONE API origin, and nothing else.
+    //
+    // ADR-0017 has the browser call the API directly, cross-origin; ADR-0024
+    // has that origin reach the page from `API_BASE_URL`. `connect-src 'self'`
+    // alone forbids exactly that fetch, and the policy is enforcing everywhere
+    // except development (`src/env.ts`, `enforceCsp`), the Playwright suite
+    // included — so the auth screens Task 16 adds could not have reached the
+    // API at all. Measured before the change: the built policy contained
+    // `connect-src 'self'` and nothing more.
+    //
+    // This is a widening of one directive by one exact origin, not a
+    // loosening of the policy's shape: no wildcard, no scheme-only source, no
+    // `'unsafe-inline'`, and the value comes from the same
+    // schema-validated variable `apps/api` builds its CORS allowlist from, so
+    // the two cannot name different origins. `apiOrigin` is omitted rather
+    // than defaulted where there is nothing to allow (the unit spec's own
+    // calls), which keeps the narrow policy the default.
+    apiOrigin === undefined ? "connect-src 'self'" : `connect-src 'self' ${apiOrigin}`,
     "frame-ancestors 'none'",
     "form-action 'self'",
     "base-uri 'self'",
@@ -99,8 +120,12 @@ function buildContentSecurityPolicy(nonce: string, enforceCsp: boolean): string 
  *                policy is specified to ignore. Derived from `APP_ENV` in one
  *                place (`src/env.ts`) so it cannot drift per call site.
  */
-export function buildSecurityHeaders(nonce: string, enforceCsp: boolean): Record<string, string> {
-  const policy = buildContentSecurityPolicy(nonce, enforceCsp);
+export function buildSecurityHeaders(
+  nonce: string,
+  enforceCsp: boolean,
+  apiOrigin?: string,
+): Record<string, string> {
+  const policy = buildContentSecurityPolicy(nonce, enforceCsp, apiOrigin);
 
   return {
     'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload',

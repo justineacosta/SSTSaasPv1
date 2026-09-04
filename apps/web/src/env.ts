@@ -32,3 +32,17 @@ export const env: WebEnv = loadEnv(webEnvSchema);
  * development gets the report instead of the block.
  */
 export const enforceCsp: boolean = env.APP_ENV !== 'development';
+
+/**
+ * The API's **origin**, for the CSP `connect-src` directive.
+ *
+ * `API_BASE_URL` is validated as an http(s) URL by `packages/config`, so this
+ * parse cannot fail on a value that loaded. Only the origin is taken: a CSP
+ * source expression matches scheme, host and port, and appending a path to one
+ * would be a source expression no browser matches.
+ *
+ * Derived here rather than in `security-headers.ts` for the same reason
+ * `enforceCsp` is: one derivation, so "the origin the page may call" and "the
+ * origin the API client actually calls" cannot drift apart.
+ */
+export const apiOrigin: string = new URL(env.API_BASE_URL).origin;

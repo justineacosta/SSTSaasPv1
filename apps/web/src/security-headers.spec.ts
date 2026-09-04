@@ -92,4 +92,47 @@ describe('buildSecurityHeaders', () => {
       enforced.filter((directive) => directive !== 'upgrade-insecure-requests'),
     );
   });
+  // ADR-0017 has the browser call the API cross-origin. `connect-src 'self'`
+  // forbids that, so Task 16 widened the directive by exactly one origin. These
+  // four assertions pin both the widening and its narrowness — a wildcard, a
+  // scheme-only source, or a second origin sneaking in would fail here.
+  describe('connect-src and the cross-origin API', () => {
+    it("is 'self' alone when no API origin is supplied", () => {
+      const csp = buildSecurityHeaders('abc123', true)['Content-Security-Policy'] ?? '';
+      expect(csp.split('; ')).toContain("connect-src 'self'");
+    });
+
+    it('names the API origin exactly once when one is supplied', () => {
+      const csp =
+        buildSecurityHeaders('abc123', true, 'http://localhost:3001')[
+          'Content-Security-Policy'
+        ] ?? '';
+      expect(csp.split('; ')).toContain("connect-src 'self' http://localhost:3001");
+    });
+
+    it('never emits a wildcard or a scheme-only source in connect-src', () => {
+      const csp =
+        buildSecurityHeaders('abc123', true, 'https://api.sentinel.example')[
+          'Content-Security-Policy'
+        ] ?? '';
+      const directive = csp.split('; ').find((entry) => entry.startsWith('connect-src'));
+      expect(directive).toBe("connect-src 'self' https://api.sentinel.example");
+      expect(directive).not.toContain('*');
+      expect(directive).not.toContain('https:;');
+    });
+
+    it('widens connect-src and nothing else', () => {
+      const narrow = (buildSecurityHeaders('abc123', true)['Content-Security-Policy'] ?? '').split(
+        '; ',
+      );
+      const widened = (
+        buildSecurityHeaders('abc123', true, 'https://api.sentinel.example')[
+          'Content-Security-Policy'
+        ] ?? ''
+      ).split('; ');
+      expect(widened.length).toBe(narrow.length);
+      const differing = widened.filter((entry, index) => entry !== narrow[index]);
+      expect(differing).toEqual(["connect-src 'self' https://api.sentinel.example"]);
+    });
+  });
 });

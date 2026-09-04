@@ -146,6 +146,51 @@ One test failed on first run and the failure was real, not a harness problem:
 the fixture had 25. Fixed the fixture, not the schema. Recorded because it is direct evidence
 that the client parses responses rather than casting them.
 
-No `NEXT_PUBLIC_` variable was introduced and no module in `apps/web/src/api` reads
-`process.env` (ADR-0024): `grep -rn "process.env\|NEXT_PUBLIC" apps/web/src/api` returns
-nothing.
+ADR-0024 compliance, measured rather than asserted:
+
+```
+$ grep -rn "process.env\|NEXT_PUBLIC" apps/web/src/api
+apps/web/src/api/client.ts:72:   * there is no `NEXT_PUBLIC_` variable and nothing here reads `process.env`.
+apps/web/src/api/provider.tsx:14: * `NEXT_PUBLIC_` variable. The ADR names the ergonomic cost out loud - every
+```
+
+Two hits, both inside docblocks; no code reads either. The base URL reaches the client only as
+a constructor argument to `createApiClient`, which `app/providers.tsx` supplies from a prop.
+
+## Step 4 — the CSP change, isolated so it can be reverted alone
+
+**This is the one change in this task the brief did not authorise in advance, and it is
+committed on its own so the orchestrator can drop it with one `git revert`.**
+
+Before: `apps/web/src/security-headers.ts:81` emitted `connect-src 'self'` unconditionally.
+After: `buildSecurityHeaders(nonce, enforceCsp, apiOrigin?)` — a **third, optional** parameter.
+Omitted, the directive is byte-identical to before. Supplied, it becomes
+`connect-src 'self' <origin>`.
+
+`apps/web/proxy.ts:44` supplies it from `apps/web/src/env.ts`'s new
+`apiOrigin = new URL(env.API_BASE_URL).origin`, which is the same schema-validated variable
+`apps/api` builds its CORS allowlist from (ADR-0017), so the two cannot name different origins.
+
+What this is NOT: no `'unsafe-inline'`, no `'unsafe-eval'`, no wildcard, no scheme-only source,
+no other directive touched. Four new assertions in `security-headers.spec.ts` pin exactly that,
+including a whole-list diff proving the widened policy differs from the narrow one in
+`connect-src` and nowhere else.
+
+Why it was made rather than only reported: without it the six screens cannot reach the API in
+any environment where the policy enforces, which is every environment except local development
+(`apps/web/src/env.ts`, `enforceCsp`) — the Playwright suite included, since `start:e2e` pins
+`APP_ENV=test`. The screens would have been untestable and unusable, and the brief's own
+verification list requires `pnpm test:e2e` to reach a rendered page. It is flagged here rather
+than described as obviously correct.
+
+```
+$ pnpm vitest run --project unit apps/web/src
+EXIT=0
+ apps/web/src/security-headers.spec.ts (15 tests)   <- was 11
+ apps/web/src/csp-report.spec.ts       (34 tests)
+ apps/web/src/api/field-errors.spec.ts (15 tests)
+ apps/web/src/api/redirect.spec.ts     (33 tests)
+ apps/web/src/api/client.spec.ts       (24 tests)
+ Test Files  5 passed (5)
+      Tests  121 passed (121)
+```
