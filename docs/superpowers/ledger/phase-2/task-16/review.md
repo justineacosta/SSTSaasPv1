@@ -59,6 +59,91 @@ measure the baseline. It subtracted its own `apps/web`-scoped run from the whole
    Step 1 ("Correction to the brief, item 8") and then contradicts it in Step 9.
 2. The `171` it subtracted was already stale — see C2.
 
+### H1 (High) — `safeRedirectPath` returns a protocol-relative URL: open redirect on `/login`
+
+**The exact defect the function's own docblock says it exists to prevent.**
+`apps/web/src/api/redirect.ts:54-74`.
+
+The guards are: starts with `/`, does not start with `//`, contains no backslash, contains no
+whitespace or control character, and `new URL(raw, probe).origin === probe`. An input of the form
+`/..//evil.example` passes **all five** — and the function then returns `resolved.pathname`
+verbatim, which URL path normalisation has collapsed to `//evil.example`.
+
+Measured by running the module's own source (only the two `import` lines and the
+`ApiError`-dependent `isSessionExpiry` removed; `safeRedirectPath` and `loginHrefForDestination`
+byte-for-byte as committed):
+
+```
+$ node --experimental-strip-types redirect-probe.mts
+"/..//evil.example"      -> "//evil.example"
+"/a/..//evil.example"    -> "//evil.example"
+"/.//evil.example"       -> "//evil.example"
+"/%2e%2e//evil.example"  -> "//evil.example"
+loginHrefForDestination: "/login?next=%2F%2Fevil.example"
+```
+
+Further returns from the same probe, all accepted by the validator:
+`/..//evil.example/x` -> `//evil.example/x`; `/..//evil.example?a=b` -> `//evil.example?a=b`;
+`/../..//evil.example` -> `//evil.example`; `/..///evil.example` -> `///evil.example`;
+`/..//user:pass@evil.example` -> `//user:pass@evil.example`.
+
+A returned `//evil.example` is a different origin in every browser:
+
+```
+$ node -e "console.log(new URL('//evil.example','https://sentinel.example/login').href)"
+https://evil.example/
+$ node -e "console.log(new URL('///evil.example','https://sentinel.example/login').href)"
+https://evil.example/
+```
+
+**The value reaches a real navigation.** `apps/web/src/auth/LoginScreen.tsx:60,73`:
+
+```ts
+const destination = safeRedirectPath(redirectTo);
+...
+router.replace(destination);
+```
+
+and the MFA branch carries the same value forward — `LoginScreen.tsx:68`
+(`startChallenge({ ..., redirectTo: destination })`) then
+`apps/web/src/auth/MfaScreen.tsx:102` (`router.replace(challenge.redirectTo)`).
+
+Next 16.3.2's App Router resolves the argument against the current location and hard-navigates
+when the origin differs — it does not clamp it to the app:
+
+```
+next/dist/client/components/app-router-utils.js:25-27
+  function isExternalURL(url) { return url.origin !== window.location.origin; }
+next/dist/client/components/app-router-instance.js:264
+  const url = new URL(addBasePath(href), location.href);
+next/dist/client/components/router-reducer/reducers/navigate-reducer.js:33-36
+  const { url, isExternalUrl, ... } = action;
+  if (isExternalUrl) { return completeHardNavigation(state, url, navigateType); }
+```
+
+So `https://sentinel.example/login?next=/..//evil.example` signs the user in and then leaves them
+on `https://evil.example/` — a credential-phishing hand-off from the product's own login page,
+with the product's own session already established. `form-action 'self'` does not help; this is a
+scripted navigation, not a form post.
+
+**Why the suite did not catch it.** `apps/web/src/api/redirect.spec.ts:34-52` is a table of 19
+rejected inputs and **contains no dot-segment case at all** — the only `..` in the file is
+`'/assets\..\..'`, which is rejected by the backslash guard, not by anything to do with `..`.
+The one test that looks like a class-wide invariant, `'never returns a value carrying a foreign
+origin'` (`redirect.spec.ts:71-79`), iterates over **that same `rejected` array** and so can only
+re-assert what the 19 preceding tests already assert. It is a tautology, not a property test; it
+would still be green with the dot-segment class wide open, and it is.
+
+**This also corrects the report's account of mutations 2a and 2d.** They are not "mutually
+redundant"; they are two guards that between them cover the *leading*-`//` class and miss the
+*normalised-to*-`//` class entirely. Redundancy was the wrong conclusion to draw from two
+surviving mutants — the survivors were a signal that the input space was under-explored, and
+the report read them as a signal that the code was over-protected.
+
+Not fixed here (reviewers do not fix). For the fix round, the shape of the defect is that the
+function validates `raw` and then returns a *different* string; whatever guards are chosen, the
+**returned** value is what must be re-checked.
+
 ### C2 (Citation) — the `apps/web` suite is 172 tests, not 171; the `auth` specs are 51, not 50
 
 `report.md` Step 6 claims `pnpm vitest run --project ui apps/web/src/auth` → "6 passed (6) /
