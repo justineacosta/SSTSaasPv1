@@ -72,22 +72,22 @@ describe('safeRedirectPath — accepts', () => {
 
 const rejected: readonly [string, string][] = [
   ['a protocol-relative URL', '//evil.example'],
-    ['a protocol-relative URL with a path', '//evil.example/login'],
-    ['a triple slash', '///evil.example'],
-    ['an absolute https URL', 'https://evil.example/login'],
-    ['an absolute http URL', 'http://evil.example'],
-    ['a javascript: URL', 'javascript:alert(1)'],
-    ['a data: URL', 'data:text/html,<script>alert(1)</script>'],
-    ['a backslash escape browsers normalise to //', '/\\evil.example'],
-    ['a double backslash', '\\\\evil.example'],
-    ['a backslash anywhere in the path', '/assets\\..\\..'],
-    ['a bare relative path with no leading slash', 'dashboard'],
-    ['a scheme-relative-looking bare host', 'evil.example/login'],
-    ['a path with a leading newline browsers would strip', '\n//evil.example'],
-    ['a path with a leading tab', '\t//evil.example'],
-    ['a path containing a NUL', '/assets' + String.fromCharCode(0)],
-    ['a path containing a DEL', '/assets' + String.fromCharCode(127)],
-    ['a path containing a carriage return', '/assets\r\n/other'],
+  ['a protocol-relative URL with a path', '//evil.example/login'],
+  ['a triple slash', '///evil.example'],
+  ['an absolute https URL', 'https://evil.example/login'],
+  ['an absolute http URL', 'http://evil.example'],
+  ['a javascript: URL', 'javascript:alert(1)'],
+  ['a data: URL', 'data:text/html,<script>alert(1)</script>'],
+  ['a backslash escape browsers normalise to //', '/\\evil.example'],
+  ['a double backslash', '\\\\evil.example'],
+  ['a backslash anywhere in the path', '/assets\\..\\..'],
+  ['a bare relative path with no leading slash', 'dashboard'],
+  ['a scheme-relative-looking bare host', 'evil.example/login'],
+  ['a path with a leading newline browsers would strip', '\n//evil.example'],
+  ['a path with a leading tab', '\t//evil.example'],
+  ['a path containing a NUL', '/assets' + String.fromCharCode(0)],
+  ['a path containing a DEL', '/assets' + String.fromCharCode(127)],
+  ['a path containing a carriage return', '/assets\r\n/other'],
   ['a path with a leading space', ' /assets'],
   ['the empty string', ''],
 ];
@@ -144,7 +144,9 @@ describe('safeRedirectPath — refuses what normalisation would turn into a fore
  */
 describe('safeRedirectPath — the class-wide invariant', () => {
   it('covers all three input tables', () => {
-    expect(everyInput.length).toBe(accepted.length + rejected.length + normalisedToForeignOrigin.length);
+    expect(everyInput.length).toBe(
+      accepted.length + rejected.length + normalisedToForeignOrigin.length,
+    );
     expect(everyInput.length).toBeGreaterThanOrEqual(30);
   });
 
