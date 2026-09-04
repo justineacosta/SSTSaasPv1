@@ -1,6 +1,7 @@
 import { ERROR_CODES } from '@sentinel/contracts';
-import { screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { StrictMode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { ApiError } from '../api/errors';
 import { authTree, pendingClient, renderAuth, stubClient } from './render-helpers';
@@ -67,7 +68,26 @@ describe('VerifyEmailScreen — the four required states', () => {
 });
 
 describe('VerifyEmailScreen — the token is consumed exactly once', () => {
-  it('does not fire a second request when the component re-renders', async () => {
+  it('fires exactly one request under StrictMode, which mounts twice', async () => {
+    // THIS IS THE CASE THE REF GUARD EXISTS FOR, so it is the case the test has
+    // to reproduce. `next.config.ts` sets `reactStrictMode: true`, and StrictMode
+    // mounts, unmounts and remounts every component once in development, running
+    // each effect twice. A verification token is single-use: the second call
+    // consumes nothing, answers TOKEN_INVALID, and the screen reports a failure
+    // for a verification that actually succeeded.
+    //
+    // Recorded because the first version of this test did NOT reproduce it — it
+    // re-rendered instead of remounting, the effect's dependencies never changed
+    // so it never re-ran, and deleting the guard left the test green. A test that
+    // cannot fail proves nothing.
+    const { client, requests } = stubClient(() => ({ status: 'EMAIL_VERIFIED' }));
+    render(<StrictMode>{authTree(<VerifyEmailScreen token="tok_abc" />, client)}</StrictMode>);
+
+    await screen.findByRole('heading', { level: 1, name: 'Email verified' });
+    expect(requests).toHaveLength(1);
+  });
+
+  it('does not fire a second request when the component merely re-renders', async () => {
     const { client, requests } = stubClient(() => ({ status: 'EMAIL_VERIFIED' }));
     const { rerender } = renderAuth(<VerifyEmailScreen token="tok_abc" />, client);
     await screen.findByRole('heading', { level: 1, name: 'Email verified' });
@@ -77,10 +97,6 @@ describe('VerifyEmailScreen — the token is consumed exactly once', () => {
     rerender(authTree(<VerifyEmailScreen token="tok_abc" />, client));
     rerender(authTree(<VerifyEmailScreen token="tok_abc" />, client));
 
-    // A verification token is single-use. A second call would consume nothing
-    // and answer TOKEN_INVALID, and the screen would report a failure for a
-    // verification that actually succeeded — the exact defect the ref guard in
-    // VerifyEmailScreen exists to prevent under React's StrictMode double-mount.
     expect(requests).toHaveLength(1);
   });
 });
