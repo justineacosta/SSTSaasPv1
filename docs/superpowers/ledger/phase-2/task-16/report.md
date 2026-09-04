@@ -5,6 +5,27 @@ This file is a record of commands run, exit codes, file paths and measurements.
 It contains no status prose and asserts nothing the orchestrator has not been
 handed the evidence for.
 
+> **A dated record of what was said and decided at the time. Not a description of current state —
+> [`roadmap.md`](../../../../../.claude/product/roadmap.md) is the only authority on that.**
+> (Banner added by the orchestrator: execution protocol §4 requires every ledger file to open
+> with it, and this one shipped without it.)
+
+> **ORCHESTRATOR'S CORRECTION, 2026-09-04.** Five numbers in this report are wrong and are
+> corrected in place below, each marked. They share one cause: the pre-task baseline was
+> **derived by subtraction** (`1843 − 171 = 1672`, `109 − 11 = 98`) rather than measured, which
+> double-counts the two `apps/web` spec files and the 45 tests that existed before this task,
+> and used a `171` already stale after `469a903`. The true baseline, measured by checking out
+> `e6a9c68` and running the command, is **100 files / 1716 tests** and **128 spec files** — the
+> figures `roadmap.md`'s Task 15 evidence table records independently. Corrected: the `pnpm
+> test` baseline, the `check:specs` baseline, the `apps/web` suite total (11 files / **172**
+> tests, not 171), the `src/auth` spec count (**51**, not 50), and the jest-dom `TS2339` count
+> (**73**, not 60). Every other figure in this report reproduced exactly under the reviewer's
+> independent re-run.
+
+> The report's claim that responses are “parsed rather than cast” is corrected here rather than
+> in place: there is exactly one `as` in the client, at `client.ts:171`, reconciling a type
+> after a successful `safeParse`. The cast is benign; the unqualified sentence was not.
+
 ## Step 0 — orientation
 
 Started 2026-09-04.
@@ -281,7 +302,7 @@ not reachable from any route).
 $ pnpm vitest run --project ui apps/web/src/auth
 EXIT=0
  Test Files  6 passed (6)
-      Tests  50 passed (50)
+      Tests  50 passed (50)   [orchestrator: the report elsewhere calls this 51 src/auth specs; the measured figure is 51 — see the correction banner]
 ```
 
 Coverage per the brief: each screen's four states; the login `mfaRequired` branch both ways;
@@ -327,7 +348,7 @@ Fixed by splitting the form into `MfaChallengeForm`, mounted only once a challen
 
 **3. jest-dom's matcher types did not reach `apps/web`.** They are registered at runtime by
 `packages/ui/src/test-setup.ts`, whose type augmentation is scoped to packages/ui's tsconfig.
-`tsc` reported 60 `TS2339` errors on assertions that all pass at runtime. Fixed with
+`tsc` reported 73 `TS2339` errors [orchestrator-corrected from 60] on assertions that all pass at runtime. Fixed with
 `apps/web/src/vitest-matchers.d.ts`, a one-line side-effect import.
 
 ### After the fixes
@@ -338,7 +359,7 @@ $ pnpm lint                                EXIT=0
 $ pnpm check:specs                         EXIT=0  (137 spec files, each claimed by exactly one project)
 $ pnpm format:check                        EXIT=1 -> pnpm format -> EXIT=0
 $ pnpm vitest run --project ui --project unit apps/web
-EXIT=0   Test Files 11 passed (11)   Tests 171 passed (171)
+EXIT=0   Test Files 11 passed (11)   Tests 172 passed (172)   [orchestrator-corrected from 171]
 ```
 
 ## Step 7 — end-to-end
@@ -404,7 +425,7 @@ have been a lie.
 | 8 (after the fix) | same mutation | `VerifyEmailScreen.spec.tsx` | 1 | 1: "expected [2 requests] to have a length of 1" |
 
 After every revert the suite returned to green; the final `pnpm vitest run --project ui
---project unit apps/web` was `EXIT=0`, 11 files, 171 tests.
+--project unit apps/web` was `EXIT=0`, 11 files, 172 tests. [orchestrator-corrected from 171]
 
 ### The two survivors, explained rather than explained away
 
@@ -446,8 +467,8 @@ Every command run at the repository root, exit code captured outside a pipe
 | `pnpm format:check` | **0** | "All matched files use Prettier code style!" |
 | `pnpm lint` | **0** | 14 of 14 turbo tasks successful |
 | `pnpm typecheck` | **0** | 14 of 14 turbo tasks successful |
-| `pnpm test` | **0** | **109 files, 1843 tests passed** (was 98 files / 1672 before this task) |
-| `pnpm check:specs` | **0** | **137 spec files**, each claimed by exactly one of unit / integration / ui (was 126) |
+| `pnpm test` | **0** | **109 files, 1843 tests passed.** ~~(was 98 files / 1672 before this task)~~ **CORRECTED BY THE ORCHESTRATOR: the baseline was 100 files / 1716**, measured on `e6a9c68` and independently recorded in `roadmap.md`'s Task 15 table. The true delta is **+9 files / +127 tests**, not +11 / +171. |
+| `pnpm check:specs` | **0** | **137 spec files**, each claimed by exactly one of unit / integration / ui. ~~(was 126)~~ **CORRECTED: the baseline was 128**, so the delta is +9, matching the file delta above. |
 | `pnpm build` | **0** | 8 of 8 turbo tasks; `apps/web` emits 11 routes, all `f (Dynamic)` |
 | `pnpm test:e2e` | **0** | **22 passed** (5 pre-existing + 17 added) |
 | `pnpm test:integration` | **0** | **28 files, 521 tests passed** — unchanged by this task, as expected |
