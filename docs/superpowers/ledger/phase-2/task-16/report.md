@@ -375,3 +375,60 @@ covered by `redirect.spec.ts` and `LoginScreen.spec.tsx`.
 The same failure output is independent evidence that ADR-0024's wiring works end to end: the
 payload contains `"apiBaseUrl":"http://localhost:3001"`, the value from `webEnvSchema`, reaching
 the client tree as a prop.
+
+## Step 8 — proving the tests bite
+
+Every mutation below was applied to the working tree, the named suite was run, and the file was
+reverted with `git checkout --`. The diff of each mutation was printed before the run so there
+is no doubt it applied — one earlier attempt silently did not, and the "surviving" result would
+have been a lie.
+
+| # | Mutation | Suite | Exit | Failures |
+|---|---|---|---|---|
+| 1a | `if (!isSafeMethod(...))` -> `if (true)` — CSRF header on every method | `client.spec.ts` | 1 | 1: "does NOT attach the CSRF header on a safe method" |
+| 1b | never set the CSRF header at all | `client.spec.ts` | 1 | 2: both "attaches the CSRF header…" tests |
+| 1c | `credentials: 'include'` -> `'same-origin'` | `client.spec.ts` | 1 | 1: "sends credentials: include on every request" |
+| 2a | delete the `startsWith('//')` guard | `redirect.spec.ts` | **0** | **none — see below** |
+| 2b | delete the backslash guard | `redirect.spec.ts` | 1 | 1: "refuses a backslash anywhere in the path" |
+| 2d | delete the final same-origin URL-parser check | `redirect.spec.ts` | **0** | **none — see below** |
+| 2e | delete the `startsWith('/')` requirement | `redirect.spec.ts` | 1 | 2 |
+| 2a+2d | delete **both** | `redirect.spec.ts` | 1 | 4: all three protocol-relative cases plus `loginHrefForDestination` |
+| 3a | `if (result.mfaRequired)` -> `if (false)` | `LoginScreen.spec.tsx` | 1 | 4 |
+| 3b | `if (result.mfaRequired)` -> `if (true)`, token replaced | `LoginScreen.spec.tsx` | 1 | 6 |
+| 3c | `safeRedirectPath(redirectTo)` -> `redirectTo ?? '/dashboard'` | `LoginScreen.spec.tsx` | 1 | 2 |
+| 4 | drop unmatched field errors instead of collecting them | `field-errors.spec.ts` / `LoginScreen.spec.tsx` | 1 / 1 | 3 / 1 |
+| 5 | return the body without parsing it against the response schema | `client.spec.ts` | 1 | 2 |
+| 6 | recovery mode keeps `inputMode="numeric"` and `autocomplete="one-time-code"` | `MfaScreen.spec.tsx` | 1 | 1 |
+| 7 | stop rendering `requestId` in the error region | all six screen specs | 1 | **6 — one per screen** |
+| 8 (first attempt) | delete the single-use guard in `VerifyEmailScreen` | `VerifyEmailScreen.spec.tsx` | **0** | **none — the test was wrong; fixed, see below** |
+| 8 (after the fix) | same mutation | `VerifyEmailScreen.spec.tsx` | 1 | 1: "expected [2 requests] to have a length of 1" |
+
+After every revert the suite returned to green; the final `pnpm vitest run --project ui
+--project unit apps/web` was `EXIT=0`, 11 files, 171 tests.
+
+### The two survivors, explained rather than explained away
+
+**2a and 2d survive individually because they are mutually redundant.** `safeRedirectPath`
+refuses `//evil.example` twice: once with an explicit `startsWith('//')` and once because the
+platform URL parser resolves it to a different origin. Measured directly:
+
+```
+$ node -e "...new URL(v, 'https://redirect-probe.invalid')..."
+"//evil.example"    -> origin https://evil.example
+"///evil.example"   -> origin https://evil.example
+"/\evil.example"   -> origin https://evil.example
+"\\evil.example"  -> origin https://redirect-probe.invalid | pathname "/evil.example"
+```
+
+Remove either guard and the other still refuses the input, so **no black-box test can
+distinguish them** — the behaviour is identical. Removing **both** fails four tests. That is
+defence in depth working as intended, not a gap in the suite, and it is recorded as a survivor
+rather than quietly omitted. (The last row is why `startsWith('/')` is a separate check: a bare
+`\evil.example` resolves same-origin and would otherwise be accepted as `/evil.example`.)
+
+**8 was a genuinely worthless test, and the mutation is what exposed it.** The first version
+re-rendered the component and asserted one request. Deleting the guard left it green, because
+`useEffect`'s dependencies never changed on a re-render so the effect never re-ran — the test
+was not reproducing the case the guard exists for. Rewritten to render inside `<StrictMode>`,
+which mounts, unmounts and remounts (`next.config.ts` sets `reactStrictMode: true`). The
+mutation now fails it with `expected [2 requests] to have a length of 1`.
