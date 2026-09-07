@@ -8,13 +8,13 @@ code was written.
 Status vocabulary (specification §79): **Implemented** / **Partially Implemented** /
 **Not Implemented** / **Blocked**.
 
-## Current state — 2026-09-03
+## Current state — 2026-09-04
 
 | Phase | Scope | Status |
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Partially Implemented** — Tasks 1–15 of 18 done 2026-09-04, **Checkpoint A passed; Tasks 13, 14 and 15 are all merged into `main` and green on CI**. The identity API is built and the authorization pipeline is enforced end to end: a request is rate-limited, authenticated against an opaque server-side session, CSRF-checked, resolved to a tenant, and authorized against a permission the route declares — and every one of those stages can deny. **Task 15 took the OpenAPI document from 24 paths to 27 and the permission-guarded route count from seven to ten**, adding invitation create, list and revoke plus `POST /api/v1/invitations/accept` — the first route in this product that is authenticated and deliberately declares no permission, because the acceptor is a member of nothing. It also **closed a latent Task 1 defect** (`Invitation` carried a full unique on `(organizationId, email)` and no delete path, so re-inviting a removed member was impossible) and **forced the rate limiter into two phases** (ADR-0023), taking the guard pipeline to ten. **One security window is open and recorded**: an invitation offering `OWNER` survives its issuer's removal and still mints an `OWNER` — the remedy belongs in Task 14's writes and is owed. **No authentication UI exists, so the E2E journey exit criterion is unmet and the phase is not complete.** Evidence table under Phase 2 below |
+| 2 | Identity | **Partially Implemented** — Tasks 1–16 of 18 done 2026-09-04, **Checkpoint A passed; Tasks 13, 14 and 15 are merged into `main` and green on CI; Task 16 is built and verified on `feat/phase-2-task-16-auth-screens` and is not yet merged**. The identity API is built and the authorization pipeline is enforced end to end: a request is rate-limited, authenticated against an opaque server-side session, CSRF-checked, resolved to a tenant, and authorized against a permission the route declares — and every one of those stages can deny. **Task 16 ended the phase's longest-standing gap: there is now an authentication UI.** The `(auth)` route group held a layout and no routes at all from Phase 1 until this task; it now holds six — `/register`, `/verify-email`, `/login`, `/login/mfa`, `/forgot-password`, `/reset-password` — behind one typed API client that validates every response against the same `packages/contracts` schemas the API enforces. It added no endpoint: `check:openapi` still reports **27 paths**. **Its adversarial review found a real open redirect** on `/login` — five guards that all ran against the *input* while the function returned a URL-*normalised* value, so `/..//evil.example` came back as `//evil.example`; fixed, and the general ruling recorded. **Two exit-criterion gaps remain and neither is closed by a green suite**: no human has loaded these screens in a browser, and no form has yet talked to a running API, so the E2E journey criterion is still unmet and cannot be met before Task 18. **Task 15's `OWNER` invitation window is still open.** Evidence table under Phase 2 below |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -2504,6 +2504,176 @@ would remove the manual step; adding it is the operator's call and it has not be
   79); ruling 24's dormant-account rehash half; the denial audit event, which belongs with Phase
   3's `/audit-logs`; `Organization.name`'s absent length cap (ruling 86); and `meta.total` on list
   endpoints, whose natural owner is Phase 3.
+
+## Task 16 — the authentication screens, and the validator that checked its input
+
+**Status: Partially Implemented.** The six screens are built, tested and green. **Two things the
+task's own verify line requires have not happened**, and neither is a detail: **no human has
+loaded any of these screens in a browser**, and **no form has talked to a running API**. Both are
+named in the plan; the first is the one Phase 1 left open when it recorded that five of the eight
+`packages/ui` primitives have never been painted, and it is closed by looking, not by a passing
+jsdom test.
+
+*Verified 2026-09-04 by the orchestrator on the finished tree at `3d3bd59`, every command re-run
+rather than taken from a subagent's report, with exit codes captured outside a pipe
+(`out=$(pnpm <cmd> 2>&1); code=$?`) because `$?` after a pipe reports the last stage's status and
+not the command's.*
+
+| Command | Exit | What it proves |
+|---|---|---|
+| `pnpm format:check` | 0 | Prettier style across the workspace. |
+| `pnpm lint` | 0 | 14 tasks. Includes the `no-restricted-properties` rule that would fire on any new `process.env` read. |
+| `pnpm typecheck` | 0 | 14 tasks. The types compile — and nothing about behaviour. |
+| `pnpm test` | 0 | **109 files / 1882 tests**, up from 100 / 1716 at Task 15. |
+| `pnpm check:specs` | 0 | **137 spec files**, each claimed by exactly one Vitest project. |
+| `pnpm test:integration` | 0 | **28 files / 521 tests** — unchanged, correctly: this task added no integration spec and touched no API code. |
+| `pnpm build` | 0 | 8 tasks. `apps/web` emits 11 routes, every one `ƒ (Dynamic)`. |
+| `pnpm test:e2e` | 0 | **22 passed**, up from 5. Against a Playwright-owned production build with the CSP enforcing. |
+| `pnpm check:openapi` | 0 | **27 paths**, byte-identical and unchanged. **This is the proof that this task added no endpoint.** |
+| `pnpm check:registry` | 0 | 15 models, unchanged — no table added. |
+| `pnpm check:secrets` | 0 | 496 tracked files, no credential-shaped literals. |
+| `docker compose ps` | — | Four services healthy. |
+
+What that table licenses and nothing more: the workspace is green, the screens render under jsdom
+and under a real Chromium against a production build, and the API surface did not move. **It says
+nothing about whether any of these forms can complete a sign-in**, because nothing in either suite
+has an API behind it.
+
+### What Task 16 built
+
+**Six routes** under the `(auth)` group, which Phase 1 built as a layout with no routes under it
+at all: `/register`, `/verify-email`, `/login`, `/login/mfa`, `/forgot-password`,
+`/reset-password`. Each implements the four of `architecture/frontend.md` §6's states that apply
+to an unauthenticated form — loading, empty, error, success — and each is driven by React Hook
+Form against **the same `packages/contracts` schema the API validates with**, not a re-declared
+shape.
+
+**One typed API client**, and it is the piece every later task inherits: `credentials: 'include'`
+on every request, `X-CSRF-Token` echoed from the `__Host-csrf` cookie on unsafe methods only,
+every response parsed with its contract schema, and the error envelope's `details.fields` mapped
+onto field-level errors — with an unmatched `path` surfacing as a form-level error rather than
+being dropped. `error.requestId` is rendered in every error state, which is what §6 asks for and
+what support needs.
+
+**ADR-0024**, written before the code. ADR-0017 put the browser on a direct cross-origin call to
+the API, so Task 16 was the first task that needed the API origin inside the browser bundle. It
+arrives as a **prop from a server component**, not as a `NEXT_PUBLIC_` variable: one
+schema-validated declaration instead of two, and a missing value becomes a TypeScript error
+rather than a `fetch` to `undefined/api/v1/auth/login`.
+
+**`/login/mfa` is one screen, not the two `ui-ux/page-map.md` predicted.** `POST
+/api/v1/auth/mfa/verify` accepts a six-digit TOTP code *or* one of the ten recovery codes on the
+same field, so recovery is a mode switch that also swaps the input's `inputMode` and
+`autocomplete`. The page map is corrected in this change rather than left to disagree with the
+product.
+
+**The `pendingToken` never enters a URL.** It is a credential, and a query string reaches browser
+history, the `Referer` header of every later request, and server logs. It crosses the
+`/login` → `/login/mfa` step in memory, through a provider on the shared `(auth)` layout that the
+App Router keeps mounted across a client-side navigation. The cost is stated rather than hidden:
+reloading `/login/mfa` loses the challenge, so that screen has a tested dead-end state that sends
+the user back to `/login` rather than a form that would submit an empty token.
+
+### The CSP change nobody asked for, which had to happen anyway
+
+`apps/web` emitted `connect-src 'self'`, which forbids exactly the cross-origin fetch ADR-0017
+requires — **in every environment where the CSP enforces**, and `enforceCsp` is
+`APP_ENV !== 'development'`. That includes the Playwright suite, because `start:e2e` pins
+`APP_ENV=test`. The screens could not have reached the API anywhere but `pnpm dev`.
+
+The implementer was not authorised to touch a security control, and it changed one. It disclosed
+that plainly and committed it alone, which is the right shape — and disclosure is not review, so
+the reviewer was pointed at it first. **The verdict was keep it**, on a measurement rather than an
+argument: the pre-change implementation was extracted from `e6a9c68` and run beside the new one,
+and with the argument omitted the whole header record is byte-identical in both enforcing and
+report-only mode. Supplied, exactly one directive of twelve differs. `'unsafe-inline'` and
+`'unsafe-eval'` are absent throughout.
+
+The fix round then hardened it, because "just take `.origin`" turned out not to be the check it
+looks like: `new URL('https://*').origin` is `https://*`, and
+`new URL('javascript:alert(1)').origin` is the string `null`. `buildSecurityHeaders` now parses
+the value itself, requires an `http:` or `https:` scheme, rejects a host containing `*`, and omits
+the source entirely if any of that fails. Each rejection is killed by a test.
+
+### The open redirect, and the ruling that outlives it
+
+**The review found a real open redirect on the login screen, and it is the most valuable thing
+this task produced.** `safeRedirectPath` refused a leading `//`, a backslash, whitespace and
+control characters, and anything resolving cross-origin — five guards, each correct. It then
+returned `resolved.pathname`, and `/..//evil.example` passes all five, resolves same-origin
+(genuinely — the origin check did not fail), and **normalises to `//evil.example`**, which every
+browser reads as an absolute URL to another host. `?next=/..//evil.example` would have signed a
+user in and landed them on the attacker's origin.
+
+Reproduced by the reviewer, then independently by the orchestrator before it was dispositioned,
+and confirmed closed the same way afterwards — running the module against an attack corpus, not
+reading the diff:
+
+```
+before:  "/..//evil.example" -> "//evil.example"   lands: https://evil.example/
+after:   "/..//evil.example" -> "/dashboard"       lands: https://sentinel.example/dashboard
+```
+
+**The ruling is more general than redirects, and it is why this is written at length.** Every
+guard ran against the input. The value returned was not the input — it was a *normalised* value
+the guards never saw. **A validator that checks its input and returns something else has not
+validated what it returned.** The fix re-applies the shape rule to the output, deliberately not by
+blacklisting `/..//`, `/.//`, `/%2e%2e//` and whatever the next parser revision produces; those
+are one class, and only the output check covers the class.
+
+**The test that should have caught it is the second finding.** The spec's "never returns a value
+carrying a foreign origin" case iterated the array of inputs already asserted to be rejected — it
+could only pass. It was measured to be worthless rather than argued to be: the pre-round spec runs
+green against the vulnerable implementation *and* against the fixed one, 33 passed both times. It
+discriminated nothing. It is replaced by a property over every input, accepted and rejected alike,
+plus a dot-segment class of ten, and the fix reverted now fails 15 of them.
+
+### What the review cost, and the five sentences that were wrong
+
+The review returned **1 High, 1 Medium, 2 Low and three citation findings**, and the citation
+findings are the recurring one. Five numbers in the implementer's report were wrong from a single
+cause: the pre-task baseline was **derived by subtraction** rather than measured, which
+double-counted the two `apps/web` spec files that already existed. The true baseline is 100 files
+/ 1716 tests, which `roadmap.md` already recorded, so the task added **+9 files / +127 tests**,
+not the +11 / +171 the report implied. All five are corrected in place and marked as corrections.
+The report had also shipped without the banner execution protocol §4 requires on every ledger
+file.
+
+**Two Lows were dispositioned as prose rather than code.** The single `as` in the client is a
+post-`safeParse` type reconciliation and is benign; what was wrong was the report's unqualified
+"parses rather than casts", so the sentence was corrected and the cast left alone.
+
+**One mutation survives and is recorded rather than hidden.** `URL.pathname` for a special-scheme
+URL always begins with `/`, so the output check's `!path.startsWith('/')` arm can never fire and
+no test can kill it. It was kept because the rule is a shape and half a shape invites the next
+reader to ask which half mattered — but it is an untested line, not a covered one.
+
+### Still owed after Task 16
+
+- **A human has not loaded these screens.** The single most important item on this list, because
+  it is the one no command on this branch can close. Contrast, spacing, focus-ring visibility,
+  dark mode and the five never-painted `packages/ui` primitives are exactly the class every test
+  here is blind to.
+- **No form has completed a round trip against a running API.** Task 18's, and the phase's E2E
+  exit criterion.
+- **The session-expiry redirect-back is a mechanism with no caller.** `isSessionExpiry` and
+  `loginHrefForDestination` are built and tested and `/login` honours `next`; nothing invokes the
+  first, because there is no authenticated screen to be expired out of yet. Task 17 is its
+  natural owner.
+- **`apps/web/e2e/auth-screens.spec.ts` checks DOM attributes and never observes a navigation**,
+  so it cannot see a `router.replace`. The class it was delegating away is now genuinely covered
+  in the unit spec, but that e2e test still reads stronger than it is.
+- **`proxy.ts` still passes `new URL(env.API_BASE_URL).origin`**, now redundant since
+  `buildSecurityHeaders` normalises internally. Harmless, and worth removing when that file is
+  next touched.
+- **No accessibility tooling was run.** `axe-core` is not a workspace dependency. Labelled inputs,
+  `aria-describedby` wiring and focus order were built deliberately and asserted in the component
+  specs, but nothing automated has audited them.
+- **No bundle budget covers the two new runtime dependencies.** `architecture/frontend.md` §7
+  requires budgets enforced in CI, and §7 remains Not Implemented.
+- Carried forward untouched: **Task 15's open D9 window** — an invitation offering `OWNER` still
+  survives its issuer's removal — which remains the highest-value security item in this phase and
+  whose owner is whoever next touches `MembershipService.remove` and `updateRole`.
 
 ### Phase 3 — SaaS core
 Projects, assets, **asset ownership verification**, scope and scope rules with the
