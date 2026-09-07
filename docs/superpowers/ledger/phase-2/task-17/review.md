@@ -607,3 +607,167 @@ ever reached a browser") but was already stale at `5dbab4e`; Task 17 adds nothin
 document, sign out, and manage their factors") in a way the three new routes fit rather than
 contradict. `architecture/backend.md:95` and `:195`, `api/errors.md`, `api/pagination.md` and
 `api/conventions.md` carry no count this task moves.
+
+---
+
+# The §2 verdict — `CLAUDE.md` rule 10, and whether this deviation is acceptable
+
+The brief asked for this plainly and it has not been written until now. Reviewer 1 established the
+facts (the precedent is real; "stricter than logout" is true). This is the judgement.
+
+## THE VERDICT: ACCEPT THE DEVIATION. One sentence of its justification is overstated and should be corrected; the decision itself is right.
+
+A rule with a documented, reasoned exception is healthier than one silently broken, and this one is
+documented in three places that a maintainer will actually hit — the service docblock, the
+controller docblock, and the report. I would not block on it. What follows is the reasoning,
+including the part of the implementer's argument that does not survive checking.
+
+## 1. Is the precedent real, and does the reasoning transfer?
+
+Yes to both, and I re-read it rather than inheriting reviewer 1's check.
+
+`logout.service.ts:55-73` is not merely similar — it is the same argument, in the same words, about
+the same two stores, reaching the same ordering:
+
+> "`SessionService.revoke` takes no transaction handle — deliberately, since it owns an ordering
+> that spans Redis and Postgres — so one transaction covering both is not expressible without
+> reopening Task 6. The order chosen is **revoke, then audit** … Auditing first would mean a
+> failure in the revocation leaves an append-only row asserting a logout that did not happen. This
+> codebase treats a false statement in an append-only table as the worse outcome … so the gap is
+> preferred to the lie."
+
+`session-management.service.ts` does the same thing to the same stores through the same injected
+client. The transfer is exact, not analogical.
+
+**And the direction it chose is the right one.** For an append-only security log that an incident
+review depends on, a *missing* row and a *false* row are not symmetric costs. A missing row makes
+the log incomplete: the investigator knows the log is a floor, not a ceiling, and goes looking for
+corroboration. A false row makes the log **wrong**: an investigator reading "session `ses_x` was
+revoked at 14:02" would stop looking, and if the revocation had in fact failed, the stolen
+credential is still live and nobody is hunting it. An append-only table's entire value is that its
+contents are true. Preferring the gap to the lie is correct and I would have argued for it.
+
+## 2. The interleaving, constructed
+
+Process dies between the revoke and the audit — a pod eviction, an OOM kill, a `SIGKILL` during a
+deploy — in the window between `session.service.ts:788` returning and
+`session-management.service.ts:229`'s `$transaction` committing:
+
+```
+t0  DELETE /api/v1/auth/sessions/ses_TARGET arrives, guards pass
+t1  SessionService.revokeOwned →  findById(ses_TARGET)                    [Postgres read]
+t2                              →  poison([tokenHash])                    [Redis: tombstone, TTL 60s]
+t3                              →  repository.revokeById(...)             [Postgres: revokedAt = now]
+    ---- the session is now dead, in both stores. The API has not answered. ----
+t4  << the process dies here >>
+t5  PlatformAuditEvent row: never written
+t6  the client sees a dropped connection; the cookie is NOT cleared (the controller never
+    reached `if (wasCurrent)` at auth.controller.ts:787)
+```
+
+**What survives, and what is lost.** The loss is smaller than "no audit trail", and stating it
+precisely is what makes the deviation acceptable rather than merely tolerated:
+
+| | Survives? |
+|---|---|
+| That the session was revoked | **Yes** — `Session.revokedAt` is set, and it is the column the audit row's `resourceId` was going to point at anyway |
+| When it was revoked | **Yes** — same column |
+| Which user owned it | **Yes** — `Session.userId` |
+| **Who asked, from where** — the `ip`, `userAgent` and `requestId` of the revoking request | **NO** |
+| **Whether it was a single revocation or a bulk one**, and how many rows moved (`metadata.scope`, `metadata.revoked`) | **NO** |
+| A `SESSION_REVOKED` row to correlate against `LOGIN`/`LOGIN_FAILED` on a timeline | **NO** |
+
+So an incident review retains the *fact* and loses the *actor context*. For the question these
+routes exist to answer — "was the attacker's session killed, and when" — the surviving evidence is
+sufficient. For "did the legitimate user kill it, or did the attacker kill the legitimate user's
+other sessions to lock them out" — which is a real attack shape on a session-management screen —
+the lost `ip`/`userAgent` is exactly the evidence you wanted. That is a genuine cost, and it is the
+reason this verdict is "accept with a correction owed" rather than "accept, nothing to see".
+
+## 3. The failure that is likelier than process death, and is not in the report
+
+An audit **write error** — not a crash — is the common case, and it produces a worse-shaped state
+than the crash does:
+
+`revokeOne` (`session-management.service.ts:172-176`) awaits `this.record(...)` and does not catch.
+A `$transaction` failure therefore propagates through the service, past `revokeSession`, and the
+controller **never reaches its cookie clear** at `auth.controller.ts:786-789`. The caller gets a
+500, their current session is genuinely revoked on the server, and their browser is left holding
+`__Host-session` and `__Host-csrf` for a dead session — which is the "signed-in-looking app that
+401s on everything" the review brief named in §1, arrived at from a third direction.
+
+**This is not a Task 17 regression.** `logout` has the identical shape: `auth.controller.ts:504`
+awaits `this.logouts.logout(...)` and clears cookies at `:514`, after it. The behaviour is
+inherited, it is consistent, and the report's "Neither error is swallowed: … a logout that could
+not be audited is a 500 rather than a quiet 204" is true of both. Recorded here because the brief
+asked what the interleaving costs, and this is the branch of it that a real deployment will hit
+first.
+
+## 4. Could it have been in a transaction? Concretely: the Postgres half, yes.
+
+The report says one transaction over both "is not expressible without reopening Task 6". **That is
+true of Redis and not true of Postgres, and the sentence does not distinguish them.**
+
+Measured:
+
+- `SessionRepository`'s constructor is `@Inject(PRISMA) private readonly store: SessionStore`
+  (`session.repository.ts:154`). `SessionManagementService`'s is
+  `@Inject(PRISMA) private readonly store: IdentityStore`
+  (`session-management.service.ts` constructor). `PRISMA` is one token —
+  `export const PRISMA = 'SENTINEL_PRISMA'` (`apps/api/src/infrastructure/tokens.ts:11`). **Both
+  narrow the same PrismaClient instance through two different structural port types.** There is no
+  second connection, no second database, and nothing physical preventing one transaction from
+  covering `session.updateMany` and the `PlatformAuditEvent` insert.
+- `SessionStore` already declares `$transaction` (`session.repository.ts:133`) and
+  `SessionRepository` already uses it — `rotate` at `:372-380` runs an `updateMany` and a `create`
+  inside one. So the pattern exists in this very file.
+- What blocks it today is a signature: `revokeById(id, revokedAt)` (`:195`) takes no `tx` handle
+  and calls `this.store.session.updateMany` directly.
+
+The shape that would satisfy rule 10 for the part that can satisfy it:
+
+```
+poison([tokenHash])                       // Redis, outside — it cannot be in a PG transaction
+await store.$transaction(async (tx) => {
+  const moved = await repository.revokeById(tx, id, now);   // ← the one changed signature
+  if (moved) await audit.record(tx, { action: 'SESSION_REVOKED', ... });
+});
+```
+
+The conditional audit — the "stricter than logout" property, which reviewer 1 verified is real —
+survives that rewrite unchanged, because `updateMany`'s count is available inside the transaction.
+
+**The residual, and why it does not defeat the argument.** The Redis tombstone stays outside, so a
+rolled-back transaction would leave a tombstone over a session that was not revoked. Measured
+consequence: `SessionService.resolve` returns `{ outcome: 'revoked' }` on a tombstone
+(`session.service.ts:517`) and the tombstone is written with `cacheTtlSeconds`, default **60**
+(`session.service.ts:932-935`). So the session would be refused for up to a minute and then work
+again — a bounded, self-healing, fail-*safe* denial. That is a strictly better residual than the
+present one, which is a permanently missing audit row.
+
+**So: yes, it could have been done, and it would have been better.** It is one parameter on one
+repository method. The implementer's reasoning is sound in every part except the claim that the
+constraint is absolute; the constraint is real for Redis and is a port signature for Postgres.
+
+## 5. Why this is still an ACCEPT
+
+Four reasons, in order of weight:
+
+1. **It matches the shipped precedent in the same module.** A codebase where `POST /auth/logout`
+   and `DELETE /auth/sessions/:id` audit differently is worse than one where both carry the same
+   documented compromise. Fixing this one alone would create the inconsistency; fixing both is a
+   change to Task 6-era code that this task's brief did not authorise.
+2. **The direction is right.** Gap over lie, for an append-only log. See §1.
+3. **The loss is bounded and partially recoverable.** `Session.revokedAt` is not lost. See §2's
+   table.
+4. **It is declared, not hidden.** Rule 10 is named, the departure is named, the reasoning is
+   written where the next maintainer stands, and the report lists it under "What is NOT done, and
+   is not claimed". That is the behaviour a rule-with-exceptions regime is supposed to produce.
+
+**What is owed, and it is small:** the sentence "one transaction over both is not expressible
+without reopening Task 6" appears in two docblocks (`logout.service.ts:58-61` and
+`session-management.service.ts`'s equivalent) and is more absolute than the code supports. The
+accurate sentence is "the Redis half cannot be in a Postgres transaction; the Postgres half could
+be, and is not, because `revokeById` takes no transaction handle." That is a correction to a
+justification, not a defect in behaviour, and it belongs to whoever next touches Task 6's
+revocation path. **Recorded, not fixed — this reviewer fixes nothing.**
