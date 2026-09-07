@@ -11,8 +11,14 @@
 > `/api/v1/organizations/:id/invitations` from Task 15, all three carrying
 > `organization.manage_members`. So §3's rows are reachable by a caller.
 >
-> **An eleventh route exists and declares no permission on purpose.**
-> `POST /api/v1/invitations/accept` is `@AuthenticatedOnly()`: the acceptor is a member of
+> **Routes that declare no permission on purpose: fourteen as of Task 17, up from eleven.**
+> Measured as decorator applications, not grep hits —
+> `grep -rnE "^\s+@AuthenticatedOnly\(\)\s*$" apps/api/src --include=*.ts | grep -v "\.spec\."`
+> returns **14**, against **10** for `@RequirePermission(`. Task 17 added the three
+> session-management routes; they are self-service and have no organisation, so a permission
+> would be meaningless rather than merely absent.
+>
+> `POST /api/v1/invitations/accept` remains the clearest case: the acceptor is a member of
 > nothing, so there is no tenant to authorize against and any `@RequirePermission()` would deny
 > by construction. It is deliberately absent from `EXPECTED_GUARDED_ROUTES`, and the boot-time
 > access assertion still requires it to declare *something*.

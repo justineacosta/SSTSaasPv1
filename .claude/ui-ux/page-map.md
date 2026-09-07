@@ -137,9 +137,9 @@ encourage.
 | Route | Phase |
 |---|---|
 | `/settings/profile` | 2 |
-| `/settings/security` — password, MFA, active sessions | 2 |
+| `/settings/security` — password, MFA, active sessions | 2 — **built, Task 17** |
 | `/settings/organization` | 2 |
-| `/settings/members`, `/settings/roles` | 2 / 11 |
+| `/settings/members`, `/settings/roles` | 2 — **`/settings/members` built, Task 17** / 11 |
 | `/settings/notifications` | 3 |
 | `/settings/integrations`, `/settings/api` | 9 |
 | `/settings/audit` | 3 |

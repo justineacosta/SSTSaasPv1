@@ -363,7 +363,11 @@ Authentication endpoints are limited per account **and** per IP
 ([`../security/abuse-prevention.md`](../security/abuse-prevention.md) §1), and fail closed if
 Redis is unavailable — an outage must not become a credential-stuffing window.
 
-The fourteen routes that exist carry:
+The **eighteen** routes that exist carry the classes below — `Object.keys(openapi.json.paths)`
+filtered to `/api/v1/auth`, summed over methods, so it counts routes rather than paths. It read
+"fourteen" until Task 17, which added `GET /auth/sessions`, `DELETE /auth/sessions/{sessionId}`
+and `DELETE /auth/sessions`; the count was already one short before that, because `switch-org`
+was never added to the table.
 
 | Route | Class | Windows |
 |---|---|---|
