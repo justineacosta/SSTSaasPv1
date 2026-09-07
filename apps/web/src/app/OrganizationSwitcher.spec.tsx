@@ -104,10 +104,12 @@ describe('OrganizationSwitcher — switching clears the cache entirely', () => {
     expect(queryClient.getQueryData(['sessions'])).toBeUndefined();
   });
 
-  it('seeds the NEW session document after the clear, not before it', async () => {
-    // Ordering matters: seeding first and clearing second would sweep away the
-    // session the switch just produced, and the shell would fall back to a
-    // skeleton on every switch.
+  it('leaves the NEW session document in place, not swept away by its own switch', async () => {
+    // Ordering matters, and after review finding C-4 the ordering is the other
+    // way round: the session is seeded first and then excluded from the reset
+    // by hash. What must hold either way is this assertion — the document the
+    // switch just produced is the one in the cache when the dust settles. Get
+    // it wrong and the shell falls back to a skeleton on every switch.
     const queryClient = testQueryClient();
     const { client } = stubClient(respond);
     renderApp(tree(ORG_A, 'acme', 'Acme'), client, queryClient);
