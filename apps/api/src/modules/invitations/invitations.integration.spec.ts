@@ -4,8 +4,11 @@ import {
   invitationCollectionSchema,
   invitationResponseSchema,
   membershipResponseSchema,
+  ROLE_PERMISSIONS,
   type ErrorEnvelope,
+  type Permission,
   type SystemRole,
+  type TenantContext,
 } from '@sentinel/contracts';
 import { newId, seedReferenceData } from '@sentinel/db';
 import { createUnscopedPrismaClient, type PrismaClient } from '@sentinel/db/unscoped';
@@ -16,6 +19,7 @@ import { CSRF_HEADER } from '../../common/guards/csrf.guard.js';
 import { SESSION_COOKIE_NAME } from '../auth/cookies.js';
 import { deriveCsrfToken } from '../auth/csrf-token.js';
 import { hashSecretToken, mintSecretToken } from '../auth/secret-token.js';
+import { InvitationService } from './invitation.service.js';
 
 /**
  * ALL FOUR INVITATION ROUTES, AGAINST REAL ROW-LEVEL SECURITY, THE REAL GUARD
@@ -1770,28 +1774,24 @@ describe('POST /api/v1/invitations/accept — concurrency and D9', () => {
     ).toBe(1);
   });
 
-  it('D9 — RECORDS AN OPEN WINDOW: an invitation outlives its issuer’s authority', async () => {
-    // **THIS TEST PINS A DEFECT, NOT A GUARANTEE.** It is written so the
-    // behaviour cannot change silently while it is being decided, and it is
-    // named so nobody reads it as approval.
+  it('D9 — CLOSED BY ADR-0026: an invitation does NOT outlive its issuer’s authority', async () => {
+    // **THIS TEST PINNED A DEFECT AND NOW PINS A GUARANTEE**, and the rewrite
+    // is the record that the window was closed deliberately rather than
+    // drifting shut. Until ADR-0026 it was named
+    // `D9 — RECORDS AN OPEN WINDOW: an invitation outlives its issuer’s
+    // authority` and asserted the opposite of every line below: the removed
+    // owner's invitation still minted an `OWNER`, days later, through an
+    // address they control.
     //
-    // D5's no-minting check runs in `create` and nowhere else. An `OWNER` may
-    // therefore issue an invitation offering `OWNER`, be removed from the
-    // organisation, and have that invitation still mint an `OWNER` days later —
-    // which is a re-escalation path for somebody who was removed precisely to
-    // take that authority away, through an address they control.
-    //
-    // Ruling 122's remedy is on the OTHER side of this: the fact moves in
-    // `MembershipService.remove` and `updateRole`, and that is where the
-    // invitations the departing member issued and could no longer issue would
-    // be revoked, in the same transaction as the demotion. That is a change to
-    // Task 14's writes rather than to this handler, and it is handed up rather
-    // than taken here. Re-running `assertActorMayGrant` at accept time instead
-    // would refuse every invitation from a colleague who has since legitimately
-    // left — a lock-out with no recovery path for the invitee.
-    //
-    // When it is closed, this test becomes the one that must be rewritten, and
-    // the rewrite is the record that it was closed deliberately.
+    // What closed it is on the OTHER side of this handler, which is why
+    // `accept` is unchanged: `MembershipService.remove` revokes the live
+    // invitations the removed member issued, in the same transaction as the
+    // soft delete. The membership side of the rule is
+    // `the invitation cascade on a membership write (ADR-0026)` in
+    // `memberships.integration.spec.ts`. ADR-0026 rejects re-running
+    // `assertActorMayGrant` here, twice over: it would refuse every invitation
+    // from a colleague who has since legitimately left, at the worst possible
+    // moment, with nobody in the organisation notified.
     await clearRateLimits(harness.redis);
     const home = await acting('OWNER');
     const second = await user();
@@ -1828,12 +1828,235 @@ describe('POST /api/v1/invitations/accept — concurrency and D9', () => {
       }),
     ).toBe(0);
 
-    // MEASURED: the invitation is still live and still mints an OWNER.
+    // The row carries `revokedAt`, written in the removal's own transaction.
+    const invitationRow = await owner.invitation.findFirstOrThrow({
+      where: { organizationId: home.organizationId, email: invitee.email },
+      select: { id: true, revokedAt: true, acceptedAt: true },
+    });
+    expect(invitationRow.revokedAt).not.toBeNull();
+    expect(invitationRow.acceptedAt).toBeNull();
+
+    // And the link is dead: the same 422 any revoked invitation gets, because
+    // that is exactly what it now is.
+    const accepted = await request(server)
+      .post(acceptPath)
+      .set(csrf(invitee.actor))
+      .send({ token });
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(422);
+    expect(codeOf(accepted.body)).toBe('TOKEN_INVALID');
+
+    // No membership was minted, and no acceptance was audited.
+    expect(
+      await owner.membership.count({
+        where: { organizationId: home.organizationId, userId: invitee.actor.userId },
+      }),
+    ).toBe(0);
+    expect(
+      await owner.auditEvent.count({
+        where: { organizationId: home.organizationId, action: 'INVITATION_ACCEPTED' },
+      }),
+    ).toBe(0);
+    // One `INVITATION_REVOKED`, on the invitation's own id, written by the
+    // owner who did the removing.
+    const events = await owner.auditEvent.findMany({
+      where: { organizationId: home.organizationId, action: 'INVITATION_REVOKED' },
+      select: { resourceId: true, actorId: true, metadata: true },
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.resourceId).toBe(invitationRow.id);
+    expect(events[0]?.actorId).toBe(second.id);
+    expect(events[0]?.metadata).toMatchObject({
+      reason: 'ISSUER_REMOVED',
+      email: invitee.email,
+      roleKey: 'OWNER',
+    });
+  });
+
+  it('a cascade revocation frees the (organizationId, email) slot for a fresh invitation', async () => {
+    // RULING 126 IS ABOUT EXACTLY THIS INDEX, SO IT IS ASSERTED RATHER THAN
+    // ASSUMED. `Invitation_organizationId_email_live_key` is UNIQUE
+    // `("organizationId", "email") WHERE "acceptedAt" IS NULL AND "revokedAt"
+    // IS NULL`, so a cascade that wrote `revokedAt` takes the row out of the
+    // live set and somebody else may invite that address again. If the cascade
+    // had used a column outside that predicate the re-invite below would raise
+    // P2002 and the caller would see a 500.
+    await clearRateLimits(harness.redis);
+    const home = await acting('OWNER');
+    const second = await user();
+    await membership({ organizationId: home.organizationId, userId: second.id, role: 'OWNER' });
+    const survivor = await sessionFor(second.id, home.organizationId);
+    const invitee = await acceptor();
+
+    await inviteAndCaptureToken(home.actor, home.organizationId, invitee.email, 'ADMIN');
+    const inviterMembership = await owner.membership.findFirstOrThrow({
+      where: { organizationId: home.organizationId, userId: home.actor.userId, deletedAt: null },
+      select: { id: true },
+    });
+    await clearRateLimits(harness.redis);
+    const removed = await request(server)
+      .delete(`/api/v1/organizations/${home.organizationId}/members/${inviterMembership.id}`)
+      .set(csrf(survivor));
+    expect(removed.status, JSON.stringify(removed.body)).toBe(204);
+
+    await clearRateLimits(harness.redis);
+    const reinvited = await request(server)
+      .post(invitesPath(home.organizationId))
+      .set(csrf(survivor))
+      .send({ email: invitee.email, roleKey: 'ADMIN' });
+    expect(reinvited.status, JSON.stringify(reinvited.body)).toBe(201);
+
+    // The re-invite superseded nothing, because the cascade had already taken
+    // the old row out of the live set — which is the difference between the
+    // slot being FREED and merely being reused.
+    const created = invitationResponseSchema.parse(reinvited.body);
+    const events = await owner.auditEvent.findMany({
+      where: { organizationId: home.organizationId, action: 'MEMBER_INVITED' },
+      select: { resourceId: true, metadata: true },
+    });
+    const supersession = events.find((event) => event.resourceId === created.id);
+    expect(supersession?.metadata).toMatchObject({ supersededInvitationId: null });
+
+    // And the new link works, which is the invitee's recovery path.
+    const token = tokenFromMailTo(invitee.email);
     const accepted = await request(server)
       .post(acceptPath)
       .set(csrf(invitee.actor))
       .send({ token });
     expect(accepted.status, JSON.stringify(accepted.body)).toBe(201);
-    expect(membershipResponseSchema.parse(accepted.body).roleKey).toBe('OWNER');
+    expect(membershipResponseSchema.parse(accepted.body).roleKey).toBe('ADMIN');
+  });
+});
+
+/**
+ * ADR-0026 §3 — `create` RE-RESOLVES THE ACTOR'S OWN AUTHORITY INSIDE ITS
+ * TRANSACTION, AND `ctx.permissions` IS NOT WHAT DECIDES.
+ *
+ * # THESE TEST THE MECHANISM, NOT THE RACE, AND THAT IS STATED RATHER THAN
+ * IMPLIED
+ *
+ * The window ADR-0026 §3 closes is a `create` already in flight when a removal
+ * commits: `TenantContextGuard` reads the actor's membership *before* the
+ * handler runs, so the handler holds a `TenantContext` describing authority the
+ * database no longer agrees with, and the `updateMany` in the cascade cannot
+ * revoke a row that did not exist when it ran. That interleaving cannot be
+ * arranged deterministically from outside the process — there is no seam
+ * between the guard and the handler to suspend.
+ *
+ * So what is asserted is the mechanism the fix consists of: given a
+ * `TenantContext` that says `OWNER` and a database that says otherwise, the
+ * handler refuses. A stale context is precisely what the racing request holds,
+ * so a `create` that still trusted `ctx.permissions` passes every case below
+ * only by reading the database — which is the whole change. A test that hit the
+ * HTTP route instead could not build that disagreement at all, because the
+ * guard would rebuild the context from the same rows.
+ *
+ * `harness.app.get` reaches `InvitationService` although
+ * `InvitationsModule` does not export it: `app.get` is non-strict and resolves
+ * from any module in the graph. It is the real service, with the real Prisma
+ * client, against the real database.
+ */
+describe('POST /api/v1/organizations/:id/invitations — the actor’s authority is re-read (ADR-0026)', () => {
+  const staleContext = (
+    organizationId: string,
+    membershipId: string,
+    roleKey: SystemRole,
+  ): TenantContext => ({
+    organizationId,
+    membershipId,
+    roleKey,
+    permissions: new Set<Permission>(ROLE_PERMISSIONS[roleKey]),
+  });
+
+  const createCommand = (actorUserId: string, email: string, roleKey: SystemRole) => ({
+    actorUserId,
+    email,
+    roleKey,
+    ip: null,
+    userAgent: null,
+    requestId: null,
+  });
+
+  it('refuses when the actor’s membership is gone by the time the transaction runs', async () => {
+    await clearRateLimits(harness.redis);
+    const home = await acting('OWNER');
+    const membershipId = (
+      await owner.membership.findFirstOrThrow({
+        where: { organizationId: home.organizationId, userId: home.actor.userId, deletedAt: null },
+        select: { id: true },
+      })
+    ).id;
+    // Soft-deleted the way `MembershipService.remove` writes it — both columns
+    // together, because `Membership_status_deletedAt_agree_check` refuses
+    // either on its own (ruling 10).
+    await owner.membership.update({
+      where: { id: membershipId },
+      data: { status: 'REMOVED', deletedAt: new Date() },
+    });
+
+    const invitations = harness.app.get(InvitationService);
+    const email = `inflight-${unique()}@example.test`;
+
+    await expect(
+      invitations.create(
+        // The context the guard built BEFORE the removal committed: it still
+        // says OWNER, and it holds every OWNER permission.
+        staleContext(home.organizationId, membershipId, 'OWNER'),
+        home.organizationId,
+        createCommand(home.actor.userId, email, 'OWNER'),
+      ),
+    ).rejects.toMatchObject({ status: 403, code: 'PERMISSION_DENIED' });
+
+    // Nothing was written: no row for the cascade to have missed, which is the
+    // point of closing this rather than recording it as owed.
+    expect(
+      await owner.invitation.count({ where: { organizationId: home.organizationId, email } }),
+    ).toBe(0);
+    expect(
+      await owner.auditEvent.count({
+        where: { organizationId: home.organizationId, action: 'MEMBER_INVITED' },
+      }),
+    ).toBe(0);
+  });
+
+  it('decides on the role the database holds, not the role the context claims', async () => {
+    await clearRateLimits(harness.redis);
+    const home = await acting('OWNER');
+    const membershipId = (
+      await owner.membership.findFirstOrThrow({
+        where: { organizationId: home.organizationId, userId: home.actor.userId, deletedAt: null },
+        select: { id: true },
+      })
+    ).id;
+    const member = await owner.role.findUniqueOrThrow({
+      where: { key: 'MEMBER' },
+      select: { id: true },
+    });
+    await owner.membership.update({ where: { id: membershipId }, data: { roleId: member.id } });
+
+    const invitations = harness.app.get(InvitationService);
+    const stale = staleContext(home.organizationId, membershipId, 'OWNER');
+
+    // Offering OWNER on a stale OWNER context: refused, because the seeded
+    // `RolePermission` rows for the role the membership NOW holds are what
+    // `assertActorMayGrant` is given.
+    await expect(
+      invitations.create(
+        stale,
+        home.organizationId,
+        createCommand(home.actor.userId, `demoted-${unique()}@example.test`, 'OWNER'),
+      ),
+    ).rejects.toMatchObject({ status: 403, code: 'PERMISSION_DENIED' });
+
+    // ...and the same call offering a role a MEMBER can still grant is NOT
+    // refused, which is what stops this reading as "the re-read refuses
+    // everything".
+    const allowed = `still-allowed-${unique()}@example.test`;
+    const created = await invitations.create(
+      stale,
+      home.organizationId,
+      createCommand(home.actor.userId, allowed, 'MEMBER'),
+    );
+    expect(created.roleKey).toBe('MEMBER');
+    expect(created.email).toBe(allowed);
   });
 });
