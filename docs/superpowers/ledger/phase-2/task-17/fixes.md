@@ -23,13 +23,13 @@ interceptor, no change to audit transactionality.
 
 ## Progress
 
-- [ ] C-4
-- [ ] C-1
-- [ ] C-2
-- [ ] C-5
-- [ ] rule-10 sentence
-- [ ] C-3 sentence
-- [ ] verification table
+- [x] C-4
+- [x] C-1
+- [x] C-2
+- [x] C-5
+- [x] rule-10 sentence
+- [x] C-3 sentence
+- [x] verification table
 
 ---
 
@@ -329,3 +329,90 @@ argument is about the `!==` comparison and does not cover the two lines above it
 the difference actually is.
 
 `pnpm lint` exit **0**, `pnpm check:openapi` exit **0** after both.
+
+---
+
+## Verification
+
+Every command run from the repository root on `feat/phase-2-task-17-app-shell`, exit code captured
+outside a pipe (`out=$(pnpm <cmd> 2>&1); code=$?`), compose stack up (`sentinel-postgres-1`,
+`sentinel-redis-1`, `sentinel-minio-1`, `sentinel-mailpit-1`).
+
+| Command | Exit | Result | Brief's measured baseline | Delta |
+|---|---|---|---|---|
+| `pnpm format:check` | **0** | "All matched files use Prettier code style!" | — | — |
+| `pnpm lint` | **0** | 14 tasks successful | — | — |
+| `pnpm typecheck` | **0** | 14 tasks successful | — | — |
+| `pnpm test` | **0** | **115 files / 1983 tests** | 115 / **1970** | **+13 tests, +0 files** |
+| `pnpm check:specs` | **0** | "144 spec files, each claimed by exactly one of: unit, integration, ui" | **144** | unchanged |
+| `pnpm test:integration` | **0** | **29 files / 544 tests** | 29 / 544 | unchanged |
+| `pnpm build` | **0** | 8 tasks successful | — | — |
+| `pnpm test:e2e` | **0** | **34 passed** | **34** | unchanged |
+| `pnpm check:openapi` | **0** | `"routes":29`, "byte-identical to what the contracts generate" | **29 paths** | unchanged |
+| `pnpm check:registry` | **0** | 15 models, 3 tenant-owned, 1 tenant root, 11 global | — | — |
+| `pnpm check:secrets` | **0** | 521 tracked files, no credential-shaped literals | 520 at review time | +1 — `apps/web/src/app/sign-out.ts` |
+
+**The +13 accounts for itself exactly**: C-4 three (`AppShell.spec.tsx`), C-1 four
+(`packages/contracts/src/auth.spec.ts`), C-2 two (`SessionsPanel.spec.tsx`), C-5 four
+(`MembersScreen.spec.tsx`). **+0 spec files** because every test went into a spec that already
+existed, which is why `check:specs` is still 144.
+
+`test:integration` and `test:e2e` unchanged is the expected result and worth stating: this round
+added no integration or Playwright test. C-1's enforcement is *measured* through the existing
+integration suite (the mutation turns 16 of its 23 red) rather than by adding one.
+
+## Files changed
+
+| File | What |
+|---|---|
+| `apps/web/src/app/OrganizationSwitcher.tsx` | C-4 — `setQueryData` + `resetQueries` (session key excluded by hash) + `getMutationCache().clear()`, replacing `clear()`; docblock rewritten with the query-core measurement |
+| `apps/web/src/app/AppShell.spec.tsx` | C-4 — three new tests mounting the real shell and switching organisation |
+| `apps/web/src/app/OrganizationSwitcher.spec.tsx` | C-4 — one test renamed and its comment corrected for the new ordering; assertions unchanged |
+| `packages/contracts/src/auth.ts` | C-1 — the false docblock corrected in place; new `sessionCollectionResponseSchema` (strict) |
+| `packages/contracts/src/index.ts` | C-1 — exports it |
+| `packages/contracts/src/auth.spec.ts` | C-1 — four tests for the closed schema and the strict/non-strict asymmetry |
+| `apps/api/src/modules/auth/auth.controller.ts` | C-1 — `listSessions` returns `sessionCollectionResponseSchema.parse(...)`; C-3 — the rate-limit docblock's "no oracle" sentence corrected |
+| `apps/web/src/app/sign-out.ts` | C-2 — **new**; `signOutLocally`, shared by `AppShell` and `SessionsPanel` |
+| `apps/web/src/app/AppShell.tsx` | C-2 — its Sign out button now calls `signOutLocally` |
+| `apps/web/src/settings/SessionsPanel.tsx` | C-2 — a self-targeted revocation signs the browser out |
+| `apps/web/src/settings/SessionsPanel.spec.tsx` | C-2 — a `next/navigation` mock and two tests |
+| `apps/web/src/api/errors.ts` | C-5 — new `isPermissionDenied` |
+| `apps/web/src/settings/MembersScreen.tsx` | C-5 — permission state split from error state on both lists; the false sentence removed |
+| `apps/web/src/settings/MembersScreen.spec.tsx` | C-5 — four tests against a 403 stub |
+| `apps/web/app/(app)/dashboard/page.tsx` | C-5 — the ungated "Invite people, change their roles" claim corrected |
+| `apps/api/src/modules/auth/session-management.service.ts` | rule 10 — the overstated necessity corrected, with the residual and what is owed |
+| `apps/api/src/modules/auth/logout.service.ts` | rule 10 — pointer to the corrected version |
+| `apps/api/src/modules/auth/organization-switch.service.ts` | rule 10 — pointer to the corrected version |
+| `apps/api/src/modules/auth/session.service.ts` | C-3 — `revokeOwned`'s timing claim bounded to what it covers |
+
+## Every mutation run, in one table
+
+| # | Mutation | Suite that stayed green | Suite that went red | Exit |
+|---|---|---|---|---|
+| M1 | C-4: restore bare `queryClient.clear()` | `OrganizationSwitcher.spec.tsx` — **8 passed** | `AppShell.spec.tsx` C-4 block — **3 failed** | 1 |
+| M2 | C-4: `resetQueries` → `removeQueries` | `OrganizationSwitcher.spec.tsx` — 8 passed; two of the three new tests | the page-data test — **1 failed** | 1 |
+| M3 | C-2: drop the current-session branch | 12 of 13 | the current-session test — **1 failed** | 1 |
+| M4 | C-5: fold the 403 back into one `isError` branch | 10 of 13 | the three 403 tests — **3 failed** | 1 |
+| M5 | C-1: the reviewer's spread over both projections | `tsc --noEmit` — **exit 0, no error** | `auth.sessions.integration.spec.ts` — **16 failed / 7 passed**, all 500s (was 1 failed / 22 passed before the fix) | 1 |
+
+## What this round did NOT do
+
+- **No migration, no global response interceptor, no change to the audit transactionality.** All
+  three were out of scope by the brief and none was made.
+- **`.claude/`, `roadmap.md`, `report.md` and `review.md` are untouched**, including C-7's
+  documentation corrections, which are the orchestrator's.
+- **`apps/web/src/api/redirect.ts` and `security-headers.ts` are untouched** — `git diff` on both
+  is empty for this round.
+- **The Postgres half of the rule-10 transaction is still not in a transaction.** Corrected in
+  prose, recorded as owed, deliberately not done — see the rule-10 section.
+- **C-3's timing residual is still open.** Wording corrected, behaviour unchanged, as instructed.
+- **Nothing was seen in a browser.** The C-4 tests drive the real components through jsdom and
+  `userEvent`, which is what the review said no test in the repository did; no manual click-through
+  was performed, and the review's note that "C-4 would be obvious in thirty seconds of clicking"
+  still describes an unperformed check.
+- **One environment note, because it cost time and will cost the next session time.** A running
+  `pnpm dev` holds `packages/db/generated/client/query_engine-windows.dll.node` open, so any change
+  under `packages/contracts` — which invalidates turbo's `@sentinel/db#build` — makes
+  `prisma generate` fail with `EPERM: operation not permitted, rename ...tmpNNNN`, and `pnpm
+  typecheck`, `lint`, `test` and `build` all fail with it. The dev server was stopped to run this
+  round's verification and has **not** been restarted.
