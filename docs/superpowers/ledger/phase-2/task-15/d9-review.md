@@ -5,25 +5,19 @@
 **Baseline diff:** `git diff 53f40aa..HEAD`
 **Started:** session start, document created before any reading (carry-forward ruling 131)
 
-## Status
+## Status — complete
 
-- [ ] Read brief, ADR-0026, d9-brief, d9-report
-- [ ] Read diff
-- [ ] Code pass (concurrency, RLS, cross-tenant, rollback)
-- [ ] Citation pass (report claims, code comments, ADR-0026, `.claude/` edits)
-- [ ] Final judgement
+- [x] Read brief, ADR-0026, d9-brief, d9-report
+- [x] Read diff
+- [x] Code pass (concurrency, RLS, cross-tenant, rollback)
+- [x] Citation pass (report claims, code comments, ADR-0026, `.claude/` edits)
+- [x] Final judgement
+
+**Result: 1 High, 4 Medium, 6 Low.** The High is Finding 4 — ADR-0026 §3's race is not closed, and
+I reproduced the original D9 escalation end to end on this branch. Sections in order: the eleven
+findings, then what I verified as true, then what I could not verify, then the judgement.
 
 ## Findings
-
-_(appended as they land)_
-
-## What I could NOT verify
-
-_(appended as they land)_
-
-## Overall judgement
-
-_(pending)_
 
 ---
 
