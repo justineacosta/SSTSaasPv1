@@ -140,3 +140,106 @@ edge when reasoning about a future cycle, and the acyclicity argument in this ch
 on which direction the edges point. The claim it should make is the true and still-sufficient one:
 the only runtime edge is `memberships.module.ts` → `invitation-revocation.cascade.ts`, and nothing
 in `invitations/` imports `memberships.module.ts`.
+
+## Finding 4 — HIGH (code pass) — ADR-0026 §3's race is NOT closed. I reproduced the original D9 escalation end to end, through the real routes, on this branch
+
+**What is wrong.** ADR-0026 §3 and `d9-brief.md` item 3 both assert that re-reading the actor's
+membership inside `create`'s transaction closes the in-flight window:
+
+> ADR-0026 §3: "…so a `create` already in flight when the removal commits cannot slip past the
+> cascade… it is closed here rather than recorded as owed, because a cascade that a concurrent
+> request can walk around is not a control."
+
+It can still be walked around. The re-read makes `create` decide on the database's state rather than
+the guard's, but **it does not serialise `create` against `remove`/`updateRole`**, and it does not
+change the isolation level. Under READ COMMITTED a `create` whose re-read runs *before* the removal
+commits sees a live membership, is allowed, and inserts its row *after* the cascade's `findMany` has
+already looked. The cascade cannot revoke a row that did not exist when it ran — which is the exact
+sentence ADR-0026 uses to justify the fix, and it remains true of the fix.
+
+**How I established it — measured, on this branch, through the real endpoints.**
+
+I temporarily inserted an env-gated `setTimeout` into `invitation-revocation.cascade.ts` immediately
+after its `findMany`, still inside the caller's transaction, to widen the window to something a test
+can hit. Then, in a temporary block appended to `invitations.integration.spec.ts`, I fired
+`DELETE /api/v1/organizations/:id/members/:membershipId` (real route, real guard chain), waited
+1200 ms, and fired `POST /api/v1/organizations/:id/invitations` as the member being removed (real
+route, real guard chain, `roleKey: OWNER`).
+
+```
+$ npx vitest run --project integration --no-file-parallelism \
+    -t "PROBE: a create in flight" \
+    apps/api/src/modules/invitations/invitations.integration.spec.ts
+EXIT=0
+PROBE removal status 204 {}
+PROBE invite status 201 {"id":"inv_01M1YC93WN…","roleKey":"OWNER","revokedAt":null,…}
+PROBE invitation row {"id":"inv_01M1YC93WN…","revokedAt":null,"acceptedAt":null,…}
+PROBE issuer membership after {"deletedAt":"2026-09-07T16:47:30.497Z","status":"REMOVED"}
+PROBE accept status 201 {"…","roleKey":"OWNER","status":"ACTIVE",…}
+PROBE VERDICT RACE OPEN: live OWNER invitation from a removed member
+```
+
+The last line is the whole point: **the invitation was then redeemed and minted an `OWNER`
+membership** in that organisation, issued by a user whose membership row reads
+`status: REMOVED, deletedAt: <set>`. That is byte for byte the outcome the deleted test
+`D9 — RECORDS AN OPEN WINDOW…` used to pin, reproduced on the branch that claims to have closed it.
+
+The demotion arm is the same:
+
+```
+$ npx vitest run --project integration --no-file-parallelism -t "PROBE2" …
+PROBE2 demotion status 200
+PROBE2 invite status 201 {"…","roleKey":"OWNER","revokedAt":null,…}
+PROBE2 issuer role after MEMBER invitation {"…","revokedAt":null}
+PROBE2 VERDICT RACE OPEN: live OWNER invitation from a member demoted to MEMBER
+```
+
+**Why it is open, established by inspection to explain the measurement (not to replace it):**
+
+1. `packages/db/src/tenant-transaction.ts` calls `scoped.$transaction(fn)` with **no**
+   `isolationLevel`. `grep -rn "isolationLevel" apps packages --include=*.ts` finds no application
+   call site — only Prisma's generated types. So every transaction here is Postgres' default
+   READ COMMITTED, under which a non-locking `SELECT` reads the last committed row version and does
+   not block on another transaction's uncommitted `UPDATE`.
+2. `InvitationService.create` **does not take the organisation lock.**
+   `grep -rn "lockOrganization" apps/api/src --include=*.ts | grep -v spec` gives exactly three call
+   sites: `invitation.service.ts:765` (that is `accept`), `membership.service.ts:517` (`updateRole`),
+   `membership.service.ts:651` (`remove`). `create` takes only
+   `pg_advisory_xact_lock(hashtext('inv:<org>:<email>'))` (`invitation.service.ts:172`), a different
+   key, so it contends with nothing the two membership writes hold.
+3. `actorAuthority` uses `tx.membership.findFirst` — a plain read, not `FOR UPDATE` — so it acquires
+   nothing that would make it wait for the removal.
+
+**On the artificial delay.** The probe widens the window; it does not create it. The window is
+`create`'s re-read → `create`'s commit overlapping `remove`'s cascade-read → `remove`'s commit, and
+its natural width is the duration of two ordinary transactions on the same tenant. Points 1–3 are
+what make it exist at all, and none of them is affected by the delay. I did not attempt to measure
+how often it reproduces without the delay, and I am not claiming it is easy to hit unaided.
+
+**The repository already knows the remedy and wrote it down.** `lockOrganization`'s docblock
+(`membership.service.ts:102-176`) says: *"Every membership write that can change the owner count
+takes it… A writer that skips it is outside the serialisation and reopens the race for everyone"*,
+and records that `SERIALIZABLE` was considered and rejected in favour of the lock. `create` is now,
+by ADR-0026, a writer whose correctness depends on that same serialisation, and it is outside it.
+`lockOrganization` is exported and `invitation.service.ts` already imports it (line 25) for `accept`.
+I have not measured whether adding it to `create` closes the probe, because the brief forbids me
+changing code — but that is the shape of the fix, and it costs one lock on a path that already
+takes one.
+
+**Cost if left alone.** The highest-value open security item in Phase 2 is recorded as closed while
+a re-escalation path for a just-removed `OWNER` remains open, reachable by that person timing one
+request against their own removal — which is precisely the person motivated to try, and the removal
+is an event they can observe (their session dies). Every downstream document now says the window is
+shut: `.claude/security/authentication.md` deleted its open-window paragraph, `roadmap.md` moved the
+item to closed, and the test named to warn about it was rewritten. A future reader has nothing left
+telling them to look.
+
+**A narrower, honest claim the change is entitled to make.** The re-read *does* work, and my probe
+confirms the mechanism: a `create` whose re-read runs *after* the removal commits is refused (that
+is what the implementer's two direct-service tests show, and they are sound). What is not true is
+that the window is closed. ADR-0026 §3's final sentence, `d9-brief.md` item 3, the
+`invitation.service.ts:290-317` docblock and `d9-review-brief.md`'s opening paragraph all overstate
+it in the same words, and all four need correcting whether or not the lock is added.
+
+**Working tree restored.** `git checkout apps/api/src/modules/invitations/invitation-revocation.cascade.ts apps/api/src/modules/invitations/invitations.integration.spec.ts` — confirmed clean with
+`git status --short` (only this review document is modified).
