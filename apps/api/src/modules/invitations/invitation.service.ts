@@ -324,6 +324,47 @@ export class InvitationService {
     assertPathIsActiveTenant(ctx, pathId);
 
     const created = await withTenantTransaction(this.base, ctx.organizationId, async (tx) => {
+      // ADR-0026 §3 — THE ORGANISATION LOCK, AND IT IS FIRST BECAUSE THE
+      // RE-READ BELOW IS NOT A LOCK.
+      //
+      // The first version of this method re-read the actor (below) and took no
+      // organisation lock, and the D9 adversarial review measured what that is
+      // worth: it reproduced the original escalation end to end on this branch,
+      // through these routes, to a `201` minting an `OWNER` membership for a
+      // user whose `Membership` row said `REMOVED`. The re-read makes `create`
+      // decide against the database instead of against the guard, which is a
+      // real improvement — and it does not SERIALISE `create` against the
+      // membership writes. `withTenantTransaction` passes no `isolationLevel`,
+      // so this is READ COMMITTED: `actorAuthority`'s non-locking `findFirst`
+      // reads the last committed row version and does not wait for another
+      // transaction's uncommitted `UPDATE`. A `create` whose re-read runs
+      // before a removal commits is allowed, and inserts its row AFTER the
+      // cascade's `findMany` has already looked — which is the exact sentence
+      // ADR-0026 uses to justify the fix, still true of the fix.
+      //
+      // `lockOrganization`'s own docblock names the remedy: *"Every membership
+      // write that can change the owner count takes it… A writer that skips it
+      // is outside the serialisation and reopens the race for everyone."*
+      // `create` decides what a member's authority may still produce, so it is
+      // the fourth writer in the set `accept`, `updateRole` and `remove`
+      // already serialise — precisely the set that can move a member's
+      // authority.
+      //
+      // **THE LOCK ORDER IS ORGANISATION THEN SLOT, AND NOTHING ANYWHERE TAKES
+      // THEM THE OTHER WAY ROUND.** `lockInvitationSlot` has exactly one caller
+      // — this method — and `lockOrganization`'s other three callers take no
+      // advisory lock at all, so organisation-then-slot introduces no cycle and
+      // no deadlock. Verified by grep over both names before this line was
+      // written, and it is the check to repeat before adding a fifth taker.
+      //
+      // The cost is that two invitations to DIFFERENT addresses in one
+      // organisation now serialise where before they did not. That is the same
+      // cost `updateRole`, `remove` and `accept` already pay, for a lock held
+      // across one short transaction, and it is what
+      // `lockInvitationSlot`'s finer key buys back for everything except this
+      // window.
+      await lockOrganization(tx, ctx.organizationId);
+
       // D5 — YOU CANNOT INVITE SOMEBODY INTO A ROLE WHOSE PERMISSIONS YOU DO NOT
       // HOLD. `security/authorization.md` §4's no-minting rule, at its third
       // call site: an `ADMIN` may not invite an `OWNER` for the same reason

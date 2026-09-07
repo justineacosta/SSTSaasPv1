@@ -2060,3 +2060,164 @@ describe('POST /api/v1/organizations/:id/invitations — the actor’s authority
     expect(created.email).toBe(allowed);
   });
 });
+
+/**
+ * ADR-0026 §3, THE RACE ITSELF — NOT THE MECHANISM.
+ *
+ * # Why this block exists, and what the block above could not do
+ *
+ * The two cases above hand `create` a stale `TenantContext` and check that it
+ * decides on the database instead. That proves the *re-read* works. It does not
+ * prove the *race* is closed, and the D9 adversarial review measured the
+ * difference: with the re-read in place and no organisation lock, a `create`
+ * whose re-read runs BEFORE a removal commits is allowed, inserts its row AFTER
+ * the cascade's `findMany` has already looked, and the review drove that row
+ * through `POST /api/v1/invitations/accept` to a `201` minting an `OWNER`
+ * membership for a user whose row said `REMOVED`. A re-read is not a lock.
+ *
+ * `withTenantTransaction` passes no `isolationLevel`, so every transaction here
+ * is Postgres' default READ COMMITTED, under which `actorAuthority`'s
+ * non-locking `findFirst` reads the last committed row version and does not wait
+ * for another transaction's uncommitted `UPDATE`. What closes the window is
+ * `lockOrganization` — the same `SELECT ... FOR UPDATE` on the tenant root that
+ * `accept`, `updateRole` and `remove` already take. `create` decides what a
+ * member's authority may produce, so it belongs in that set, and
+ * `lockOrganization`'s own docblock says what a writer outside it costs
+ * everyone: *"A writer that skips it is outside the serialisation and reopens
+ * the race for everyone."*
+ *
+ * # WHAT THIS TEST PROVES, EXACTLY, AND WHAT IT DOES NOT
+ *
+ * It proves that `create` **serialises behind a holder of the organisation
+ * lock**, and that once that holder's removal commits, `create` refuses. It does
+ * not prove the absence of every interleaving; no test does. It is a detector
+ * for the one statement (ruling 120: a lock needs a detector per path that takes
+ * it), and it is deterministic — nothing here races, because the blocker holds
+ * the lock before the request is sent and releases it only when this test says
+ * so.
+ *
+ * **`FOR NO KEY UPDATE` is the blocker mode, and the choice is the measurement**
+ * (ruling 121, and the same reasoning the accept-side detector records): the
+ * tenant-scoping extension forces `organizationId` into every write payload, so
+ * Postgres re-checks the foreign key and takes `FOR KEY SHARE` on the
+ * `Organization` row. `FOR KEY SHARE` conflicts with `FOR UPDATE` but not with
+ * `FOR NO KEY UPDATE`, so a `FOR UPDATE` blocker would stall this request
+ * whether or not the handler locked anything and the detector would pass under
+ * its own mutation. `FOR NO KEY UPDATE` conflicts with the handler's
+ * `FOR UPDATE` and with nothing the insert does on its own.
+ *
+ * **The removal is written as raw SQL rather than by driving
+ * `MembershipService.remove`, and that is a stated limit.** `remove` opens its
+ * own `withTenantTransaction`, so it cannot be composed into the blocker's
+ * transaction — and the blocker's transaction is what has to hold the lock while
+ * the request is in flight. The two columns written here are the ones `remove`
+ * writes, together, because `Membership_status_deletedAt_agree_check` refuses
+ * either alone (ruling 10). What is skipped is the cascade — which is the point,
+ * since there is no invitation yet for it to find — and the session revocation,
+ * which the racing request has by definition already got past, because
+ * `TenantContextGuard` ran before the removal committed.
+ */
+describe('POST /api/v1/organizations/:id/invitations — a create racing its own issuer’s removal (ADR-0026 §3)', () => {
+  it('BLOCKS while another session holds FOR NO KEY UPDATE on the organisation row, and is refused once that removal commits', async () => {
+    await clearRateLimits(harness.redis);
+    const home = await acting('OWNER');
+    // A second owner, so the removal below is not the sole owner walking out.
+    // The last-owner invariant is a different control and this test is not
+    // about it.
+    const second = await user();
+    await membership({ organizationId: home.organizationId, userId: second.id, role: 'OWNER' });
+
+    const membershipId = (
+      await owner.membership.findFirstOrThrow({
+        where: { organizationId: home.organizationId, userId: home.actor.userId, deletedAt: null },
+        select: { id: true },
+      })
+    ).id;
+    const invitee = `racing-removal-${unique()}@example.test`;
+
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let removed: (() => void) | undefined;
+    const gone = new Promise<void>((resolve) => {
+      removed = resolve;
+    });
+
+    const removing = blockerConnection.$transaction(
+      async (tx) => {
+        // `set_config` first: this client connects as `sentinel_app` and both
+        // tables carry FORCE RLS, so without it the SELECT returns no rows and
+        // the UPDATE writes none — a blocker that silently does not block.
+        await tx.$queryRaw`SELECT set_config('app.organization_id', ${home.organizationId}, true) AS scoped`;
+        const locked = await tx.$queryRaw<{ id: string }[]>`
+          SELECT id FROM "Organization" WHERE id = ${home.organizationId} FOR NO KEY UPDATE
+        `;
+        expect(
+          locked,
+          'The blocker locked no row, so every assertion below would pass vacuously. RLS ' +
+            'refused the SELECT, or the organisation does not exist.',
+        ).toHaveLength(1);
+        const rows = await tx.$executeRaw`
+          UPDATE "Membership" SET "status" = 'REMOVED', "deletedAt" = now() WHERE id = ${membershipId}
+        `;
+        expect(rows, 'The blocker removed nobody; RLS refused the UPDATE.').toBe(1);
+        removed?.();
+        await held;
+      },
+      { timeout: 120_000, maxWait: 30_000 },
+    );
+
+    // The removal must be WRITTEN — not yet committed — before the request is
+    // sent, or this measures nothing about a create that is already in flight.
+    await gone;
+
+    let settled = false;
+    const pending = request(server)
+      .post(invitesPath(home.organizationId))
+      .set(csrf(home.actor))
+      // `OWNER`, because the escalation this closes is a removed owner minting
+      // themselves a fresh way back in through an address they control.
+      .send({ email: invitee, roleKey: 'OWNER' })
+      .then((response) => {
+        settled = true;
+        return response;
+      });
+
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    expect(
+      settled,
+      'The create answered while another session held FOR NO KEY UPDATE on the organisation ' +
+        'row, so `create` never took `lockOrganization`. Its re-read of the actor is then ' +
+        'outside the serialisation the membership writes use: under READ COMMITTED it sees the ' +
+        'pre-removal snapshot, allows the invitation, and inserts the row AFTER the cascade’s ' +
+        '`findMany` has already looked. That is the D9 escalation, and the adversarial review ' +
+        'reproduced it end to end on this branch — a live OWNER invitation from a removed ' +
+        'member, redeemed into an OWNER membership.',
+    ).toBe(false);
+
+    release?.();
+    await removing;
+    const response = await pending;
+
+    // The refusal `actorAuthority` produces for a membership that is gone: the
+    // same `PERMISSION_DENIED` envelope any other principal who cannot grant the
+    // role receives.
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(codeOf(response.body)).toBe('PERMISSION_DENIED');
+
+    // NOTHING WAS WRITTEN. This is the half the escalation actually needed: a
+    // row the cascade could not have revoked, because it did not exist when the
+    // cascade ran.
+    expect(
+      await owner.invitation.count({
+        where: { organizationId: home.organizationId, email: invitee },
+      }),
+    ).toBe(0);
+    expect(
+      await owner.auditEvent.count({
+        where: { organizationId: home.organizationId, action: 'MEMBER_INVITED' },
+      }),
+    ).toBe(0);
+  }, 120_000);
+});
