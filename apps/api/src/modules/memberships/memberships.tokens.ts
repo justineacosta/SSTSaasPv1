@@ -54,8 +54,20 @@ export interface MemberSessionRevoker {
  * `membership.service.ts`, so an import in the other direction from anything
  * `membership.service.ts` can reach is an ES module cycle, and a cycle in ESM
  * does not always fail loudly. `membership.service.ts` takes the type with
- * `import type`, which TypeScript erases, so there is no runtime edge from
- * `memberships/` into `invitations/` at all. The provider factory is in
+ * `import type`, which TypeScript erases, so **the service** carries no runtime
+ * edge from `memberships/` into `invitations/`.
+ *
+ * **There is exactly one such runtime edge, and it is this module's factory.**
+ * `memberships.module.ts` imports `invitationRevocationCascade` — a value —
+ * from `../invitations/invitation-revocation.cascade.js`. The claim that
+ * matters is not that no edge exists but that **no cycle** does: nothing in
+ * `invitations/` imports `memberships.module.ts`, and
+ * `invitation-revocation.cascade.ts` imports only `@sentinel/db`,
+ * `audit/audit.service.js` and a type from `auth/request-context.js`. This
+ * docblock said "no runtime edge … at all" until the D9 review's Finding 3,
+ * and a reader who believed the absolute version would not look for the
+ * module-level edge when reasoning about a future cycle — which is the whole
+ * argument this port rests on. The provider factory is in
  * `memberships.module.ts` alongside the session revoker's.
  */
 export const INVITATION_REVOCATION_CASCADE = 'SENTINEL_INVITATION_REVOCATION_CASCADE';

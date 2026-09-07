@@ -9,12 +9,21 @@ type TenantTransaction = Parameters<Parameters<typeof withTenantTransaction>[2]>
  * "Live" for an invitation: neither accepted nor revoked.
  *
  * **It matches the partial unique index's predicate exactly**, and that is the
- * whole reason it is a shared constant rather than four inline object literals.
- * `Invitation_organizationId_email_live_key` is
+ * whole reason it is a shared constant rather than **seven** inline object
+ * literals. `Invitation_organizationId_email_live_key` is
  * `WHERE "acceptedAt" IS NULL AND "revokedAt" IS NULL`; a query that used a
  * different definition of live would disagree with the constraint that enforces
  * uniqueness over it, and the disagreement would show up as a P2002 on a path
  * that had just checked there was nothing to collide with.
+ *
+ * **The seven is counted, not carried forward.**
+ * `grep -rn '\.\.\.LIVE_INVITATION' apps/api/src --include=*.ts | wc -l` gives
+ * `7`: two in `create` (the supersession's read and its write), two in `revoke`,
+ * one in `accept`, and two here (the cascade's read and its per-row write) —
+ * seven literals across four methods. This sentence said "three" and then
+ * "four", which are the method counts at two moments, while the words it uses
+ * are "inline object literals"; the D9 review's Finding 2 is that the figure was
+ * incremented rather than measured. Ruling 108: compute the count.
  *
  * **Expiry is deliberately not part of it**, for the same reason it is not part
  * of the index: a predicate mentioning `now()` is not IMMUTABLE and Postgres
@@ -104,8 +113,9 @@ export interface InvitationRevocationCascade {
  * link still mint an `OWNER` days later, through an address they control. That
  * is carry-forward ruling 130's shape in one sentence, and it was measured end
  * to end rather than inferred — see
- * `D9 — CLOSED BY ADR-0026: an invitation does NOT outlive its issuer’s
- * authority` in `invitations.integration.spec.ts`.
+ * `D9 — CLOSED BY ADR-0026: an invitation does NOT outlive its issuer's authority`
+ * in `invitations.integration.spec.ts`. Straight apostrophe, on one line, and
+ * both of those are the citation being greppable rather than typography.
  *
  * # IT TAKES THE CALLER'S TRANSACTION AND OPENS NONE OF ITS OWN
  *

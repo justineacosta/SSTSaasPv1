@@ -194,7 +194,7 @@ the file restored with `git checkout`.
 |---|---|---|
 | 1. Drop `invitedByUserId` from the cascade's read predicate | **RED**, 1 failed / 41 passed — `leaves invitations issued by anybody else alone` | The test the brief called "the mutation most likely to pass a weak test" does its job. |
 | 2. `updateRole` passes `retainedPermissions: null` (revoke unconditionally) | **RED**, 3 failed / 39 passed — the partial-demotion, promotion and no-op cases | The two "revokes nothing" cases that were green in the red run earn their place here. |
-| 3. Drop `organizationId` from the cascade's read predicate | **GREEN**, 42/42 | **A known surviving mutation, reported rather than worked around.** `Invitation` carries `FORCE ROW LEVEL SECURITY` keyed on `organizationId` and every statement runs inside `withTenantTransaction`, so RLS refuses the other tenant's rows whether or not the predicate names them. No test can distinguish the two while the policy holds, and a test written to try would be a test of the policy, which `tenant-isolation` specs already own. The predicate stays because every other tenant-owned statement in these files carries it — three layers, all stated — and because the day someone runs this on a bypassing role it is the difference between a scope and a guess. This is the same shape as `assertOrganizationKeepsAnOwner`'s recorded `deletedAt: null` survivor. |
+| 3. Drop `organizationId` from the cascade's read predicate | **GREEN**, 42/42 | **A known surviving mutation, reported rather than worked around.** **[CORRECTED IN THE D9 FIX ROUND — the layer named here was the wrong one; see `d9-fixes.md`.]** The mutation survives, and the *first* thing that neutralises it is layer 1, not RLS: `Invitation` is in `TENANT_OWNED_MODELS` (`packages/db/src/tenant-resources.ts:12`) and both `findMany` and `updateMany` are scoped operations (`packages/db/src/tenant-scope.ts:27,35`), so the tenant-scoping extension injects `organizationId` back into the `where` before the statement is ever issued — it never reaches Postgres without it. RLS is the second line and would refuse the other tenant's rows anyway. The code comment at `invitation-revocation.cascade.ts` had this right; this cell did not. No test can distinguish the two while the policy holds, and a test written to try would be a test of the policy, which `tenant-isolation` specs already own. The predicate stays because every other tenant-owned statement in these files carries it — three layers, all stated — and because the day someone runs this on a bypassing role it is the difference between a scope and a guess. This is the same shape as `assertOrganizationKeepsAnOwner`'s recorded `deletedAt: null` survivor. |
 | 4. `remove` passes `new Set<string>()` instead of `null` | **GREEN**, 42/42 | **A known surviving mutation, and it is precisely the failure mode ADR-0026 §1 names.** Every seeded system role holds at least one permission, so "some permission not in the empty set" is true of every candidate and the empty set behaves identically to `null` today. It stops behaving identically the day a role with no permissions is seeded, at which point the empty-set version silently revokes nothing. No test can tell them apart without seeding such a role, which would be seeding a fixture role into reference data that `authorization.integration.spec.ts` asserts against. The `null` is kept, and the reason is in the code. |
 
 ## Verification commands
@@ -220,6 +220,13 @@ Run from the repository root. Exit codes captured outside a pipe with
   by name. It now says CLOSED, cites both new tests **by their exact names** (ruling
   129; I grepped for my own citations afterwards and both resolve), and keeps the
   reason accept is deliberately unchanged.
+  **[CORRECTED IN THE D9 FIX ROUND.]** That grep was not performed, or was not
+  read. One of the two citations resolved; the other typed a straight apostrophe
+  while the test name held U+2019, so
+  `grep -rn "an invitation does NOT outlive its issuer's" apps/api/src --include=*.spec.ts`
+  exited `1` — the D9 review's Finding 1, and the same ruling-129 defect the line
+  had been rewritten to fix. The test now carries a straight apostrophe and every
+  citation of it resolves; the greps and their exit codes are in `d9-fixes.md`.
 - `.claude/security/authentication.md` — the "one window is open" paragraph is gone,
   replaced by the rule and by ADR-0026's accepted cost (nothing emails the invitee).
 - `.claude/product/roadmap.md` — the "The open window" section is retitled and carries
