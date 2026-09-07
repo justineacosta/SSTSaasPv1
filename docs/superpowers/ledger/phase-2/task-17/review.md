@@ -10,11 +10,20 @@ Written incrementally from the first minutes and committed as it went (ruling 13
 
 ## Status: IN PROGRESS
 
-## Pass 1 — citation (in progress)
+A second reviewer picked this up on 2026-09-07 after the first was ended by a session limit
+partway through. It did not redo the first reviewer's work; the sections below say who did what.
 
-## Pass 2 — code (not started)
+## Pass 1 — citation (COMPLETE — reviewer 1)
 
-## Findings (in progress)
+## Pass 2 — code (IN PROGRESS — reviewer 2)
+
+- §1 cross-user isolation — **complete** (reviewer 1, seven probes)
+- §2 the audit deviation — facts complete (reviewer 1); **verdict written** (reviewer 2)
+- §3 the rate-limit choice — complete (reviewer 1, finding C-3)
+- §4 the frontend — **reviewer 2**
+- §5 documentation made false — **reviewer 2**
+
+## Findings (C-1..C-3 reviewer 1; C-4 onward reviewer 2)
 
 ## Checked and found fine (in progress)
 
@@ -230,3 +239,142 @@ by `AuthenticationGuard` at `authentication.guard.ts:195-206` with 401 `MFA_REQU
 `auth.controller.ts:432` sets **no cookie at all** for a pending credential, so one can never
 arrive in `__Host-session` by the product's own paths. **Decision 5's premise holds: an excluded
 session genuinely cannot authenticate a request.**
+
+---
+
+# Reviewer 2 — picking up at §4 and §5 of the brief
+
+The first reviewer's citation pass, cross-user isolation probes and findings C-1 to C-3 stand and
+are not repeated. What follows is the part of the brief that had not been reached: the frontend
+(§4), the documentation list (§5), and the explicit verdict on §2's audit deviation.
+
+## C-4 (HIGH) — `queryClient.clear()` empties the store but does not repaint the screen. After an organisation switch the shell keeps rendering the PREVIOUS organisation — its name, its permission set, and any page data keyed without an organisation — until the user navigates or reloads.
+
+This is the exact property `architecture/frontend.md` §3 is written to protect, quoted by
+`OrganizationSwitcher.tsx`'s own docblock: *"Switching organisations clears the cache entirely — a
+stale cross-tenant render would be a security-visible bug even though the data was legitimately
+fetched."* The cache is cleared. The render is stale anyway.
+
+**Citation.** `apps/web/src/app/OrganizationSwitcher.tsx:47-56`:
+
+```
+const switcher = useMutation({
+  mutationFn: (organizationId: string) => switchOrganization(client, { organizationId }),
+  onSuccess: (next) => {
+    queryClient.clear();
+    queryClient.setQueryData(SESSION_QUERY_KEY, next);
+  },
+});
+```
+
+and `apps/web/src/app/session-context.tsx:104-112`, where `useSessionQuery` is the observer that
+feeds `SessionContextProvider` in `AppShell.tsx:128`.
+
+### Measurement 1 — the real shell, the real switcher, the real `clear()`
+
+Probe `apps/web/src/app/reviewer-cache.spec.tsx` (deleted before this review's final commit; not
+part of the branch) mounts `<AppShell><Page/></AppShell>` against a `stubClient` whose
+`/api/v1/auth/session`, `/api/v1/organizations`, `/api/v1/auth/switch-org` and a
+`/api/v1/findings` all answer for **whichever organisation the session currently names** — which
+is what the real API does, since the organisation is on the cookie and not in the URL. The
+organisation is then switched from Acme to Globex through the real `<select>`, with
+`userEvent.selectOptions` (act-wrapped).
+
+`pnpm vitest run --project ui apps/web/src/app/reviewer-cache.spec.tsx` — **2 of 3 failed**:
+
+```
+P1 immediately after clear  | Acme on screen: true | Globex on screen: false | cache['findings']: undefined
+P1 100ms later              | Acme on screen: true | Globex on screen: false | cache['findings']: undefined
+P2 context org rendered  : org:acme | select value: org_...GQ7 (ACME)
+   | cache session: {"activeOrganization":{"id":"org_...GQ9","slug":"globex","name":"Globex"},...}
+P2 150ms later              | Acme on screen: true | Globex on screen: false | cache['findings']: undefined
+
+AssertionError: expected <li></li> to be null
+- Expected: null
++ Received: <li>Acme's finding</li>
+```
+
+Read the P2 line carefully, because it is the whole finding: **the cache holds Globex and the
+screen renders Acme.** The organisation `<select>` still shows Acme, so the switcher does not even
+report the switch it performed. The page's own instrumentation shows why:
+
+```
+[page render] contextOrg=acme findings=undefined status=pending/fetching
+[page render] contextOrg=acme findings={"rows":["Acme's finding"]} status=success/idle
+   <- the switch happens here, and there is no third render. Ever.
+```
+
+**Two renders, both before the switch.** After the switch the shell does not re-render, the page
+does not re-render, and `['findings']` — cleared — is never refetched, so the row stays on screen
+with nothing behind it. The server session has already moved to Globex: every request the user
+makes from this point is answered for the *other* tenant while the chrome names the first one.
+
+### Measurement 2 — the mechanism, with no Sentinel code in the frame
+
+Probe `apps/web/src/app/reviewer-observer.spec.tsx` (also deleted): one `useQuery(['session'])`,
+one button whose handler is `OrganizationSwitcher`'s `onSuccess` body verbatim (`clear()` then
+`setQueryData()`), nothing else.
+
+| Probe | Result |
+|---|---|
+| **A** — nothing else re-renders the observing component | `hook renders "acme" \| cache holds {"org":"globex"} \| Probe re-rendered **0** time(s) since the switch` |
+| **B** — an unrelated parent state update re-renders it | the render log shows `[render 3] useQuery.data={"org":"globex"}` — it recovers, and only then |
+
+The library reason, read out of `@tanstack/query-core@5.101.4` (the installed version):
+
+- `queryClient.clear()` → `queryCache.clear()` → for every query `remove(query)`, which calls
+  `query.destroy()` and deletes it from the map (`queryCache.js:39-55`).
+- `query.destroy()` is `super.destroy(); this.cancel({ silent: true })` (`query.js:86-89`).
+  **It does not touch `query.observers`, and `silent: true` suppresses any dispatch.**
+- A `QueryObserver` subscribes to its *query*, not to the cache: `#currentQuery` is reassigned
+  only inside `#updateQuery()` (`queryObserver.js:417`), reachable only from `setOptions` /
+  `onSubscribe` — i.e. **only when React re-renders the hook**. `grep -rn "queryCache.subscribe"`
+  across `query-core`'s build returns nothing.
+- So after `clear()` every mounted observer holds a destroyed query that is no longer in the
+  cache, and `setQueryData` writes into a *newly built* query that has **zero** observers.
+
+A window-focus refetch does not rescue it either: `queryCache.onFocus()` iterates `this.getAll()`
+(`queryCache.js:79-85`) — the orphaned query is not in that list, and the rebuilt one has no
+observers to fetch for.
+
+### Why the shipped tests cannot see it
+
+`OrganizationSwitcher.spec.tsx:47-52` renders the switcher under a **static**
+`SessionContextProvider session={sessionOn(ORG_A, ...)}` — a literal prop, never
+`useSessionQuery`'s observer. Every assertion in that file is against
+`queryClient.getQueryData(...)`, and the spec says so deliberately at `:63-68`: *"The assertion is
+against the cache itself rather than against what happens to be on screen."* That choice is
+defensible against the failure it was aimed at, and it is exactly what hides this one — **the
+cache is the half that works.**
+
+`AppShell.spec.tsx` has nine tests and none of them switches organisations
+(`grep -n "it(" apps/web/src/app/AppShell.spec.tsx`). `e2e/app-shell.spec.ts` has seven and none
+of them signs in, so none reaches a switcher with more than one organisation in it. There is no
+test in this repository that mounts the shell and changes organisation.
+
+### Severity
+
+**High**, and it is the one High in this review.
+
+- It is the named `frontend.md` §3 property, failing in the direction that document calls
+  "security-visible".
+- It is not a leak across a permission boundary — the rows on screen are ones this user was
+  entitled to see a moment ago — which is the only reason it is not Critical.
+- But the shell's `permissions` array is frozen on the previous organisation too, so every
+  `usePermission` / `<Can>` gate under it is evaluated against the wrong tenant's rights until the
+  next navigation. Those are UX-only (see C-6), so this misinforms rather than authorises.
+- It persists indefinitely. Nothing in the app recovers it except a route change or a full page
+  load; the `refetchOnWindowFocus: true` at `app/providers.tsx:44` does not.
+- The mitigation the implementer chose and argued for at length — a total clear, no per-key
+  reasoning — is the thing that produces it. `router.refresh()`, a remount key on the shell, or
+  `resetQueries()` in place of `clear()` would each have re-rendered. `clear()` alone does not.
+
+**Answering the brief's §4 question directly** — "verify the clear is total and that nothing
+survives it (router cache, in-flight requests, an unmounted component's stale closure)":
+
+| Asked about | Answer | Evidence |
+|---|---|---|
+| The query store | **Total.** Both shipped assertions reproduce; nothing survives `clear()` | `OrganizationSwitcher.spec.tsx`, re-run green |
+| Next's router cache | **Empty of tenant data, so nothing to clear.** Every page under `(app)` renders its data from client queries; `app/(app)/layout.tsx`, `dashboard/page.tsx`, `settings/*/page.tsx` fetch nothing server-side (ADR-0025), and every route is `ƒ (Dynamic)` | read all four files; `grep` for a server-side fetch returns nothing |
+| In-flight requests | **Fine.** `clear()` cancels each retryer, and a request that resolves anyway writes into a Query object already removed from the map — probe P3 ended with `cache['findings']: undefined` and neither tenant's row on screen | probe P3, passed |
+| A stale closure / stale render | **BROKEN — this finding.** Not a closure: an orphaned `QueryObserver` | probes P1, P2, A, B |
