@@ -186,3 +186,46 @@ Four in `packages/contracts/src/auth.spec.ts` under
 that pins the asymmetry: the strict schema **refuses** a row carrying `tokenHash` (and the issue
 names the key), while `sessionCollectionSchema` strips it. They were **red before the schema
 existed** — `Tests 4 failed | 46 passed (50)`, exit 1 — and are green now: `50 passed`, exit 0.
+
+---
+
+## C-2 — revoking the current session signs the browser out
+
+### The tests came first
+
+Two added to `apps/web/src/settings/SessionsPanel.spec.tsx`, plus a `next/navigation` router mock
+the file did not have:
+
+- **`SIGNS THE USER OUT IN THE BROWSER when the revoked row is the CURRENT session`** — clicks
+  "Sign out this device", asserts `router.replace('/login')` and that a key seeded before the click
+  is gone from the cache. The existing `:123` test asserts the button's *label*; this asserts the
+  outcome.
+- **`does NOT sign the browser out when the revoked row is another device`** — the half that breaks
+  if the fix keys on "a revocation succeeded" rather than on "the revoked row was this session".
+
+### The fix
+
+New file `apps/web/src/app/sign-out.ts` exporting `signOutLocally(queryClient, router)` —
+`queryClient.clear()` then `router.replace('/login')`, the two things `AppShell` already did.
+**`AppShell.tsx` now calls it too**, so the two sign-out paths are shared rather than copied; two
+copies of a sign-out that drift apart is how one of them ends up leaving a cache behind.
+
+`SessionsPanel`'s `revokeOne.onSuccess` now takes the mutation's `sessionId` variable, looks the
+row up in the page it already has, and calls `signOutLocally` when that row is `current`;
+otherwise it invalidates the list as before. The revoke response is `{ status: 'SESSION_REVOKED' }`
+for both cases, so the row's own `current` flag is the only available signal — which is also the
+flag the button's label is already keyed on.
+
+`signOutLocally`'s docblock records why `clear()` is still right *there* while the organisation
+switcher needed `resetQueries()`: `/login` is outside the `(app)` layout, so the whole subscribed
+tree unmounts and there is no observer left that needs telling. C-4's failure mode requires the
+tree to stay mounted.
+
+### The mutation
+
+| Mutation | Result | Exit |
+|---|---|---|
+| **M3** — drop the current-session branch, leaving the shipped `invalidateQueries` alone | **1 failed / 12 passed** — the new current-session test, and only it | 1 |
+| none | 13 passed | 0 |
+
+`pnpm vitest run --project ui apps/web/src` with the fix in place: **12 files / 106 tests, exit 0**.

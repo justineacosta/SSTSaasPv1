@@ -3,9 +3,11 @@
 import type { SessionSummary } from '@sentinel/contracts';
 import { Alert, Badge, Button, Card, Skeleton } from '@sentinel/ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useRouter } from 'next/navigation';
 import { useState, type ReactNode } from 'react';
 import { listSessions, revokeOtherSessions, revokeSession } from '../api/auth-endpoints';
 import { useApiClient } from '../api/provider';
+import { signOutLocally } from '../app/sign-out';
 
 export const SESSIONS_QUERY_KEY = ['sessions'] as const;
 
@@ -41,6 +43,7 @@ function when(iso: string): string {
 export function SessionsPanel(): ReactNode {
   const client = useApiClient();
   const queryClient = useQueryClient();
+  const router = useRouter();
   const [confirmingAll, setConfirmingAll] = useState(false);
 
   const sessions = useQuery({
@@ -50,7 +53,32 @@ export function SessionsPanel(): ReactNode {
 
   const revokeOne = useMutation({
     mutationFn: (sessionId: string) => revokeSession(client, sessionId),
-    onSuccess: () => {
+    onSuccess: (_result, sessionId) => {
+      // REVOKING THE CURRENT SESSION IS A SIGN-OUT, AND HAS TO LOOK LIKE ONE.
+      //
+      // Review finding C-2. `DELETE /auth/sessions/:id` clears both cookies
+      // when the id is the caller's own session, and the API's decision to
+      // allow that at all is justified on an equivalence — "the end state is
+      // one this API already produces; it is `POST /auth/logout` by another
+      // route". This is the only UI that can exercise it, so this is where the
+      // equivalence is either delivered or is a sentence in a docblock.
+      //
+      // Before this it only invalidated the list: the refetch 401'd, the panel
+      // rendered "Your sessions could not be loaded. Try again in a moment." —
+      // wrong advice, because trying again will 401 forever — and `AppShell`
+      // went on drawing signed-in chrome, because its 401 redirect is keyed on
+      // `useSessionQuery`, which is already resolved and is never refetched by
+      // this path. Signed out on the server, signed-in-looking in the browser,
+      // until a reload.
+      //
+      // `signOutLocally` is the same call `AppShell`'s Sign out button makes,
+      // shared rather than copied: two sign-out paths that drift apart is how
+      // one of them ends up leaving a cache behind.
+      const current = sessions.data?.data.find((session) => session.id === sessionId)?.current;
+      if (current === true) {
+        signOutLocally(queryClient, router);
+        return;
+      }
       void queryClient.invalidateQueries({ queryKey: SESSIONS_QUERY_KEY });
     },
   });
