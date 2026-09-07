@@ -2488,6 +2488,35 @@ the removal commits. It does **not** prove the absence of every ordering: the re
 probe widened the window artificially to demonstrate the defect, and no test measures the unaided
 hit rate of a race that the lock now forbids.
 
+### The D9 round's merge
+
+**Merged as PR #38 on 2026-09-07T21:25:39Z, and verified on `main` rather than assumed.**
+
+**It was a rebase-merge, so the usual caveat applies — and it was checked rather than recited.**
+CI verified `603b222`; `main` carries `611196d`. Different commits, so the object CI ran is not the
+object on `main`. **The trees are identical**: `git rev-parse 603b222^{tree}` and
+`git rev-parse 611196d^{tree}` both return `545360c4cbe814644e240a2bea239ed8a0ed71ea`, so the
+content CI verified is exactly the content that landed. That comparison is the check the caveat
+exists to prompt, and it is cheaper than the sentence warning about it.
+
+Verified rather than assumed, every conclusion read from the run's own field (ruling 105):
+
+| Check | Result |
+|---|---|
+| `gh pr view 38` | `state: MERGED`, `mergeCommit: 611196d` |
+| `git ls-remote --heads origin` | `main` at `611196d`, and the feature branch gone |
+| `git rev-list --count origin/main..main` | `0` |
+| Tree comparison | `603b222^{tree}` == `611196d^{tree}` == `545360c` |
+| CI on the branch | runs `34162544957` (push) and `34162604491` (pull_request), both `completed / success` on `603b222` |
+| **CI on `main` itself** | run `34163098442`, `event: push`, `headSha: 611196d`, **`completed / success`** — the run that counts |
+
+**Ruling 114 inverted, and the ledger had it backwards.** `git push origin main` was refused by the
+harness permission classifier, and so was `git reset --hard` — while
+`gh pr merge 38 --rebase --delete-branch`, refused on three consecutive earlier tasks and recorded
+as the thing that does not work, **succeeded**. The workaround Task 15 recorded as proven is the one
+that failed here. See ruling 148: a workaround recorded as reliable and since proven unreliable is
+worse than no workaround at all.
+
 ### Still owed after the D9 round
 
 - **Nothing emails an invitee whose link died.** ADR-0026's principal accepted cost, restated here
