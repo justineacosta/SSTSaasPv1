@@ -384,11 +384,21 @@ template for one.
   row is read.** That is what [ADR-0022](../decisions/ADR-0022-invitation-acceptance-definer-lookup.md)
   exists to solve, and the containment argument there is worth reading before extending the path.
 
-**One window is open and is recorded rather than claimed closed.** D5's no-minting check runs when
-an invitation is created and nowhere else, so an invitation offering `OWNER` survives its issuer
-being removed and still mints an `OWNER` — measured, and pinned by a test named to be read as a
-defect. The remedy belongs on the other side, in `MembershipService.remove` and `updateRole`. See
-`roadmap.md`'s "Still owed after Task 15".
+- **An invitation does not outlive its issuer's authority.**
+  [ADR-0026](../decisions/ADR-0026-invitations-are-revoked-when-their-issuer-loses-the-authority-to-have-issued-them.md).
+  D5's no-minting check still runs only when an invitation is created, but the moment the fact
+  moves now invalidates the artefact: `MembershipService.remove` revokes every live invitation the
+  removed member issued, and `updateRole` revokes the ones whose offered role carries a permission
+  they no longer hold — in the same transaction as the change, each with its own
+  `INVITATION_REVOKED` event. `InvitationService.create` re-resolves the actor's own membership and
+  role permissions inside its transaction, so a `create` in flight when the removal commits cannot
+  insert a row the cascade has already run past. Accepting is deliberately unchanged: re-running
+  `assertActorMayGrant` at accept time was rejected twice, because it refuses every invitation from
+  a colleague who has since legitimately left, at the worst possible moment.
+- **The cost is stated and accepted: nothing emails the invitee.** A member who leaves for benign
+  reasons takes their outstanding invitations with them, and every invitee who had not yet accepted
+  must be re-invited by somebody else. They learn this by clicking a link that now refuses like any
+  other dead token.
 
 All three use the same token discipline: 256-bit random, **hashed at rest**, single-use,
 expiring, invalidated by use or by a newer token, and delivered only by email.
