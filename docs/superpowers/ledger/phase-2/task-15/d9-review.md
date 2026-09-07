@@ -243,3 +243,146 @@ it in the same words, and all four need correcting whether or not the lock is ad
 
 **Working tree restored.** `git checkout apps/api/src/modules/invitations/invitation-revocation.cascade.ts apps/api/src/modules/invitations/invitations.integration.spec.ts` — confirmed clean with
 `git status --short` (only this review document is modified).
+
+## Finding 5 — MEDIUM (citation/documentation pass) — `roadmap.md`'s status section still asserts the defect in the present tense, in bold, above the correction
+
+**What is wrong.** `.claude/product/roadmap.md:2402` retitles the section
+`### The window that was open — CLOSED by ADR-0026, and the record of how`, and then leaves the
+entire original body unedited beneath it, in the present tense:
+
+- 2404: "**An invitation offering `OWNER` survives its issuer being removed, and accepting it still
+  mints an `OWNER`.**" — bold, present tense, first line of the section.
+- 2406-2407: "the removed owner's invitation **is** still live and the acceptor **receives** 201".
+- 2409: "This **is** a re-escalation path…"
+- 2413-2415: "**The remedy is on the other side of the transaction** … it **is recorded as owed
+  rather than taken here**."
+
+"**It is closed.**" appears at 2423, four paragraphs and twenty lines later. Only the pinned-test
+sentence at 2420 was moved into the past tense.
+
+**How I established it.** `sed -n '2400,2442p' .claude/product/roadmap.md`, read in full. The diff
+(`git diff 53f40aa..HEAD -- .claude/product/roadmap.md`) confirms the only edits to that section are
+the heading, three tense fixes on the pinned-test sentence, and the two appended paragraphs.
+
+**Why this is not pedantry.** `CLAUDE.md` names `roadmap.md` as "the single source of truth for
+status", read by a resuming session before anything else, and the failure mode it names is a
+resuming session that "rebuild[s] what exists or skip[s] what does not". This section now reads, to
+anything that greps or skims, as a live security defect whose remedy is recorded as owed. The right
+shape is the one the "Still owed after Task 15" bullet twenty lines further down actually uses —
+strike the old claim through, state the new one.
+
+**Cost if left.** A future session reads 2404 and either rebuilds the cascade or believes the
+platform is exposed when the same file tells it otherwise. Given Finding 4 the stale paragraph is
+accidentally closer to the truth than the correction is, which is a defence of neither.
+
+## Finding 6 — MEDIUM (documentation rule) — `.claude/security/audit.md` was not updated, and it is the file that enumerates producers and metadata keys
+
+**What is wrong.** This change gives `INVITATION_REVOKED` a second producer and two new metadata
+keys (`reason`, `issuerUserId`), and makes a removal write a non-constant number of audit rows.
+`.claude/security/audit.md` is untouched:
+
+    $ git diff --stat 53f40aa..HEAD -- .claude/security/
+     .claude/security/authentication.md | 20 +++++++++++---------
+
+That file's §4 is where this repository records exactly this kind of change, with a consistent
+convention — "`ORGANIZATION_SWITCHED` was added to this list by Phase 2 Task 13, in the same change
+as the endpoint that writes it"; "`MEMBER_REMOVED` and `ROLE_CHANGED` gained producers in Phase 2
+Task 14, in the same change as the two handlers that write them… Both carry `before`, `after` and
+`memberUserId` in `metadata`"; "**Three of that group gained producers in Phase 2 Task 15**".
+ADR-0026's producer is the first in that section's history not to get its paragraph.
+
+Nothing in `audit.md` is now *false* — I read §2, §4 and §5 and the existing sentences survive — so
+this is an omission rather than a contradiction, which is why it is Medium and not High.
+`CLAUDE.md`'s documentation rule ("When you change … a security control, update the matching
+`.claude/` document **in the same change**") names the security docs, and `audit.md` is the matching
+one for an audit-action change. `d9-report.md` does not claim `audit.md` was updated, so the report
+is honest here; the defect is the omission.
+
+**On §5 specifically, which the review brief asked about: I found nothing forbidden.** The cascade's
+`metadata` is `{ email, roleKey, reason, issuerUserId }`. `email` and `roleKey` are what the
+deliberate `revoke` at `invitation.service.ts:608` already writes and what `audit.md` §4 already
+documents for this action; `reason` is an enum literal; `issuerUserId` is an id. The cascade's
+`select` reads only `id`, `email` and role keys — `tokenHash` is never loaded, so it cannot reach an
+event. Established by reading `invitation-revocation.cascade.ts:148-206` against
+`.claude/security/audit.md:281-286`.
+
+**Cost if left.** The next person auditing "what writes `INVITATION_REVOKED`" reads `audit.md` §4,
+finds one producer, and builds a query or an alert on a false cardinality assumption — the exact
+consequence ADR-0026's own "Neutral" paragraph flags.
+
+## Finding 7 — LOW (citation pass, ruling 128) — mutation 3's recorded reason names the wrong layer
+
+**What is wrong.** `d9-report.md`'s mutation table explains why dropping `organizationId` from the
+cascade's read predicate stays green:
+
+> `Invitation` carries `FORCE ROW LEVEL SECURITY` keyed on `organizationId` and every statement runs
+> inside `withTenantTransaction`, so RLS refuses the other tenant's rows whether or not the
+> predicate names them.
+
+RLS is the *second* thing that stops it. The first is layer 1: the tenant-scoping Prisma extension
+injects the predicate back in before the query is issued, so the mutated statement never reaches
+Postgres without `organizationId` at all.
+
+**How I established it.**
+
+    $ grep -n "TENANT_OWNED_MODELS" packages/db/src/tenant-resources.ts
+    12:export const TENANT_OWNED_MODELS = ['Membership', 'Invitation', 'AuditEvent'] as const;
+
+    $ grep -n "findMany\|updateMany" packages/db/src/tenant-scope.ts
+    27:  'findMany',
+    35:const SCOPED_WHERE_AND_DATA_MANY_OPERATIONS = new Set(['updateMany', 'updateManyAndReturn']);
+
+`Invitation` is a tenant-owned model and both operations the cascade uses are scoped operations, so
+`createTenantClient`'s `$allOperations` hook rewrites the `where` (`packages/db/src/tenant-client.ts`,
+`decideScope` → `case 'run'`).
+
+Ruling 128 says a mutation that cannot go red is a claim about the system and the claim must be
+written down; the claim as written is about the wrong layer. **The code comment gets it right** —
+`invitation-revocation.cascade.ts:143-147` says "the tenant-scoping extension would inject it *and*
+RLS would refuse another tenant's row anyway" — so this is a defect in the report only.
+
+**I independently confirmed the mutation does survive**, which the report is right about:
+
+    $ # organizationId removed from the cascade's findMany where
+    $ npx vitest run --project integration --no-file-parallelism \
+        apps/api/src/modules/memberships/memberships.integration.spec.ts
+    MUT3 EXIT=0    Tests 42 passed (42)
+    $ git checkout apps/api/src/modules/invitations/
+
+**Cost if left.** Someone who later runs this path on an unscoped connection — the platform-admin
+module and the seeds already do, per `tenant-client.ts`'s own comments — would reason from the
+report that RLS alone has them covered.
+
+## Finding 8 — LOW (test coverage) — self-removal, the consequence ADR-0026 calls its principal cost, has no test
+
+**What is wrong.** `MembershipService.remove`'s docblock (`membership.service.ts:630-636`) says
+"**Self-removal is supported**, and it is supported rather than tolerated", and ADR-0026's
+"Negative — and this is a real cost, not a rounding error" paragraph is entirely about the member
+who leaves benignly taking their invitations with them. Nothing tests it. All seven cascade cases
+have the actor act on somebody else:
+
+    $ sed -n '1061,1400p' apps/api/src/modules/memberships/memberships.integration.spec.ts \
+        | grep -n "membersPath(organizationId)}/"
+    42:  .delete(...leavingMembership)
+    96:  .delete(...leavingMembership)
+    133: .patch(...demotedMembership)
+    169: .patch(...promotedMembership)
+    200: .patch(...unchangedMembership)
+
+plus `hereMembership` in the cross-tenant case and the direct-port call in the rollback case. In
+every one the subject is a fixture user, never `actor`. The review brief asked this question
+directly and `d9-report.md` does not answer it.
+
+**A related smaller thing.** `audit.actions.ts`'s new docblock says of the cascade's `actorId`:
+"that person is the one who removed or demoted the issuer, **not the issuer**". On a self-removal
+they are the same person, so a reader using that sentence to tell the two producers apart will be
+wrong for exactly the case ADR-0026 says will be the common one.
+
+**What I did not do.** I did not write the missing test — the brief forbids changing code. I found
+no behavioural bug here by inspection: `remove` passes `command.actorUserId` and `membership.userId`
+independently, so self-removal should set both to the same id, and the last-owner invariant refuses
+the sole-owner case at 422 before the cascade runs. That is reasoning, not measurement, and I am
+labelling it as such.
+
+**Cost if left.** Low. The behaviour is probably right; what is missing is the pin on the one
+consequence the ADR says users will notice.
