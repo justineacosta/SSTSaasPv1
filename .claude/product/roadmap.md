@@ -14,7 +14,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Partially Implemented** — **Tasks 1–16 of 18 done and all merged into `main`**, Task 16 merged 2026-09-07 as PR #35 with CI green on `main` itself (run `34090908888`, `07ba969`). The identity API is built and the authorization pipeline is enforced end to end: a request is rate-limited, authenticated against an opaque server-side session, CSRF-checked, resolved to a tenant, and authorized against a permission the route declares — and every one of those stages can deny. **Task 16 ended the phase's longest-standing gap: there is now an authentication UI**, six routes under `(auth)` behind one typed API client that validates every response against the same `packages/contracts` schemas the API enforces, adding no endpoint (`check:openapi` still reports **27 paths**). **The operator drove the whole journey through a browser on 2026-09-07** — register, verify, login, a real TOTP challenge at `/login/mfa`, and a password reset — which is what took Task 16 to Implemented and closed Phase 1's note that five `packages/ui` primitives had never been painted. **Its adversarial review found a real open redirect** on `/login`: five guards that all ran against the *input* while the function returned a URL-*normalised* value, so `/..//evil.example` came back as `//evil.example`; fixed, with the general ruling recorded as 132. **The phase is still not complete.** Its E2E exit criterion demands the journey pass *as a suite*, and no automated test has an API behind it — that is Task 18's. Tasks 17 and 18 remain, and **Task 15's `OWNER`-invitation window is still open**. Evidence table under Phase 2 below |
+| 2 | Identity | **Partially Implemented** — **Tasks 1–17 of 18 done**; 1–16 are merged into `main`, and **Task 17 is built and verified on `feat/phase-2-task-17-app-shell` and not yet merged**. The identity API is enforced end to end and the product now has both halves of its UI: Task 16's six authentication screens and **Task 17's authenticated shell, organisation switcher, `/settings/security` and `/settings/members`**, plus three new session-management routes taking the OpenAPI document to **29 paths**. **Task 17's review found a tenant-isolation defect a green suite could not see**: the organisation switcher called `queryClient.clear()`, which empties the cache and notifies **no mounted observer**, so the shell went on rendering the previous organisation's name and permission set until a reload. Fixed with `resetQueries()` and a test that mounts the real shell. **Two `.claude` documents were found stale by many tasks** — `audit.md` claimed four audit actions are written by running code when thirty are, and `abuse-prevention.md` pinned a grep to a count three tasks out of date. **Neither Task 17 nor anything in it has been seen in a browser**, and the phase's E2E journey criterion still demands an automated suite with a live API, which is Task 18's. **Task 15's `OWNER`-invitation window is still open**, now three tasks old. Evidence table under Phase 2 below |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -2690,6 +2690,157 @@ reader to ask which half mattered — but it is an untested line, not a covered 
 - Carried forward untouched: **Task 15's open D9 window** — an invitation offering `OWNER` still
   survives its issuer's removal — which remains the highest-value security item in this phase and
   whose owner is whoever next touches `MembershipService.remove` and `updateRole`.
+
+## Task 17 — the app shell, the switcher that emptied the cache without repainting, and three routes that revoke credentials
+
+**Status: Partially Implemented.** Everything on the plan's checklist is built and every command is
+green. **The plan's verify line also ends "a human in a browser", and nobody has looked** — which
+is not a formality here: the review's High is a defect that would be obvious in thirty seconds of
+clicking and was invisible to a fully green suite for the length of the task.
+
+*Verified 2026-09-07 by the orchestrator on the fix-round tree at `2be1a6f`, every command re-run
+rather than taken from a subagent's report, exit codes captured outside a pipe
+(`out=$(pnpm <cmd> 2>&1); code=$?`). The commits after it are Markdown only.*
+
+| Command | Exit | What it proves |
+|---|---|---|
+| `pnpm format:check` | 0 | Prettier style across the workspace. |
+| `pnpm lint` | 0 | 14 tasks, including the rule that would fire on a new `process.env` read. |
+| `pnpm typecheck` | 0 | 14 tasks. The types compile — and **not** that the response shape is safe; see C-1. |
+| `pnpm test` | 0 | **115 files / 1983 tests**, up from 109 / 1882 at Task 16. |
+| `pnpm check:specs` | 0 | **144 spec files**, each claimed by exactly one Vitest project. |
+| `pnpm test:integration` | 0 | **29 files / 544 tests**, up from 28 / 521 — the new file is the session routes' isolation suite. |
+| `pnpm build` | 0 | 8 tasks. `apps/web` emits 13 routes, every one `ƒ (Dynamic)`. |
+| `pnpm test:e2e` | 0 | **34 passed**, up from 22. |
+| `pnpm check:openapi` | 0 | **29 paths**, up from 27, byte-identical to what the contracts generate. |
+| `pnpm check:registry` | 0 | **15 models**, unchanged — the tripwire proving `Session` did not become tenant-owned. |
+| `pnpm check:secrets` | 0 | 521 tracked files, no credential-shaped literals. |
+| `docker compose ps` | — | Four services healthy. |
+
+What that table licenses and nothing more: the workspace is green and the three new endpoints hold
+under a real Postgres. **It says nothing about what any of it looks like**, and the section below
+is why that sentence is load-bearing rather than ritual.
+
+### What Task 17 built
+
+**Three API routes that did not exist**, because the plan asked `/settings/security` to manage
+active sessions while scoping the task to `apps/web` — a contradiction the operator resolved in
+favour of full scope. `GET /api/v1/auth/sessions`, `DELETE .../sessions/:sessionId`, and
+`DELETE .../sessions` for "revoke all others". **No migration was needed**: `model Session` already
+carried `ip`, `userAgent` and `lastSeenAt`, and Task 1's `@@index([userId, lastSeenAt(sort: Desc)])`
+names "list / revoke a user's sessions for /settings/security" as the query it exists for. Task 1
+anticipated this task.
+
+**The `(app)` shell, session context, organisation switcher, `/settings/security` and
+`/settings/members`**, plus a `/dashboard` whose copy was corrected only as far as is true — no
+mock metrics, per the standing rule.
+
+**ADR-0025**, written before the code, settling a conflict between two project documents:
+`frontend.md` §2 said the shell is a server component resolving permissions server-side; the plan
+said it fetches the session through TanStack Query. **A measurement decided it.** `passwordChange`
+and `mfaManagement` declare `perIp` as their *only* scope, 10/hour, fail-closed, and between them
+they guard all five routes `/settings/security` is built on. Server-originated calls would put the
+whole deployment on one address: ten password changes an hour for every user combined, eleventh
+refused. So the choice was never server-or-client but client-or-both, and one pattern won.
+
+### The organisation switcher emptied the cache and never repainted
+
+**The review's High, and the most useful thing this task produced.** The switcher called
+`queryClient.clear()` — the primitive `frontend.md` §3 asks for, quoted in the switcher's own
+docblock. Measured against `@tanstack/query-core@5.101.4` with no product code in the frame:
+
+```
+after queryClient.clear()      cache getQueryData : undefined
+                               observer notified  : 0 times
+                               observer still shows: ACME
+```
+
+`clear()` reaches `remove(query)` → `destroy()` → `cancel({silent:true})`, which never touches
+`query.observers`. **The store empties and the screen does not.** After switching organisation the
+shell went on rendering the previous organisation's name and its permission set, indefinitely,
+until a navigation or a reload — the stale cross-tenant render §3 calls security-visible, produced
+by the call meant to prevent it.
+
+`resetQueries()` notifies where `clear()` does not: **3 notifications against 0**, re-measured by
+the orchestrator. The session key is seeded and excluded rather than reset, because resetting it
+drops `useSessionQuery` back to `isPending` and unmounts the page mid-switch.
+
+**Why a green suite could not see it.** The shipped spec rendered the switcher under a *static*
+session provider and asserted `getQueryData` — the half that works. No test mounted the shell and
+switched. The fix ships tests that mount the real shell with the real switcher, and the mutation
+restoring the bare `clear()` leaves the old spec fully green while the new block fails three: the
+suite was green while the shell rendered the wrong tenant.
+
+### The schema that documented a guarantee it did not provide
+
+`sessionSummarySchema`'s docblock said the token hash is "unrepresentable on the wire, and
+`check:openapi` pins that". Both halves were false. **No response in `apps/api` was parsed against
+a contract schema at all** — `app-setup.ts` installs one global interceptor and it is the logger —
+and `check:openapi` compares a committed document, not a response body.
+
+The reviewer proved it with the realistic mutation rather than a contrived one: replacing both
+hand-written projections with a spread **typechecks cleanly**, because TypeScript does not
+excess-property-check a spread. One integration assertion stood between the endpoint and a hashed
+credential on the wire.
+
+Dispositioned to fix both halves rather than soften the sentence: the prose is corrected and the
+controller now parses its response through a closed schema, so the claim is true. The same mutation
+now fails **16 of 23** integration tests instead of 1.
+
+### The audit deviation, accepted with its justification corrected
+
+`CLAUDE.md` rule 10 requires a security-relevant action to write its audit event **in the same
+transaction**. Session revocation does not: it revokes, then audits, because the revocation spans
+Redis and Postgres and takes no transaction handle — the same compromise `logout.service.ts`
+already documents.
+
+**Accepted.** On process death between the two the session is dead in both stores and
+`Session.revokedAt` survives, so the fact and the when survive and what is lost is actor context. A
+gap in an append-only log is better than a false row: a missing row makes the log a floor, a false
+row makes an investigator stop looking. It is also stricter than `logout`, which audits
+unconditionally — a refused revocation writes nothing, so a replay cannot pad the table.
+
+**Its justification overstated itself and that is corrected.** The docblock said one transaction
+"is not expressible without reopening Task 6". True of Redis, **false of Postgres**:
+`SessionRepository` and `SessionManagementService` inject the same client, and `rotate` already
+uses `$transaction`. It is one `tx` parameter. The sentence is fixed; the behaviour deliberately is
+not, because that change spans a module two tasks old and deserves its own review rather than a
+fix round.
+
+### Two documents had been stale for many tasks, and the review only caught the edge
+
+`security/audit.md` said **"Four actions in §4 are written by running code"**. Measured, **thirty**
+are. It had been wrong since Task 8, with Tasks 9, 11, 13, 14, 15 and 17 adding twenty-six writers
+and none of them touching the banner. The review noticed only that `SESSION_REVOKED` had gained its
+first writer; re-running the count instead of patching the one name is what found the rest.
+
+`security/abuse-prevention.md` said `generalSession` governs **eight** routes and **pinned a grep
+to prove it**. That grep now returns 19, of which 18 are routes. The number was true at Task 13.
+**A pinned command does not keep a number honest if nobody runs it** — that is the lesson, and it
+is recorded because this file relies on the same device in several places.
+
+### Still owed after Task 17
+
+- **Nothing built in this task has been seen by a person.** The highest-value item on this list.
+  The review's own note is the argument: the High "would be obvious in thirty seconds of clicking",
+  and it survived a fully green suite for the length of the task.
+- **The Postgres half of the rule-10 transaction.** One `tx` parameter on
+  `SessionRepository.revokeById` would cover `logout`, `switch-org` and the three session routes.
+  Corrected in prose, not in behaviour, deliberately.
+- **A timing oracle on session-id probing.** An id naming no row skips a row fetch that a foreign
+  id performs, and `generalSession` resolves nothing, so an attacker may average over unlimited
+  samples. Narrow — `ses_` ids are ULIDs, so it only *confirms* an id obtained elsewhere — and the
+  "no oracle" claim is corrected to say so.
+- **The three session routes are effectively unlimited.** `generalSession` is fail-open and its
+  only scope resolves nothing (rulings 55 and 90, open since Task 7). Deliberate for a *defensive*
+  action, and it is the same condition every other authenticated route in the API is in.
+- **No accessibility tooling, no bundle budget.** `axe-core` is still not a workspace dependency
+  and `frontend.md` §7 remains Not Implemented. `qrcode` pulls 17 transitives, none of which reach
+  the browser (0 hits in `.next/static`); the encoder ships as a 40,777-byte chunk.
+- **`/settings/security` cannot say whether MFA is currently on**, because no endpoint reports it.
+  The panel offers all three operations and renders the API's refusals rather than inventing a
+  state.
+- Carried forward untouched: **Task 15's `OWNER`-invitation window**, now three tasks old.
 
 ### Phase 3 — SaaS core
 Projects, assets, **asset ownership verification**, scope and scope rules with the

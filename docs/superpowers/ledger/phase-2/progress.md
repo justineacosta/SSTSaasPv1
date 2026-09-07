@@ -27,7 +27,7 @@ Branch: `feat/phase-2-identity`
 | 14 | Memberships, roles, last-owner invariant | subagent + fresh reviewer + fix round | **Done** — [brief](task-14/brief.md) · [report](task-14/report.md) · [review](task-14/review.md) · [dispositions](task-14/fix-brief.md) · [fixes](task-14/fixes.md) |
 | 15 | Invitations | subagent + fresh reviewer + fix round | **Done** — [brief](task-15/brief.md) · [report](task-15/report.md) · [review](task-15/review.md) · [dispositions](task-15/fix-brief.md) |
 | 16 | Web — authentication screens | subagent + fresh reviewer + fix round | **Done** — [brief](task-16/brief.md) · [report](task-16/report.md) · [review-brief](task-16/review-brief.md) · [review](task-16/review.md) · [dispositions](task-16/fix-brief.md) · [fixes](task-16/fixes.md) |
-| 17 | Web — app shell, org switcher, `/settings/security` | chained with 16 | Not started |
+| 17 | Web — app shell, org switcher, `/settings/security` | subagent + 2 reviewers + fix round | **Done** — [brief](task-17/brief.md) · [report](task-17/report.md) · [review-brief](task-17/review-brief.md) · [review](task-17/review.md) · [dispositions](task-17/fix-brief.md) · [fixes](task-17/fixes.md) |
 | 18 | E2E journey, doc audit, ADR sweep, roadmap | orchestrator | Not started |
 
 ## Carry-forward rulings
@@ -1123,102 +1123,147 @@ Full reasoning in [`task-10/review.md`](task-10/review.md),
      A scheme check and a wildcard rejection are both required, and each is pinned by a test that
      was seen to fail without it.
 
+### From Task 17
+
+137. **A cache primitive that empties a store is not the same as one that repaints the screen.**
+     The organisation switcher called `queryClient.clear()` — the exact call
+     `architecture/frontend.md` §3 asks for, quoted in the switcher's own docblock. Measured
+     against `@tanstack/query-core@5.101.4`: after `clear()` the store returns `undefined` and a
+     mounted `QueryObserver` is notified **zero** times, so the shell went on rendering the
+     previous organisation's name and permission set until a reload. `resetQueries()` notifies
+     **three** times. **Cost if wrong: a stale cross-tenant render the user can see**, which §3
+     itself calls security-visible — produced by the call meant to prevent it. Read the primitive
+     out of the library rather than trusting the name.
+
+138. **A test that renders a component under a static provider tests the half that works.** The
+     shipped switcher spec asserted `getQueryData` after the switch and passed while the screen
+     rendered the wrong tenant. Restoring the defect leaves that spec **fully green** and fails
+     only the tests that mount the real shell. **When a change's whole point is that the screen
+     updates, the test must observe the screen**, not the store the screen reads from.
+
+139. **A schema that nothing parses is documentation, not a control.** `sessionSummarySchema`'s
+     docblock claimed the token hash was "unrepresentable on the wire". No response in `apps/api`
+     is parsed against a contract schema — one global interceptor exists and it is the logger — and
+     `check:openapi` compares a committed document, not a response body. The proof was the
+     realistic mutation: replacing two hand-written projections with a spread **typechecks
+     cleanly**, because TypeScript does not excess-property-check a spread, and ships the hashed
+     credential past everything but one integration assertion. **Fixed by making the claim true**
+     rather than by softening it.
+
+140. **A pinned command does not keep a number honest if nobody runs it.**
+     `security/abuse-prevention.md` said `generalSession` governs eight routes and named the grep
+     that proves it — a device adopted after ruling 108 caught the same file miscounting. Three
+     tasks added ten routes and nobody re-ran it; the grep now returns 19. `security/audit.md` was
+     worse: "four actions are written by running code" since Task 8, against a measured **thirty**.
+     **Re-run every pinned count when you touch the file it defends**, and prefer writing the
+     command's output over writing a number.
+
+141. **An out-of-scope change that turns out to be necessary is still out of scope until reviewed.**
+     Task 16's ruling 134 in a second form. Here the implementer *corrected the orchestrator's
+     brief* instead — the brief asserted `perPrincipal` resolves on authenticated routes, and
+     `RATE_LIMIT_SCOPE_PHASES` puts it in the `'edge'` phase where it resolves nothing (rulings 55
+     and 90). **The cite-before-you-claim rule caught the orchestrator this time**, which is the
+     first time in this phase it has run in that direction. A brief is not evidence.
+
+142. **Accept a documented deviation from a rule on its merits, and correct its justification
+     separately.** Session revocation writes its audit row *after* the change rather than in the
+     same transaction, against `CLAUDE.md` rule 10. Accepted: on process death the session is dead
+     in both stores and `revokedAt` survives, so a gap costs actor context, and **a gap in an
+     append-only log beats a false row** — a missing row makes the log a floor, a false row makes
+     an investigator stop looking. But the docblock claimed one transaction "is not expressible":
+     true of Redis, **false of Postgres**, where it is one `tx` parameter. **The deviation stands;
+     the overstatement does not.**
+
 ## Pause state
 
-**2026-09-07 — Task 16 is MERGED into `main` (PR #35, merge commit `07ba969`), CI is green on
-`main` itself (run `34090908888`), and the operator has driven all six screens through a browser
-against a running API.** Task 16 is **Implemented**. Task 17 is next.
+**2026-09-07 — Task 17 built, reviewed twice, fixed and verified on
+`feat/phase-2-task-17-app-shell`. It is NOT merged and CI has not seen it.** Task 18 is next, and
+it is the last task in this phase.
 
-**The merge was a rebase, not a fast-forward**, so the commits on `main` are new objects and the
-tree CI verified on the PR is not the tree on `main`. That is why `main`'s own push-triggered run
-was waited for rather than the PR's green being treated as sufficient — and it came back
-`completed / success`. **Ruling 114 did not bite this time**: `gh pr merge --rebase` went through
-after refusing three consecutive tasks. Do not assume it is fixed; do not assume it will fail
-either.
+**The product now has both halves of its UI.** Task 16's six authentication screens, and Task 17's
+`(app)` shell with session context, organisation switcher, `/settings/security` and
+`/settings/members` — plus **three new API routes** (`GET /auth/sessions`,
+`DELETE /auth/sessions/:sessionId`, `DELETE /auth/sessions`), taking the OpenAPI document to **29
+paths**. No migration was needed: Task 1 had already put `ip`, `userAgent` and `lastSeenAt` on
+`Session` and created the index whose comment names `/settings/security` as its reason.
 
-**This product has an authentication UI for the first time.** The `(auth)` route group carried a
-layout and no routes at all from Phase 1 until this task. It now carries six — `/register`,
-`/verify-email`, `/login`, `/login/mfa`, `/forgot-password`, `/reset-password` — plus one typed
-API client that sends `credentials: 'include'`, echoes `__Host-csrf` into `X-CSRF-Token` on unsafe
-methods only, parses every response with its `packages/contracts` schema, and maps the error
-envelope's `details.fields` to field-level errors. **No endpoint was added**: `check:openapi`
-reports 27 paths, unchanged.
+**ADR-0025 was written before the code** and is the decision every authenticated page inherits:
+every authenticated API call is made **from the browser**, including the shell's own session read.
+The measured reason is that `passwordChange` and `mfaManagement` declare `perIp` as their only
+scope, 10/hour, fail-closed, and between them guard all five routes `/settings/security` is built
+on — server-originated calls would give the whole deployment ten password changes an hour.
 
-**ADR-0024 was written before the code**, per execution protocol §7. The API base URL crosses into
-the browser as a **prop from a server component**, not as a `NEXT_PUBLIC_` variable — one
-schema-validated declaration rather than two, and a missing value is a TypeScript error instead of
-a `fetch` to `undefined/api/v1/auth/login`.
+**THE REVIEW FOUND A TENANT-ISOLATION DEFECT A FULLY GREEN SUITE COULD NOT SEE, AND IT IS THE MOST
+IMPORTANT THING ON THIS PAGE.** The organisation switcher called `queryClient.clear()`, which
+empties the store and notifies **no mounted observer** — measured at zero notifications against
+`query-core@5.101.4`. After switching organisation the shell went on rendering the previous
+organisation's name and permission set until a reload. Fixed with `resetQueries()` (three
+notifications) plus tests that mount the real shell. Rulings **137** and **138**; read them before
+writing another cache mutation.
 
-**THE REVIEW FOUND A REAL OPEN REDIRECT, AND ITS RULING IS THE MOST PORTABLE THING THIS TASK
-PRODUCED.** `safeRedirectPath` applied five guards — leading `//`, backslash, whitespace, control
-characters, cross-origin resolution — every one of them correct, and every one of them against the
-**input**. It then returned `resolved.pathname`, which the URL parser had *normalised*.
-`/..//evil.example` passes all five and comes back as `//evil.example`, so `?next=/..//evil.example`
-would have signed a user in and landed them on the attacker's origin. **A validator that checks its
-input and returns something else has not validated what it returned.** Ruling 132. The fix
-re-checks the output against the same whitelist, deliberately not by blacklisting dot-segment
-spellings — `/..//`, `/.//`, `/%2e%2e//` and the next parser revision's are one class, and only the
-output check covers the class.
+**A second finding worth the same attention.** `sessionSummarySchema`'s docblock claimed the token
+hash was "unrepresentable on the wire". Nothing in `apps/api` parses a response against a contract
+schema, and the realistic mutation — two projections replaced with a spread — **typechecks
+cleanly** and ships the hash past everything but one integration assertion. Fixed by making the
+claim true: the controller now parses through a closed schema, and that mutation fails 16 of 23.
+Ruling 139.
 
-**The test that should have caught it could only pass** (ruling 133): it iterated the array of
-inputs already asserted to be rejected. Proven worthless by measurement rather than by argument —
-the old spec is green against the vulnerable implementation *and* the fixed one, 33 passed both
-times.
+**Two `.claude` documents had been stale for many tasks and the review only caught the edge.**
+`audit.md` said four audit actions are written by running code; thirty are, and it had been wrong
+since Task 8. `abuse-prevention.md` pinned a grep to prove `generalSession` governs eight routes;
+the grep returns 19. **A pinned command does not keep a number honest if nobody runs it** — ruling
+140, and this file uses the same device in several places.
 
-**The implementer changed a security control it was not authorised to touch, and it was right to.**
-`connect-src 'self'` forbids the cross-origin fetch ADR-0017 requires in every environment where
-the CSP enforces, the Playwright suite included (`start:e2e` pins `APP_ENV=test`). It disclosed the
-change and committed it alone, the reviewer was pointed at it first, and the verdict was keep —
-byte-identity against the extracted pre-change implementation, not against its own assertion.
-Ruling 134: **disclosure is not review, and an out-of-scope change that is correct still gets
-reviewed as if it were not.**
+**`CLAUDE.md` rule 10 was deliberately deviated from and the deviation was accepted.** Session
+revocation audits *after* the change rather than in the same transaction, matching
+`logout.service.ts`'s existing compromise. A gap in an append-only log beats a false row. The
+justification's claim that one transaction "is not expressible" was corrected — true of Redis,
+false of Postgres — and **the Postgres half is recorded as owed**, not done. Ruling 142.
 
-**Five numbers in the implementer's report were wrong, from one cause** (ruling 135): the pre-task
-baseline was **derived by subtraction** instead of measured, double-counting the two `apps/web`
-spec files that already existed. True baseline 100 files / 1716 tests — which `roadmap.md` already
-recorded — so the task added +9 files / +127 tests, not +11 / +171. Corrected in place and marked.
-**Never derive a baseline you can measure.**
+**The cite-before-you-claim rule caught the orchestrator this time**, for the first time in this
+phase: the brief told the implementer that `perPrincipal` resolves on authenticated routes, and it
+does not. Ruling 141. **A brief is not evidence.**
 
-**Verification, re-run by the orchestrator on the finished tree rather than taken from any
-subagent's report**: `format:check`, `lint`, `typecheck`, `build` all 0; `pnpm test` **109 files /
-1882**; `check:specs` **137**; `test:integration` **28 files / 521**, unchanged and correctly so;
-`test:e2e` **22 passed**, up from 5; `check:openapi` **27 paths** byte-identical; `check:registry`
-15 models unchanged; `check:secrets` 496 files. The full table is in `roadmap.md` under "Task 16".
-The open redirect was additionally re-verified closed by the orchestrator against an attack corpus,
-not by reading the diff.
+**Both reviewers matter to how this task ran.** The first was killed by a session limit part-way
+through and **lost nothing**, because ruling 131 requires the review document to be written and
+committed from the first minutes. A second reviewer continued from its committed work rather than
+starting over. That is the ruling paying for itself, and it is the second time on this branch.
 
-**BOTH OF THE TASK'S OUTSTANDING VERIFY ITEMS ARE NOW CLOSED, AND ONE DISTINCTION SURVIVES THEM.**
-On 2026-09-07 the operator registered, confirmed the address, signed in, completed a **real TOTP
-challenge at `/login/mfa`**, and ran a password reset end to end — all six screens, against
-`apps/api` with Postgres, Redis and Mailpit behind it. That closed the browser pass and Phase 1's
-note that five `packages/ui` primitives had never been painted, and it falsified "no form has
-talked to a running API".
+**Verification, re-run by the orchestrator on the fix-round tree rather than taken from any
+subagent's report**: `format:check`, `lint`, `typecheck`, `build` all 0; `pnpm test` **115 files /
+1983**; `check:specs` **144**; `test:integration` **29 files / 544**; `test:e2e` **34**;
+`check:openapi` **29 paths** byte-identical; `check:registry` **15 models** unchanged — the
+tripwire proving `Session` did not become tenant-owned; `check:secrets` 521 files. The full table
+is in `roadmap.md` under "Task 17".
 
-**What survives is narrower and must not be blurred: no *automated* test exercises that round
-trip.** Neither Vitest nor Playwright has an API behind it. **The phase's "full authentication
-journey passes E2E" exit criterion is therefore still unmet** and is Task 18's. A manual pass
-proves the product works; it does not survive the next commit.
+**NOTHING BUILT IN TASK 17 HAS BEEN SEEN BY A PERSON.** The review's own note is the argument: the
+High "would be obvious in thirty seconds of clicking", and it survived a green suite for the whole
+task. **Task 17 is therefore Partially Implemented, not Implemented.**
+
+**One operational note.** The fix round stopped a `pnpm dev` server (PID 18416) and did not restart
+it. A running dev server holds `packages/db/generated/client/query_engine-windows.dll.node` open,
+so any change under `packages/contracts` makes `prisma generate` fail with `EPERM` and takes
+`typecheck`, `lint`, `test` and `build` down with it. **If those four fail together with an EPERM
+on the query engine, kill the dev server first.**
 
 *No commit count is written here, deliberately* — ruling 108. Run `git rev-list --count main..HEAD`.
 
-**Next action: Task 17 — the app shell, the organisation switcher and `/settings/security`.**
+**Next action, in this order.**
 
-It is the natural owner of the **session-expiry redirect-back**, which Task 16 built and tested as
-a mechanism with no caller: `isSessionExpiry` and `loginHrefForDestination` exist and `/login`
-honours `next`, but nothing invokes the first because there is no authenticated screen to be
-expired out of yet.
+1. **A human loads the Task 17 screens in a browser** — the shell, the organisation switcher
+   (switch, and confirm the header and permissions actually change), `/settings/security` and
+   `/settings/members`. Two dev accounts exist locally from Task 16's pass:
+   `mfa-demo@sentinel.local` and `mfa-demo2@sentinel.local`, the second with a live TOTP factor.
+   They are **not seeded**; a fresh clone will not have them.
+2. **Push, get CI green, merge.** Ruling 114 did not bite on Task 16 after stopping three
+   consecutive tasks — do not assume it is fixed, do not assume it will fail.
+3. **Task 18 — the E2E journey suite, the authorization matrix in CI, the ADR sweep, the doc audit
+   and the roadmap.** It is the phase gate and the orchestrator does it directly. It is also the
+   only task that can close the phase's "full authentication journey passes E2E" exit criterion,
+   which needs an automated suite with a live API behind it — a manual pass does not satisfy it.
 
-It is also the owner of **`/mfa/enroll`**, and the browser pass made that gap concrete rather than
-theoretical: enrolling the demo factor required calling `POST /auth/mfa/enroll` and
-`/auth/mfa/confirm` directly, because **no screen can enrol MFA today**. The endpoints work; there
-is no way to reach them from the product.
-
-**Two dev accounts exist in the local database from that pass** — `mfa-demo@sentinel.local` and
-`mfa-demo2@sentinel.local`, the second with a live TOTP factor and ten recovery codes. They are
-local-only, they are not seeded, and `pnpm db:seed` does not create them: a fresh clone will not
-have them and should not expect them.
-
-**Still open and older than this task: Task 15's `OWNER` invitation window.** An invitation
-offering `OWNER` survives its issuer's removal and still mints an `OWNER`. It remains the highest-
-value security item in this phase, and its owner is whoever next touches `MembershipService.remove`
-and `updateRole`.
+**Still open and older than this task: Task 15's `OWNER`-invitation window**, now three tasks old.
+An invitation offering `OWNER` survives its issuer's removal and still mints an `OWNER`. Its owner
+is whoever next touches `MembershipService.remove` and `updateRole`, and **Task 18 does not touch
+them**, so on the current plan it will still be open when the phase closes. That is a decision to
+make, not a drift to accept.
