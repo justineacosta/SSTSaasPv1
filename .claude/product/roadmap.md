@@ -8,13 +8,13 @@ code was written.
 Status vocabulary (specification §79): **Implemented** / **Partially Implemented** /
 **Not Implemented** / **Blocked**.
 
-## Current state — 2026-09-04
+## Current state — 2026-09-07
 
 | Phase | Scope | Status |
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Partially Implemented** — Tasks 1–16 of 18 done 2026-09-04, **Checkpoint A passed; Tasks 13, 14 and 15 are merged into `main` and green on CI; Task 16 is built and verified on `feat/phase-2-task-16-auth-screens` and is not yet merged**. The identity API is built and the authorization pipeline is enforced end to end: a request is rate-limited, authenticated against an opaque server-side session, CSRF-checked, resolved to a tenant, and authorized against a permission the route declares — and every one of those stages can deny. **Task 16 ended the phase's longest-standing gap: there is now an authentication UI.** The `(auth)` route group held a layout and no routes at all from Phase 1 until this task; it now holds six — `/register`, `/verify-email`, `/login`, `/login/mfa`, `/forgot-password`, `/reset-password` — behind one typed API client that validates every response against the same `packages/contracts` schemas the API enforces. It added no endpoint: `check:openapi` still reports **27 paths**. **Its adversarial review found a real open redirect** on `/login` — five guards that all ran against the *input* while the function returned a URL-*normalised* value, so `/..//evil.example` came back as `//evil.example`; fixed, and the general ruling recorded. **Two exit-criterion gaps remain and neither is closed by a green suite**: no human has loaded these screens in a browser, and no form has yet talked to a running API, so the E2E journey criterion is still unmet and cannot be met before Task 18. **Task 15's `OWNER` invitation window is still open.** Evidence table under Phase 2 below |
+| 2 | Identity | **Partially Implemented** — **Tasks 1–16 of 18 done and all merged into `main`**, Task 16 merged 2026-09-07 as PR #35 with CI green on `main` itself (run `34090908888`, `07ba969`). The identity API is built and the authorization pipeline is enforced end to end: a request is rate-limited, authenticated against an opaque server-side session, CSRF-checked, resolved to a tenant, and authorized against a permission the route declares — and every one of those stages can deny. **Task 16 ended the phase's longest-standing gap: there is now an authentication UI**, six routes under `(auth)` behind one typed API client that validates every response against the same `packages/contracts` schemas the API enforces, adding no endpoint (`check:openapi` still reports **27 paths**). **The operator drove the whole journey through a browser on 2026-09-07** — register, verify, login, a real TOTP challenge at `/login/mfa`, and a password reset — which is what took Task 16 to Implemented and closed Phase 1's note that five `packages/ui` primitives had never been painted. **Its adversarial review found a real open redirect** on `/login`: five guards that all ran against the *input* while the function returned a URL-*normalised* value, so `/..//evil.example` came back as `//evil.example`; fixed, with the general ruling recorded as 132. **The phase is still not complete.** Its E2E exit criterion demands the journey pass *as a suite*, and no automated test has an API behind it — that is Task 18's. Tasks 17 and 18 remain, and **Task 15's `OWNER`-invitation window is still open**. Evidence table under Phase 2 below |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -2507,12 +2507,27 @@ would remove the manual step; adding it is the operator's call and it has not be
 
 ## Task 16 — the authentication screens, and the validator that checked its input
 
-**Status: Partially Implemented.** The six screens are built, tested and green. **Two things the
-task's own verify line requires have not happened**, and neither is a detail: **no human has
-loaded any of these screens in a browser**, and **no form has talked to a running API**. Both are
-named in the plan; the first is the one Phase 1 left open when it recorded that five of the eight
-`packages/ui` primitives have never been painted, and it is closed by looking, not by a passing
-jsdom test.
+**Status: Implemented.** The six screens are built, tested, green, and — as of 2026-09-07 —
+**exercised in a browser by the operator against a running API**, which is the last thing the
+plan's verify line required and the one no command on the branch could do.
+
+**What the operator actually did, recorded rather than summarised**, because "a human looked at
+it" is the kind of claim that decays into nothing: registered through `/register`, received the
+mail in Mailpit, **confirmed the address through `/verify-email`**, signed in through `/login`,
+was challenged at **`/login/mfa` by a real TOTP factor** and completed it, and ran
+`/forgot-password` through to a completed `/reset-password`. All six screens, each against
+`apps/api` on `:3001` with Postgres, Redis and Mailpit behind it.
+
+**That also closes the Phase 1 note that five of the eight `packages/ui` primitives — Button,
+Input, Label, Field, Skeleton — had never been painted by a browser.** They have now. It was
+closed by looking, which is the only way it could be closed.
+
+**One gap this does NOT close, and the distinction is the whole point.** The journey above was
+driven by a person, not by a suite. **No automated test exercises a live round trip**, because
+neither Vitest nor Playwright has an API behind it here. **The phase's "full authentication
+journey passes E2E" exit criterion therefore remains unmet** and is still Task 18's. A manual
+pass is evidence that the product works; it is not a regression test, and nothing about it
+survives the next commit.
 
 *Verified 2026-09-04 by the orchestrator on the finished tree at `3d3bd59`, every command re-run
 rather than taken from a subagent's report, with exit codes captured outside a pipe
@@ -2650,12 +2665,13 @@ reader to ask which half mattered — but it is an untested line, not a covered 
 
 ### Still owed after Task 16
 
-- **A human has not loaded these screens.** The single most important item on this list, because
-  it is the one no command on this branch can close. Contrast, spacing, focus-ring visibility,
-  dark mode and the five never-painted `packages/ui` primitives are exactly the class every test
-  here is blind to.
-- **No form has completed a round trip against a running API.** Task 18's, and the phase's E2E
-  exit criterion.
+- ~~A human has not loaded these screens.~~ **Closed 2026-09-07 by the operator**, who ran all
+  six against a running API. See the status paragraph above for exactly what was exercised.
+- ~~No form has completed a round trip against a running API.~~ **Falsified 2026-09-07**: the
+  operator's manual pass completed register → verify → login → MFA challenge → reset end to end,
+  through `apps/api`, Postgres and Mailpit. What remains owed is narrower and unchanged — **no
+  *automated* test exercises that round trip**, which is Task 18's and is the phase's E2E exit
+  criterion. Do not read the manual pass as satisfying it.
 - **The session-expiry redirect-back is a mechanism with no caller.** `isSessionExpiry` and
   `loginHrefForDestination` are built and tested and `/login` honours `next`; nothing invokes the
   first, because there is no authenticated screen to be expired out of yet. Task 17 is its
