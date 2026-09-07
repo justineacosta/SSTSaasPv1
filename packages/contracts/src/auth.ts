@@ -1,5 +1,7 @@
 import { z } from 'zod';
-import { organizationIdSchema, userIdSchema } from './ids.js';
+import { organizationIdSchema, sessionIdSchema, userIdSchema } from './ids.js';
+import { collectionEnvelopeSchema, listQuerySchema } from './pagination.js';
+import { isoTimestampSchema } from './timestamps.js';
 import { PERMISSIONS } from './permissions.js';
 
 /**
@@ -266,6 +268,63 @@ export const sessionResponseSchema = z.object({
   entitlements: z.record(z.unknown()),
 });
 
+/**
+ * ONE LIVE SESSION AS `/settings/security` SEES IT.
+ *
+ * **`tokenHash` and everything derived from it are absent, and that is the
+ * point of this schema existing at all.** A `SessionRow` in `apps/api` carries
+ * the hashed credential; a handler that built this shape by hand could ship it
+ * by adding one field, and nothing would fail. Here the shape is closed, so the
+ * hash is not merely omitted — it is unrepresentable on the wire, and
+ * `check:openapi` pins that.
+ *
+ * `ip` and `userAgent` are nullable because the columns are: a session issued
+ * by a caller that sent no `User-Agent` records none, and `conventions.md` §4
+ * distinguishes null ("not recorded") from absent ("not applicable").
+ *
+ * `current` is whether this row is the session the request was made with. It is
+ * computed by the API rather than by the client, because the client cannot see
+ * its own session id — `sessionResponseSchema` deliberately withholds it, and
+ * this schema does not reintroduce it by the back door.
+ *
+ * There is no `revokedAt`: this endpoint answers with live sessions only, so a
+ * field that is always `null` would be a column pretending to be information.
+ */
+export const sessionSummarySchema = z.object({
+  id: sessionIdSchema,
+  ip: z.string().nullable(),
+  userAgent: z.string().nullable(),
+  createdAt: isoTimestampSchema,
+  lastSeenAt: isoTimestampSchema,
+  current: z.boolean(),
+});
+
+/** `GET /api/v1/auth/sessions` — one page of the caller's own live sessions. */
+export const listSessionsQuerySchema = listQuerySchema;
+export const sessionCollectionSchema = collectionEnvelopeSchema(sessionSummarySchema);
+
+/**
+ * `DELETE /api/v1/auth/sessions/:sessionId`.
+ *
+ * 200 with a body rather than 204, so the one client this API has can parse
+ * every response with a schema — `apps/web`'s client requires a
+ * `responseSchema` on every call and a 204 has no body to parse.
+ */
+export const revokeSessionResponseSchema = statusResponseSchema('SESSION_REVOKED');
+
+/**
+ * `DELETE /api/v1/auth/sessions` — every session except the one that asked.
+ *
+ * `revoked` is how many rows this call moved, which is what lets the screen say
+ * "3 other devices signed out" rather than a sentence that might be about
+ * nothing. It counts the caller's own sessions and therefore discloses nothing
+ * about anybody else.
+ */
+export const revokeOtherSessionsResponseSchema = z.object({
+  status: z.literal('SESSIONS_REVOKED'),
+  revoked: z.number().int().nonnegative(),
+});
+
 export const switchOrganizationRequestSchema = z
   .object({ organizationId: organizationIdSchema })
   .strict();
@@ -318,6 +377,11 @@ export type MfaRegenerateRecoveryCodesRequest = z.infer<
 >;
 export type LogoutRequest = z.infer<typeof logoutRequestSchema>;
 export type SessionOrganization = z.infer<typeof sessionOrganizationSchema>;
+export type SessionSummary = z.infer<typeof sessionSummarySchema>;
+export type ListSessionsQuery = z.infer<typeof listSessionsQuerySchema>;
+export type SessionCollection = z.infer<typeof sessionCollectionSchema>;
+export type RevokeSessionResponse = z.infer<typeof revokeSessionResponseSchema>;
+export type RevokeOtherSessionsResponse = z.infer<typeof revokeOtherSessionsResponseSchema>;
 export type SessionResponse = z.infer<typeof sessionResponseSchema>;
 export type SwitchOrganizationRequest = z.infer<typeof switchOrganizationRequestSchema>;
 export type SwitchOrganizationResponse = z.infer<typeof switchOrganizationResponseSchema>;
