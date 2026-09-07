@@ -26,7 +26,7 @@ Branch: `feat/phase-2-identity`
 | 13 | Organisations and organisation switching | subagent + fresh reviewer | **Done** — [brief](task-13/brief.md) · [report](task-13/report.md) · [review](task-13/review.md) · [fixes](task-13/fixes.md) |
 | 14 | Memberships, roles, last-owner invariant | subagent + fresh reviewer + fix round | **Done** — [brief](task-14/brief.md) · [report](task-14/report.md) · [review](task-14/review.md) · [dispositions](task-14/fix-brief.md) · [fixes](task-14/fixes.md) |
 | 15 | Invitations | subagent + fresh reviewer + fix round | **Done** — [brief](task-15/brief.md) · [report](task-15/report.md) · [review](task-15/review.md) · [dispositions](task-15/fix-brief.md) |
-| 16 | Web — authentication screens | chained with 17 | Not started |
+| 16 | Web — authentication screens | subagent + fresh reviewer + fix round | **Done** — [brief](task-16/brief.md) · [report](task-16/report.md) · [review-brief](task-16/review-brief.md) · [review](task-16/review.md) · [dispositions](task-16/fix-brief.md) · [fixes](task-16/fixes.md) |
 | 17 | Web — app shell, org switcher, `/settings/security` | chained with 16 | Not started |
 | 18 | E2E journey, doc audit, ADR sweep, roadmap | orchestrator | Not started |
 
@@ -1080,79 +1080,130 @@ Full reasoning in [`task-10/review.md`](task-10/review.md),
     first, append each finding as it landed, and commit as it went — and survived. **For any agent
     whose work is a document, the document is the first artefact, not the last.**
 
+### From Task 16
+
+132. **A validator that checks its input and returns something else has not validated what it
+     returned.** `safeRedirectPath` applied five guards to `raw` — leading `//`, backslash,
+     whitespace, control characters, cross-origin resolution — and every one was correct. It then
+     returned `resolved.pathname`, which the URL parser had *normalised*. `/..//evil.example`
+     passes all five guards, resolves genuinely same-origin, and comes back as `//evil.example`:
+     an open redirect on the login screen. **Cost if wrong: a real vulnerability shipped in the
+     one function on these screens that is a security control.** The fix re-applies the whitelist
+     to the output, deliberately not by blacklisting `/..//`, `/.//`, `/%2e%2e//` — those are one
+     class and only the output check covers the class. Ask this of every guard: is the value you
+     checked the value you return?
+
+133. **A table-driven test that iterates only the inputs it already asserts is a tautology.** The
+     spec case named "never returns a value carrying a foreign origin" looped over the `rejected`
+     array — already asserted item by item twelve lines above — so it could only pass, and it is
+     what let ruling 132 through. Proven worthless by measurement rather than by argument: the
+     pre-fix spec runs green against both the vulnerable and the fixed implementation, 33 passed
+     each time, discriminating nothing. **A property test's corpus must include the accepted
+     inputs**, because the invariant is about every return value, not about the rejected ones.
+
+134. **Disclosure is not review.** The implementer changed a security control its brief did not
+     authorise — `connect-src` in `security-headers.ts` — disclosed it plainly and committed it
+     alone, which is the right shape and is why it was noticed. It was still routed to the
+     reviewer as the first item, and the verdict of "keep" rests on the pre-change implementation
+     being extracted from the base commit and run beside the new one, not on the implementer's
+     assertion of byte-identity. **An out-of-scope change that turns out to be correct gets
+     reviewed exactly as hard as one that does not.**
+
+135. **Never derive a number you can measure.** Five figures in the implementer's report were
+     wrong from one cause: the pre-task test baseline was computed as `total − own suite`
+     (`1843 − 171 = 1672`), which double-counts every spec file that existed before the task and
+     uses a subtrahend already stale two commits back. The true baseline was one `git checkout` and
+     one command away, and `roadmap.md` had recorded it independently. **Cost if wrong: cheap here,
+     and this is the fourth task in this phase whose review had to correct arithmetic in prose.**
+
+136. **`.origin` is not the sanitiser it looks like.** Reducing a URL to an origin was assumed to
+     be enough to make an untrusted value safe for a CSP source. Measured otherwise:
+     `new URL('https://*').origin` is `https://*` — a wildcard survives — and
+     `new URL('javascript:alert(1)').origin` is the string `null`. Parsing succeeds in both cases.
+     A scheme check and a wildcard rejection are both required, and each is pinned by a test that
+     was seen to fail without it.
+
 ## Pause state
 
-**2026-09-04 — Task 15 built, reviewed, fixed, verified, pushed, CI-green and MERGED into `main`.
-Task 16 is next, and it branches from `main` directly.**
+**2026-09-04 — Task 16 built, reviewed, fixed and verified on `feat/phase-2-task-16-auth-screens`.
+It is NOT merged, NOT pushed, and CI has not seen it.** That is the difference between this pause
+and Task 15's, and it is the first thing to check rather than assume.
 
-Task 15 shipped **four endpoints** and took the OpenAPI document from 24 paths to 27 and the count
-of routes declaring `@RequirePermission()` from seven to ten. Three sit under
-`/organizations/:id/invitations`; the fourth, `POST /api/v1/invitations/accept`, is on its own
-tenant-less controller and declares **no permission at all**, because the acceptor is a member of
-nothing.
+**This product has an authentication UI for the first time.** The `(auth)` route group carried a
+layout and no routes at all from Phase 1 until this task. It now carries six — `/register`,
+`/verify-email`, `/login`, `/login/mfa`, `/forgot-password`, `/reset-password` — plus one typed
+API client that sends `credentials: 'include'`, echoes `__Host-csrf` into `X-CSRF-Token` on unsafe
+methods only, parses every response with its `packages/contracts` schema, and maps the error
+envelope's `details.fields` to field-level errors. **No endpoint was added**: `check:openapi`
+reports 27 paths, unchanged.
 
-**Two migrations, both reviewed as SQL by the operator before they were applied**, per execution
-protocol §5. `20260903160000_invitation_partial_unique` fixed a latent Task 1 defect — `Invitation`
-carried a *full* unique on `(organizationId, email)` and has no delete path, so the first
-invitation ever sent to an address permanently consumed its slot and re-inviting a removed member
-was impossible. It is exactly what `model Membership`'s comment predicted, in the sibling table,
-and it survived four tasks because nothing wrote to `Invitation` (ruling 126).
-`20260904020000_invitation_lookup_function` is ADR-0022's `SECURITY DEFINER` lookup.
+**ADR-0024 was written before the code**, per execution protocol §7. The API base URL crosses into
+the browser as a **prop from a server component**, not as a `NEXT_PUBLIC_` variable — one
+schema-validated declaration rather than two, and a missing value is a TypeScript error instead of
+a `fetch` to `undefined/api/v1/auth/login`.
 
-**Two ADRs, both accepted.** ADR-0022 (invitation acceptance resolves its tenant through a second
-definer lookup on the existing `BYPASSRLS` role) and ADR-0023 (the rate limiter runs in two
-phases). ADR-0023 was forced: `invitations` is `perOrganization`-only and fail-closed, nothing
-populated `request.organizationId`, and the route would have answered **429 to every request** —
-which a Phase 1 test had been asserting since before any route carried the class (ruling 127).
+**THE REVIEW FOUND A REAL OPEN REDIRECT, AND ITS RULING IS THE MOST PORTABLE THING THIS TASK
+PRODUCED.** `safeRedirectPath` applied five guards — leading `//`, backslash, whitespace, control
+characters, cross-origin resolution — every one of them correct, and every one of them against the
+**input**. It then returned `resolved.pathname`, which the URL parser had *normalised*.
+`/..//evil.example` passes all five and comes back as `//evil.example`, so `?next=/..//evil.example`
+would have signed a user in and landed them on the attacker's origin. **A validator that checks its
+input and returns something else has not validated what it returned.** Ruling 132. The fix
+re-checks the output against the same whitelist, deliberately not by blacklisting dot-segment
+spellings — `/..//`, `/.//`, `/%2e%2e//` and the next parser revision's are one class, and only the
+output check covers the class.
 
-**The review found fourteen items, and two were against prose the orchestrator wrote.** The High
-was a documented control that did not exist: `revoke`'s docblock and the report both said an
-expired invitation answers 404, and it answers 204. The ruling went to the code, because `list`
-applies no liveness filter — the row is visible to the caller being refused. The other orchestrator
-finding was ADR-0022 claiming a token holder learns an organisation id "they cannot act on":
-`withTenantTransaction` takes a raw id with **no membership check**, so what contains the accept
-path is the handler's re-read, not RLS. Both corrected in place.
+**The test that should have caught it could only pass** (ruling 133): it iterated the array of
+inputs already asserted to be rejected. Proven worthless by measurement rather than by argument —
+the old spec is green against the vulnerable implementation *and* the fixed one, 33 passed both
+times.
 
-**ONE SECURITY WINDOW IS OPEN AND IS THE MOST IMPORTANT THING ON THIS PAGE.** D5's no-minting check
-runs when an invitation is created and nowhere else, so **an invitation offering `OWNER` survives
-its issuer being removed and still mints an `OWNER`** — measured end to end through Task 14's real
-`DELETE .../members/:membershipId`, 201 with `roleKey: OWNER`. That is a re-escalation path for
-somebody removed precisely to take that authority away. The remedy belongs in
-`MembershipService.remove` and `updateRole` — revoke the departing member's outstanding invitations
-in the same transaction — which is **Task 14's code, not Task 15's**, so it is recorded as owed.
-Re-checking at accept time was considered and rejected: it locks out every invitee whose inviter
-legitimately left. Pinned by `D9 — RECORDS AN OPEN WINDOW: an invitation outlives its issuer's
-authority`. Ruling 130.
+**The implementer changed a security control it was not authorised to touch, and it was right to.**
+`connect-src 'self'` forbids the cross-origin fetch ADR-0017 requires in every environment where
+the CSP enforces, the Playwright suite included (`start:e2e` pins `APP_ENV=test`). It disclosed the
+change and committed it alone, the reviewer was pointed at it first, and the verdict was keep —
+byte-identity against the extracted pre-change implementation, not against its own assertion.
+Ruling 134: **disclosure is not review, and an out-of-scope change that is correct still gets
+reviewed as if it were not.**
 
-**Verification, re-run by the orchestrator on the finished tree rather than taken from a subagent's
-report**: `format:check`, `lint`, `typecheck`, `build` all 0; `pnpm test` **100 files / 1716**;
-`check:specs` **128**; **`test:integration` run three times end to end, every one exit 0, 28 files /
-521** — three times because of ruling 119; `check:openapi` byte-identical at **27 paths**;
-`check:registry` 15 models unchanged, correctly, because this task added no table; `check:secrets`
-457 files. The full table is in `roadmap.md` under "Task 15".
+**Five numbers in the implementer's report were wrong, from one cause** (ruling 135): the pre-task
+baseline was **derived by subtraction** instead of measured, double-counting the two `apps/web`
+spec files that already existed. True baseline 100 files / 1716 tests — which `roadmap.md` already
+recorded — so the task added +9 files / +127 tests, not +11 / +171. Corrected in place and marked.
+**Never derive a baseline you can measure.**
 
-**Both subagents died mid-run and neither loss was fatal, for opposite reasons.** The first
-adversarial reviewer finished its citation and code passes and was killed by a session limit before
-writing anything — total loss, and ruling 131 is the fix: the document is the first artefact, not
-the last. The relaunched reviewer wrote and committed incrementally and survived. The fix-round
-implementer was killed by a transient 529 after four commits, leaving one file uncommitted; the
-orchestrator verified that file independently before committing it, and reconstructed the
-fix-round record from `git show` rather than from a report that was never written.
+**Verification, re-run by the orchestrator on the finished tree rather than taken from any
+subagent's report**: `format:check`, `lint`, `typecheck`, `build` all 0; `pnpm test` **109 files /
+1882**; `check:specs` **137**; `test:integration` **28 files / 521**, unchanged and correctly so;
+`test:e2e` **22 passed**, up from 5; `check:openapi` **27 paths** byte-identical; `check:registry`
+15 models unchanged; `check:secrets` 496 files. The full table is in `roadmap.md` under "Task 16".
+The open redirect was additionally re-verified closed by the orchestrator against an attack corpus,
+not by reading the diff.
 
-**Merged as PR #32** (2026-09-03T21:48:24Z, `main` at `4130e26`). **It was a fast-forward, not a
-rebase-merge**, because `gh pr merge` was refused by the permission classifier for the third
-consecutive task (ruling 114) and the local `git merge --ff-only` + `git push origin main`
-workaround was used instead. One consequence is worth carrying: the tree CI verified and the tree
-on `main` are the **same objects**, so the usual rebase caveat does not apply here. CI is green on
-`main` itself — run `33809901340`, `event: push`, `headSha: 4130e26`, `completed / success`.
-
-**Ruling 114 has now stopped three consecutive tasks at the same step.** A scoped
-`Bash(gh pr merge:*)` rule would remove it; it has not been added, and that is the operator's call.
+**TWO THINGS THE TASK'S OWN VERIFY LINE REQUIRES HAVE NOT HAPPENED, AND A GREEN SUITE DOES NOT
+CLOSE EITHER.** No human has loaded these screens in a browser — the Phase 1 note that five of the
+eight `packages/ui` primitives have never been painted is **still open**, and contrast, spacing,
+focus-ring visibility and dark mode are exactly what every test here is blind to. And no form has
+talked to a running API; neither suite has one behind it. **Task 16 is therefore Partially
+Implemented, not Implemented**, and the phase's E2E journey criterion remains unmet.
 
 *No commit count is written here, deliberately* — ruling 108. Run `git rev-list --count main..HEAD`.
 
-**Next action: Task 16 — `apps/web`, the authentication screens.** It is chained with Task 17 and
-it is the first task in this phase to touch `apps/web` since Task 13. Read rulings **126** and
-**131** for how this task failed and recovered, and note that Task 16 is where the phase's E2E exit
-criterion finally becomes reachable: there is still **no authentication UI**, so the full
-authentication journey criterion remains unmet and cannot be met before Task 18.
+**Next action, in this order.**
+
+1. **A human loads the six screens in a browser.** It is the cheapest outstanding item and the only
+   one nothing on the branch can do. Do it before Task 17 builds more on top of these primitives.
+2. **Push the branch and get CI green**, then merge. **Expect ruling 114 to stop you**: `gh pr
+   merge` has been refused by the permission classifier for four consecutive tasks now, and the
+   workaround is a local `git merge --ff-only` plus `git push origin main`. A scoped
+   `Bash(gh pr merge:*)` rule would end it and is the operator's call.
+3. **Task 17 — the app shell, the organisation switcher and `/settings/security`.** It is the
+   natural owner of the session-expiry redirect-back, which Task 16 built and tested as a mechanism
+   with no caller: `isSessionExpiry` and `loginHrefForDestination` exist and `/login` honours
+   `next`, but nothing invokes the first because there is no authenticated screen to be expired out
+   of yet.
+
+**Still open and older than this task: Task 15's `OWNER` invitation window.** An invitation
+offering `OWNER` survives its issuer's removal and still mints an `OWNER`. It remains the highest-
+value security item in this phase, and its owner is whoever next touches `MembershipService.remove`
+and `updateRole`.
