@@ -11,8 +11,8 @@ writing its document last. Nothing here is written in advance of the work it des
 
 - [x] Read the brief, the review, ADR-0026, and the implementer's report
 - [x] Item 1 — organisation lock in `InvitationService.create` (the reproduced escalation)
-- [ ] Remaining items, in the brief's order
-- [ ] Six commands green, exit codes captured outside a pipe
+- [x] Remaining items, in the brief's order
+- [x] Six commands green, exit codes captured outside a pipe
 
 ## Honesty rule
 
@@ -402,3 +402,94 @@ MUT EXIT=1
   Tests 1 failed | 43 skipped (44)
 ```
 File restored from a backup taken before the mutation; `git diff --stat` on it is empty.
+
+### Entry 8 — `create`'s docblock stops overstating the fix
+
+The docblock at `invitation.service.ts` still ended on "the re-read makes the check and the fact
+come from the same snapshot", which is the sentence the review says overstates it in four
+places. Two of the four (ADR-0026 §3, `roadmap.md`) are the orchestrator's; the two in code are
+mine. The `create` docblock now carries the correction in the strongest form available to it —
+that a re-read is not a lock, that READ COMMITTED is why, that the review reproduced a `201`
+minting an `OWNER` on the code that made the claim, and that **naming rulings 82 and 122 in a
+docblock is not obeying them**. It names `lockOrganization` as what closes it and cites the
+detector by its exact name. `invitation-revocation.cascade.ts`'s claim is about the cascade and
+was not one of the four.
+
+### Entry 9 — the six commands
+
+Every exit code captured outside a pipe with `out=$(pnpm <cmd> 2>&1); code=$?` (ruling 105).
+
+| Command | Exit | Result |
+|---|---|---|
+| `pnpm lint` | `0` | 14/14 tasks. `@sentinel/api:lint` was a **cache miss** and executed. |
+| `pnpm typecheck` | `0` | 14/14 tasks. `@sentinel/api:typecheck` was a **cache miss** and executed. |
+| `pnpm test` | `0` | 115 files, **1983 tests passed** |
+| `pnpm test:integration` | `0` | 29 files, **558 tests passed** (302.9s). Baseline 554; +4 = the race detector, the `manage_members` re-check, the lateral set-vs-ranking case, and self-removal. |
+| `pnpm check:specs` | `0` | 144 spec files, each claimed by exactly one of unit / integration / ui |
+| `pnpm format:check` | `0` | All matched files use Prettier code style |
+
+**On the caching warning.** Turbo reported `cache miss, executing` for `@sentinel/api` on both
+`lint` and `typecheck`, so neither was a replayed log. I also ran both independently of turbo,
+which is what the brief asked for: `npx tsc -p tsconfig.json --noEmit` in `apps/api` → **exit
+0**; `npx eslint src/modules/invitations src/modules/memberships src/modules/audit` → **exit 0**.
+I did **not** use `turbo run --force`, because the review recorded an intermittent Windows
+`EPERM` on the Prisma query-engine DLL under it and the two direct runs answer the same question
+without that risk. I did not see the EPERM at any point in this round.
+
+`pnpm lint` was red once during this round, on my own new code:
+`@typescript-eslint/no-unnecessary-type-assertion` at `invitations.integration.spec.ts:2104` —
+a `ROLE_PERMISSIONS.MEMBER as readonly Permission[]` that changed nothing. Removed; lint green
+on the re-run, again as a cache miss.
+
+## What I did not do, and why
+
+- **`.claude/product/roadmap.md`** (Finding 5) and **`.claude/decisions/ADR-0026-*.md`** — the
+  brief assigns both to the orchestrator and forbids me either. Untouched. `git diff --name-only`
+  from my first commit confirms it, along with `apps/web`.
+- **ADR-0026 §3's own wording** still asserts that the re-read closes the race. That assertion
+  was wrong when written and is now *incomplete* rather than wrong — the window is closed, by a
+  mechanism the ADR does not name. Amending it is the orchestrator's.
+- **`d9-brief.md` and `d9-review-brief.md`**, the two other places the review says overstate the
+  claim. They are dated instruction documents from earlier rounds, not descriptions of current
+  state, and rewriting somebody else's brief after the fact destroys the record of what was
+  actually asked. The correction lives where a reader will hit it: the code, and this file.
+- **`pnpm check:openapi` and `pnpm check:registry`** — not among the six, and nothing in this
+  round touches a contract, a response schema or the tenant resource registry. My changes are
+  confined to two service files, one cascade, one tokens file, one audit constants file, two
+  integration specs and three documents.
+- **A test for the unaided (undelayed) hit rate of the original race.** The review did not
+  measure it and neither did I; the detector proves the lock is taken, not how often the window
+  used to open.
+
+## Residual risks I am aware of
+
+1. **The detector proves serialisation, not the absence of every interleaving.** It shows
+   `create` waits behind a holder of the organisation lock and then refuses. A different
+   interleaving — one that does not contend for that row — is not covered by it. What makes me
+   think the set is now complete is `lockOrganization`'s own argument: the four writers that can
+   move a member's authority (`accept`, `updateRole`, `remove`, and now `create`) all take it. A
+   fifth writer added without it reopens this, and the docblock in `create` says so.
+2. **The blocker writes the removal as raw SQL**, not by driving `MembershipService.remove`.
+   Same two columns; no cascade (there is nothing yet to cascade over) and no session revocation
+   (the racing request already passed the guard). Stated in the test and above.
+3. **Organisation suspension is still not re-read** inside `create`'s transaction. Out of scope
+   by the brief; the window is now one organisation-lock-width, the same as every other
+   membership write's.
+4. **`status === 'ACTIVE'` is still not checked** by `actorAuthority`; `deletedAt: null` is the
+   only predicate. Unreachable today because nothing writes `'INVITED'`. That is a claim about
+   the data and it is now written into the docblock beside the predicate that depends on it
+   (ruling 128), which is the most I can do without pinning it.
+5. **Mutations 3 and 4 still survive**, as the implementer reported. Finding 7 corrected which
+   layer explains mutation 3; neither mutation became distinguishable.
+6. **`create` now serialises per organisation.** Two invitations to different addresses in one
+   tenant queue behind each other where before they did not — `lockInvitationSlot`'s finer key no
+   longer buys that back on this path. It is the same cost `updateRole`, `remove` and `accept`
+   already pay, for one short transaction, and the existing test
+   `does not take that lock for a DIFFERENT address in the same organisation` still passes
+   because it blocks on the advisory key rather than the row. If invitation throughput per tenant
+   ever matters, this is the line that bounds it.
+7. **The invitee is still not told.** ADR-0026's stated and accepted cost, unchanged by this
+   round.
+8. **`d9-report.md` is now a corrected document rather than a contemporaneous one.** Both
+   corrections are marked in place as `[CORRECTED IN THE D9 FIX ROUND]` rather than rewritten
+   silently, so the original claims and the fact that they were wrong are both still readable.

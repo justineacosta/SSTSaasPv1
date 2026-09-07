@@ -2101,7 +2101,7 @@ describe('POST /api/v1/organizations/:id/invitations — the actor’s authority
       select: { id: true },
     });
     expect(
-      ROLE_PERMISSIONS.MEMBER as readonly Permission[],
+      ROLE_PERMISSIONS.MEMBER,
       'MEMBER now carries `organization.manage_members`, so this test proves nothing. The ' +
         'seeded roles moved and the case needs a role that still lacks it.',
     ).not.toContain('organization.manage_members');
