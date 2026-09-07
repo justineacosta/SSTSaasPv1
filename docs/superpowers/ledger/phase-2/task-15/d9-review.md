@@ -522,3 +522,180 @@ the same outcome as removal.
 **Cost if left.** Item 2 is the material one and it is small: one extra request's worth of writes
 into an organisation being suspended, on the same window as Finding 4 and closed by the same fix.
 Item 3 costs nothing today and costs a privilege bug the day someone writes `'INVITED'`.
+
+---
+
+# What I verified and found TRUE
+
+These are the report's and the code's claims that I checked and that held. Each was run, not assumed.
+
+**The verification commands, re-run on a clean tree.** The implementer's numbers are exact.
+
+| Command | My exit | My result | Report's claim | Agrees |
+|---|---|---|---|---|
+| `pnpm test:integration` | `0` | 29 files, **554 tests passed**, 320.7s | 29 files, 554 tests | yes |
+| `pnpm test` | `0` | 115 files, **1983 tests passed** | 115 files, 1983 tests | yes |
+| `pnpm check:specs` | `0` | "144 spec files, each claimed by exactly one of: unit, integration, ui" | 144 spec files | yes |
+| `pnpm format:check` | `0` | "All matched files use Prettier code style!" | green | yes |
+| `pnpm lint` | `0` | 14/14 tasks (turbo cache hit on this tree) | 14/14 | yes |
+| `pnpm typecheck` | `0` | 14/14 tasks (turbo cache hit on this tree) | 14/14 | yes |
+
+Because `lint` and `typecheck` came back from turbo's cache, I re-ran them independently, bypassing
+turbo: `npx tsc -p tsconfig.json --noEmit` in `apps/api` → **exit 0**; `npx eslint` over
+`modules/invitations modules/memberships modules/audit` → **exit 0**.
+
+**Environment note, not a finding.** `npx turbo run typecheck lint --force` fails on this machine at
+`@sentinel/db#build` with `EPERM: operation not permitted, rename
+'…\generated\client\query_engine-windows.dll.node.tmp…'` — a Windows file lock on the Prisma query
+engine, reproduced twice including with nothing else running. It is not caused by this change:
+`pnpm test` and `pnpm test:integration` both run `build:packages` first and both completed green,
+and `--filter=@sentinel/db typecheck --force` passes in isolation.
+
+**The red run was real.** I removed the feature (cascade returns `[]`; `create`'s
+`assertActorMayGrant` given `ctx` again instead of `await actorAuthority(tx, ctx)`) and ran both
+specs:
+
+    MUT EXIT=1   Tests 9 failed | 69 passed (78)
+    × D9 — CLOSED BY ADR-0026: an invitation does NOT outlive its issuer's authority
+    × a cascade revocation frees the (organizationId, email) slot for a fresh invitation
+    × refuses when the actor's membership is gone by the time the transaction runs
+    × decides on the role the database holds, not the role the context claims
+    × revokes every live invitation the removed member issued, and audits each one
+    × leaves invitations issued by anybody else alone
+    × revokes only the invitations a demoted member could no longer issue
+    × revokes only in the organisation the member was removed from
+    × writes the revocations inside the caller's transaction, so a later failure undoes them
+
+**Nine of the eleven new tests fail when the feature is removed.** The two that do not are exactly
+the two the report names — `revokes nothing on a promotion` and `revokes nothing on a role change to
+the role the member already holds` — and the report is right that they are guard cases against
+over-revocation and that mutation 2 is where they earn their place. This matches `d9-report.md`'s
+red-run section line for line, including the 42/36 baseline counts. **That is an honest report of a
+real red run**, and it is the strongest single thing I can say for this change.
+
+**Mutation 3 survives, as reported.** Dropping `organizationId` from the cascade's read predicate:
+`MUT3 EXIT=0, Tests 42 passed (42)`. (Its recorded *reason* is wrong — Finding 7.)
+
+**Mutation 4 survives, as reported, and the claim behind it is arithmetically true.**
+`remove` passing `new Set<string>()` instead of `null`: `MUT4 EXIT=0, Tests 42 passed (42)`. The
+claim "every seeded system role holds at least one permission" computes to:
+`OWNER=49 ADMIN=47 SECURITY_LEAD=33 MEMBER=23 VIEWER=12 AUDITOR=15 GUEST=11` — minimum 11, so the
+empty set and `null` are behaviourally identical today and the ADR §1 reasoning for keeping `null`
+is correct.
+
+**`deletedAt: null` in `actorAuthority` is load-bearing and IS pinned.** Dropping it turns
+`refuses when the actor's membership is gone by the time the transaction runs` red
+(`MUT6 EXIT=1, Tests 1 failed | 35 passed (36)`). `ctx.membershipId` is also the right key —
+`resolveTenant` sets it from the live row (`tenant-context.ts:127`), so a removed-and-re-added
+member's stale context resolves nothing and is refused.
+
+**The ES module cycle argument is sound at runtime**, notwithstanding Finding 3's overreach:
+
+    $ grep -rn "from '../memberships/" apps/api/src/modules/invitations/ | grep -v spec
+    invitation.service.ts:28:} from '../memberships/membership.service.js';     # the only one
+    $ grep -rn "memberships.module" apps/api/src --include=*.ts | grep -v spec
+    app.module.ts:22   + four occurrences inside comments — nothing in invitations/ imports it
+
+`invitation-revocation.cascade.ts` imports only `@sentinel/db`, `audit/audit.service.js` and a
+type from `auth/request-context.js`; `audit.service.ts` imports nothing from either module. The
+only value edge `memberships/` → `invitations/` is `memberships.module.ts` → the cascade, and
+nothing in `invitations/` imports `memberships.module.ts`. The graph is acyclic, and the 554
+passing integration tests boot the whole Nest graph, which is the runtime measurement.
+
+**`LIVE_INVITATION` has exactly one definition and no inline copy.**
+`grep -rn "acceptedAt: null" apps/api/src --include=*.ts | grep -v spec` returns exactly one line:
+the constant itself. (Its docblock's *count* is wrong — Finding 2.)
+
+**The audit trail is correct in the ways the brief asked about.** Two producers, matching the
+widened docblock: `invitation-revocation.cascade.ts:192` and `invitation.service.ts:608` (the
+deliberate `revoke`). Three writers of `Invitation.revokedAt`: supersession
+(`invitation.service.ts:389`), `revoke` (`:600`), the cascade (`:176`) — which is what the cascade's
+docblock says. Every cascade event is written with the caller's `tx` via `AuditService.record`, so
+it is inside the transaction; the rollback test proves it (and goes red when the feature is
+removed). No forbidden field reaches an event: the cascade's `select` never loads `tokenHash`.
+Supersession still writes no `INVITATION_REVOKED` — unchanged.
+
+**Cross-tenant is genuinely closed, by three layers.** `Invitation` is in `TENANT_OWNED_MODELS`
+(`packages/db/src/tenant-resources.ts:12`); `findMany` and `updateMany` are both scoped operations
+(`packages/db/src/tenant-scope.ts:27,35`), so the extension injects `organizationId`; RLS is
+`FORCE` and keyed on it; and the cascade names it explicitly in both statements. The test
+`revokes only in the organisation the member was removed from` goes red when the feature is removed.
+I could not break it with mutation 3.
+
+**The cascade's two call sites are complete for this codebase.** The only writer of
+`status: 'REMOVED'` is `membership.service.ts:680` (`remove`) and the only writer of an existing
+membership's `roleId` is `:554` (`updateRole`); `accept` only *creates* a membership and is guarded
+by `assertUserIsNotAlreadyAMember`. So there is no third path by which a live member's authority
+shrinks without the cascade running.
+
+**The conditional per-row write is right.** `updateMany` re-states `LIVE_INVITATION` and a
+`count: 0` row gets no event, so a concurrent supersession cannot produce an audit row claiming a
+revocation that did not happen. `create`'s lock is on `(org, address)` and the membership writes'
+is on the organisation, so the concurrency the comment describes is real.
+
+**`d9-report.md` is unusually honest about its own limits.** Its "I tested the mechanism, not the
+race" section, residual risks 1-6, and both surviving mutations are disclosed rather than buried.
+Finding 4 is a failure of the *design's* claim that the report inherited from ADR-0026, and residual
+risk 1 shows the implementer was circling the right area. The report's specific factual defects are
+Findings 1 and 7 only.
+
+# What I could NOT verify, and why
+
+- **How often Finding 4's race reproduces without help.** My probe widens the window with an
+  env-gated `setTimeout` inside the cascade. I did not measure the unaided hit rate and make no
+  claim about it. The window's *existence* does not depend on the delay (READ COMMITTED + no shared
+  lock + a non-locking re-read), but its width does.
+- **Whether adding `lockOrganization` to `create` closes the probe.** I did not try it: the brief
+  forbids changing code, and I judged that a fix belongs to the orchestrator. I am confident of the
+  mechanism and I have not measured the outcome.
+- **Whether the cascade behaves correctly on an incomparable role change** (`ADMIN` → `SECURITY_LEAD`
+  with a pending `AUDITOR` invitation). I read the filter and it should revoke; no test exercises it
+  and I wrote none. Finding 9 rests on the mutation measurement, which I did run, not on this.
+- **Self-removal end to end** (Finding 8). Reasoned, not measured.
+- **`pnpm check:openapi` and `pnpm check:registry`.** Not run — neither was in the six commands, and
+  nothing in the diff touches a contract, a response schema or the tenant registry. I did not verify
+  that last statement beyond reading the diff's file list.
+- **`apps/web`.** Explicitly out of scope; not looked at.
+- **ADR-0026's decision itself.** Not re-litigated, per the brief. Having measured the rest, I think
+  the decision is right and item 3 of it is incompletely implemented rather than wrong.
+
+# Overall judgement
+
+**The code is a real improvement and I would not throw it away. The claim attached to it is false,
+and in its current form this must not merge as "the D9 window is closed".**
+
+Everything the cascade does, it does correctly: eleven tests, nine of which I watched go red when I
+removed the feature; the transaction discipline holds; cross-tenant holds under three layers and
+resists the obvious mutation; the audit trail is per-invitation, in-transaction, and free of
+anything §5 forbids; the module boundary is genuinely acyclic. Sequentially — which is every case
+anyone will hit by accident — a removed or demoted member's invitations now die with their
+authority, and that is the substance of ADR-0026 §1 and §2.
+
+But ADR-0026 §3's claim is the one the change stakes its status on, and it does not hold. I
+reproduced the original D9 escalation on this branch, through the real routes, to a `201` minting an
+`OWNER` membership for a user whose row says `REMOVED` — and again for a demotion. The re-read is
+necessary and it is not sufficient, which is the exact sentence the ADR quotes rulings 82 and 122
+for and then commits the third instance of. Meanwhile the six documents that used to warn about this
+have been rewritten to say it is shut, the test named to warn about it has been renamed, and
+`authentication.md`'s paragraph is gone.
+
+**What I would require before this merges:**
+
+1. **Finding 4.** Either take `lockOrganization` in `InvitationService.create` — it is exported,
+   already imported by that file for `accept`, and its own docblock says a writer outside the
+   serialisation reopens the race for everyone — or downgrade the claim in all six places that make
+   it (ADR-0026 §3 and its Consequences, `invitation.service.ts:290-317`, `roadmap.md`,
+   `authentication.md`, `d9-brief.md`, `d9-review-brief.md`) and record the residue as owed, with a
+   test that pins it the way the old D9 test pinned the original. **Deleting the warning while the
+   window is open is the part I would block on**, more than the window itself.
+2. **Finding 5.** `roadmap.md`'s section must not lead with the defect in the present tense.
+3. **Finding 1.** Fix the four broken citations and correct the report's "both resolve".
+4. **Finding 6.** `audit.md` §4 gets its paragraph, as Tasks 13, 14 and 15 each did.
+5. **Finding 9.** One test on an incomparable pair, so the design's central claim is pinned.
+
+Findings 2, 3, 7, 8, 10 and 11 are worth fixing and would not block.
+
+**Severity roll-up:** 1 High (4), 4 Medium (1, 5, 6, 9), 6 Low (2, 3, 7, 8, 10, 11).
+
+**Working tree.** Every file I mutated was restored with `git checkout` and `git status --short`
+returned empty each time. The only file I changed or committed is this document.
