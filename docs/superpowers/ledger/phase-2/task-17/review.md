@@ -179,3 +179,54 @@ attacker cannot generate candidates. It is only useful for *confirming* an id ob
 (a leaked log line, an audit export, a support transcript), which is a narrow real case. Reported
 because §3 of the review brief asked whether "no oracle" is true of **every** response including
 timing, and the honest answer is "of the body yes, of the clock approximately".
+
+### C-1, the decisive measurement
+
+The reviewer applied its own mutation — the realistic one, not a contrived one: replace both
+hand-written projections with a spread.
+
+```
+session.service.ts  listOwnedPage:  sessions: page.map((row) => ({ ...row })),
+auth.controller.ts  listSessions:   data: page.sessions.map((session) => ({
+                                      ...session,
+                                      createdAt: session.createdAt.toISOString(),
+                                      lastSeenAt: session.lastSeenAt.toISOString(),
+                                    })),
+```
+
+| Command | Exit | Output |
+|---|---|---|
+| `pnpm --filter @sentinel/api exec tsc --noEmit` | **0** | **no error at all — TypeScript does not excess-property-check a spread, so nothing at compile time objects to shipping the hashed credential** |
+| `pnpm vitest run --project integration apps/api/src/modules/auth/auth.sessions.integration.spec.ts` | 1 | 1 failed / 22 passed — `AssertionError: expected '{"data":[{"id":"ses_01M1XFTZXJF7XTYKH…' not to contain 'tokenHash'` |
+
+Reverted with `git checkout --`; `git status --short` afterwards shows only the reviewer's own
+probe file.
+
+So: **one assertion in the entire repository stands between this endpoint and a hashed credential
+on the wire** — `auth.sessions.integration.spec.ts:222`. That is a good test and it is doing its
+job. It is not "three independent strippings", and it is not "unrepresentable".
+
+### Reviewer's own probe — seven attacks on the isolation, all repelled
+
+The reviewer wrote `apps/api/src/modules/auth/reviewer-probe.integration.spec.ts` (deleted before
+the final commit; it is not part of the branch) to attack shapes the implementer's suite does not
+cover. `pnpm vitest run --project integration …` → **exit 0, 7 passed**.
+
+| Probe | Result |
+|---|---|
+| A — another user's **already-revoked** session id | 404 `RESOURCE_NOT_FOUND`, not 200 |
+| B — another user's **`PENDING_MFA`** session id | 404, and `revokedAt` still `null` afterwards |
+| C — a `PENDING_MFA` row hidden from **its own owner** | hidden from the list, and once the warm cache entry is dropped the credential answers **401** |
+| D — a **forged cursor** positioned over another user's rows | 200, and the other user's row is absent — the `userId` scope is inside the predicate, so no cursor widens the set |
+| E — a **refused** revocation | audit row count unchanged: a 404 writes nothing |
+| F — every `SESSION_REVOKED` audit row | contains neither the string `tokenHash` nor any stored hash value |
+| G — an id from **another prefix namespace** (`usr_…`) | 400 `VALIDATION_ERROR`; a well-formed foreign id is 404 |
+
+**Probe C is worth recording because it failed first and the failure was the probe's.** Mutating
+`status` to `PENDING_MFA` in Postgres alone left `GET /auth/session` answering **200**, because
+`SessionService.resolve` (`session.service.ts:511-546`) serves from the Redis snapshot and never
+re-reads `status`. That is a test artefact, not a defect: a real `PENDING_MFA` session is refused
+by `AuthenticationGuard` at `authentication.guard.ts:195-206` with 401 `MFA_REQUIRED`, and
+`auth.controller.ts:432` sets **no cookie at all** for a pending credential, so one can never
+arrive in `__Host-session` by the product's own paths. **Decision 5's premise holds: an excluded
+session genuinely cannot authenticate a request.**
