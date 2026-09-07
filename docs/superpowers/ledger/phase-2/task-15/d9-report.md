@@ -15,11 +15,28 @@ Not Implemented / Blocked.
 
 ## What I was asked to build
 
-_(to be filled in after reading the brief)_
+Per `d9-brief.md` and ADR-0026 (Accepted, not re-litigated):
+
+1. `MembershipService.remove` revokes **every** live invitation the removed member
+   issued in that organisation, in the same transaction as the soft delete.
+2. `MembershipService.updateRole` revokes the live invitations that member issued
+   whose offered role carries a permission they do not hold after the change, and
+   only those. Set comparison against seeded `RolePermission` rows, reusing the read
+   `updateRole` already does for its own D5 check.
+3. `InvitationService.create` re-resolves the actor's own live membership and role
+   permissions inside its transaction and runs `assertActorMayGrant` against that set
+   rather than against `ctx.permissions`.
+
+Plus: one `INVITATION_REVOKED` audit event per revoked invitation, inside the same
+transaction; correct `audit.actions.ts`'s now-false "written only for a deliberate
+revocation through DELETE ..." sentence; rewrite the pinned D9 open-window test into a
+guarantee.
 
 ## Log
 
 - Skeleton created and committed before reading anything.
+- Read `CLAUDE.md`, `d9-brief.md`, ADR-0026, and all seven target files plus the two
+  integration specs' helper sections.
 
 ## Tests added
 
