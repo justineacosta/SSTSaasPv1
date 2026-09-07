@@ -5,6 +5,7 @@ import {
   emailSchema,
   forgotPasswordRequestSchema,
   loginRequestSchema,
+  listSessionsQuerySchema,
   loginResponseSchema,
   logoutRequestSchema,
   mfaVerifyRequestSchema,
@@ -14,7 +15,11 @@ import {
   registerRequestSchema,
   resendVerificationRequestSchema,
   resetPasswordRequestSchema,
+  revokeOtherSessionsResponseSchema,
+  revokeSessionResponseSchema,
+  sessionCollectionSchema,
   sessionResponseSchema,
+  sessionSummarySchema,
   switchOrganizationRequestSchema,
   verifyEmailRequestSchema,
 } from './auth.js';
@@ -22,6 +27,7 @@ import {
 const VALID_PASSWORD = 'correcthorsebatterystaple';
 const ORG_ID = 'org_01M0T74WZZFY9T2QS56RGF3GQ7';
 const USER_ID = 'usr_01M0T74WZZFY9T2QS56RGF3GQ8';
+const SESSION_ID = 'ses_01M0T74WZZFY9T2QS56RGF3GQ9';
 
 describe('emailSchema', () => {
   it('trims and lower-cases at the boundary', () => {
@@ -238,5 +244,104 @@ describe('sessionResponseSchema', () => {
 
   it('carries an entitlements placeholder', () => {
     expect(sessionResponseSchema.parse(base).entitlements).toEqual({});
+  });
+});
+
+describe('sessionSummarySchema', () => {
+  const base = {
+    id: SESSION_ID,
+    ip: '203.0.113.9',
+    userAgent: 'Mozilla/5.0',
+    createdAt: '2026-09-07T10:00:00Z',
+    lastSeenAt: '2026-09-07T11:00:00Z',
+    current: true,
+  };
+
+  it('accepts a live session', () => {
+    expect(sessionSummarySchema.parse(base).id).toBe(SESSION_ID);
+  });
+
+  it('accepts a session with no recorded address or agent', () => {
+    // Both columns are nullable: a caller that sent no `User-Agent` records
+    // none, and `null` says "not recorded" rather than "not applicable".
+    const parsed = sessionSummarySchema.parse({ ...base, ip: null, userAgent: null });
+    expect(parsed.ip).toBeNull();
+    expect(parsed.userAgent).toBeNull();
+  });
+
+  it('STRIPS a tokenHash rather than carrying it', () => {
+    // The single most important property of this schema. A handler that
+    // widened its projection by one column cannot ship the hashed credential
+    // through this shape: Zod object parsing drops unknown keys, so the value
+    // is not merely undocumented, it is absent from the parsed output that the
+    // response body is built from.
+    const parsed = sessionSummarySchema.parse({ ...base, tokenHash: 'a'.repeat(64) });
+    expect(Object.keys(parsed)).not.toContain('tokenHash');
+    expect(JSON.stringify(parsed)).not.toContain('a'.repeat(64));
+  });
+
+  it('refuses a timestamp that is not UTC', () => {
+    expect(
+      sessionSummarySchema.safeParse({ ...base, lastSeenAt: '2026-09-07T11:00:00+01:00' }).success,
+    ).toBe(false);
+  });
+
+  it('refuses an id that is not a session id', () => {
+    expect(sessionSummarySchema.safeParse({ ...base, id: USER_ID }).success).toBe(false);
+  });
+
+  it('requires `current` — a client cannot compute it', () => {
+    const { current, ...withoutCurrent } = base;
+    expect(current).toBe(true);
+    expect(sessionSummarySchema.safeParse(withoutCurrent).success).toBe(false);
+  });
+});
+
+describe('sessionCollectionSchema', () => {
+  it('is the shared list envelope, so this endpoint paginates like every other', () => {
+    const parsed = sessionCollectionSchema.parse({
+      data: [],
+      pagination: { nextCursor: null, hasMore: false, limit: 50 },
+    });
+    expect(parsed.data).toEqual([]);
+    expect(parsed.pagination.limit).toBe(50);
+  });
+
+  it('refuses a page with no pagination block', () => {
+    expect(sessionCollectionSchema.safeParse({ data: [] }).success).toBe(false);
+  });
+});
+
+describe('listSessionsQuerySchema', () => {
+  it('defaults the limit rather than admitting an unbounded query', () => {
+    expect(listSessionsQuerySchema.parse({}).limit).toBe(50);
+  });
+
+  it('clamps a limit above the maximum rather than refusing it', () => {
+    expect(listSessionsQuerySchema.parse({ limit: '500' }).limit).toBe(100);
+  });
+});
+
+describe('the two revocation responses', () => {
+  it('pins the single-session status string', () => {
+    expect(revokeSessionResponseSchema.parse({ status: 'SESSION_REVOKED' }).status).toBe(
+      'SESSION_REVOKED',
+    );
+    expect(revokeSessionResponseSchema.safeParse({ status: 'REVOKED' }).success).toBe(false);
+  });
+
+  it('carries how many other sessions were revoked', () => {
+    expect(revokeOtherSessionsResponseSchema.parse({ status: 'SESSIONS_REVOKED', revoked: 3 }).revoked).toBe(3);
+  });
+
+  it('refuses a negative or fractional count', () => {
+    expect(
+      revokeOtherSessionsResponseSchema.safeParse({ status: 'SESSIONS_REVOKED', revoked: -1 })
+        .success,
+    ).toBe(false);
+    expect(
+      revokeOtherSessionsResponseSchema.safeParse({ status: 'SESSIONS_REVOKED', revoked: 1.5 })
+        .success,
+    ).toBe(false);
   });
 });
