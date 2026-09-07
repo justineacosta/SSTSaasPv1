@@ -242,3 +242,32 @@ MUT5 EXIT=1
 ```
 The review's 78/78 is now 80 passed and **one** failure, and the failure is this case. The file
 was restored from a backup taken before the mutation and `git diff --stat` on it is empty.
+
+### Entry 5 — Finding 10: `ISSUER_DEMOTED` → `ISSUER_ROLE_CHANGED`
+
+`updateRole` always passed `reason: 'ISSUER_DEMOTED'`. Because the rule is a set test and the
+seeded lattice is only partially ordered — `AUDITOR` is incomparable with `SECURITY_LEAD`,
+`MEMBER` and `VIEWER` — a **lateral** move revokes. The test added in Entry 4 is exactly such a
+move, so the suite was, as of the previous commit, pinning `ISSUER_DEMOTED` on a change that is
+not a demotion. Ranking vocabulary on the one rule the design insists is not a ranking.
+
+Renamed in the type and in the value `updateRole` writes. `ISSUER_REMOVED` is untouched: a
+removal is a removal under any ordering. ADR-0026 names neither constant, so nothing there is
+invalidated, and the ADR is not mine to edit in any case.
+
+The type's docblock now says which changes are included and why — that a lateral move losing a
+permission revokes, with `AUDITOR` named as where the lattice forks. `audit.actions.ts` §
+`INVITATION_REVOKED` carries the new spelling and drops "demoted" from its prose.
+
+**Also corrected in the same docblock, and it is Finding 8's related half.** It said of the
+cascade's `actorId`: *"that person is the one who removed or demoted the issuer, not the
+issuer."* On a self-removal they are the same person, and ADR-0026 says self-removal will be the
+common case — so a reader using that sentence to tell the two producers apart would be wrong
+precisely where it matters most. It now says `actorId` is usually somebody else and on a
+self-removal is the leaver, and that `reason` — present on exactly one of the two producers — is
+what distinguishes them.
+
+```
+$ npx vitest run --project integration --no-file-parallelism memberships.integration.spec.ts
+EXIT=0   Test Files 1 passed (1)   Tests 43 passed (43)
+```

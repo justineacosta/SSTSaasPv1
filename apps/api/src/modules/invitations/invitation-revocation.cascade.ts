@@ -43,8 +43,25 @@ export const LIVE_INVITATION = { acceptedAt: null, revokedAt: null } as const;
  * event's `metadata` as `reason`, which is what tells a reader six months later
  * that a revocation had no direct actor beyond the person who moved the
  * membership.
+ *
+ * # `ISSUER_ROLE_CHANGED`, NOT `ISSUER_DEMOTED`, AND THE NAME IS THE POINT
+ *
+ * It was `ISSUER_DEMOTED` until the D9 review's Finding 10, and that name told
+ * an investigator something that had not necessarily happened. The rule above
+ * this one is a SET test against the seeded `RolePermission` rows, and the
+ * seeded lattice is only PARTIALLY ordered — `AUDITOR` is incomparable with
+ * `SECURITY_LEAD`, `MEMBER` and `VIEWER`, holding `audit.read` and
+ * `billing.read` that none of them hold. So a **lateral** move revokes: a member
+ * changed `MEMBER` → `AUDITOR` loses `MEMBER`'s non-`AUDITOR` permissions and
+ * their pending `MEMBER` invitations die with them, although `AUDITOR` is not
+ * below `MEMBER` in any order this codebase defines. Naming that a demotion
+ * would put ranking vocabulary on the one rule the design insists is not a
+ * ranking, and an investigator reading the trail would infer a demotion that
+ * did not occur.
+ *
+ * `ISSUER_REMOVED` stays as it is: a removal is a removal under any ordering.
  */
-export type InvitationRevocationReason = 'ISSUER_REMOVED' | 'ISSUER_DEMOTED';
+export type InvitationRevocationReason = 'ISSUER_REMOVED' | 'ISSUER_ROLE_CHANGED';
 
 export interface RevokeIssuedInvitationsInput extends AuthRequestContext {
   readonly organizationId: string;

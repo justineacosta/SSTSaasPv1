@@ -1206,7 +1206,10 @@ describe('the invitation cascade on a membership write (ADR-0026)', () => {
     expect(events).toHaveLength(2);
     expect(new Set(events.map((event) => event.resourceId))).toEqual(new Set([asOwner, asAdmin]));
     for (const event of events) {
-      expect(event.metadata).toMatchObject({ reason: 'ISSUER_DEMOTED', issuerUserId: demoted.id });
+      expect(event.metadata).toMatchObject({
+        reason: 'ISSUER_ROLE_CHANGED',
+        issuerUserId: demoted.id,
+      });
     }
   });
 
@@ -1294,11 +1297,12 @@ describe('the invitation cascade on a membership write (ADR-0026)', () => {
     const events = await revocationEvents(organizationId);
     expect(events).toHaveLength(1);
     expect(events[0]?.resourceId).toBe(asAuditor);
-    // The reason constant is `ISSUER_DEMOTED` and this move is NOT a demotion —
-    // `SECURITY_LEAD` is not below `ADMIN` in any order this codebase defines.
-    // That is Finding 10, fixed in the commit after this one.
+    // A LATERAL move, and the reason names it as one rather than calling it a
+    // demotion — `SECURITY_LEAD` is not below `ADMIN` in any order this codebase
+    // defines, and ranking vocabulary on the trail would have an investigator
+    // infer a demotion that did not happen.
     expect(events[0]?.metadata).toMatchObject({
-      reason: 'ISSUER_DEMOTED',
+      reason: 'ISSUER_ROLE_CHANGED',
       issuerUserId: moved.id,
     });
   });
