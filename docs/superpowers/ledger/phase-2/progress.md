@@ -1125,9 +1125,16 @@ Full reasoning in [`task-10/review.md`](task-10/review.md),
 
 ## Pause state
 
-**2026-09-04 — Task 16 built, reviewed, fixed and verified on `feat/phase-2-task-16-auth-screens`.
-It is NOT merged, NOT pushed, and CI has not seen it.** That is the difference between this pause
-and Task 15's, and it is the first thing to check rather than assume.
+**2026-09-07 — Task 16 is MERGED into `main` (PR #35, merge commit `07ba969`), CI is green on
+`main` itself (run `34090908888`), and the operator has driven all six screens through a browser
+against a running API.** Task 16 is **Implemented**. Task 17 is next.
+
+**The merge was a rebase, not a fast-forward**, so the commits on `main` are new objects and the
+tree CI verified on the PR is not the tree on `main`. That is why `main`'s own push-triggered run
+was waited for rather than the PR's green being treated as sufficient — and it came back
+`completed / success`. **Ruling 114 did not bite this time**: `gh pr merge --rebase` went through
+after refusing three consecutive tasks. Do not assume it is fixed; do not assume it will fail
+either.
 
 **This product has an authentication UI for the first time.** The `(auth)` route group carried a
 layout and no routes at all from Phase 1 until this task. It now carries six — `/register`,
@@ -1180,28 +1187,36 @@ subagent's report**: `format:check`, `lint`, `typecheck`, `build` all 0; `pnpm t
 The open redirect was additionally re-verified closed by the orchestrator against an attack corpus,
 not by reading the diff.
 
-**TWO THINGS THE TASK'S OWN VERIFY LINE REQUIRES HAVE NOT HAPPENED, AND A GREEN SUITE DOES NOT
-CLOSE EITHER.** No human has loaded these screens in a browser — the Phase 1 note that five of the
-eight `packages/ui` primitives have never been painted is **still open**, and contrast, spacing,
-focus-ring visibility and dark mode are exactly what every test here is blind to. And no form has
-talked to a running API; neither suite has one behind it. **Task 16 is therefore Partially
-Implemented, not Implemented**, and the phase's E2E journey criterion remains unmet.
+**BOTH OF THE TASK'S OUTSTANDING VERIFY ITEMS ARE NOW CLOSED, AND ONE DISTINCTION SURVIVES THEM.**
+On 2026-09-07 the operator registered, confirmed the address, signed in, completed a **real TOTP
+challenge at `/login/mfa`**, and ran a password reset end to end — all six screens, against
+`apps/api` with Postgres, Redis and Mailpit behind it. That closed the browser pass and Phase 1's
+note that five `packages/ui` primitives had never been painted, and it falsified "no form has
+talked to a running API".
+
+**What survives is narrower and must not be blurred: no *automated* test exercises that round
+trip.** Neither Vitest nor Playwright has an API behind it. **The phase's "full authentication
+journey passes E2E" exit criterion is therefore still unmet** and is Task 18's. A manual pass
+proves the product works; it does not survive the next commit.
 
 *No commit count is written here, deliberately* — ruling 108. Run `git rev-list --count main..HEAD`.
 
-**Next action, in this order.**
+**Next action: Task 17 — the app shell, the organisation switcher and `/settings/security`.**
 
-1. **A human loads the six screens in a browser.** It is the cheapest outstanding item and the only
-   one nothing on the branch can do. Do it before Task 17 builds more on top of these primitives.
-2. **Push the branch and get CI green**, then merge. **Expect ruling 114 to stop you**: `gh pr
-   merge` has been refused by the permission classifier for four consecutive tasks now, and the
-   workaround is a local `git merge --ff-only` plus `git push origin main`. A scoped
-   `Bash(gh pr merge:*)` rule would end it and is the operator's call.
-3. **Task 17 — the app shell, the organisation switcher and `/settings/security`.** It is the
-   natural owner of the session-expiry redirect-back, which Task 16 built and tested as a mechanism
-   with no caller: `isSessionExpiry` and `loginHrefForDestination` exist and `/login` honours
-   `next`, but nothing invokes the first because there is no authenticated screen to be expired out
-   of yet.
+It is the natural owner of the **session-expiry redirect-back**, which Task 16 built and tested as
+a mechanism with no caller: `isSessionExpiry` and `loginHrefForDestination` exist and `/login`
+honours `next`, but nothing invokes the first because there is no authenticated screen to be
+expired out of yet.
+
+It is also the owner of **`/mfa/enroll`**, and the browser pass made that gap concrete rather than
+theoretical: enrolling the demo factor required calling `POST /auth/mfa/enroll` and
+`/auth/mfa/confirm` directly, because **no screen can enrol MFA today**. The endpoints work; there
+is no way to reach them from the product.
+
+**Two dev accounts exist in the local database from that pass** — `mfa-demo@sentinel.local` and
+`mfa-demo2@sentinel.local`, the second with a live TOTP factor and ten recovery codes. They are
+local-only, they are not seeded, and `pnpm db:seed` does not create them: a fresh clone will not
+have them and should not expect them.
 
 **Still open and older than this task: Task 15's `OWNER` invitation window.** An invitation
 offering `OWNER` survives its issuer's removal and still mints an `OWNER`. It remains the highest-
