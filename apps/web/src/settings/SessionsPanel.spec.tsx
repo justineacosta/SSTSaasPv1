@@ -1,8 +1,22 @@
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
-import { pendingClient, renderApp, stubClient, type RecordedRequest } from '../app/render-helpers';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  pendingClient,
+  renderApp,
+  stubClient,
+  testQueryClient,
+  type RecordedRequest,
+} from '../app/render-helpers';
 import { SessionsPanel } from './SessionsPanel';
+
+const router = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn() }));
+vi.mock('next/navigation', () => ({ useRouter: () => router }));
+
+beforeEach(() => {
+  router.push.mockClear();
+  router.replace.mockClear();
+});
 
 const CURRENT = 'ses_01M0T74WZZFY9T2QS56RGF3GQ7';
 const OTHER = 'ses_01M0T74WZZFY9T2QS56RGF3GQ8';
@@ -118,6 +132,56 @@ describe('SessionsPanel — revoking', () => {
         ),
       ).toBe(true);
     });
+  });
+
+  it('SIGNS THE USER OUT IN THE BROWSER when the revoked row is the CURRENT session', async () => {
+    // REVIEW FINDING C-2. The API clears both cookies for this case —
+    // `auth.controller.ts` justifies allowing it on the grounds that "the end
+    // state is one this API already produces — it is `POST /auth/logout` by
+    // another route". Before this fix the panel only invalidated its own query
+    // key, so the refetch 401'd and the user read "Your sessions could not be
+    // loaded" while the shell went on rendering signed-in chrome. The old
+    // ':123' test asserted the button's LABEL, not the outcome; this asserts
+    // the outcome.
+    const queryClient = testQueryClient();
+    queryClient.setQueryData(['some-other-screen'], { rows: ['data from this session'] });
+
+    const { client } = stubClient(
+      responder([
+        row(CURRENT, true, 'Firefox on Linux', '203.0.113.9'),
+        row(OTHER, false, 'Safari on iOS', '198.51.100.4'),
+      ]),
+    );
+    renderApp(<SessionsPanel />, client, queryClient);
+
+    await screen.findByText('Firefox on Linux');
+    await userEvent.click(screen.getByRole('button', { name: 'Sign out this device' }));
+
+    // The same two things `AppShell`'s own sign-out does, in the same order.
+    await waitFor(() => {
+      expect(router.replace).toHaveBeenCalledWith('/login');
+    });
+    expect(queryClient.getQueryData(['some-other-screen'])).toBeUndefined();
+  });
+
+  it('does NOT sign the browser out when the revoked row is another device', async () => {
+    // The other half, and the one that would break if the fix keyed on "a
+    // revocation succeeded" rather than on "the revoked row was this session".
+    const { client } = stubClient(
+      responder([
+        row(CURRENT, true, 'Firefox on Linux', '203.0.113.9'),
+        row(OTHER, false, 'Safari on iOS', '198.51.100.4'),
+      ]),
+    );
+    renderApp(<SessionsPanel />, client);
+
+    await screen.findByText('Safari on iOS');
+    await userEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Safari on iOS')).toBeInTheDocument();
+    });
+    expect(router.replace).not.toHaveBeenCalled();
   });
 
   it('labels the current session differently, so it is not signed out by accident', async () => {

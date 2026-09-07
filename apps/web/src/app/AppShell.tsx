@@ -10,6 +10,7 @@ import { useApiClient } from '../api/provider';
 import { isSessionExpiry, loginHrefForDestination } from '../api/redirect';
 import { OrganizationSwitcher } from './OrganizationSwitcher';
 import { SessionContextProvider, useSessionQuery } from './session-context';
+import { signOutLocally } from './sign-out';
 
 /**
  * The navigation the shell draws once — and only once — the permission set is
@@ -159,12 +160,11 @@ function ShellHeader(): ReactNode {
               try {
                 await logout(client);
               } finally {
-                // The cache is cleared whether or not the request succeeded.
-                // Leaving one user's cached data in memory after a sign-out is
-                // the same failure the organisation switch clears it for, and
-                // a failed logout is exactly when it matters most.
-                queryClient.clear();
-                router.replace('/login');
+                // The cache is cleared whether or not the request succeeded,
+                // and the reasoning lives in `signOutLocally` because
+                // `SessionsPanel` makes the same call for a self-targeted
+                // revocation (review finding C-2).
+                signOutLocally(queryClient, router);
               }
             })();
           }}
