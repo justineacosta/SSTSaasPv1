@@ -56,7 +56,8 @@ export default function AppOverviewPage(): ReactNode {
             >
               Security
             </Link>
-            . Invite people, change their roles and remove them on{' '}
+            . Managing who belongs to this organisation — inviting, removing and changing roles, for
+            those who hold organization.manage_members — is on{' '}
             <Link
               href="/settings/members"
               className="text-[var(--color-accent)] underline underline-offset-2"

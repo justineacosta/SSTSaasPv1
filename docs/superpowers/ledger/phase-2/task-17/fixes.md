@@ -229,3 +229,54 @@ tree to stay mounted.
 | none | 13 passed | 0 |
 
 `pnpm vitest run --project ui apps/web/src` with the fix in place: **12 files / 106 tests, exit 0**.
+
+---
+
+## C-5 — a 403 on `/settings/members` is a Permission state, not an error state
+
+### The tests came first
+
+Four added to `apps/web/src/settings/MembersScreen.spec.tsx` under
+`a 403 is a PERMISSION state, not an error state (review C-5)`, against a stub that answers **403
+`PERMISSION_DENIED`** to every call — which is exactly what `memberships.controller.ts:84` and
+`invitations.controller.ts:211` do for a member without `organization.manage_members`:
+
+1. both lists name the missing permission and who can grant it;
+2. the words "Try reloading the page" and "could not be loaded" are **absent**;
+3. "You can see who belongs to this organisation" is **absent**;
+4. a failure that is **not** a 403 still renders the error state, and no permission state.
+
+First run: `Tests 3 failed | 10 passed (13)`, exit 1. (The fourth was already green — the error
+branch existed; what did not exist was the discrimination.)
+
+### The fix
+
+`apps/web/src/api/errors.ts` — new `isPermissionDenied(error)`: `error instanceof ApiError &&
+error.status === 403`. Keyed on the **HTTP status, not the error code**, because `toApiError` falls
+back to `INTERNAL_ERROR` for a 403 whose body it cannot parse and that is still a refusal. Its
+docblock carries the same "this is not a permission check, it reads a refusal the server already
+made" warning `usePermission` does.
+
+`apps/web/src/settings/MembersScreen.tsx`:
+
+- `members.isError` split into a **Permission** branch (`Alert variant="info"`, `data-testid="members-permission-state"`) and the existing **Error** branch. Same for `invitations.isError`.
+- The foot-of-card paragraph's `!canManageMembers` sentence lost its false opening clause. It read
+  "You can see who belongs to this organisation. Inviting, removing and changing roles need
+  organization.manage_members, which an owner or admin can grant." It now reads "Inviting, removing
+  and changing roles need organization.manage_members, which an owner or admin can grant." — the
+  half that is true of that caller.
+
+`apps/web/app/(app)/dashboard/page.tsx` — the review folded this in: the dashboard told **every**
+user "Invite people, change their roles and remove them on Members", including the ones the API
+refuses. It now reads "Managing who belongs to this organisation — inviting, removing and changing
+roles, for those who hold organization.manage_members — is on Members." No test asserted the old
+sentence (`grep` across all `.ts`/`.tsx` outside `node_modules` and `.next`: nothing).
+
+### The mutation
+
+| Mutation | Result | Exit |
+|---|---|---|
+| **M4** — fold the 403 back into the single undiscriminated `isError` branch | **3 failed / 10 passed** — the three new 403 tests | 1 |
+| none | 13 passed | 0 |
+
+`pnpm vitest run --project ui apps/web/src`: **12 files / 110 tests, exit 0**. `pnpm lint`: exit 0.

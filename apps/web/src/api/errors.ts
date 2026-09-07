@@ -101,3 +101,28 @@ export function toApiError(status: number, body: unknown): ApiError {
     fieldErrors: readFieldErrors(error.details),
   });
 }
+
+/**
+ * Whether a failure is the server saying "you may not", as opposed to "that did
+ * not work".
+ *
+ * Review finding C-5: `/settings/members` rendered a 403 through the same
+ * branch as a dropped connection, so a member without
+ * `organization.manage_members` was told "The member list could not be loaded.
+ * Try reloading the page." Reloading produces the identical 403 forever, and
+ * `architecture/frontend.md` §6 asks for a permission state that "explains the
+ * missing permission rather than showing a blank page" — a different state,
+ * with different advice, reached from a different branch.
+ *
+ * The HTTP status is what is checked, not the error code: a 403 that arrived
+ * without a parseable envelope — `toApiError` falls back to `INTERNAL_ERROR`
+ * for a body it cannot read — is still a refusal, and treating that as a
+ * transient failure is the bug this exists to prevent.
+ *
+ * **This is not a permission check.** It reads a refusal the server has already
+ * made; it never decides one. `usePermission` and `<Can>` carry the same
+ * warning for the same reason.
+ */
+export function isPermissionDenied(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 403;
+}

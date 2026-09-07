@@ -21,6 +21,7 @@ import {
   revokeInvitation,
   updateMemberRole,
 } from '../api/organization-endpoints';
+import { isPermissionDenied } from '../api/errors';
 import { useApiClient } from '../api/provider';
 import { FormErrorRegion } from '../auth/AuthCard';
 import { applyServerErrors, type FormFailure } from '../auth/server-errors';
@@ -146,7 +147,23 @@ function MemberList({ organizationId }: { organizationId: string }): ReactNode {
         </div>
       ) : null}
 
-      {members.isError ? (
+      {/* §6's PERMISSION state, and it is a different state from the error one
+          below. Review finding C-5: this list route carries
+          `@RequirePermission('organization.manage_members')`, so a member
+          without it gets a 403 every time — "try reloading" is advice that
+          cannot work, and the paragraph at the foot of this card used to tell
+          the same user they could see who belongs to the organisation. §5:
+          say what is missing and who can grant it. */}
+      {members.isError && isPermissionDenied(members.error) ? (
+        <Alert variant="info">
+          <span data-testid="members-permission-state">
+            You do not have permission to see who belongs to this organisation. Viewing members
+            needs organization.manage_members, which an owner or admin can grant.
+          </span>
+        </Alert>
+      ) : null}
+
+      {members.isError && !isPermissionDenied(members.error) ? (
         <Alert variant="danger">
           <span>The member list could not be loaded. Try reloading the page.</span>
         </Alert>
@@ -186,13 +203,20 @@ function MemberList({ organizationId }: { organizationId: string }): ReactNode {
         </ul>
       ) : null}
 
-      {/* §6's permission state: explain what is missing rather than showing a
-          page with silently absent controls. */}
+      {/* §6's permission state for the WRITES on this card, which is a
+          different question from whether the read succeeded — the alert above
+          answers that one, from the server's own refusal.
+
+          The `!canManageMembers` sentence used to open with "You can see who
+          belongs to this organisation", which is false: the list it referred to
+          had just answered 403 two lines above it (review finding C-5). The
+          clause is gone; what remains is the part that is true of both
+          branches, which is what the caller cannot do and who can grant it. */}
       {canManageRoles && canManageMembers ? null : (
         <p className="text-[length:var(--text-sm)] leading-[var(--leading-sm)] text-[var(--color-text-muted)]">
           {canManageMembers
             ? 'You can invite and remove members. Changing a role needs organization.manage_roles, which an owner or admin can grant.'
-            : 'You can see who belongs to this organisation. Inviting, removing and changing roles need organization.manage_members, which an owner or admin can grant.'}
+            : 'Inviting, removing and changing roles need organization.manage_members, which an owner or admin can grant.'}
         </p>
       )}
     </Card>
@@ -329,7 +353,16 @@ function InvitationList({ organizationId }: { organizationId: string }): ReactNo
         </div>
       ) : null}
 
-      {invitations.isError ? (
+      {invitations.isError && isPermissionDenied(invitations.error) ? (
+        <Alert variant="info">
+          <span data-testid="invitations-permission-state">
+            You do not have permission to see outstanding invitations. Listing them needs
+            organization.manage_members, which an owner or admin can grant.
+          </span>
+        </Alert>
+      ) : null}
+
+      {invitations.isError && !isPermissionDenied(invitations.error) ? (
         <Alert variant="danger">
           <span>Outstanding invitations could not be loaded.</span>
         </Alert>
