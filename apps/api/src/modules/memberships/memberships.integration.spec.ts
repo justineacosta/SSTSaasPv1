@@ -18,10 +18,8 @@ import { SESSION_COOKIE_NAME } from '../auth/cookies.js';
 import { deriveCsrfToken } from '../auth/csrf-token.js';
 import { hashSecretToken, mintSecretToken } from '../auth/secret-token.js';
 import { PRISMA } from '../../infrastructure/tokens.js';
-import {
-  INVITATION_REVOCATION_CASCADE,
-  type InvitationRevocationCascade,
-} from './memberships.tokens.js';
+import type { InvitationRevocationCascade } from '../invitations/invitation-revocation.cascade.js';
+import { INVITATION_REVOCATION_CASCADE } from './memberships.tokens.js';
 
 /**
  * THE THREE MEMBERSHIP ROUTES AND `GET /api/v1/roles`, AGAINST REAL ROW-LEVEL

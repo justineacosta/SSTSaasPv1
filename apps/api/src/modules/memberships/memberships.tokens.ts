@@ -33,3 +33,29 @@ export const MEMBER_SESSION_REVOKER = 'SENTINEL_MEMBER_SESSION_REVOKER';
 export interface MemberSessionRevoker {
   (userId: string, organizationId: string): Promise<number>;
 }
+
+/**
+ * "Revoke the live invitations this member issued that they could no longer
+ * issue now, inside this transaction."
+ *
+ * ADR-0026. `MembershipService` is the only consumer, and it is handed one
+ * function over the transaction handle rather than `InvitationService` — which
+ * could invite, list, revoke by id or accept. The discipline is
+ * {@link MEMBER_SESSION_REVOKER}'s above, and the reason is sharper here than
+ * usual: this is a second module writing to `Invitation`, a table another
+ * module owns, and ADR-0026 records that coupling as a real cost. A port whose
+ * type is a single function is the narrowest form that coupling can take.
+ *
+ * **The interface lives with the implementation rather than beside this
+ * constant**, which is the one place this file departs from
+ * {@link MEMBER_SESSION_REVOKER}'s shape. `InvitationRevocationCascade` is
+ * declared in `invitations/invitation-revocation.cascade.ts` because that file
+ * must import nothing from `memberships/` — `invitation.service.ts` imports
+ * `membership.service.ts`, so an import in the other direction from anything
+ * `membership.service.ts` can reach is an ES module cycle, and a cycle in ESM
+ * does not always fail loudly. `membership.service.ts` takes the type with
+ * `import type`, which TypeScript erases, so there is no runtime edge from
+ * `memberships/` into `invitations/` at all. The provider factory is in
+ * `memberships.module.ts` alongside the session revoker's.
+ */
+export const INVITATION_REVOCATION_CASCADE = 'SENTINEL_INVITATION_REVOCATION_CASCADE';

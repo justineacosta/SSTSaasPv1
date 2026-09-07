@@ -15,9 +15,14 @@ import { DomainError } from '../../common/errors/domain-error.js';
 import { AuditService } from '../audit/audit.service.js';
 import type { AuthRequestContext } from '../auth/request-context.js';
 import { PRISMA } from '../../infrastructure/tokens.js';
+import type { InvitationRevocationCascade } from '../invitations/invitation-revocation.cascade.js';
 import { encodeListCursor, type ListCursor } from '../organizations/list-cursor.js';
 import { assertPathIsActiveTenant, notFound } from '../organizations/organization.service.js';
-import { MEMBER_SESSION_REVOKER, type MemberSessionRevoker } from './memberships.tokens.js';
+import {
+  INVITATION_REVOCATION_CASCADE,
+  MEMBER_SESSION_REVOKER,
+  type MemberSessionRevoker,
+} from './memberships.tokens.js';
 
 /**
  * The base Prisma client, named through the function that consumes it.
@@ -389,6 +394,8 @@ export class MembershipService {
     @Inject(PRISMA) private readonly base: TenantTransactionBase,
     @Inject(AuditService) private readonly audit: AuditService,
     @Inject(MEMBER_SESSION_REVOKER) private readonly revokeSessions: MemberSessionRevoker,
+    @Inject(INVITATION_REVOCATION_CASCADE)
+    private readonly revokeIssuedInvitations: InvitationRevocationCascade,
   ) {}
 
   /**
@@ -523,10 +530,8 @@ export class MembershipService {
         },
       });
 
-      assertActorMayGrant(
-        ctx,
-        granted.permissions.map((grant) => grant.permission.key),
-      );
+      const grantedPermissions = granted.permissions.map((grant) => grant.permission.key);
+      assertActorMayGrant(ctx, grantedPermissions);
 
       await assertOrganizationKeepsAnOwner(tx, ctx.organizationId, {
         membershipId,
@@ -566,6 +571,32 @@ export class MembershipService {
           after: command.roleKey,
           memberUserId: membership.userId,
         },
+        ip: command.ip,
+        userAgent: command.userAgent,
+        requestId: command.requestId,
+      });
+
+      // ADR-0026 §2 — THE INVITATIONS THIS MEMBER COULD NO LONGER ISSUE GO
+      // WITH THE AUTHORITY, IN THIS TRANSACTION.
+      //
+      // D5 refuses a role the actor cannot mint; an invitation is the durable
+      // artefact that check produces, and something has to invalidate the
+      // artefact when the authority behind it moves (carry-forward ruling 130).
+      // `OWNER` → `MEMBER` therefore takes their pending `OWNER` and `ADMIN`
+      // invitations and leaves a pending `MEMBER` one alone, because they could
+      // still issue that today.
+      //
+      // **`grantedPermissions` is the read this method already did for its own
+      // D5 check**, reused rather than re-issued: the rule that revokes and the
+      // rule that refuses must come from one set of seeded rows or they are two
+      // models of authority. A promotion revokes nothing, because the subset
+      // test passes.
+      await this.revokeIssuedInvitations(tx, {
+        organizationId: ctx.organizationId,
+        issuerUserId: membership.userId,
+        actorUserId: command.actorUserId,
+        reason: 'ISSUER_DEMOTED',
+        retainedPermissions: new Set(grantedPermissions),
         ip: command.ip,
         userAgent: command.userAgent,
         requestId: command.requestId,
@@ -665,6 +696,30 @@ export class MembershipService {
           after: null,
           memberUserId: membership.userId,
         },
+        ip: command.ip,
+        userAgent: command.userAgent,
+        requestId: command.requestId,
+      });
+
+      // ADR-0026 §1 — EVERY LIVE INVITATION THEY ISSUED, UNCONDITIONALLY.
+      //
+      // `retainedPermissions: null` is the whole difference from `updateRole`
+      // above, and it is deliberate rather than a shortcut. A removed member
+      // holds no role at all, so the honest input is "do not compare"; a
+      // predicate that derived the empty set from the seeded rows would
+      // silently stop revoking the day a role with no permissions is seeded.
+      //
+      // It is inside this transaction, after the soft delete and its event, so
+      // the removal and the revocations it causes commit or roll back together
+      // — `CLAUDE.md` rule 10. The session revocation below is the one part
+      // that is deliberately outside, for the reason this class's docblock
+      // gives.
+      await this.revokeIssuedInvitations(tx, {
+        organizationId: ctx.organizationId,
+        issuerUserId: membership.userId,
+        actorUserId: command.actorUserId,
+        reason: 'ISSUER_REMOVED',
+        retainedPermissions: null,
         ip: command.ip,
         userAgent: command.userAgent,
         requestId: command.requestId,
