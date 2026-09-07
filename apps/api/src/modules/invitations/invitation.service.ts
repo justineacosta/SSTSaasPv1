@@ -229,10 +229,11 @@ const ROUTE_PERMISSION = 'organization.manage_members' satisfies Permission;
  * is small.
  *
  * So the route's declared permission is asserted against the live set as well.
- * `ROUTE_PERMISSION` is the same string `@RequirePermissions` puts on the
+ * `ROUTE_PERMISSION` is the same string `@RequirePermission` puts on the
  * controller method — the two are not derived from one another, and the test
- * `an actor demoted out of `organization.manage_members` mid-flight is refused`
- * is what holds them together.
+ * `refuses an actor demoted out of organization.manage_members, even for a role they could grant`
+ * is what holds them together. Cited by its exact name, on one line, with a
+ * straight apostrophe if it ever grows one (ruling 129).
  *
  * # WHAT IS STILL NOT RE-READ, AND IT IS DELIBERATE
  *
@@ -825,8 +826,8 @@ export class InvitationService {
    *    invitations that member issued and could no longer issue, in the same
    *    transaction as the removal or demotion, so an invitation offering
    *    `OWNER` does not survive its issuer's authority. Pinned by
-   *    `D9 — CLOSED BY ADR-0026: an invitation does NOT outlive its issuer's
-   *    authority` in `invitations.integration.spec.ts` and by
+   *    `D9 — CLOSED BY ADR-0026: an invitation does NOT outlive its issuer's authority`
+   *    in `invitations.integration.spec.ts` and by
    *    `the invitation cascade on a membership write (ADR-0026)` in
    *    `memberships.integration.spec.ts` — cited by their exact names, because
    *    the first version of this line paraphrased its test and a grep for the

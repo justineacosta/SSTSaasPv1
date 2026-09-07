@@ -1774,7 +1774,14 @@ describe('POST /api/v1/invitations/accept — concurrency and D9', () => {
     ).toBe(1);
   });
 
-  it('D9 — CLOSED BY ADR-0026: an invitation does NOT outlive its issuer’s authority', async () => {
+  // THE NAME CARRIES A STRAIGHT APOSTROPHE (U+0027) ON PURPOSE. Ruling 129 and
+  // the D9 review's Finding 1: this test was cited from three other files, and
+  // every one of those citations typed `'` while the name held `’`, so a grep
+  // for any of them exited 1 and a reader concluded the guarantee was unpinned.
+  // A test name nobody can grep for is not a citation. The double quotes are
+  // Prettier's doing, not a style choice — `singleQuote` picks whichever quote
+  // needs fewer escapes.
+  it("D9 — CLOSED BY ADR-0026: an invitation does NOT outlive its issuer's authority", async () => {
     // **THIS TEST PINNED A DEFECT AND NOW PINS A GUARANTEE**, and the rewrite
     // is the record that the window was closed deliberately rather than
     // drifting shut. Until ADR-0026 it was named
@@ -2178,7 +2185,7 @@ describe('POST /api/v1/organizations/:id/invitations — the actor’s authority
  * which the racing request has by definition already got past, because
  * `TenantContextGuard` ran before the removal committed.
  */
-describe('POST /api/v1/organizations/:id/invitations — a create racing its own issuer’s removal (ADR-0026 §3)', () => {
+describe("POST /api/v1/organizations/:id/invitations — a create racing its own issuer's removal (ADR-0026 §3)", () => {
   it('BLOCKS while another session holds FOR NO KEY UPDATE on the organisation row, and is refused once that removal commits', async () => {
     await clearRateLimits(harness.redis);
     const home = await acting('OWNER');

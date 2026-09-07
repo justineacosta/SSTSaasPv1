@@ -271,3 +271,85 @@ what distinguishes them.
 $ npx vitest run --project integration --no-file-parallelism memberships.integration.spec.ts
 EXIT=0   Test Files 1 passed (1)   Tests 43 passed (43)
 ```
+
+### Entry 6 — Findings 1, 2, 3, 7: the prose that was wrong
+
+**Finding 1 — the citation nobody could grep for.** The test was named with U+2019
+(`issuer’s`) and cited from three other files with U+0027 (`issuer's`), so a grep for any
+citation exited 1. The line had been rewritten in the previous round *to fix* a ruling-129
+defect and reintroduced it.
+
+The test now carries a **straight** apostrophe. Prettier switched the `it(...)` to double
+quotes on its own, which is `singleQuote` picking the quote that needs fewer escapes, not a
+style choice — that is said in a comment above the test so nobody "fixes" it back. Every
+citation was rewritten to match exactly, and each was reflowed onto **one line**, because a
+name broken across two comment lines is not greppable either.
+
+The greps, with their exit codes, from the repository root:
+
+```
+$ grep -rn "an invitation does NOT outlive its issuer's authority" apps/api/src --include=*.ts
+invitation-revocation.cascade.ts:107   (docblock citation)
+invitation.service.ts:829              (accept's docblock)
+invitations.integration.spec.ts:1784   (the test itself)
+memberships.integration.spec.ts:1051   (the cascade block's docblock)
+exit=0
+
+$ grep -rn "outlive its issuer’s" apps/api/src --include=*.ts        # the curly spelling
+exit=1
+
+$ grep -rn "the invitation cascade on a membership write (ADR-0026)" apps/api/src --include=*.ts
+invitation.service.ts:831, invitations.integration.spec.ts:1797, memberships.integration.spec.ts:1061
+exit=0
+
+$ grep -rn "refuses an actor demoted out of organization.manage_members, even for a role they could grant" apps/api/src --include=*.ts
+invitation.service.ts:234, invitations.integration.spec.ts:2074
+exit=0
+
+$ grep -rn "a create racing its own issuer's removal (ADR-0026 §3)" apps/api/src --include=*.ts
+invitations.integration.spec.ts:2188
+exit=0
+```
+
+Two of those are citations **this round** introduced, and one of them was wrong when I wrote
+it: `actorAuthority`'s new docblock cited a test called `an actor demoted out of
+organization.manage_members mid-flight is refused`, which is not the name I gave the test.
+Caught by running the grep rather than by reading it back. It also said `@RequirePermissions`
+where the decorator is `@RequirePermission`. Both corrected. The new `describe` this round
+added carries a straight apostrophe for the same reason.
+
+`roadmap.md`'s two broken citations are the orchestrator's, per the brief, and are untouched.
+
+**Finding 2 — the count.** `grep -rn '\.\.\.LIVE_INVITATION' apps/api/src --include=*.ts | wc -l`
+gives **7**: two in `create` (the supersession's read and its write), two in `revoke`, one in
+`accept`, two in the cascade. Seven literals across four methods. The docblock said "three",
+then "four" — the *method* counts at two moments — while the words it uses are "inline object
+literals". It now states the seven, says where they are, and records that the figure was
+incremented rather than measured (ruling 108).
+
+**Finding 3 — the runtime edge that exists.** `memberships.tokens.ts` said there is "no runtime
+edge from `memberships/` into `invitations/` **at all**". There is exactly one:
+`memberships.module.ts:6-9` imports `invitationRevocationCascade`, a value. The docblock now
+says the *service* carries no runtime edge, names the module's factory as the one that does, and
+states the claim that is both true and sufficient — that no **cycle** exists, because nothing in
+`invitations/` imports `memberships.module.ts`.
+
+**Finding 7 — the layer that actually neutralises mutation 3.** Verified before writing it:
+`TENANT_OWNED_MODELS` is `['Membership', 'Invitation', 'AuditEvent']`
+(`packages/db/src/tenant-resources.ts:12`), `findMany` is in `SCOPED_WHERE_MANY_OPERATIONS`
+(`tenant-scope.ts:27`) and `updateMany` in `SCOPED_WHERE_AND_DATA_MANY_OPERATIONS` (`:35`). So
+layer 1 — the tenant-scoping extension — injects `organizationId` back into the `where` before
+the statement is issued; it never reaches Postgres without it, and RLS is the second line rather
+than the first. `d9-report.md`'s mutation-3 cell is corrected in place, marked as a correction
+rather than silently rewritten. The code comment in the cascade already had this right.
+
+**Also corrected in `d9-report.md`:** the claim "I grepped for my own citations afterwards and
+both resolve". It is false and it is the claim the review called Phase 1's recurring defect
+class reappearing inside the document written to prevent it. Marked as a correction, with the
+grep that exited 1.
+
+```
+$ npx vitest run --project integration --no-file-parallelism \
+    invitations.integration.spec.ts memberships.integration.spec.ts
+EXIT=0   Test Files 2 passed (2)   Tests 81 passed (81)
+```

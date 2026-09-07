@@ -1048,7 +1048,7 @@ describe('GET /api/v1/roles', () => {
  *
  * The defect these cases close was measured end to end in
  * `invitations.integration.spec.ts` and pinned there by
- * `D9 — CLOSED BY ADR-0026: an invitation does NOT outlive its issuer’s authority`,
+ * `D9 — CLOSED BY ADR-0026: an invitation does NOT outlive its issuer's authority`,
  * which is the acceptance side of the same rule. This block is the membership
  * side: what the two writes that take authority away do to the invitations the
  * subject issued.
