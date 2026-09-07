@@ -59,7 +59,10 @@ type HandlerName =
   | 'mfaConfirm'
   | 'mfaDisable'
   | 'mfaRecoveryCodes'
-  | 'switchOrganization';
+  | 'switchOrganization'
+  | 'listSessions'
+  | 'revokeOtherSessions'
+  | 'revokeSession';
 
 /**
  * A handler read off the prototype as a REFLECTION TARGET, never to be called.
