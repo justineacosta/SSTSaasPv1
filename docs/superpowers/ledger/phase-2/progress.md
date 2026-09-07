@@ -26,6 +26,7 @@ Branch: `feat/phase-2-identity`
 | 13 | Organisations and organisation switching | subagent + fresh reviewer | **Done** — [brief](task-13/brief.md) · [report](task-13/report.md) · [review](task-13/review.md) · [fixes](task-13/fixes.md) |
 | 14 | Memberships, roles, last-owner invariant | subagent + fresh reviewer + fix round | **Done** — [brief](task-14/brief.md) · [report](task-14/report.md) · [review](task-14/review.md) · [dispositions](task-14/fix-brief.md) · [fixes](task-14/fixes.md) |
 | 15 | Invitations | subagent + fresh reviewer + fix round | **Done** — [brief](task-15/brief.md) · [report](task-15/report.md) · [review](task-15/review.md) · [dispositions](task-15/fix-brief.md) |
+| 15·D9 | The D9 window — an invitation outliving its issuer's authority | orchestrator ADR + implementer + fresh reviewer + fixer, 2026-09-08 | **Done** — [brief](task-15/d9-brief.md) · [report](task-15/d9-report.md) · [review-brief](task-15/d9-review-brief.md) · [review](task-15/d9-review.md) · [dispositions](task-15/d9-fix-brief.md) · [fixes](task-15/d9-fixes.md) |
 | 16 | Web — authentication screens | subagent + fresh reviewer + fix round | **Done** — [brief](task-16/brief.md) · [report](task-16/report.md) · [review-brief](task-16/review-brief.md) · [review](task-16/review.md) · [dispositions](task-16/fix-brief.md) · [fixes](task-16/fixes.md) |
 | 17 | Web — app shell, org switcher, `/settings/security` | subagent + 2 reviewers + fix round | **Done** — [brief](task-17/brief.md) · [report](task-17/report.md) · [review-brief](task-17/review-brief.md) · [review](task-17/review.md) · [dispositions](task-17/fix-brief.md) · [fixes](task-17/fixes.md) |
 | 18 | E2E journey, doc audit, ADR sweep, roadmap | orchestrator | Not started |
@@ -1183,6 +1184,44 @@ Full reasoning in [`task-10/review.md`](task-10/review.md),
      true of Redis, **false of Postgres**, where it is one `tx` parameter. **The deviation stands;
      the overstatement does not.**
 
+### From the Task 15 D9 fix round
+
+144. **A re-read is not a lock, and citing the ruling you are about to break does not help.**
+     ADR-0026 §3 asserted that re-resolving the actor's authority inside `create`'s transaction
+     closed the in-flight race — and cited rulings 82 and 122 by number while asserting it. The
+     adversarial review reproduced the escalation anyway, end to end through the real routes, to a
+     201 minting an `OWNER`. `withTenantTransaction` passes no `isolationLevel`, so a non-locking
+     `findFirst` under READ COMMITTED neither waits for nor sees another transaction's uncommitted
+     `UPDATE`. **When the remedy for a check-then-act race is "read it again inside the
+     transaction", ask what makes the second read wait.** If nothing does, it is the same check in
+     a different place. The fix was `lockOrganization`, which three neighbouring writes already
+     took.
+
+145. **Do not rewrite the warnings before the fix is measured.** Six documents were rewritten to
+     say the D9 window was closed, and the test named to warn about it was renamed from
+     `RECORDS AN OPEN WINDOW` to `CLOSED BY ADR-0026`, while the escalation was still reproducible.
+     The rename destroyed the one artefact that would have told the next reader the window was
+     open, and the review — not the tests, not the six green commands — is the only thing that
+     caught it. **Rename a warning test in the commit that proves the warning obsolete, never in
+     the commit that intends to make it obsolete.**
+
+146. **A property asserted in four places and distinguished by no test is a preference, not a
+     property.** "A set comparison, never a ranking" appeared in ADR-0026, two docblocks and a test
+     comment. Replacing the subset filter with a permission-count ranking left **78 passed (78)**,
+     because every role change the suite exercised sat on a totally ordered chain. The seeded data
+     held the counterexample all along: `AUDITOR` carries `audit.read` and `billing.read`, which
+     `SECURITY_LEAD` does not, so the two roles are incomparable and the two rules disagree.
+     **When a comment says "X, never Y", find the input that distinguishes them and test it — or
+     delete the sentence.**
+
+147. **Three of this task's four agents died mid-flight; the one that lost work was the one that
+     wrote its document last.** The first implementer hit a session limit having read two files and
+     produced nothing. The fixer died at the verification step with every fix committed and the
+     ledger written — and lost nothing but its own summary. Ruling 131 was written after a
+     reviewer lost a complete review the same way, and this task is its second and third
+     confirmation. **Document first, commit continuously, and the death of an agent costs minutes
+     instead of a session.**
+
 ## Pause state
 
 **2026-09-07 — Task 17 built, reviewed twice, fixed and verified on
@@ -1306,8 +1345,12 @@ between them; the API half has worked since Task 15. Ruling **143**: *a contract
 docblock is not a checklist item until some task's brief lists it, and "the screens that will read
 the token" named no task that was obliged to build them.*
 
-**Still open and older than this task: Task 15's `OWNER`-invitation window**, now three tasks old.
-An invitation offering `OWNER` survives its issuer's removal and still mints an `OWNER`. Its owner
-is whoever next touches `MembershipService.remove` and `updateRole`, and **Task 18 does not touch
-them**, so on the current plan it will still be open when the phase closes. That is a decision to
-make, not a drift to accept.
+**~~Still open and older than this task: Task 15's `OWNER`-invitation window.~~ CLOSED on
+2026-09-08**, in its own round before Task 18, under
+[ADR-0026](../../../../.claude/decisions/ADR-0026-invitations-are-revoked-when-their-issuer-loses-the-authority-to-have-issued-them.md).
+`MembershipService.remove` and `updateRole` revoke the invitations their subject could no longer
+issue, in the same transaction as the change; `InvitationService.create` takes the organisation
+lock and re-resolves the actor's authority inside its own. **The first attempt did not close it and
+said it had** — the review reproduced the escalation against the branch that claimed the fix, which
+is rulings 144 and 145. Read the roadmap's Task 15 section for the current state; read
+[`task-15/d9-review.md`](task-15/d9-review.md) for how it was caught.

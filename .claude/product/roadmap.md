@@ -14,7 +14,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Partially Implemented** — **Tasks 1–17 of 18 done and Implemented**; 1–16 are merged into `main` and Task 17 is verified on `feat/phase-2-task-17-app-shell`, awaiting merge. The identity API is enforced end to end and the product has both halves of its UI: Task 16's six authentication screens and Task 17's authenticated shell, organisation switcher, `/settings/security` and `/settings/members`, plus three session-management routes taking the OpenAPI document to **29 paths**. **The operator has now driven both halves through a browser** — the unauthenticated journey on 2026-09-07 and the authenticated screens the same day, including the organisation switch, which is where Task 17's review found a tenant-isolation defect a green suite could not see: `queryClient.clear()` empties the cache and notifies no mounted observer, so the shell kept rendering the previous organisation until a reload. **Three gaps remain and none is closed by a green suite.** The phase's E2E criterion demands an *automated* journey against a live API — Task 18's, and a manual pass does not satisfy it. **A live invitation email 404s**: `/accept-invitation` was named in Task 5's `TOKEN_LINK_PATHS` as the contract with Task 16's screens and appeared on no task's checklist, so Task 18 must build it before it can write the journey spec its own criterion demands. And **Task 15's `OWNER`-invitation window is still open**, now three tasks old. Evidence table under Phase 2 below |
+| 2 | Identity | **Partially Implemented** — **Tasks 1–17 of 18 done and Implemented**; 1–16 are merged into `main` and Task 17 is verified on `feat/phase-2-task-17-app-shell`, awaiting merge. The identity API is enforced end to end and the product has both halves of its UI: Task 16's six authentication screens and Task 17's authenticated shell, organisation switcher, `/settings/security` and `/settings/members`, plus three session-management routes taking the OpenAPI document to **29 paths**. **The operator has now driven both halves through a browser** — the unauthenticated journey on 2026-09-07 and the authenticated screens the same day, including the organisation switch, which is where Task 17's review found a tenant-isolation defect a green suite could not see: `queryClient.clear()` empties the cache and notifies no mounted observer, so the shell kept rendering the previous organisation until a reload. **Two gaps remain and neither is closed by a green suite.** The phase's E2E criterion demands an *automated* journey against a live API — Task 18's, and a manual pass does not satisfy it. **A live invitation email 404s**: `/accept-invitation` was named in Task 5's `TOKEN_LINK_PATHS` as the contract with Task 16's screens and appeared on no task's checklist, so Task 18 must build it before it can write the journey spec its own criterion demands. Task 15's `OWNER`-invitation window — the third of those gaps — **was closed on 2026-09-08** under ADR-0026, in its own round on `feat/phase-2-task-15-d9-invitation-revocation`, after the adversarial review reproduced the escalation against the first attempt that claimed to have closed it. Evidence table under Phase 2 below |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -2399,45 +2399,105 @@ nothing.** Rulings 55 and 90 are not closed by this task: `generalSession`'s 100
 is still applied to no request. The stage it needs now exists; switching it on is a separate
 decision with its own blast radius.
 
-### The window that was open — CLOSED by ADR-0026, and the record of how
+### The window that was open — closed on 2026-09-08, and the record of how
 
-**An invitation offering `OWNER` survives its issuer being removed, and accepting it still mints an
-`OWNER`.** D5's no-minting check runs when an invitation is created and nowhere else. Measured end
-to end through Task 14's real `DELETE .../members/:membershipId`: the removed owner's invitation is
-still live and the acceptor receives 201 with `roleKey: OWNER`.
+**Everything in this subsection is written in the past tense on purpose.** It described a live
+defect for three tasks; it now describes a closed one, and a reader who meets a present-tense
+sentence here would be misinformed about the current state of the system. The defect is preserved
+rather than deleted because the fix is only legible against it.
 
-This is a re-escalation path for somebody removed precisely to take that authority away, through an
-address they control, and it is carry-forward ruling 124's shape — an authority rule enforced on one
-verb and not on the events that should invalidate its output.
+**What was wrong.** An invitation offering `OWNER` survived its issuer being removed, and accepting
+it still minted an `OWNER`. D5's no-minting check ran when an invitation was created and nowhere
+else. Measured end to end through Task 14's real `DELETE .../members/:membershipId`: the removed
+owner's invitation was still live and the acceptor received 201 with `roleKey: OWNER`. It was a
+re-escalation path for somebody removed precisely to take that authority away, through an address
+they control — carry-forward ruling 124's shape, an authority rule enforced on one verb and not on
+the events that should invalidate its output. It was pinned by
+`D9 — RECORDS AN OPEN WINDOW: an invitation outlives its issuer's authority`, written to fail if
+the behaviour changed silently and named so nobody read it as approval.
 
-**The remedy is on the other side of the transaction**, in `MembershipService.remove` and
-`updateRole`, where the invitations a departing member issued and could no longer issue would be
-revoked in the same transaction as the removal. That is a change to Task 14's writes and it is
-recorded as owed rather than taken here. Re-running `assertActorMayGrant` at accept time instead was
-considered and rejected: it would refuse every invitation from a colleague who has since
-legitimately left, which is a lock-out with no recovery path for the invitee.
-
-It was pinned by `D9 — RECORDS AN OPEN WINDOW: an invitation outlives its issuer's authority`,
-written to fail if the behaviour changed silently and named so nobody read it as approval.
-
-**It is closed.**
+**What closed it.**
 [ADR-0026](../decisions/ADR-0026-invitations-are-revoked-when-their-issuer-loses-the-authority-to-have-issued-them.md)
-took the remedy above — the membership writes revoke the invitations their subject could no longer
-issue, in the same transaction as the change, each with its own `INVITATION_REVOKED` event — and
-added the half the paragraph above did not name: `InvitationService.create` re-resolves the actor's
-own membership and role permissions **inside its transaction**, because
-`TenantContextGuard` reads them before the handler runs and a `create` already in flight when the
-removal commits would otherwise insert a row the cascade had already run past (rulings 82 and 122
-for the third time). Accepting is unchanged, deliberately.
+took the remedy this section had recorded as owed — `MembershipService.remove` revokes every live
+invitation the removed member issued, `updateRole` revokes the ones whose offered role carries a
+permission they no longer hold, both in the same transaction as the change and each with its own
+`INVITATION_REVOKED` event. Accepting is deliberately unchanged: re-running `assertActorMayGrant`
+at accept time was considered and rejected twice, because it refuses every invitation from a
+colleague who has since legitimately left, at the last step, with the invitation still listed as
+live to the organisation's admins and nobody notified.
 
 The pinned test was rewritten into its opposite, which is the record that the window was closed
 deliberately rather than drifting shut: it is now
 `D9 — CLOSED BY ADR-0026: an invitation does NOT outlive its issuer's authority` in
 `invitations.integration.spec.ts`, with the membership side in
 `the invitation cascade on a membership write (ADR-0026)` in `memberships.integration.spec.ts`.
-The cost ADR-0026 accepts and does not pay down: **nothing emails an invitee whose link died**, so
-a colleague who leaves for benign reasons takes their outstanding invitations with them and every
-invitee must be re-invited by somebody else.
+Both names are cited here exactly as the source spells them, with a straight apostrophe, because
+the first attempt at this line used U+2019 and no grep could resolve it — ruling 129, broken twice
+in the same line it exists to protect.
+
+**The half that had to be found by measurement, and the claim that was false while it was being
+made.** ADR-0026 as first accepted said `InvitationService.create` re-resolving the actor's
+authority inside its transaction closed the in-flight race. The adversarial review reproduced the
+original escalation anyway — removal 204, invite 201 `roleKey: OWNER`, accept 201 minting an
+`OWNER` — because **a re-read is not a lock**: `withTenantTransaction` passes no `isolationLevel`,
+so a non-locking `findFirst` under READ COMMITTED neither waits for nor sees another transaction's
+uncommitted `UPDATE`. `create` now takes `lockOrganization` as the first statement in its
+transaction, making it the fourth writer in the set `accept`, `updateRole` and `remove` already
+serialise — the set that can move a member's authority. It also re-checks the route's own
+`organization.manage_members`, so an in-flight `create` by a demoted actor is refused rather than
+landing a weaker invitation. ADR-0026 carries the amendment with the wrong sentence struck through
+rather than deleted.
+
+**The ordering is the lesson, and it is worth more than the fix.** Six documents had already been
+rewritten to say the window was shut, and the test named to warn about it had already been renamed,
+while the escalation was still reproducible. See ruling 144.
+
+**The cost ADR-0026 accepts and does not pay down: nothing emails an invitee whose link died.** A
+colleague who leaves for benign reasons takes their outstanding invitations with them, and every
+invitee who had not yet accepted must be re-invited by somebody else. They discover it by clicking
+a link that refuses like any other dead token.
+
+### The D9 fix round's evidence, 2026-09-08
+
+*Verified by the orchestrator on the fix-round tree at `0006223`, every command re-run rather than
+taken from a subagent's report — the fixer died at its own verification step, so its table was
+treated as unverified. Exit codes captured outside a pipe (`out=$(pnpm <cmd> 2>&1); code=$?`),
+ruling 105.*
+
+| Command | Exit | What it proves |
+|---|---|---|
+| `pnpm format:check` | 0 | Prettier style across the workspace. |
+| `pnpm lint` | 0 | 14 tasks. |
+| `pnpm typecheck` | 0 | 14 tasks. The types compile — and nothing about the race. |
+| `pnpm test` | 0 | **115 files / 1983 tests**, unchanged from Task 17: the whole of this change is integration-tested, because a lock is not observable in a unit test. |
+| `pnpm check:specs` | 0 | **144 spec files**, each claimed by exactly one Vitest project. |
+| `pnpm test:integration` | 0 | **29 files / 558 tests**, up from 544 at Task 17. The 14 new tests are the cascade's nine, the actor re-read's three, the race detector and the freed slot. |
+| `pnpm build` | 0 | 8 tasks. |
+| `pnpm check:openapi` | 0 | **29 paths**, unchanged — the tripwire proving this added no endpoint. |
+| `pnpm check:registry` | 0 | **15 models**, unchanged. |
+| `pnpm check:secrets` | 0 | 523 tracked files, no credential-shaped literals. |
+| `docker compose ps` | — | Four services healthy. |
+
+**`pnpm test:e2e` was not run and has no row.** Nothing under `apps/web`, `packages/ui`,
+`packages/config` or the middleware is touched by this change; the diff is `apps/api` and `.claude/`
+only. It is named here rather than silently omitted.
+
+**What the table licenses and nothing more.** The cascade holds under a real Postgres, and the race
+detector proves `create` serialises behind a holder of the organisation lock and is refused once
+the removal commits. It does **not** prove the absence of every ordering: the review's original
+probe widened the window artificially to demonstrate the defect, and no test measures the unaided
+hit rate of a race that the lock now forbids.
+
+### Still owed after the D9 round
+
+- **Nothing emails an invitee whose link died.** ADR-0026's principal accepted cost, restated here
+  because it is a product gap somebody will eventually be asked about.
+- **`create` does not re-check organisation suspension inside its transaction**, only the actor's
+  live membership and their `organization.manage_members`. `accept` does check suspension. The gap
+  is one request wide and is recorded rather than closed.
+- **`MembershipStatus.INVITED` still has no producer**, so `actorAuthority`'s implicit reliance on
+  a membership row being live rather than `ACTIVE` is unreachable today. It becomes reachable the
+  day something writes that status.
 
 ### What the adversarial review found, and what it cost
 
@@ -2708,9 +2768,9 @@ reader to ask which half mattered — but it is an untested line, not a covered 
   specs, but nothing automated has audited them.
 - **No bundle budget covers the two new runtime dependencies.** `architecture/frontend.md` §7
   requires budgets enforced in CI, and §7 remains Not Implemented.
-- Carried forward untouched: **Task 15's open D9 window** — an invitation offering `OWNER` still
-  survives its issuer's removal — which remains the highest-value security item in this phase and
-  whose owner is whoever next touches `MembershipService.remove` and `updateRole`.
+- ~~Carried forward untouched: **Task 15's open D9 window**.~~ **Closed 2026-09-08** by ADR-0026,
+  in its own round after Task 17 and before Task 18 — not by Task 16, which is what this bullet
+  recorded. See the Task 15 section above for what closed it and what it cost.
 
 ## Task 17 — the app shell, the switcher that emptied the cache without repainting, and three routes that revoke credentials
 
@@ -2889,7 +2949,9 @@ is recorded because this file relies on the same device in several places.
   inboxes and cannot be changed retroactively. The page map is corrected in this change. Measured:
   `GET /accept-invitation?token=… -> 404`, against a real pending `ADMIN` invitation
   (`inv_01M1XXXG76F1AVNKZB2DG8TVQE`).
-- Carried forward untouched: **Task 15's `OWNER`-invitation window**, now three tasks old.
+- ~~Carried forward untouched: **Task 15's `OWNER`-invitation window**, now three tasks old.~~
+  **Closed 2026-09-08**, in its own round immediately after this task. See the Task 15 section
+  above.
 
 ### Phase 3 — SaaS core
 Projects, assets, **asset ownership verification**, scope and scope rules with the

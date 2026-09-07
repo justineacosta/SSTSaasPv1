@@ -1,6 +1,19 @@
 # ADR-0026: An invitation is revoked when its issuer loses the authority that created it
 
-**Status:** Accepted · **Date:** 2026-09-07
+**Status:** Accepted · **Date:** 2026-09-07 · **Amended 2026-09-08, before merge**
+
+> **AMENDMENT, AND THE ERROR IT CORRECTS.** As accepted on 2026-09-07, point 3 below asserted that
+> re-resolving the actor's authority inside `create`'s transaction closes the in-flight race. **That
+> was wrong, and the adversarial review reproduced the exact escalation this ADR exists to prevent**
+> — removal `204`, invite `201` with `roleKey: OWNER`, accept `201` minting an `OWNER` — on the
+> branch that implemented it. A re-read is not a lock: `withTenantTransaction` passes no
+> `isolationLevel`, so a non-locking `findFirst` under READ COMMITTED neither waits for nor sees
+> another transaction's uncommitted `UPDATE`. Point 3 now also takes `lockOrganization`.
+>
+> This ADR is amended rather than superseded because it had not been merged and nothing had ever
+> relied on it; the sentence it got wrong is left standing below, struck through, rather than
+> quietly rewritten. The decisions README's immutability rule exists to stop history being edited
+> to match current opinion, and deleting the error would be exactly that.
 
 ## Context
 
@@ -41,8 +54,9 @@ transaction as the change that takes the authority away.**
    `MEMBER` invitation alone, because they could still issue that one today. A promotion revokes
    nothing, because the subset test passes.
 
-3. **`InvitationService.create` re-resolves the actor's own role inside its transaction** and
-   runs `assertActorMayGrant` against *that* permission set rather than against `ctx.permissions`.
+3. **`InvitationService.create` takes `lockOrganization` as the first statement in its
+   transaction, and re-resolves the actor's own role and route permission inside it**, running
+   `assertActorMayGrant` against *that* permission set rather than against `ctx.permissions`.
    Without this, points 1 and 2 close only the front door: `TenantContextGuard` reads the actor's
    membership before the handler runs, so a `create` already in flight when the removal commits
    inserts a fresh invitation from a member who no longer exists — and the `updateMany` above
@@ -51,10 +65,25 @@ transaction as the change that takes the authority away.**
    here rather than recorded as owed, because a cascade that a concurrent request can walk around
    is not a control.
 
-   The re-read costs one query against a row the transaction will already have contended for, and
-   it makes the check that refuses and the fact it is checking come from the same snapshot. An
-   actor whose membership has gone by then receives the same refusal as any other principal who
-   cannot grant the role.
+   **The lock is what closes it, and the amendment above is why that sentence is here.** As first
+   accepted, this point read: ~~"The re-read costs one query against a row the transaction will
+   already have contended for, and it makes the check that refuses and the fact it is checking
+   come from the same snapshot."~~ Both halves are true and neither is sufficient. The re-read
+   makes `create` decide against the database instead of against the guard, which is worth keeping
+   on its own; it does not *serialise* `create` against the membership writes, and under READ
+   COMMITTED a `create` whose re-read runs before a removal commits is allowed to proceed and
+   inserts its row after the cascade's `findMany` has already looked. `lockOrganization` makes
+   `create` the fourth writer in the set `accept`, `updateRole` and `remove` already serialise —
+   which is precisely the set that can move a member's authority. The lock order is organisation
+   then advisory slot, and nothing takes them the other way round.
+
+   The cost is that invitation creation now serialises per organisation rather than per
+   `(organisation, address)`. At the `invitations` class's 50/day per organisation that is not a
+   throughput concern, and it is the same lock three neighbouring writes already hold.
+
+   An actor whose membership has gone by then, or whose live role no longer carries
+   `organization.manage_members`, receives the same refusal as any other principal who cannot
+   grant the role.
 
 The comparison is `assertActorMayGrant`'s — a set comparison against the seeded
 `RolePermission` rows, not a ranking — so the rule that revokes and the rule that refuses cannot
