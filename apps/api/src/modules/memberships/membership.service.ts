@@ -595,7 +595,10 @@ export class MembershipService {
         organizationId: ctx.organizationId,
         issuerUserId: membership.userId,
         actorUserId: command.actorUserId,
-        reason: 'ISSUER_DEMOTED',
+        // `ISSUER_ROLE_CHANGED` and not `ISSUER_DEMOTED`: the comparison is a
+        // set test and the seeded lattice is only partially ordered, so a
+        // LATERAL move revokes too. See `InvitationRevocationReason`.
+        reason: 'ISSUER_ROLE_CHANGED',
         retainedPermissions: new Set(grantedPermissions),
         ip: command.ip,
         userAgent: command.userAgent,

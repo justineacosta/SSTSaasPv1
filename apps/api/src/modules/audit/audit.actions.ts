@@ -163,16 +163,25 @@ export const AUDIT_ACTIONS = [
    *    `DELETE /organizations/:id/invitations/:invitationId`. `metadata` is the
    *    two keys above and no more.
    * 2. **Its issuer lost the authority that created it** — they were removed
-   *    from the organisation, or demoted to a role that could not offer it —
-   *    and `MembershipService.remove` or `updateRole` revoked it in the same
+   *    from the organisation, or moved to a role that could not offer it — and
+   *    `MembershipService.remove` or `updateRole` revoked it in the same
    *    transaction as that change. `metadata` carries two further keys:
-   *    `reason` (`ISSUER_REMOVED` or `ISSUER_DEMOTED`) and `issuerUserId`.
+   *    `reason` (`ISSUER_REMOVED` or `ISSUER_ROLE_CHANGED`) and `issuerUserId`.
+   *    The role-change reason is deliberately not called a demotion: the rule
+   *    is a set comparison and the seeded roles are only partially ordered, so
+   *    a lateral move that drops a permission revokes as well.
    *
    * **The two stay one action rather than becoming two**, because the property
    * that matters to a reader holds for both: there is a person in `actorId` who
    * caused it, and following the `resourceId` gives the invitation's whole life
    * on one id. In the cascade's case that person is the one who removed or
-   * demoted the issuer, not the issuer. A removal may therefore write several
+   * re-roled the issuer — **usually** somebody other than the issuer, and on a
+   * SELF-REMOVAL the same person, which ADR-0026 expects to be the common case:
+   * a member leaving voluntarily takes their outstanding invitations with them,
+   * and `actorId` is then the leaver. So the two producers are not told apart
+   * by comparing `actorId` with `issuerUserId`; `reason` is what distinguishes
+   * them, and it is present on exactly one of the two. A removal may write
+   * several
    * of these in one transaction, so audit volume for a removal is no longer
    * constant — the shape ADR-0026 intends, since a reader following one
    * invitation needs the event on that invitation's id.
