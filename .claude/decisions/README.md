@@ -33,6 +33,7 @@ re-litigated every six months by someone who cannot see why the obvious option w
 | [0023](ADR-0023-rate-limiter-runs-in-two-phases.md) | The rate limiter runs twice — an edge pass before authentication and a tenant pass after authorization | Accepted |
 | [0024](ADR-0024-api-base-url-reaches-the-browser-through-a-server-rendered-provider.md) | The API base URL reaches the browser through a server-rendered provider, not a `NEXT_PUBLIC_` variable | Accepted |
 | [0025](ADR-0025-authenticated-calls-are-made-from-the-browser.md) | Every authenticated API call is made from the browser, and the app shell resolves its session client-side | Accepted |
+| [0026](ADR-0026-invitations-are-revoked-when-their-issuer-loses-the-authority-to-have-issued-them.md) | An invitation is revoked when its issuer loses the authority that created it | Accepted |
 
 **0018 was claimed out of order and is now written.** It was reserved for the pending-MFA
 credential decision while Phase 2 Task 9 shipped that credential provisionally; Phase 2 Task 11
