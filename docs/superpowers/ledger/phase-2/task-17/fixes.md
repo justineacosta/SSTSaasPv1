@@ -280,3 +280,52 @@ sentence (`grep` across all `.ts`/`.tsx` outside `node_modules` and `.next`: not
 | none | 13 passed | 0 |
 
 `pnpm vitest run --project ui apps/web/src`: **12 files / 110 tests, exit 0**. `pnpm lint`: exit 0.
+
+---
+
+## The two prose corrections. No behaviour change in either.
+
+### Rule 10 — the justification overstated its own necessity
+
+The verdict stands (ACCEPT); one clause did not. "One transaction over both is not expressible
+without reopening Task 6" runs Redis and Postgres together, and is only true of the first.
+
+`apps/api/src/modules/auth/session-management.service.ts` — the Task 17 file, corrected in full
+under a new heading `THE PART OF THAT JUSTIFICATION THAT WAS OVERSTATED`: the Redis tombstone
+genuinely cannot be inside a Postgres transaction; the Postgres half could be, because
+`SessionRepository` and `SessionManagementService` inject the same `PRISMA` token, `SessionStore`
+already declares `$transaction`, and `SessionRepository.rotate` already uses one — what blocks it
+is that `revokeById(id, revokedAt)` takes no `tx` handle. The docblock also records the residual
+that rewrite would have (a tombstone over a session a rolled-back transaction did not revoke:
+refused for at most `cacheTtlSeconds`, default 60, then working again — bounded, self-healing and
+fail-safe, so strictly better than a permanently missing row) and states plainly that it is **not
+done here on purpose**, because it changes a revocation path shared with `logout` and deserves its
+own change.
+
+The same sentence exists in two older files. Both now carry a short pointer to the corrected
+version rather than a second copy of the false one:
+`apps/api/src/modules/auth/logout.service.ts` and
+`apps/api/src/modules/auth/organization-switch.service.ts`. Prose only — neither service's
+behaviour is touched, per the brief.
+
+**Owed, and recorded here so it is not lost:** one `tx` parameter on `SessionRepository.revokeById`
+would bring the Postgres half of `logout`, `switch-org` and the three session routes inside a
+transaction. It belongs to whoever next opens Task 6's revocation path.
+
+### C-3 — "no oracle" was truer of the body than of the clock
+
+`apps/api/src/modules/auth/auth.controller.ts`, the `listSessions` rate-limit argument: "There is
+also no oracle here to protect" is replaced with "There is also no secret to guess here", followed
+by the measurement it was overstating — `revokeOwned` returns `'NOT_FOUND'` from two different
+amounts of work, so the body discloses nothing and the clock discloses a little, and
+`generalSession` resolves no principal to bound the sampling. The residual is recorded as narrow
+(`ses_` ids are ULIDs, so the signal can only *confirm* an id obtained elsewhere) and the reason
+for not closing it is stated: equalising the branches means a wasted row fetch or a fixed delay on
+a defensive route, and it is not a thing a rate-limit class would have protected.
+
+`apps/api/src/modules/auth/session.service.ts`, `revokeOwned`'s docblock: the existing "the
+database round trip dominates any timing signal" sentence is kept and explicitly bounded — that
+argument is about the `!==` comparison and does not cover the two lines above it, which is where
+the difference actually is.
+
+`pnpm lint` exit **0**, `pnpm check:openapi` exit **0** after both.

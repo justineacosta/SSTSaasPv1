@@ -58,7 +58,19 @@ export interface LogoutCommand extends AuthRequestContext {
  * `CLAUDE.md` rule 10 wants both in one transaction. `SessionService.revoke`
  * takes no transaction handle — deliberately, since it owns an ordering that
  * spans Redis and Postgres — so one transaction covering both is not expressible
- * without reopening Task 6. The order chosen is **revoke, then audit**:
+ * without reopening Task 6.
+ *
+ * **One clause of that is overstated, and it is corrected in
+ * `session-management.service.ts`'s equivalent docblock rather than repeated
+ * here:** the *Redis* half cannot be in a Postgres transaction, but the
+ * Postgres half could be — both classes inject the same `PRISMA` token,
+ * `SessionStore` already declares `$transaction`, and `rotate` already uses
+ * one. What blocks it is that the repository method takes no `tx` handle. The
+ * constraint is a port signature, not an impossibility. The behaviour is
+ * deliberately left as it is; it is owed to whoever next opens Task 6's
+ * revocation path.
+ *
+ * The order chosen is **revoke, then audit**:
  *
  * - Revoking first means a failure in the audit write leaves a session that is
  *   genuinely gone and an event that was not recorded. That is a gap in the

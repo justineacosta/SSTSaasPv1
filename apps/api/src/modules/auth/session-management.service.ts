@@ -90,8 +90,35 @@ export interface RevokeOwnSessionResult {
  * `SessionService`'s revocation owns an ordering that spans **Redis and
  * Postgres** — the cache entry is tombstoned before the row is written, which
  * is what makes revocation immediate — and it therefore takes no transaction
- * handle. One transaction over both is not expressible without reopening Task
- * 6's cache design.
+ * handle. One transaction over **the Redis half and the Postgres half** is not
+ * expressible without reopening Task 6's cache design.
+ *
+ * # THE PART OF THAT JUSTIFICATION THAT WAS OVERSTATED
+ *
+ * "Not expressible without reopening Task 6" is true of Redis and **false of
+ * Postgres**, and the sentence above used to run them together. Review round 2
+ * measured the difference and accepted the deviation with this correction owed:
+ *
+ * - The **Redis tombstone genuinely cannot** be inside a Postgres transaction.
+ *   Nothing changes that.
+ * - The **Postgres half could be**. `SessionRepository` and this service both
+ *   inject the same `PRISMA` token — one `PrismaClient`, narrowed by two
+ *   structural port types — `SessionStore` already declares `$transaction`, and
+ *   `SessionRepository.rotate` already runs an `updateMany` and a `create`
+ *   inside one. What blocks it is a signature: `revokeById(id, revokedAt)`
+ *   takes no `tx` handle. It is one parameter.
+ *
+ * The conditional audit below survives that rewrite unchanged, because
+ * `updateMany`'s count is available inside the transaction. The residual would
+ * be a tombstone over a session a rolled-back transaction did not revoke —
+ * refused for at most `cacheTtlSeconds` (default 60) and then working again,
+ * which is a bounded, self-healing, fail-safe denial and strictly better than a
+ * permanently missing audit row.
+ *
+ * **It is not done here on purpose.** Moving the audit write inside a Postgres
+ * transaction changes a revocation path shared with `logout`, two tasks older
+ * than this one, and doing it in a fix round rather than in a change of its own
+ * is how a blast radius goes unmeasured. Recorded as owed, not smuggled in.
  *
  * The order chosen is **revoke, then audit**, which is `logout`'s:
  *

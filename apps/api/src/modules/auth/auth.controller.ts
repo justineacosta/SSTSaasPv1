@@ -588,10 +588,27 @@ export class AuthController {
    * `failMode: 'closed'`. That would put a whole corporate egress address on
    * one budget for a **defensive** action — signing a stolen device out — and
    * would fail closed during exactly the outage in which a user needs it.
-   * There is also no oracle here to protect: unlike `change-password`, nothing
-   * on these routes verifies a secret, a session id is 26 characters of
-   * unguessable base32, and every refusal for one that is not the caller's is
-   * the same 404.
+   * There is also no secret to guess here: unlike `change-password`, nothing on
+   * these routes verifies one, and every refusal for an id that is not the
+   * caller's is the same 404 — asserted as an identity, not as two matching
+   * expectations, at `auth.sessions.integration.spec.ts:148`.
+   *
+   * **That is true of the body and only approximately true of the clock**, and
+   * the earlier wording ("there is no oracle here to protect") claimed more
+   * than holds. Review finding C-3 measured it: `SessionService.revokeOwned`
+   * returns `'NOT_FOUND'` from two different amounts of work — an id naming no
+   * row fetches nothing, while an id naming somebody else's row deserialises a
+   * full `SessionRow` and runs a `userIdSchema.parse` before the `!==` refuses
+   * it. With `generalSession` resolving no principal, an attacker may average
+   * over unlimited samples.
+   *
+   * The residual is recorded rather than closed, and it is narrow: `ses_` ids
+   * are ULIDs, so no attacker can generate candidates. The oracle only
+   * *confirms* an id obtained some other way — a leaked log line, an audit
+   * export, a support transcript. Closing it means equalising the work on both
+   * branches, which is a change to the revocation path rather than to this
+   * rate-limit choice, and it is not what a rate-limit class would have
+   * protected anyway.
    */
   @AuthenticatedOnly()
   @RateLimit('generalSession')
