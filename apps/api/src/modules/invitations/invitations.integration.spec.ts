@@ -2027,11 +2027,15 @@ describe('POST /api/v1/organizations/:id/invitations — the actor’s authority
         select: { id: true },
       })
     ).id;
-    const member = await owner.role.findUniqueOrThrow({
-      where: { key: 'MEMBER' },
+    // `ADMIN`, not `MEMBER`. `ADMIN` still carries `organization.manage_members`
+    // — which `actorAuthority` now re-checks as well (Finding 11) — so this case
+    // stays about the no-minting rule and nothing else. The `MEMBER` arm is the
+    // next test, and it is a different refusal for a different reason.
+    const admin = await owner.role.findUniqueOrThrow({
+      where: { key: 'ADMIN' },
       select: { id: true },
     });
-    await owner.membership.update({ where: { id: membershipId }, data: { roleId: member.id } });
+    await owner.membership.update({ where: { id: membershipId }, data: { roleId: admin.id } });
 
     const invitations = harness.app.get(InvitationService);
     const stale = staleContext(home.organizationId, membershipId, 'OWNER');
@@ -2047,7 +2051,7 @@ describe('POST /api/v1/organizations/:id/invitations — the actor’s authority
       ),
     ).rejects.toMatchObject({ status: 403, code: 'PERMISSION_DENIED' });
 
-    // ...and the same call offering a role a MEMBER can still grant is NOT
+    // ...and the same call offering a role an ADMIN can still grant is NOT
     // refused, which is what stops this reading as "the re-read refuses
     // everything".
     const allowed = `still-allowed-${unique()}@example.test`;
@@ -2058,6 +2062,63 @@ describe('POST /api/v1/organizations/:id/invitations — the actor’s authority
     );
     expect(created.roleKey).toBe('MEMBER');
     expect(created.email).toBe(allowed);
+  });
+
+  it('refuses an actor demoted out of organization.manage_members, even for a role they could grant', async () => {
+    // FINDING 11'S DISCLOSED HALF, CLOSED.
+    //
+    // `actorAuthority` used to re-read the actor's role and hand it only to
+    // `assertActorMayGrant`, which asks "may they grant *this* role" and nothing
+    // else. `AuthorizationGuard` had separately decided
+    // `organization.manage_members`, from the row it saw before the handler ran.
+    // So an in-flight `create` by somebody demoted `OWNER` → `MEMBER` was
+    // refused an `OWNER` invitation and ALLOWED a `MEMBER` one — a member with
+    // no authority over the roster still adding somebody to it, one request
+    // wide. The implementer disclosed it as residual risk 1; the D9 review
+    // recorded it as Finding 11.
+    //
+    // `MEMBER` is the demotion target precisely because a `MEMBER` invitation
+    // passes `assertActorMayGrant` — `MEMBER`'s permissions are a subset of
+    // themselves — so the ONLY thing that can refuse this call is the route's
+    // own permission being re-checked against the live set.
+    await clearRateLimits(harness.redis);
+    const home = await acting('OWNER');
+    const membershipId = (
+      await owner.membership.findFirstOrThrow({
+        where: { organizationId: home.organizationId, userId: home.actor.userId, deletedAt: null },
+        select: { id: true },
+      })
+    ).id;
+    const member = await owner.role.findUniqueOrThrow({
+      where: { key: 'MEMBER' },
+      select: { id: true },
+    });
+    expect(
+      ROLE_PERMISSIONS.MEMBER as readonly Permission[],
+      'MEMBER now carries `organization.manage_members`, so this test proves nothing. The ' +
+        'seeded roles moved and the case needs a role that still lacks it.',
+    ).not.toContain('organization.manage_members');
+    await owner.membership.update({ where: { id: membershipId }, data: { roleId: member.id } });
+
+    const invitations = harness.app.get(InvitationService);
+    const email = `no-longer-manages-${unique()}@example.test`;
+
+    await expect(
+      invitations.create(
+        staleContext(home.organizationId, membershipId, 'OWNER'),
+        home.organizationId,
+        createCommand(home.actor.userId, email, 'MEMBER'),
+      ),
+    ).rejects.toMatchObject({ status: 403, code: 'PERMISSION_DENIED' });
+
+    expect(
+      await owner.invitation.count({ where: { organizationId: home.organizationId, email } }),
+    ).toBe(0);
+    expect(
+      await owner.auditEvent.count({
+        where: { organizationId: home.organizationId, action: 'MEMBER_INVITED' },
+      }),
+    ).toBe(0);
   });
 });
 

@@ -130,3 +130,69 @@ be composed into the transaction that has to hold the lock. It writes the same t
 yet for it to find — and the session revocation, which the racing request has by definition
 already got past, since `TenantContextGuard` ran before the removal committed. This is in the
 test's own docblock too, not only here.
+
+### Entry 3 — Finding 11's disclosed half: `actorAuthority` re-checks the route's own permission
+
+`actorAuthority` re-read the actor's role and handed it only to `assertActorMayGrant`, which
+asks "may they grant *this* role" and nothing else. `AuthorizationGuard` had separately decided
+`organization.manage_members`, before the handler ran, from the row the guard saw. So an
+in-flight `create` by somebody demoted `OWNER` → `MEMBER` was refused an `OWNER` invitation and
+**allowed** a `MEMBER` one — a member with no authority over the roster still adding somebody to
+it. The implementer disclosed this as residual risk 1; the review recorded it as Finding 11's
+disclosed half.
+
+**The change.** `ROUTE_PERMISSION` is declared once in `invitation.service.ts` as a
+`satisfies Permission` literal — a second copy of the string `@RequirePermission` puts on the
+handler, deliberately not read from the decorator's metadata, because a check derived from the
+guard cannot disagree with a wrong guard. `actorAuthority` builds the live context first and
+then refuses if that set does not contain it, with the refusal built from the **live** context
+so `yourRole` names the role the database holds now.
+
+**The test.** `refuses an actor demoted out of organization.manage_members, even for a role they
+could grant`. `MEMBER` is the demotion target precisely because a `MEMBER` invitation passes
+`assertActorMayGrant` — `MEMBER`'s permissions are a subset of themselves — so the only thing
+that can refuse the call is the new check. It also asserts, from `ROLE_PERMISSIONS`, that
+`MEMBER` still lacks the permission, so the case cannot go quietly vacuous if the seeded roles
+move.
+
+**Its mutation.** With the one line deleted:
+
+```
+$ npx vitest run --project integration --no-file-parallelism \
+    -t "demoted out of organization.manage_members" invitations.integration.spec.ts
+MUT EXIT=1
+  × refuses an actor demoted out of organization.manage_members, even for a role they could grant
+  Tests 1 failed | 37 skipped (38)
+```
+Restored with `cp` from a backup taken before the mutation; `git diff --stat` confirms only the
+intended lines remain.
+
+**One existing test had to change, and the change is not a weakening.** `decides on the role the
+database holds, not the role the context claims` demoted the actor to `MEMBER` and then asserted
+that a `MEMBER` invitation was **allowed** — which is exactly the behaviour Finding 11 says is
+wrong, pinned as correct. Its demotion target is now `ADMIN`, which still carries
+`organization.manage_members`, so the case stays about the no-minting rule alone: `OWNER`
+refused, `MEMBER` allowed. The `MEMBER` arm is the new test above, and it is a different
+refusal for a different reason.
+
+**Whole spec after both changes:**
+```
+$ npx vitest run --project integration --no-file-parallelism invitations.integration.spec.ts
+EXIT=0   Test Files 1 passed (1)   Tests 38 passed (38)
+```
+
+**Deliberately NOT widened, per the brief — recorded here as residuals.**
+
+- **Organisation suspension.** `resolveTenant` refuses a suspended organisation;
+  `assertPathIsActiveTenant` is only an id comparison and reads no row, so an in-flight `create`
+  during a suspension is in the same position Finding 11 item 2 describes. It is out of scope
+  because suspension is a different control with its own lifecycle and its own callers, and
+  widening a function named for ADR-0026 §3 into it would put the suspension rule in a place
+  nobody looking for the suspension rule would find. The organisation lock added above narrows
+  this window to the same width as every other membership write's.
+- **`status === 'ACTIVE'`.** `actorAuthority` filters on `deletedAt: null` only. The
+  `Membership_status_deletedAt_agree_check` biconditional ties `deletedAt` to `REMOVED`, so an
+  `INVITED` row would have `deletedAt IS NULL` and would resolve here. It is unreachable today —
+  nothing in the codebase writes `'INVITED'` — and adding the predicate would pin a claim about
+  the data in a place that does not own it. The claim is now written into `actorAuthority`'s
+  docblock instead (ruling 128), which is where the predicate that depends on it lives.
