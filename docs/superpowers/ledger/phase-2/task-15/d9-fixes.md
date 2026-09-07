@@ -353,3 +353,52 @@ $ npx vitest run --project integration --no-file-parallelism \
     invitations.integration.spec.ts memberships.integration.spec.ts
 EXIT=0   Test Files 2 passed (2)   Tests 81 passed (81)
 ```
+
+### Entry 7 — Findings 6 and 8: the missing document and the missing test
+
+**Finding 6 — `.claude/security/audit.md` §4.** Tasks 13, 14 and 15 each recorded their audit
+producers in that file, in the same change; ADR-0026's producer was the first in that section's
+history not to get its paragraph. Nothing in the file was false, so this is an omission and the
+existing text is untouched. Added, in the same convention as the Task 13 and Task 14 paragraphs
+beside it:
+
+- `INVITATION_REVOKED` gained a **second producer** — the cascade, called by
+  `MembershipService.remove` and `updateRole`, writing inside the same transaction as the
+  membership write, with `resourceId` still the `Invitation`.
+- The two metadata keys the deliberate revocation does not write: **`reason`**
+  (`ISSUER_REMOVED` / `ISSUER_ROLE_CHANGED`) and **`issuerUserId`** (the user id, not the
+  membership id, for the reason `MEMBER_REMOVED` gives for `memberUserId`).
+- That `reason` is the **only** thing that tells the two producers apart, and that `actorId` is
+  not — on a self-removal the actor *is* the issuer, and ADR-0026 expects that to be common.
+- That a removal no longer writes a constant number of audit rows, so nothing downstream may
+  size one.
+- That supersession still writes no event, and that §5 is unaffected because the cascade's
+  `select` never loads `tokenHash`.
+
+**Finding 8 — self-removal, ADR-0026's principal stated cost.** Every one of the seven cascade
+cases had the actor act on somebody else, so the one consequence users will actually notice —
+"a member who leaves for entirely benign reasons takes their outstanding invitations with them"
+— was reasoned about and never measured. Added
+`takes the invitations of a member who removes THEMSELVES, and names them as the actor`: the
+actor deletes their own membership through the real endpoint (a second owner exists so the
+last-owner invariant does not refuse at 422 first), their `ADMIN` invitation is revoked, a
+colleague's is not, and the single event has `actorId === issuerUserId === the leaver`.
+
+That last assertion is the half that matters beyond coverage: it pins the case that made
+`audit.actions.ts`'s "the one who removed or demoted the issuer, **not the issuer**" wrong, so
+the sentence cannot come back.
+
+```
+$ npx vitest run --project integration --no-file-parallelism memberships.integration.spec.ts
+EXIT=0   Test Files 1 passed (1)   Tests 44 passed (44)
+```
+
+It goes red when the feature is removed (cascade returns before revoking anything), which I
+measured rather than assumed:
+```
+MUT EXIT=1
+  × the invitation cascade on a membership write (ADR-0026)
+    > takes the invitations of a member who removes THEMSELVES, and names them as the actor
+  Tests 1 failed | 43 skipped (44)
+```
+File restored from a backup taken before the mutation; `git diff --stat` on it is empty.
