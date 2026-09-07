@@ -14,7 +14,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Partially Implemented** — **Tasks 1–17 of 18 done**; 1–16 are merged into `main`, and **Task 17 is built and verified on `feat/phase-2-task-17-app-shell` and not yet merged**. The identity API is enforced end to end and the product now has both halves of its UI: Task 16's six authentication screens and **Task 17's authenticated shell, organisation switcher, `/settings/security` and `/settings/members`**, plus three new session-management routes taking the OpenAPI document to **29 paths**. **Task 17's review found a tenant-isolation defect a green suite could not see**: the organisation switcher called `queryClient.clear()`, which empties the cache and notifies **no mounted observer**, so the shell went on rendering the previous organisation's name and permission set until a reload. Fixed with `resetQueries()` and a test that mounts the real shell. **Two `.claude` documents were found stale by many tasks** — `audit.md` claimed four audit actions are written by running code when thirty are, and `abuse-prevention.md` pinned a grep to a count three tasks out of date. **Neither Task 17 nor anything in it has been seen in a browser**, and the phase's E2E journey criterion still demands an automated suite with a live API, which is Task 18's. **Task 15's `OWNER`-invitation window is still open**, now three tasks old. Evidence table under Phase 2 below |
+| 2 | Identity | **Partially Implemented** — **Tasks 1–17 of 18 done and Implemented**; 1–16 are merged into `main` and Task 17 is verified on `feat/phase-2-task-17-app-shell`, awaiting merge. The identity API is enforced end to end and the product has both halves of its UI: Task 16's six authentication screens and Task 17's authenticated shell, organisation switcher, `/settings/security` and `/settings/members`, plus three session-management routes taking the OpenAPI document to **29 paths**. **The operator has now driven both halves through a browser** — the unauthenticated journey on 2026-09-07 and the authenticated screens the same day, including the organisation switch, which is where Task 17's review found a tenant-isolation defect a green suite could not see: `queryClient.clear()` empties the cache and notifies no mounted observer, so the shell kept rendering the previous organisation until a reload. **Three gaps remain and none is closed by a green suite.** The phase's E2E criterion demands an *automated* journey against a live API — Task 18's, and a manual pass does not satisfy it. **A live invitation email 404s**: `/accept-invitation` was named in Task 5's `TOKEN_LINK_PATHS` as the contract with Task 16's screens and appeared on no task's checklist, so Task 18 must build it before it can write the journey spec its own criterion demands. And **Task 15's `OWNER`-invitation window is still open**, now three tasks old. Evidence table under Phase 2 below |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -2693,10 +2693,20 @@ reader to ask which half mattered — but it is an untested line, not a covered 
 
 ## Task 17 — the app shell, the switcher that emptied the cache without repainting, and three routes that revoke credentials
 
-**Status: Partially Implemented.** Everything on the plan's checklist is built and every command is
-green. **The plan's verify line also ends "a human in a browser", and nobody has looked** — which
-is not a formality here: the review's High is a defect that would be obvious in thirty seconds of
-clicking and was invisible to a fully green suite for the length of the task.
+**Status: Implemented.** Everything on the plan's checklist is built, every command is green, and
+on 2026-09-07 **the operator exercised the screens in a browser** — the last thing the verify line
+required.
+
+**What the operator confirmed, recorded rather than summarised.** The screens render, and
+**switching organisation repaints the shell** — which is the review's High, the one defect on this
+branch that no command could catch. It needed real state to test at all: every account had
+`orgs=0` until two organisations were created for the purpose, so the switcher had nothing to
+switch between and could not have been exercised before that.
+
+**What the browser pass did NOT cover, stated so it is not read as wider than it was**: nobody has
+scanned the MFA QR code with a real authenticator app, and nobody has revoked a session by hand
+from `/settings/security`. Both are exercised by tests; neither has been seen working by a person.
+**And the pass found a defect of its own** — a live invitation email 404s, recorded below.
 
 *Verified 2026-09-07 by the orchestrator on the fix-round tree at `2be1a6f`, every command re-run
 rather than taken from a subagent's report, exit codes captured outside a pipe
@@ -2821,9 +2831,14 @@ is recorded because this file relies on the same device in several places.
 
 ### Still owed after Task 17
 
-- **Nothing built in this task has been seen by a person.** The highest-value item on this list.
-  The review's own note is the argument: the High "would be obvious in thirty seconds of clicking",
-  and it survived a fully green suite for the length of the task.
+- ~~Nothing built in this task has been seen by a person.~~ **Closed 2026-09-07 by the operator**,
+  who confirmed the screens and specifically that the organisation switch repaints. The review's
+  note was right: the High "would be obvious in thirty seconds of clicking" and survived a fully
+  green suite for the length of the task — and it needed two organisations to exist before those
+  thirty seconds were possible at all.
+- **The MFA QR code has never been scanned, and no session has been revoked by hand.** Both are
+  covered by tests and neither has been seen working by a person. The QR in particular is the class
+  a test cannot reach: it asserts the SVG renders, not that a phone can read it.
 - **The Postgres half of the rule-10 transaction.** One `tx` parameter on
   `SessionRepository.revokeById` would cover `logout`, `switch-org` and the three session routes.
   Corrected in prose, not in behaviour, deliberately.
