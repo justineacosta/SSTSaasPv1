@@ -38,6 +38,35 @@ guarantee.
 - Read `CLAUDE.md`, `d9-brief.md`, ADR-0026, and all seven target files plus the two
   integration specs' helper sections.
 
+## The red run (before implementation)
+
+Both new blocks were run against the unchanged production code and read.
+
+```
+npx vitest run --project integration --no-file-parallelism   apps/api/src/modules/memberships/memberships.integration.spec.ts
+EXIT=1   Tests 5 failed | 37 passed (42)
+```
+Failing: `revokes every live invitation the removed member issued, and audits each one`,
+`leaves invitations issued by anybody else alone`,
+`revokes only the invitations a demoted member could no longer issue`,
+`revokes only in the organisation the member was removed from`,
+`writes the revocations inside the caller's transaction, so a later failure undoes them`
+(the last with "Nest could not find given element" — the port did not exist yet).
+
+Green already, and expected to be: `revokes nothing on a promotion` and
+`revokes nothing on a role change to the role the member already holds`. They are
+guard cases against over-revocation, so they pass before and after; they earn their
+place by going red if the cascade is ever made unconditional on `updateRole`.
+
+```
+npx vitest run --project integration --no-file-parallelism   apps/api/src/modules/invitations/invitations.integration.spec.ts
+EXIT=1   Tests 4 failed | 32 passed (36)
+```
+Failing: `D9 — CLOSED BY ADR-0026: an invitation does NOT outlive its issuer's authority`,
+`a cascade revocation frees the (organizationId, email) slot for a fresh invitation`,
+`refuses when the actor's membership is gone by the time the transaction runs`,
+`decides on the role the database holds, not the role the context claims`.
+
 ## Tests added
 
 _(none yet)_
