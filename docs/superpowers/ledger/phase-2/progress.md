@@ -1245,9 +1245,19 @@ subagent's report**: `format:check`, `lint`, `typecheck`, `build` all 0; `pnpm t
 tripwire proving `Session` did not become tenant-owned; `check:secrets` 521 files. The full table
 is in `roadmap.md` under "Task 17".
 
-**NOTHING BUILT IN TASK 17 HAS BEEN SEEN BY A PERSON.** The review's own note is the argument: the
-High "would be obvious in thirty seconds of clicking", and it survived a green suite for the whole
-task. **Task 17 is therefore Partially Implemented, not Implemented.**
+**THE BROWSER PASS HAPPENED AND IT CLOSED THE HIGH.** On 2026-09-07 the operator confirmed the
+screens render and that **switching organisation repaints the shell** — the review's High, and the
+one defect on this branch no command could catch. **Task 17 is Implemented.**
+
+It needed state that did not exist: every account had `orgs=0`, so the switcher had nothing to
+switch between and could not have been exercised at all until two organisations were created for
+the purpose. **A screen whose whole behaviour is about switching between things cannot be tested by
+an account that belongs to one thing** — check the fixture state before recording a pass on it.
+
+**Two interactions remain unseen by a person**: nobody has scanned the MFA QR code with a real
+authenticator, and nobody has revoked a session by hand from `/settings/security`. Both are covered
+by tests. The QR is the class a test cannot reach — it asserts the SVG renders, not that a phone
+can read it.
 
 **One operational note.** The fix round stopped a `pnpm dev` server (PID 18416) and did not restart
 it. A running dev server holds `packages/db/generated/client/query_engine-windows.dll.node` open,
