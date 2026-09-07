@@ -483,3 +483,127 @@ The one thing C-4 does to this: after an organisation switch the `permissions` a
 read is the previous organisation's, so they are computed from the wrong tenant's rights until the
 next navigation. Because they are UX only, that misinforms the user; it does not authorise
 anything.
+
+## C-7 (Medium — the brief said "a missed document is the defect") — the report's §5 list misses one document entirely, is wrong about a second, and gets the arithmetic wrong in two of the four it does name.
+
+The brief asked: *"Verify that list is right and complete."* It is neither. Each item below is a
+count run against the repository, not a reading.
+
+### C-7a — MISSED DOCUMENT: `.claude/security/abuse-prevention.md`
+
+Its banner, lines 14-19:
+
+> **`generalSession` governs eight routes**, each carrying `@RateLimit('generalSession')`
+> explicitly rather than by default: the five organisation routes, `POST /api/v1/auth/switch-org`,
+> `POST /api/v1/auth/logout` and `GET /api/v1/auth/session`. … Counted from
+> `grep -rn "@RateLimit('generalSession')" apps/api/src --include=*.ts`
+
+The three new session routes all carry `@RateLimit('generalSession')`
+(`auth.controller.ts:596`, `:673`, `:740`) — the class the implementer chose, argued for, and had
+the orchestrator's brief corrected about. This document is the one that enumerates that class's
+members, it pins its own count to a named command, and it is **absent from the report's list**.
+
+**Measurement**, running the document's own command:
+
+| | Result |
+|---|---|
+| `git grep -c "@RateLimit('generalSession')" 5dbab4e -- apps/api/src` (base, non-spec) | 3+1+2+3+5+1 = **15** |
+| the same grep on `HEAD` | **18** — the three added lines are `auth.controller.ts:596, 673, 740` |
+| the document | **"eight"** |
+
+Note the second-order point: it was already wrong before this task (15, not 8), so the orchestrator
+does not owe an increment of three — it owes a recount. But it is Task 17 that makes the routes it
+enumerates by name incomplete, and Task 17's report is the one that was asked to find it.
+
+### C-7b — WRONG: `.claude/security/audit.md`. The report says nothing is owed. Something is.
+
+Report item 5: *"`.claude/security/audit.md` §4 already lists `SESSION_REVOKED`, so nothing is owed
+there — but the note in the surrounding prose that some names are written by no code is now one
+name shorter."*
+
+There is no such note in the surrounding prose. The claim lives in the document's **status
+banner**, line 13, and it is a number:
+
+> **Four actions in §4 are written by running code**; every other name in that section is still
+> Designed only. `USER_REGISTERED`, `REGISTRATION_BLOCKED_EXISTING_EMAIL`,
+> `EMAIL_VERIFICATION_RESENT` and `EMAIL_VERIFIED` …
+
+`SESSION_REVOKED` is written by running code as of this task and was written by none before it:
+
+```
+$ git grep -n "SESSION_REVOKED" 5dbab4e -- apps/api/src      # (nothing)
+$ grep -rn "SESSION_REVOKED" apps/api/src --include=*.ts | grep -v spec
+apps/api/src/modules/audit/platform-audit.actions.ts:308
+apps/api/src/modules/auth/session-management.service.ts:231   ← the writer
+```
+
+So the banner is falsified by this task, and it is a **status banner**, which is the class of
+sentence this repository treats as load-bearing. (Like C-7a it was already stale — `LOGIN`,
+`LOGOUT`, `ACCOUNT_LOCKED`, the `PASSWORD_*` and `MFA_*` names have had writers since Tasks 9-11 —
+and its second sentence, "Nothing writes an `AuditEvent` row yet", has been false since Task 13.
+The orchestrator owes a recount here too.) The report's "nothing is owed there" is the sentence
+that is wrong.
+
+### C-7c — ARITHMETIC: `api/authorization.md`'s non-permission route count is not "four"
+
+Report item 4: *"This task adds three more `@AuthenticatedOnly()` routes, so that banner's count of
+deliberate non-permission routes is now four rather than one."*
+
+**Measurement** — counting route decorators, not docblock mentions:
+
+| | `@AuthenticatedOnly()` routes |
+|---|---|
+| base `5dbab4e` | **11** — `auth.controller.ts` 8, `invitation-acceptance.controller.ts` 1, `organizations.controller.ts` 2 |
+| `HEAD` | **14** — the same plus `GET /auth/sessions`, `DELETE /auth/sessions`, `DELETE /auth/sessions/:sessionId` |
+
+Enumerated on `HEAD`: `POST /auth/logout`, `GET /auth/session`, `GET /auth/sessions`,
+`DELETE /auth/sessions`, `DELETE /auth/sessions/{sessionId}`, `POST /auth/switch-org`,
+`POST /auth/change-password`, `POST /auth/mfa/enroll`, `POST /auth/mfa/confirm`,
+`POST /auth/mfa/disable`, `POST /auth/mfa/recovery-codes`, `POST /invitations/accept`,
+`POST /organizations`, `GET /organizations`.
+
+So the correct figure is **eleven becoming fourteen**, not one becoming four. The banner's phrasing
+("An eleventh route exists and declares no permission on purpose") uses "eleventh" as an ordinal
+after the ten permission-declaring routes, not as a count of non-permission routes — the report
+read it as the latter and produced a number that is wrong by a factor of three and a half. An
+orchestrator editing the banner from this report writes a new false sentence.
+
+Related and worth stating so the orchestrator does not chase it: `architecture/backend.md:99`
+("governs ten shipped routes as of Task 15") and `security/authorization.md:301` (the same phrase)
+are **not** falsified — the three new routes declare no permission, so the count of
+`@RequirePermission()` routes is still ten and `EXPECTED_GUARDED_ROUTES` is untouched by this
+branch.
+
+### C-7d — ARITHMETIC: `api/authentication.md` §7's table is seventeen rows only if you accept an existing omission
+
+Report item 3: *"Its §7 rate-limit table lists fourteen routes and is now seventeen."*
+
+Fourteen rows reproduce (`awk 'NR>=360 && NR<=420 && /^\| \`/' .claude/api/authentication.md | wc -l`
+→ **14**), and the prose above them says "The fourteen routes that exist carry:". But
+`auth.controller.ts` held **fifteen** routes at base and holds **eighteen** now
+(`grep -cE "^  @(Get|Post|Patch|Delete|Put)\(" `). The missing one is
+**`POST /auth/switch-org`**, which has existed since Task 13, carries
+`@RateLimit('generalSession')` (`auth.controller.ts:830`), and appears in no row of that table.
+
+So "now seventeen" is only correct if the pre-existing gap is preserved. The honest figure is
+**eighteen**.
+
+### The four items the report got right
+
+| Report item | Verdict |
+|---|---|
+| 1. `frontend.md` §2's rendering table row — "App shell, navigation \| Server component \| Permissions resolved server-side" | **Right.** ADR-0025 falsifies it and the ADR's Consequences say so |
+| 2. `frontend.md`'s status banner — "§5 (permissions) and §7 … remain Not Implemented", "§3 is still unexercised" | **Right**, and correctly scoped: §7 is still not implemented and that clause stays true |
+| 3. `api/authentication.md` §2 and §7 | **Right in kind**, wrong in the number — see C-7d |
+| 6. `ui-ux/page-map.md` | **Right.** Its banner says "Every route listed is Not Implemented as of 2026-08-21" and "Two URLs now answer, and neither counts as a shipped route"; `/settings/security` (`:140`) and `/settings/members` (`:142`) are listed routes that now answer |
+
+### Checked and found NOT falsified
+
+`security/authentication.md` §3's bullet — "so the user can see and revoke their sessions from
+`/settings/security`" (`:163`) — was written as design and this task makes it **true**, which is
+not a defect. Its banner is stale in several places ("Nothing calls any of §3 yet", "no cookie has
+ever reached a browser") but was already stale at `5dbab4e`; Task 17 adds nothing to it.
+`security/authorization.md:54` describes the `@AuthenticatedOnly()` class ("read their own session
+document, sign out, and manage their factors") in a way the three new routes fit rather than
+contradict. `architecture/backend.md:95` and `:195`, `api/errors.md`, `api/pagination.md` and
+`api/conventions.md` carry no count this task moves.
