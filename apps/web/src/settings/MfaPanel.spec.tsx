@@ -163,7 +163,7 @@ describe('MfaPanel — reissuing and disabling', () => {
     expect(await screen.findByText('Two-factor authentication is off.')).toBeInTheDocument();
   });
 
-  it('warns what disabling costs before it happens', async () => {
+  it('warns what disabling costs before it happens', () => {
     const { client } = stubClient(respond);
     renderApp(<MfaPanel />, client);
 
