@@ -386,3 +386,139 @@ labelling it as such.
 
 **Cost if left.** Low. The behaviour is probably right; what is missing is the pin on the one
 consequence the ADR says users will notice.
+
+## Finding 9 — MEDIUM (code pass, mutation) — "a SET comparison, never a ranking" is the design's centrepiece, is asserted in four places, and no test distinguishes it. I replaced it with the ranking and everything stayed green
+
+**What is wrong.** ADR-0026 states the rule three times ("The comparison is `assertActorMayGrant`'s
+— a set comparison against the seeded `RolePermission` rows, not a ranking — so the rule that
+revokes and the rule that refuses cannot drift into two models of authority"), the cascade's
+docblock gives it its own heading (`invitation-revocation.cascade.ts:99-110`, "# THE COMPARISON IS A
+SET TEST, NEVER A RANKING"), `membership.service.ts:588-590` repeats it, and the demotion test's
+comment asserts it: "The comparison is `assertActorMayGrant`'s — a SET comparison against the
+seeded `RolePermission` rows, not a ranking."
+
+**No test can tell the two apart.** I replaced the subset filter with the ranking the design
+explicitly rejects — a comparison of permission *counts* — and ran both spec files:
+
+    // REVIEW MUTATION 5: a RANKING by permission count, not a set comparison.
+    const doomed = retained === null
+      ? candidates
+      : candidates.filter((candidate) => candidate.role.permissions.length > retained.size);
+
+    $ npx vitest run --project integration --no-file-parallelism \
+        apps/api/src/modules/memberships/memberships.integration.spec.ts \
+        apps/api/src/modules/invitations/invitations.integration.spec.ts
+    MUT5 EXIT=0    Test Files 2 passed (2)    Tests 78 passed (78)
+    $ git checkout apps/api/src/modules/invitations/
+
+The reason is that all three role-change cases chosen are on a totally ordered chain:
+`OWNER` → `MEMBER` with `OWNER`/`ADMIN`/`MEMBER` invitations, `MEMBER` → `ADMIN`, `ADMIN` → `ADMIN`.
+On that chain a ranking and a subset test agree on every row, so the assertion in the test comment
+is not something the test checks.
+
+**Unlike mutations 3 and 4, this one is not undistinguishable in principle** — the seeded data
+already contains the counterexample:
+
+    $ node -e "...ROLE_PERMISSIONS subset lattice..."
+    role sizes: OWNER=49 ADMIN=47 SECURITY_LEAD=33 MEMBER=23 VIEWER=12 AUDITOR=15 GUEST=11
+    Incomparable pairs (neither is a subset of the other):
+       SECURITY_LEAD <-> AUDITOR
+       MEMBER <-> AUDITOR
+       VIEWER <-> AUDITOR
+       AUDITOR <-> GUEST
+    total incomparable pairs: 4
+    AUDITOR not-in SECURITY_LEAD: [ 'audit.read', 'billing.read' ]
+    AUDITOR subset of ADMIN? true
+
+So one realistic case separates them: **an `ADMIN` issues an `AUDITOR` invitation** (permitted —
+`AUDITOR` ⊆ `ADMIN`) **and is then changed to `SECURITY_LEAD`.** `AUDITOR` carries `audit.read` and
+`billing.read`, which `SECURITY_LEAD` does not, so the set test revokes it. A count ranking says
+15 > 33 is false and keeps it — a live invitation offering two permissions the issuer no longer
+holds, which is exactly what ADR-0026 exists to prevent. That case is one `it(...)` in the block
+that already exists.
+
+**How I established it.** The mutation run above, plus the lattice computed from
+`ROLE_PERMISSIONS` in `packages/contracts/dist/index.js` (ruling 108 — computed, not eyeballed).
+I have **not** measured that the real code revokes in the `ADMIN` → `SECURITY_LEAD` scenario; I read
+the filter and it should, but no test exercises it and I did not write one (the brief forbids
+changing code).
+
+**Cost if left.** The one property the ADR says must never drift is unprotected by the suite. A
+later "simplification" to a role rank — which is the shape a reader who has not read the ADR
+reaches for, and which several other systems in this repo would make look natural — passes CI
+unchanged and silently stops revoking the incomparable cases. Ruling 128 says a mutation that
+cannot go red is a claim about the schema that must be written down; this one *can* go red, and the
+report does not list it because it was not tried.
+
+## Finding 10 — LOW (code pass) — the audit `reason` says `ISSUER_DEMOTED` for role changes that are not demotions
+
+**What is wrong.** `updateRole` always passes `reason: 'ISSUER_DEMOTED'`
+(`membership.service.ts:596`), and `InvitationRevocationReason` offers only `ISSUER_REMOVED` and
+`ISSUER_DEMOTED`. Because the rule is a set test and the role lattice is only partially ordered
+(Finding 9: four incomparable pairs, all involving `AUDITOR`), a **lateral** change can revoke. A
+member moved `MEMBER` → `AUDITOR` loses `MEMBER`'s non-`AUDITOR` permissions and their pending
+`MEMBER` invitations are revoked with `reason: ISSUER_DEMOTED`, though `AUDITOR` is not below
+`MEMBER` in any sense the codebase defines — `AUDITOR` holds `audit.read` and `billing.read`, which
+`MEMBER` does not.
+
+**How I established it.** The lattice computation in Finding 9, plus reading
+`membership.service.ts:591-601` and `invitation-revocation.cascade.ts:41-46`.
+
+**Cost if left.** Small and purely forensic: the audit trail uses ranking vocabulary for a rule the
+design insists is not a ranking, so an investigator reading `ISSUER_DEMOTED` infers a demotion that
+did not happen. `ISSUER_ROLE_CHANGED` would say what actually occurred. Noting it rather than
+pressing it — the enum is cheap to widen later and doing so is not free of its own churn.
+
+## Finding 11 — LOW (code pass) — `actorAuthority` re-reads two of the four facts the guard decided, and the report names only one of the two it skips
+
+**What is wrong.** The review brief asked: "What else does the guard decide that the transaction
+does not re-check?" `resolveTenant` (`apps/api/src/common/guards/tenant-context.ts:115-136`) decides
+four things: an active organisation is selected; the membership exists **and is `ACTIVE`**; the
+**organisation is not suspended**; and the role/permissions. `actorAuthority`
+(`invitation.service.ts:203-220`) re-reads the membership row and its permissions. It does not
+re-read:
+
+1. **The route's own `organization.manage_members`.** `d9-report.md` residual risk 1 names this, and
+   the test `decides on the role the database holds, not the role the context claims` pins it as
+   current behaviour: a stale `OWNER` context whose row now says `MEMBER` is still allowed to create
+   a `MEMBER` invitation, and `MEMBER` does not hold `organization.manage_members`. Correctly
+   disclosed.
+2. **The organisation's suspension state.** Not named anywhere. `assertPathIsActiveTenant` is only
+   `if (pathId !== ctx.organizationId) throw notFound()`
+   (`organizations/organization.service.ts:76-78`) — it reads no row. So an in-flight `create` while
+   the organisation is being suspended is in the same position as item 1. Same window as Finding 4,
+   same size, and the guard would refuse the next request.
+3. **`status === 'ACTIVE'`.** `resolveTenant` refuses a membership that is `INVITED` *or* `REMOVED`,
+   and its docblock makes a point of it. `actorAuthority` filters only on `deletedAt: null`, and the
+   `Membership_status_deletedAt_agree_check` biconditional ties `deletedAt` to `REMOVED` only — an
+   `INVITED` row has `deletedAt IS NULL` and would resolve here, granting its role's permissions.
+   **Unreachable today**, because nothing writes `'INVITED'`:
+
+       $ grep -rn "'INVITED'" apps/api/src packages/db --include=*.ts | grep -v spec
+       apps/api/src/modules/invitations/invitations.controller.ts:73,74   (a comment saying exactly this)
+       apps/api/src/modules/memberships/membership.service.ts:215          (a type union)
+
+   That is a claim about the data, and by ruling 128 it belongs written down next to the predicate
+   that depends on it. `actorAuthority`'s docblock explains `deletedAt: null` at length and does not
+   mention `status`.
+
+**What I did verify by measurement: `deletedAt: null` is load-bearing and is pinned.** Dropping it:
+
+    // where: { id: ctx.membershipId, organizationId: ctx.organizationId }   <- deletedAt removed
+    $ npx vitest run --project integration --no-file-parallelism \
+        apps/api/src/modules/invitations/invitations.integration.spec.ts
+    MUT6 EXIT=1
+      × the actor's authority is re-read (ADR-0026) > refuses when the actor's membership is gone
+        by the time the transaction runs
+      Tests 1 failed | 35 passed (36)
+    $ git checkout apps/api/src/modules/invitations/
+
+So the brief's question — "is `deletedAt: null` load-bearing there?" — is answered yes, by
+measurement, and the suite protects it. `ctx.membershipId` is also the right key: `resolveTenant`
+sets it from the **live** membership row (`tenant-context.ts:127`), so a member removed and re-added
+gets a new row with a new id and a stale context resolves nothing and is refused — fail-closed, and
+the same outcome as removal.
+
+**Cost if left.** Item 2 is the material one and it is small: one extra request's worth of writes
+into an organisation being suspended, on the same window as Finding 4 and closed by the same fix.
+Item 3 costs nothing today and costs a privilege bug the day someone writes `'INVITED'`.
