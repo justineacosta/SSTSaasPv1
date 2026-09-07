@@ -8,24 +8,24 @@ Fresh adversarial reviewer, 2026-09-07. Branch `feat/phase-2-task-17-app-shell`,
 
 Written incrementally from the first minutes and committed as it went (ruling 131).
 
-## Status: IN PROGRESS
+## Status: COMPLETE
 
 A second reviewer picked this up on 2026-09-07 after the first was ended by a session limit
-partway through. It did not redo the first reviewer's work; the sections below say who did what.
+partway through. It did not redo the first reviewer's work; the table below says who did what.
+Every section of the review brief has now been covered.
 
-## Pass 1 — citation (COMPLETE — reviewer 1)
+| Brief section | State | By |
+|---|---|---|
+| Pass 1 — citation | **COMPLETE** — every reported number reproduces | reviewer 1 |
+| §1 cross-user isolation | **COMPLETE** — seven attack probes, all repelled | reviewer 1 |
+| §2 the audit deviation | **COMPLETE** — facts, then the explicit verdict (ACCEPT) | facts reviewer 1, verdict reviewer 2 |
+| §3 the rate-limit choice | **COMPLETE** — finding C-3 | reviewer 1 |
+| §4 the frontend | **COMPLETE** — findings C-4, C-5, C-6 | reviewer 2 |
+| §5 documentation made false | **COMPLETE** — finding C-7 | reviewer 2 |
 
-## Pass 2 — code (IN PROGRESS — reviewer 2)
+## Findings: C-1 to C-3 (reviewer 1), C-4 to C-7 (reviewer 2). Summary table at the end of this file.
 
-- §1 cross-user isolation — **complete** (reviewer 1, seven probes)
-- §2 the audit deviation — facts complete (reviewer 1); **verdict written** (reviewer 2)
-- §3 the rate-limit choice — complete (reviewer 1, finding C-3)
-- §4 the frontend — **reviewer 2**
-- §5 documentation made false — **reviewer 2**
-
-## Findings (C-1..C-3 reviewer 1; C-4 onward reviewer 2)
-
-## Checked and found fine (in progress)
+## Checked and found fine: reviewer 1's list is in its Pass 1 section; reviewer 2's is under "Checked and found FINE" near the end.
 
 ---
 
@@ -771,3 +771,127 @@ accurate sentence is "the Redis half cannot be in a Postgres transaction; the Po
 be, and is not, because `revokeById` takes no transaction handle." That is a correction to a
 justification, not a defect in behaviour, and it belongs to whoever next touches Task 6's
 revocation path. **Recorded, not fixed — this reviewer fixes nothing.**
+
+---
+
+# Checked and found FINE — reviewer 2
+
+A review reporting only problems gives no signal about coverage. Everything below was opened,
+run, or counted, and is **not** a finding.
+
+## The 401 → login redirect (brief §4)
+
+| Check | Result |
+|---|---|
+| `git diff 5dbab4e..HEAD -- apps/web/src/api/redirect.ts` | **0 bytes.** `safeRedirectPath` is untouched, including the output re-check Task 16's review added |
+| Is there a second helper? | **No.** `AppShell.tsx:97` is `router.replace(loginHrefForDestination(pathname))` and `:88` is `isSessionExpiry(query.error)` — Task 16's two functions, imported from `../api/redirect` at `:9` |
+| Can the shell route around `safeRedirectPath`? | **No.** `grep -rn "router\.(replace\|push)\|window\.location\|redirect(" apps/web/src apps/web/app` (non-spec) returns six lines: the one above; `AppShell.tsx:167`'s `router.replace('/login')` on sign-out, a **string literal** with no input in it; and four pre-existing lines in `src/auth/` from Task 16. **No `window.location` assignment anywhere in `apps/web`** |
+| Does the redirect run during render? | No — `useEffect` at `:94-98`, with the reason written on it. `if (query.isPending \|\| expired) return <ShellSkeleton />` at `:100` means the shell chrome is never painted for an expired session |
+| Is the destination validated on the way in? | Yes, by `loginHrefForDestination` itself (`redirect.ts:110`, `safeRedirectPath(destination, '')`) |
+
+One observation, not a finding and not measured here: `usePathname()` yields the path without the
+query string, so a destination like `/settings/members?invite=1` returns as `/settings/members`.
+That loses a little context on return; it cannot loosen `safeRedirectPath`, because a value the
+validator never sees cannot get past it.
+
+## The `qrcode` dependency (brief §4)
+
+| Check | Measurement |
+|---|---|
+| Encoding only, no library output into an HTML parser | `grep -rn "qrcode" apps/web/src apps/web/app` returns **one import**: `import { create as createQrCode } from 'qrcode'` (`QrCode.tsx:3`). No `toString`, no `toDataURL`, no `toCanvas`. `grep -rn "dangerouslySetInnerHTML\|innerHTML" apps/web/src apps/web/app packages/ui/src` returns **two lines, neither of them markup**: the `QrCode.tsx:25` docblock explaining why it is not used, and a `Button.spec.tsx` assertion about hex colours. The modules are rendered as React `<rect>` elements (`QrCode.tsx:74-83`) |
+| ADR-0013's 1440-minute floor | **Satisfied, not bypassed.** `git diff 5dbab4e..HEAD -- pnpm-workspace.yaml` → **0 bytes**; `pnpm-workspace.yaml:32` is `minimumReleaseAge: 1440` and `:34` reads "minimumReleaseAgeExclude is deliberately absent" |
+| Did the `--ignore-scripts` install leave the lockfile honest? | **Yes.** Backed up `pnpm-lock.yaml`, ran `pnpm install --lockfile-only --ignore-scripts`, and `git diff --stat -- pnpm-lock.yaml` was **empty** — the committed lockfile is exactly what a clean resolve produces. `pnpm install --frozen-lockfile --lockfile-only` exits **0** |
+| Known vulnerabilities introduced | **None.** `pnpm audit --json` reports 16 advisories, and every one resolves through `testcontainers`, `@prisma/config` or `@nestjs/platform-express`. **No advisory path contains `qrcode` or any of its dependencies** |
+
+**One thing worth the orchestrator's attention, reported rather than filed as a finding.**
+`qrcode@1.5.4` brings **17 transitive packages**, and most of them are its CLI's, not its
+encoder's: `yargs@15.4.1`, `yargs-parser@18.1.3`, `cliui@6.0.0`, `wrap-ansi@6.2.0`, `y18n@4.0.3`,
+`which-module`, `set-blocking`, `require-main-filename`, `camelcase@5.3.1`, `decamelize@1.2.0`,
+`find-up@4.1.0`, `locate-path@5.0.0`, `p-limit@2.3.0`, `p-locate@4.1.0`, `p-try@2.2.0`, plus
+`pngjs@5.0.0` and `dijkstrajs@1.0.3` (18 new lockfile entries counting `qrcode` itself). That is
+supply-chain surface the docblock's justification does not mention.
+
+**None of it reaches the browser**, which is the part that matters and which nobody had measured.
+Against the build output already in the tree:
+
+```
+$ cd apps/web/.next/static && for t in yargs pngjs dijkstrajs y18n camelcase; do
+    echo "$t -> $(grep -rl "$t" . | wc -l) file(s)"; done
+yargs -> 0 file(s)     pngjs -> 0 file(s)      dijkstrajs -> 0 file(s)
+y18n  -> 0 file(s)     camelcase -> 0 file(s)
+```
+
+and the encoder itself did ship — `chunks/146xtzbi7grur.js`, 40,777 bytes, is the chunk carrying
+it. So the cost is a ~40 KB client chunk and 17 packages in the dependency graph, not 17 packages
+in the bundle. Report item 7 ("nothing measured its cost") is now measured.
+
+## Recovery codes (brief §4)
+
+`RecoveryCodes.tsx:15-16` exports the sentence as a constant rather than burying it in JSX:
+
+> `These codes will not be shown again. Save them now — each one signs you in once if you lose your
+> authenticator.`
+
+It is rendered in a `warning` `<Alert>` above the codes (`:41-43`), and the report's mutation 10
+(removing it) killed **three** tests across two files. That is a plain statement, in the required
+words, in the required place. Nothing sends a code anywhere: no `fetch`, no logging, no analytics
+in that file.
+
+One wart, not a finding: the download handler calls `URL.revokeObjectURL(url)` on the line after
+`anchor.click()` (`:88-92`). Revoking a blob URL synchronously after a programmatic click is a
+known-flaky pattern in some browsers. It is a functional risk on a convenience button, not a
+security one, and the codes are on screen and copyable regardless.
+
+## `/dashboard` (brief §4)
+
+No mock product UI. The page renders one heading ("There is no product here yet."), one warning
+alert naming Phase 2, and two paragraphs of links to `/settings/security` and `/settings/members`.
+**No metric tile, no chart, no seeded table, no number of any kind.** The docblock at
+`dashboard/page.tsx:22-24` states the rule and `e2e/app-shell.spec.ts:133` ("the dashboard still
+refuses to invent a product") is the test. The copy change is scoped to what became true —
+the Phase 2 identity sentence — and the "no asset, no scope, no scan and no finding" sentence, which
+is still true, stays.
+
+Its one inaccuracy is folded into **C-5**: "Invite people, change their roles and remove them on
+Members" is told to every user, including those the API will refuse.
+
+## The organisation-switch cache clear, the parts that DO work
+
+Both shipped `OrganizationSwitcher.spec.tsx` assertions reproduce and the store really is emptied
+— including keys that never named an organisation, which is the case a selective invalidation
+would miss. Next's router cache holds no tenant data to clear (every `(app)` page fetches
+client-side per ADR-0025; all four files read). An in-flight request that resolves after the
+switch does not repopulate anything — reviewer probe P3 ended with the cache empty and neither
+tenant's row on screen. The failure is only in the repaint, and it is **C-4**.
+
+## Housekeeping
+
+The three reviewer probe files (`apps/web/src/app/reviewer-cache.spec.tsx`,
+`apps/web/src/app/reviewer-observer.spec.tsx`, `apps/web/src/settings/reviewer-members.spec.tsx`)
+were deleted before this commit. `git status --short` is empty apart from this file, and
+`pnpm check:specs` exits **0** reporting **144 spec files** — the same number the citation pass
+recorded, so nothing of the reviewer's is left behind.
+
+---
+
+# Summary — reviewer 2's findings
+
+| # | Severity | What |
+|---|---|---|
+| C-4 | **High** | `queryClient.clear()` empties the cache without repainting; after an organisation switch the shell renders the previous organisation's name, permission set and page data until the user navigates or reloads |
+| C-7 | **Medium** | The report's "documentation this makes false" list misses `security/abuse-prevention.md` entirely, wrongly says nothing is owed on `security/audit.md`, and gets two counts wrong (11→14 `@AuthenticatedOnly()` routes, not 1→4; §7's table should read eighteen, not seventeen) |
+| C-5 | **Low** | `/settings/members` tells a member without `organization.manage_members` they "can see who belongs to this organisation" — both list routes 403 — and reports the 403 as "Try reloading the page" |
+| C-6 | — | `usePermission` / `<Can>`: **fine**, docstring in the required words, no code path treats either as a control, all four gated affordances refused server-side |
+| §2 | — | **Rule-10 deviation: ACCEPTED.** One sentence of its justification is overstated — the Postgres half of the transaction was expressible |
+
+## Not reached by either reviewer
+
+- **`MfaPanel`, `PasswordPanel` and `SecurityScreen` were not read line by line.** Reviewer 2 read
+  `RecoveryCodes.tsx` and `QrCode.tsx` in full because the brief named them, and read
+  `MembersScreen.tsx`, `AppShell.tsx`, `OrganizationSwitcher.tsx` and `session-context.tsx` in full.
+  The three MFA/password panels were checked only for what the brief asked about them.
+- **No mutation testing of reviewer 2's own** beyond the three probes described. The report's
+  eleven mutations were not re-run; reviewer 1 re-ran the decisive one (7/7b).
+- **Nothing was seen in a browser**, which the report already states as outstanding. C-4 in
+  particular would be obvious in thirty seconds of clicking, and no automated test in this
+  repository is positioned to catch it.
