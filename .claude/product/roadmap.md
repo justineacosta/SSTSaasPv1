@@ -2840,6 +2840,19 @@ is recorded because this file relies on the same device in several places.
 - **`/settings/security` cannot say whether MFA is currently on**, because no endpoint reports it.
   The panel offers all three operations and renders the API's refusals rather than inventing a
   state.
+- **THE INVITATION JOURNEY CANNOT BE COMPLETED THROUGH THE PRODUCT, AND A LIVE INVITATION 404s
+  TODAY.** Found on 2026-09-07 by the operator clicking the link in a real invitation email, which
+  is the only way it could have been found: no test follows a link out of an inbox.
+  `TOKEN_LINK_PATHS` in `apps/api/src/modules/auth/emails/links.ts:38-42` settled three paths in
+  Task 5 and its docblock calls them "the contract with the Task 16 screens that will read the
+  token". **Task 16 built two of the three** — `/verify-email` and `/reset-password` — and
+  `/accept-invitation` was on neither Task 16's nor Task 17's checklist, so it fell between them.
+  The API half has worked since Task 15 (`POST /api/v1/invitations/accept`); only the screen is
+  missing. **`ui-ux/page-map.md` also had the path wrong** — it said `/invitations/[token]` — and
+  the mail template is the authority rather than the map, because its URLs are already in people's
+  inboxes and cannot be changed retroactively. The page map is corrected in this change. Measured:
+  `GET /accept-invitation?token=… -> 404`, against a real pending `ADMIN` invitation
+  (`inv_01M1XXXG76F1AVNKZB2DG8TVQE`).
 - Carried forward untouched: **Task 15's `OWNER`-invitation window**, now three tasks old.
 
 ### Phase 3 — SaaS core

@@ -1165,6 +1165,15 @@ Full reasoning in [`task-10/review.md`](task-10/review.md),
      and 90). **The cite-before-you-claim rule caught the orchestrator this time**, which is the
      first time in this phase it has run in that direction. A brief is not evidence.
 
+143. **A path named as "the contract with a later task's screens" is not a work item until a
+     brief lists it.** `TOKEN_LINK_PATHS` settled three token-link paths in Task 5, with a docblock
+     calling them the contract with "the Task 16 screens that will read the token". Task 16's
+     checklist listed six screens, `/accept-invitation` was not among them, and Task 17's was about
+     the app shell — so it fell between two tasks that each had a complete-looking list. **Cost: a
+     real invitation email 404s, and it was found by the operator clicking a link rather than by
+     any test, because nothing here follows a link out of an inbox.** When a docblock says another
+     task will build something, check that that task's brief actually says so.
+
 142. **Accept a documented deviation from a rule on its merits, and correct its justification
      separately.** Session revocation writes its audit row *after* the change rather than in the
      same transaction, against `CLAUDE.md` rule 10. Accepted: on process death the session is dead
@@ -1261,6 +1270,16 @@ on the query engine, kill the dev server first.**
    and the roadmap.** It is the phase gate and the orchestrator does it directly. It is also the
    only task that can close the phase's "full authentication journey passes E2E" exit criterion,
    which needs an automated suite with a live API behind it — a manual pass does not satisfy it.
+
+**A LIVE INVITATION EMAIL 404s, AND TASK 18 SHOULD NOT BE THE FIRST TO NOTICE.** Found on
+2026-09-07 by the operator clicking the link in a real invitation, which is the only way it could
+have been found — no test in this repository follows a link out of an inbox. `TOKEN_LINK_PATHS`
+(`apps/api/src/modules/auth/emails/links.ts:38-42`) settled three paths in Task 5 and calls them
+"the contract with the Task 16 screens that will read the token". **Task 16 built two of the
+three.** `/accept-invitation` appeared on neither Task 16's nor Task 17's checklist, so it fell
+between them; the API half has worked since Task 15. Ruling **143**: *a contract named in a
+docblock is not a checklist item until some task's brief lists it, and "the screens that will read
+the token" named no task that was obliged to build them.*
 
 **Still open and older than this task: Task 15's `OWNER`-invitation window**, now three tasks old.
 An invitation offering `OWNER` survives its issuer's removal and still mints an `OWNER`. Its owner
