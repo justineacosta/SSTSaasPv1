@@ -8,7 +8,7 @@ import {
   type ErrorEnvelope,
   type SystemRole,
 } from '@sentinel/contracts';
-import { newId, seedReferenceData } from '@sentinel/db';
+import { newId, seedReferenceData, withTenantTransaction } from '@sentinel/db';
 import type { PrismaClient } from '@sentinel/db/unscoped';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -16,7 +16,12 @@ import { clearRateLimits, startAuthHarness, type AuthHarness } from '../../testi
 import { CSRF_HEADER } from '../../common/guards/csrf.guard.js';
 import { SESSION_COOKIE_NAME } from '../auth/cookies.js';
 import { deriveCsrfToken } from '../auth/csrf-token.js';
-import { mintSecretToken } from '../auth/secret-token.js';
+import { hashSecretToken, mintSecretToken } from '../auth/secret-token.js';
+import { PRISMA } from '../../infrastructure/tokens.js';
+import {
+  INVITATION_REVOCATION_CASCADE,
+  type InvitationRevocationCascade,
+} from './memberships.tokens.js';
 
 /**
  * THE THREE MEMBERSHIP ROUTES AND `GET /api/v1/roles`, AGAINST REAL ROW-LEVEL
@@ -170,6 +175,64 @@ const csrf = (actor: Actor): Record<string, string> => ({
 
 const membersPath = (organizationId: string): string =>
   `/api/v1/organizations/${organizationId}/members`;
+
+/**
+ * An invitation written straight into the table.
+ *
+ * The cascade this file tests is driven by `invitedByUserId` and by the offered
+ * role, and both are fixture data — going through
+ * `POST /organizations/:id/invitations` for each one would spend the 50/day
+ * organisation rate limit and would make every case here depend on another
+ * module's endpoint. The token is derived from the id rather than minted, and
+ * deliberately not in `mintSecretToken`'s shape, so a fixture token can never
+ * be mistaken for a real credential in a failure message. The same fixture
+ * `invitations.integration.spec.ts` uses, for the same reasons.
+ */
+async function invitation(options: {
+  organizationId: string;
+  invitedByUserId: string;
+  role?: SystemRole;
+  email?: string;
+  acceptedAt?: Date;
+  revokedAt?: Date;
+}): Promise<string> {
+  const role = await owner.role.findUniqueOrThrow({
+    where: { key: options.role ?? 'MEMBER' },
+    select: { id: true },
+  });
+  const id = newId('inv');
+  await owner.invitation.create({
+    data: {
+      id,
+      organizationId: options.organizationId,
+      email: options.email ?? `cascade-${unique()}@example.test`,
+      roleId: role.id,
+      tokenHash: hashSecretToken(`fixture-${id}`),
+      invitedByUserId: options.invitedByUserId,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      acceptedAt: options.acceptedAt ?? null,
+      revokedAt: options.revokedAt ?? null,
+    },
+    select: { id: true },
+  });
+  return id;
+}
+
+const revokedAtOf = async (invitationId: string): Promise<Date | null> =>
+  (
+    await owner.invitation.findUniqueOrThrow({
+      where: { id: invitationId },
+      select: { revokedAt: true },
+    })
+  ).revokedAt;
+
+const revocationEvents = async (
+  organizationId: string,
+): Promise<{ resourceId: string | null; actorId: string | null; metadata: unknown }[]> =>
+  owner.auditEvent.findMany({
+    where: { organizationId, action: 'INVITATION_REVOKED' },
+    select: { resourceId: true, actorId: true, metadata: true },
+  });
 
 describe('GET /api/v1/organizations/:id/members', () => {
   it('lists the live memberships of the organisation the session is acting in', async () => {
@@ -978,5 +1041,318 @@ describe('GET /api/v1/roles', () => {
 
     expect(response.status).toBe(404);
     expect(codeOf(response.body)).toBe('RESOURCE_NOT_FOUND');
+  });
+});
+
+/**
+ * ADR-0026 — AN INVITATION IS REVOKED WHEN ITS ISSUER LOSES THE AUTHORITY THAT
+ * CREATED IT.
+ *
+ * The defect these cases close was measured end to end in
+ * `invitations.integration.spec.ts` and pinned there by
+ * `D9 — CLOSED BY ADR-0026: an invitation does NOT outlive its issuer’s authority`,
+ * which is the acceptance side of the same rule. This block is the membership
+ * side: what the two writes that take authority away do to the invitations the
+ * subject issued.
+ *
+ * Every assertion here reads the `Invitation` rows through the owner client
+ * rather than through an endpoint, because the property is "the column moved
+ * inside that transaction" and no membership route reports it in a form a
+ * removal's 204 could carry.
+ */
+describe('the invitation cascade on a membership write (ADR-0026)', () => {
+  it('revokes every live invitation the removed member issued, and audits each one', async () => {
+    await clearRateLimits(harness.redis);
+    const { actor, organizationId } = await acting('OWNER');
+    const leaving = await user();
+    const leavingMembership = await membership({
+      organizationId,
+      userId: leaving.id,
+      role: 'OWNER',
+    });
+
+    // Two live ones, at different roles. UNCONDITIONAL is the rule for a
+    // removal (ADR-0026 §1): a removed member holds no role at all, so the
+    // `MEMBER` one goes with the `OWNER` one.
+    const liveOwner = await invitation({
+      organizationId,
+      invitedByUserId: leaving.id,
+      role: 'OWNER',
+    });
+    const liveMember = await invitation({
+      organizationId,
+      invitedByUserId: leaving.id,
+      role: 'MEMBER',
+    });
+    // Two that are already spent. The cascade must not touch either: an
+    // accepted invitation is a membership that exists, and re-stamping an
+    // already-revoked row would move a timestamp that records when a person
+    // revoked it.
+    const alreadyAccepted = await invitation({
+      organizationId,
+      invitedByUserId: leaving.id,
+      acceptedAt: new Date(),
+    });
+    const alreadyRevokedAt = new Date(Date.now() - 60_000);
+    const alreadyRevoked = await invitation({
+      organizationId,
+      invitedByUserId: leaving.id,
+      revokedAt: alreadyRevokedAt,
+    });
+
+    const response = await request(server)
+      .delete(`${membersPath(organizationId)}/${leavingMembership}`)
+      .set(csrf(actor));
+    expect(response.status, JSON.stringify(response.body)).toBe(204);
+
+    expect(await revokedAtOf(liveOwner)).not.toBeNull();
+    expect(await revokedAtOf(liveMember)).not.toBeNull();
+    expect(await revokedAtOf(alreadyAccepted)).toBeNull();
+    expect((await revokedAtOf(alreadyRevoked))?.getTime()).toBe(alreadyRevokedAt.getTime());
+
+    // ONE EVENT PER INVITATION, ON THE INVITATION'S OWN ID. Not one summary row
+    // on the `Membership`: `INVITATION_ACCEPTED`'s docblock gives the reason —
+    // a reader following one invitation from one end of its life to the other
+    // needs the event on that invitation's id.
+    const events = await revocationEvents(organizationId);
+    expect(events).toHaveLength(2);
+    expect(new Set(events.map((event) => event.resourceId))).toEqual(
+      new Set([liveOwner, liveMember]),
+    );
+    // The actor is the person who removed the issuer, not the issuer.
+    expect(new Set(events.map((event) => event.actorId))).toEqual(new Set([actor.userId]));
+    for (const event of events) {
+      expect(event.metadata).toMatchObject({ reason: 'ISSUER_REMOVED', issuerUserId: leaving.id });
+    }
+  });
+
+  it('leaves invitations issued by anybody else alone', async () => {
+    await clearRateLimits(harness.redis);
+    const { actor, organizationId } = await acting('OWNER');
+    const leaving = await user();
+    const leavingMembership = await membership({
+      organizationId,
+      userId: leaving.id,
+      role: 'ADMIN',
+    });
+    const staying = await user();
+    await membership({ organizationId, userId: staying.id, role: 'ADMIN' });
+
+    const theirs = await invitation({ organizationId, invitedByUserId: leaving.id, role: 'ADMIN' });
+    // Issued by a colleague who is not going anywhere, and by the remover
+    // themselves. A cascade whose predicate lost `invitedByUserId` would take
+    // both, and would still pass a test that only asserted the removed
+    // member's own invitation was gone.
+    const colleagues = await invitation({
+      organizationId,
+      invitedByUserId: staying.id,
+      role: 'ADMIN',
+    });
+    const removers = await invitation({
+      organizationId,
+      invitedByUserId: actor.userId,
+      role: 'OWNER',
+    });
+
+    const response = await request(server)
+      .delete(`${membersPath(organizationId)}/${leavingMembership}`)
+      .set(csrf(actor));
+    expect(response.status, JSON.stringify(response.body)).toBe(204);
+
+    expect(await revokedAtOf(theirs)).not.toBeNull();
+    expect(await revokedAtOf(colleagues)).toBeNull();
+    expect(await revokedAtOf(removers)).toBeNull();
+    expect(await revocationEvents(organizationId)).toHaveLength(1);
+  });
+
+  it('revokes only the invitations a demoted member could no longer issue', async () => {
+    await clearRateLimits(harness.redis);
+    const { actor, organizationId } = await acting('OWNER');
+    const demoted = await user();
+    const demotedMembership = await membership({
+      organizationId,
+      userId: demoted.id,
+      role: 'OWNER',
+    });
+
+    const asOwner = await invitation({
+      organizationId,
+      invitedByUserId: demoted.id,
+      role: 'OWNER',
+    });
+    const asAdmin = await invitation({
+      organizationId,
+      invitedByUserId: demoted.id,
+      role: 'ADMIN',
+    });
+    const asMember = await invitation({
+      organizationId,
+      invitedByUserId: demoted.id,
+      role: 'MEMBER',
+    });
+
+    const response = await request(server)
+      .patch(`${membersPath(organizationId)}/${demotedMembership}`)
+      .set(csrf(actor))
+      .send({ roleKey: 'MEMBER' });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+
+    // The comparison is `assertActorMayGrant`'s — a SET comparison against the
+    // seeded `RolePermission` rows, not a ranking. The `MEMBER` invitation
+    // survives because a `MEMBER` could still issue it today.
+    expect(await revokedAtOf(asOwner)).not.toBeNull();
+    expect(await revokedAtOf(asAdmin)).not.toBeNull();
+    expect(await revokedAtOf(asMember)).toBeNull();
+
+    const events = await revocationEvents(organizationId);
+    expect(events).toHaveLength(2);
+    expect(new Set(events.map((event) => event.resourceId))).toEqual(new Set([asOwner, asAdmin]));
+    for (const event of events) {
+      expect(event.metadata).toMatchObject({ reason: 'ISSUER_DEMOTED', issuerUserId: demoted.id });
+    }
+  });
+
+  it('revokes nothing on a promotion', async () => {
+    await clearRateLimits(harness.redis);
+    const { actor, organizationId } = await acting('OWNER');
+    const promoted = await user();
+    const promotedMembership = await membership({
+      organizationId,
+      userId: promoted.id,
+      role: 'MEMBER',
+    });
+    const theirs = await invitation({
+      organizationId,
+      invitedByUserId: promoted.id,
+      role: 'MEMBER',
+    });
+
+    const response = await request(server)
+      .patch(`${membersPath(organizationId)}/${promotedMembership}`)
+      .set(csrf(actor))
+      .send({ roleKey: 'ADMIN' });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+
+    // The subset test passes, so nothing is revoked — ADR-0026 rejects
+    // "revoke on any membership change" as theatre that costs invitees real
+    // work.
+    expect(await revokedAtOf(theirs)).toBeNull();
+    expect(await revocationEvents(organizationId)).toHaveLength(0);
+  });
+
+  it('revokes nothing on a role change to the role the member already holds', async () => {
+    await clearRateLimits(harness.redis);
+    const { actor, organizationId } = await acting('OWNER');
+    const unchanged = await user();
+    const unchangedMembership = await membership({
+      organizationId,
+      userId: unchanged.id,
+      role: 'ADMIN',
+    });
+    const theirs = await invitation({
+      organizationId,
+      invitedByUserId: unchanged.id,
+      role: 'ADMIN',
+    });
+
+    // `updateRole`'s docblock: a role change to the role already held is
+    // applied and audited rather than refused. Equal sets, so the cascade must
+    // find nothing.
+    const response = await request(server)
+      .patch(`${membersPath(organizationId)}/${unchangedMembership}`)
+      .set(csrf(actor))
+      .send({ roleKey: 'ADMIN' });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+
+    expect(await revokedAtOf(theirs)).toBeNull();
+    expect(await revocationEvents(organizationId)).toHaveLength(0);
+  });
+
+  it('revokes only in the organisation the member was removed from', async () => {
+    await clearRateLimits(harness.redis);
+    const here = await acting('OWNER');
+    const elsewhere = await acting('OWNER');
+    const consultant = await user();
+    const hereMembership = await membership({
+      organizationId: here.organizationId,
+      userId: consultant.id,
+      role: 'ADMIN',
+    });
+    await membership({
+      organizationId: elsewhere.organizationId,
+      userId: consultant.id,
+      role: 'ADMIN',
+    });
+
+    const revoked = await invitation({
+      organizationId: here.organizationId,
+      invitedByUserId: consultant.id,
+      role: 'ADMIN',
+    });
+    const survives = await invitation({
+      organizationId: elsewhere.organizationId,
+      invitedByUserId: consultant.id,
+      role: 'ADMIN',
+    });
+
+    const response = await request(server)
+      .delete(`${membersPath(here.organizationId)}/${hereMembership}`)
+      .set(csrf(here.actor));
+    expect(response.status, JSON.stringify(response.body)).toBe(204);
+
+    // `organizationId` is in the cascade's predicate even though RLS would
+    // refuse the other tenant's row anyway. Three layers, all stated, for the
+    // reason every other statement in these two files gives.
+    expect(await revokedAtOf(revoked)).not.toBeNull();
+    expect(await revokedAtOf(survives)).toBeNull();
+    expect(await revocationEvents(elsewhere.organizationId)).toHaveLength(0);
+  });
+
+  it('writes the revocations inside the caller’s transaction, so a later failure undoes them', async () => {
+    // WHAT THIS PROVES, EXACTLY: the cascade takes the caller's transaction
+    // handle and opens none of its own, so `CLAUDE.md` rule 10 and
+    // `security/audit.md` §2 hold — the invitation's `revokedAt` and its audit
+    // row live or die with whatever else that transaction did.
+    //
+    // It drives the port directly rather than through
+    // `DELETE .../members/:membershipId`, and that is a deliberate limit on the
+    // claim: nothing in `MembershipService.remove` after the cascade can be
+    // made to fail deterministically from outside the process, so a test that
+    // went through the endpoint would be asserting an ordering it could not
+    // arrange. The port is the thing both membership writes call.
+    await clearRateLimits(harness.redis);
+    const { actor, organizationId } = await acting('OWNER');
+    const issuer = await user();
+    await membership({ organizationId, userId: issuer.id, role: 'ADMIN' });
+    const theirs = await invitation({
+      organizationId,
+      invitedByUserId: issuer.id,
+      role: 'ADMIN',
+    });
+
+    const cascade = harness.app.get<InvitationRevocationCascade>(INVITATION_REVOCATION_CASCADE);
+    const base = harness.app.get<Parameters<typeof withTenantTransaction>[0]>(PRISMA);
+
+    await expect(
+      withTenantTransaction(base, organizationId, async (tx) => {
+        const revokedIds = await cascade(tx, {
+          organizationId,
+          issuerUserId: issuer.id,
+          actorUserId: actor.userId,
+          reason: 'ISSUER_REMOVED',
+          retainedPermissions: null,
+          ip: null,
+          userAgent: null,
+          requestId: null,
+        });
+        // The cascade did do the work — otherwise the assertions below would
+        // pass over a no-op and prove nothing about the rollback.
+        expect(revokedIds).toEqual([theirs]);
+        throw new Error('rolled back on purpose');
+      }),
+    ).rejects.toThrow('rolled back on purpose');
+
+    expect(await revokedAtOf(theirs)).toBeNull();
+    expect(await revocationEvents(organizationId)).toHaveLength(0);
   });
 });
