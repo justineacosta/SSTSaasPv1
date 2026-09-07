@@ -173,6 +173,18 @@ async function lockInvitationSlot(
 }
 
 /**
+ * The permission every route on `InvitationsController` declares, named once
+ * here so `actorAuthority` re-checks the same string `@RequirePermission` puts
+ * on the handler.
+ *
+ * It is a second copy of that string rather than something derived from the
+ * decorator's metadata, and that is deliberate: reading the metadata would make
+ * this function agree with the guard by construction and therefore incapable of
+ * disagreeing with a wrong guard. The two are held together by a test instead.
+ */
+const ROUTE_PERMISSION = 'organization.manage_members' satisfies Permission;
+
+/**
  * ADR-0026 §3 — THE ACTOR'S AUTHORITY AS THE DATABASE HOLDS IT *NOW*, NOT AS
  * THE GUARD FOUND IT.
  *
@@ -200,6 +212,39 @@ async function lockInvitationSlot(
  * `assertActorMayGrant` compares two sets of `Permission`; a seeded row naming
  * something the contract does not know is not a permission this process can
  * reason about, and an `as` here would have made it one silently.
+ *
+ * # THE ROUTE'S OWN PERMISSION IS RE-CHECKED TOO, NOT ONLY THE NO-MINTING RULE
+ *
+ * The first version of this function re-read the actor's role and then handed
+ * it straight to `assertActorMayGrant`, which asks only "may they grant *this*
+ * role". `AuthorizationGuard` had separately decided
+ * `organization.manage_members` — before the handler ran, from the row the
+ * guard saw. So a member demoted `OWNER` → `MEMBER` while their `create` was in
+ * flight was refused an `OWNER` invitation and **allowed** a `MEMBER` one,
+ * although `MEMBER` does not carry `organization.manage_members` and the next
+ * request from that session would be refused at the door. The implementer
+ * disclosed this as residual risk 1 rather than closing it; the D9 review
+ * recorded it as Finding 11's disclosed half. With the organisation lock above
+ * the window is narrow, and a check that is right is cheaper than a window that
+ * is small.
+ *
+ * So the route's declared permission is asserted against the live set as well.
+ * `ROUTE_PERMISSION` is the same string `@RequirePermissions` puts on the
+ * controller method — the two are not derived from one another, and the test
+ * `an actor demoted out of `organization.manage_members` mid-flight is refused`
+ * is what holds them together.
+ *
+ * # WHAT IS STILL NOT RE-READ, AND IT IS DELIBERATE
+ *
+ * `resolveTenant` decides four things; this re-reads two of them. It does
+ * **not** re-read the organisation's suspension state, and it does not check
+ * `status === 'ACTIVE'` on the membership row. Both are recorded in the D9 fix
+ * round's report as residuals with their reasons: suspension is a different
+ * control with its own lifecycle and widening this function into it belongs to
+ * that control's change, and `'INVITED'` is unwritable by anything in this
+ * codebase today — `deletedAt: null` is what separates a live row from a
+ * removed one, and the `Membership_status_deletedAt_agree_check` biconditional
+ * ties `deletedAt` to `REMOVED`.
  */
 async function actorAuthority(tx: TenantTransaction, ctx: TenantContext): Promise<TenantContext> {
   const actor = await tx.membership.findFirst({
@@ -214,9 +259,9 @@ async function actorAuthority(tx: TenantTransaction, ctx: TenantContext): Promis
   // permission the caller has just stopped holding rather than inventing a
   // second refusal shape. Same `PERMISSION_DENIED` envelope
   // `AuthorizationGuard` and `assertActorMayGrant` produce.
-  if (actor === null) throw permissionDenied('organization.manage_members', ctx);
+  if (actor === null) throw permissionDenied(ROUTE_PERMISSION, ctx);
 
-  return {
+  const live: TenantContext = {
     ...ctx,
     roleKey: actor.role.key,
     permissions: new Set<Permission>(
@@ -225,6 +270,14 @@ async function actorAuthority(tx: TenantTransaction, ctx: TenantContext): Promis
         .filter((key): key is Permission => (PERMISSIONS as readonly string[]).includes(key)),
     ),
   };
+
+  // The route's own permission, against the live set. `live` rather than `ctx`
+  // is what the refusal is built from, so `yourRole` names the role the
+  // database holds now instead of the one the guard saw — the same reason the
+  // returned context replaces `roleKey`.
+  if (!live.permissions.has(ROUTE_PERMISSION)) throw permissionDenied(ROUTE_PERMISSION, live);
+
+  return live;
 }
 
 /**
