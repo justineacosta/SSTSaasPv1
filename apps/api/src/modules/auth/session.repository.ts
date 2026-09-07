@@ -73,6 +73,31 @@ interface SessionWhere {
 }
 
 /**
+ * The predicate ONE PAGE OF `/settings/security`'s session list is built from,
+ * and it is deliberately a separate type from `SessionWhere` above.
+ *
+ * Keyset pagination needs `OR`, a `lastSeenAt` comparison and a `status`
+ * filter, and none of those may leak into `SessionWhere`: that type is what
+ * `updateMany` takes, and an `OR` available there is the shape of an accidental
+ * revoke-everybody. Two types is what keeps the revocation predicates as narrow
+ * as they were before this task.
+ *
+ * `revokedAt: null` and `status: 'ACTIVE'` are **required**, not optional, so a
+ * page cannot be expressed that includes a revoked session or a `PENDING_MFA`
+ * one. The expiry clocks are required for the same reason: a session past
+ * either of them cannot authenticate a request, so listing it under the heading
+ * "active sessions" would be a false statement the user might act on.
+ */
+interface SessionPageWhere {
+  readonly userId: string;
+  readonly revokedAt: null;
+  readonly status: SessionStatus;
+  readonly idleExpiresAt: { gt: Date };
+  readonly absoluteExpiresAt: { gt: Date };
+  readonly OR?: [{ lastSeenAt: { lt: Date } }, { lastSeenAt: Date; id: { lt: string } }];
+}
+
+/**
  * The slice of Prisma this repository uses — the same narrow-port shape
  * `TokenService`'s `VerificationTokenStore` uses, for the same reason: handing
  * a service the whole `PrismaClient` makes every spec that touches it either a
@@ -87,7 +112,11 @@ interface SessionWhere {
 interface SessionDelegate {
   create(args: { data: SessionCreateData }): Promise<unknown>;
   findUnique(args: { where: { tokenHash: string } | { id: string } }): Promise<SessionRow | null>;
-  findMany(args: { where: SessionWhere }): Promise<readonly SessionRow[]>;
+  findMany(args: {
+    where: SessionWhere | SessionPageWhere;
+    orderBy?: [{ lastSeenAt: 'desc' }, { id: 'desc' }];
+    take?: number;
+  }): Promise<readonly SessionRow[]>;
   updateMany(args: {
     where: SessionWhere;
     data: { revokedAt?: Date; lastSeenAt?: Date; idleExpiresAt?: Date };
@@ -201,6 +230,55 @@ export class SessionRepository {
           : { activeOrganizationId: input.organizationId }),
         ...(input.exceptSessionId === undefined ? {} : { id: { not: input.exceptSessionId } }),
       },
+    });
+  }
+
+  /**
+   * ONE PAGE of a user's live sessions, most recently seen first.
+   *
+   * Served by `@@index([userId, lastSeenAt(sort: Desc)])`, whose comment in
+   * `schema.prisma` names this exact use case — "list / revoke a user's
+   * sessions for /settings/security".
+   *
+   * **Bounded, unlike `listLiveForUser` above.** That method is deliberately
+   * unbounded because its caller is bulk revocation, which needs the cache key
+   * of every affected session; this one is an endpoint, and `CLAUDE.md`'s
+   * "every list endpoint paginates" applies to it. `limit + 1` rows are
+   * fetched so the caller can report `hasMore` without a second `count`.
+   *
+   * **The id tie-breaker is not optional.** Two sessions can share a
+   * `lastSeenAt` to the microsecond — two tabs of one browser issuing a request
+   * in the same transaction window is the ordinary case, not the rare one — and
+   * a keyset on the timestamp alone silently skips or repeats those rows.
+   *
+   * The expiry clocks are in the predicate rather than filtered afterwards, so
+   * an expired session never occupies a slot in the page and cannot make a full
+   * page look short.
+   */
+  listPageForUser(input: {
+    userId: string;
+    now: Date;
+    limit: number;
+    cursor: { lastSeenAt: Date; id: string } | null;
+  }): Promise<readonly SessionRow[]> {
+    return this.store.session.findMany({
+      where: {
+        userId: input.userId,
+        revokedAt: null,
+        status: 'ACTIVE',
+        idleExpiresAt: { gt: input.now },
+        absoluteExpiresAt: { gt: input.now },
+        ...(input.cursor === null
+          ? {}
+          : {
+              OR: [
+                { lastSeenAt: { lt: input.cursor.lastSeenAt } },
+                { lastSeenAt: input.cursor.lastSeenAt, id: { lt: input.cursor.id } },
+              ] satisfies [{ lastSeenAt: { lt: Date } }, { lastSeenAt: Date; id: { lt: string } }],
+            }),
+      },
+      orderBy: [{ lastSeenAt: 'desc' }, { id: 'desc' }],
+      take: input.limit + 1,
     });
   }
 

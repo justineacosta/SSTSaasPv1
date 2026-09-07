@@ -220,6 +220,43 @@ export type RotateSessionInput = z.input<typeof rotateSessionInputSchema>;
  * which carries `userId` and `sessionId` and nothing else
  * (`packages/contracts/src/principal.ts`).
  */
+/**
+ * ONE LIVE SESSION AS A CALLER MAY SEE IT — and the projection is the control.
+ *
+ * `SessionRow` carries `tokenHash`. This does not, and the narrowing happens
+ * **here**, inside the service, rather than in the controller or in a response
+ * schema: by the time a row leaves this class the hashed credential is already
+ * gone, so a later handler cannot ship it by widening a `select` it never
+ * wrote. `sessionSummarySchema` in `packages/contracts` is the second line, not
+ * the first.
+ *
+ * Timestamps are `Date`s. Converting to the wire's ISO strings is the
+ * controller's, because `api/conventions.md` §3's format is a wire concern and
+ * this service has no wire.
+ */
+export interface OwnedSession {
+  readonly id: string;
+  readonly ip: string | null;
+  readonly userAgent: string | null;
+  readonly createdAt: Date;
+  readonly lastSeenAt: Date;
+}
+
+/** One page of {@link OwnedSession}, plus whether another page exists. */
+export interface OwnedSessionPage {
+  readonly sessions: readonly OwnedSession[];
+  readonly hasMore: boolean;
+}
+
+/**
+ * What became of a revocation aimed at one session id.
+ *
+ * `'NOT_FOUND'` covers two situations a caller must NOT be able to tell apart:
+ * an id that names no row at all, and an id that names somebody else's session.
+ * See `revokeOwned`.
+ */
+export type OwnedRevocation = 'REVOKED' | 'NOTHING_TO_REVOKE' | 'NOT_FOUND';
+
 export interface ResolvedSession {
   readonly id: string;
   readonly userId: string;
@@ -668,6 +705,86 @@ export class SessionService {
 
     await this.poison([row.tokenHash], 'revoke');
     return this.repository.revokeById(row.id, new Date());
+  }
+
+  /**
+   * ONE PAGE OF THE CALLER'S OWN LIVE SESSIONS, most recently seen first.
+   *
+   * `/settings/security`'s list, and the reason
+   * `@@index([userId, lastSeenAt(sort: Desc)])` exists — `schema.prisma`'s
+   * comment on it names this use case by name.
+   *
+   * **The `userId` is the caller's, taken from the resolved session, and it is
+   * not a filter a caller can influence.** `Session` is user-owned rather than
+   * tenant-owned, so no guard produces the isolation this list needs;
+   * `auth.sessions.integration.spec.ts` is what asserts it holds.
+   *
+   * The rows are projected to {@link OwnedSession} before they leave, so
+   * `tokenHash` does not reach the caller even as an unused property.
+   */
+  async listOwnedPage(input: {
+    userId: string;
+    limit: number;
+    cursor: { lastSeenAt: Date; id: string } | null;
+  }): Promise<OwnedSessionPage> {
+    const rows = await this.repository.listPageForUser({
+      userId: userIdSchema.parse(input.userId),
+      now: new Date(),
+      limit: input.limit,
+      cursor: input.cursor,
+    });
+
+    // `listPageForUser` asks for `limit + 1`; the extra row is the answer to
+    // "is there another page", and it is dropped rather than returned.
+    const hasMore = rows.length > input.limit;
+    const page = hasMore ? rows.slice(0, input.limit) : rows;
+
+    return {
+      sessions: page.map((row) => ({
+        id: row.id,
+        ip: row.ip,
+        userAgent: row.userAgent,
+        createdAt: row.createdAt,
+        lastSeenAt: row.lastSeenAt,
+      })),
+      hasMore,
+    };
+  }
+
+  /**
+   * Revokes one session **only if it belongs to the named user**.
+   *
+   * # `'NOT_FOUND'` is one answer for two situations, deliberately
+   *
+   * An id naming no row and an id naming somebody else's session both return
+   * `'NOT_FOUND'`, and the controller turns both into the same 404. Any
+   * distinguishable outcome — a 403, a different message, a measurably
+   * different latency — makes this route an oracle for "is this session id
+   * live", against every account in the product rather than only the caller's.
+   * `api/authorization.md` §3's "resource belongs to another tenant -> 404" is
+   * the same rule one ownership axis over.
+   *
+   * The ownership check is `!==` on an opaque id rather than a constant-time
+   * comparison, and that is not an oversight: a session id is not a secret the
+   * caller is trying to guess byte by byte — it is 26 characters of Crockford
+   * base32 they either hold or do not — and the database round trip that
+   * precedes this line dominates any timing signal the comparison could carry.
+   *
+   * # `'NOTHING_TO_REVOKE'` is success, not failure
+   *
+   * The row is the caller's and is already revoked or already expired. The end
+   * state they asked for is the end state they have, so the controller answers
+   * 200. It is distinguished from `'REVOKED'` only so the caller can decline to
+   * write a second audit row for a change that did not happen — otherwise one
+   * replayed request grows an append-only table at will.
+   */
+  async revokeOwned(userId: string, sessionId: string): Promise<OwnedRevocation> {
+    const row = await this.repository.findById(sessionIdSchema.parse(sessionId));
+    if (row === null) return 'NOT_FOUND';
+    if (row.userId !== userIdSchema.parse(userId)) return 'NOT_FOUND';
+
+    await this.poison([row.tokenHash], 'revokeOwned');
+    return (await this.repository.revokeById(row.id, new Date())) ? 'REVOKED' : 'NOTHING_TO_REVOKE';
   }
 
   /**

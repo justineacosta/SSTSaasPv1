@@ -1108,6 +1108,255 @@
         }
       }
     },
+    "/api/v1/auth/sessions": {
+      "delete": {
+        "operationId": "AuthController_revokeOtherSessions",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Sign out every other session.",
+        "description": "Revokes every live session belonging to the caller **except the one this request was made with**, which is the session the authentication guard resolved rather than anything the caller can name. Revocation is immediate: each cache entry is tombstoned before the rows are written. `revoked` is how many sessions moved, and it is 0 rather than an error when there were none. One `SESSION_REVOKED` audit row is written for the whole call, and none at all when nothing moved. Requires `X-CSRF-Token`.",
+        "responses": {
+          "200": {
+            "description": "How many other sessions were revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "SESSIONS_REVOKED"
+                      ]
+                    },
+                    "revoked": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "revoked"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`)."
+          },
+          "403": {
+            "description": "Missing or mismatched `X-CSRF-Token` (`CSRF_TOKEN_INVALID`)."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "authenticated"
+        }
+      },
+      "get": {
+        "operationId": "AuthController_listSessions",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "List the caller's own live sessions.",
+        "description": "One page of the sessions this user currently holds, most recently seen first. Revoked, expired and `PENDING_MFA` sessions are absent: this list answers \"where am I signed in\", and a row that cannot authenticate a request would be a false statement the user might act on. `current` marks the session the request was made with — the session identifier is otherwise not readable by page script, and `GET /auth/session` still withholds it. The response carries **no `tokenHash` and nothing derived from one**. `pagination.nextCursor` is opaque and its encoding is not part of this contract; a cursor this endpoint did not issue is a 400.",
+        "responses": {
+          "200": {
+            "description": "One page of live sessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "ip": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "userAgent": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "lastSeenAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "current": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "ip",
+                          "userAgent",
+                          "createdAt",
+                          "lastSeenAt",
+                          "current"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "pagination": {
+                      "type": "object",
+                      "properties": {
+                        "nextCursor": {
+                          "type": "string",
+                          "nullable": true
+                        },
+                        "hasMore": {
+                          "type": "boolean"
+                        },
+                        "limit": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 100
+                        }
+                      },
+                      "required": [
+                        "nextCursor",
+                        "hasMore",
+                        "limit"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "total"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "pagination"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The query did not validate, or the cursor was malformed."
+          },
+          "401": {
+            "description": "No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`)."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "authenticated"
+        }
+      }
+    },
+    "/api/v1/auth/sessions/{sessionId}": {
+      "delete": {
+        "operationId": "AuthController_revokeSession",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Revoke one of the caller's own sessions.",
+        "description": "Revokes the named session, which must belong to the caller. A session id belonging to anybody else answers **404 `RESOURCE_NOT_FOUND`**, byte-identical to the answer for an id that has never existed — a 403 would confirm the id names a live session. Revocation is immediate: the cache entry is tombstoned before the row is written. Revoking the session the request was made with is allowed and clears both cookies, which is `POST /auth/logout` reached by another route. A session that was already revoked or expired still answers 200 — the end state asked for is the end state held — and writes no second audit row. Requires `X-CSRF-Token`.",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "description": "Path parameter.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Revoked, or already gone.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "SESSION_REVOKED"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The path id is not a session id (`VALIDATION_ERROR`)."
+          },
+          "401": {
+            "description": "No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`)."
+          },
+          "403": {
+            "description": "Missing or mismatched `X-CSRF-Token` (`CSRF_TOKEN_INVALID`)."
+          },
+          "404": {
+            "description": "The id is not one of the caller's sessions, or names no session at all — one answer for both (`RESOURCE_NOT_FOUND`)."
+          },
+          "default": {
+            "description": "Error. Every error response uses the shared envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "x-sentinel-access": {
+          "kind": "authenticated"
+        }
+      }
+    },
     "/api/v1/auth/switch-org": {
       "post": {
         "operationId": "AuthController_switchOrganization",
