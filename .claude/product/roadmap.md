@@ -2399,7 +2399,7 @@ nothing.** Rulings 55 and 90 are not closed by this task: `generalSession`'s 100
 is still applied to no request. The stage it needs now exists; switching it on is a separate
 decision with its own blast radius.
 
-### The open window — read this before building on invitations
+### The window that was open — CLOSED by ADR-0026, and the record of how
 
 **An invitation offering `OWNER` survives its issuer being removed, and accepting it still mints an
 `OWNER`.** D5's no-minting check runs when an invitation is created and nowhere else. Measured end
@@ -2417,8 +2417,27 @@ recorded as owed rather than taken here. Re-running `assertActorMayGrant` at acc
 considered and rejected: it would refuse every invitation from a colleague who has since
 legitimately left, which is a lock-out with no recovery path for the invitee.
 
-It is pinned by `D9 — RECORDS AN OPEN WINDOW: an invitation outlives its issuer's authority`,
-written to fail if the behaviour changes silently and named so nobody reads it as approval.
+It was pinned by `D9 — RECORDS AN OPEN WINDOW: an invitation outlives its issuer's authority`,
+written to fail if the behaviour changed silently and named so nobody read it as approval.
+
+**It is closed.**
+[ADR-0026](../decisions/ADR-0026-invitations-are-revoked-when-their-issuer-loses-the-authority-to-have-issued-them.md)
+took the remedy above — the membership writes revoke the invitations their subject could no longer
+issue, in the same transaction as the change, each with its own `INVITATION_REVOKED` event — and
+added the half the paragraph above did not name: `InvitationService.create` re-resolves the actor's
+own membership and role permissions **inside its transaction**, because
+`TenantContextGuard` reads them before the handler runs and a `create` already in flight when the
+removal commits would otherwise insert a row the cascade had already run past (rulings 82 and 122
+for the third time). Accepting is unchanged, deliberately.
+
+The pinned test was rewritten into its opposite, which is the record that the window was closed
+deliberately rather than drifting shut: it is now
+`D9 — CLOSED BY ADR-0026: an invitation does NOT outlive its issuer's authority` in
+`invitations.integration.spec.ts`, with the membership side in
+`the invitation cascade on a membership write (ADR-0026)` in `memberships.integration.spec.ts`.
+The cost ADR-0026 accepts and does not pay down: **nothing emails an invitee whose link died**, so
+a colleague who leaves for benign reasons takes their outstanding invitations with them and every
+invitee must be re-invited by somebody else.
 
 ### What the adversarial review found, and what it cost
 
@@ -2480,9 +2499,11 @@ would remove the manual step; adding it is the operator's call and it has not be
 
 ### Still owed after Task 15
 
-- **The open D9 window above.** The highest-value item on this list, and the only one that is a
-  security gap rather than a limitation. Its natural owner is whoever next touches
-  `MembershipService.remove` and `updateRole`.
+- **~~The open D9 window above.~~ CLOSED** by ADR-0026 in the D9 fix round, in
+  `MembershipService.remove`, `MembershipService.updateRole` and `InvitationService.create`. It was
+  the highest-value item on this list and the only one that was a security gap rather than a
+  limitation. What remains of it is a product gap rather than a security one: no email tells an
+  invitee that the link they were sent no longer works.
 - **Rulings 55 and 90 stay open.** The tenant stage exists now, so the remaining work is a decision
   about switching `perPrincipal: 'authenticated'` on, not a missing mechanism.
 - **A request refused above the tenant limiter pass is never counted.** `invitations` declares
