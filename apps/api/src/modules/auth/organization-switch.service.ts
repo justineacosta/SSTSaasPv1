@@ -165,7 +165,11 @@ function refusalFor(outcome: Exclude<TenantResolution['outcome'], 'resolved'>): 
  * `CLAUDE.md` rule 10 wants the event and the change in one transaction.
  * `SessionService.rotate` takes no transaction handle — deliberately, because
  * it owns an ordering that spans Redis and Postgres — so one transaction over
- * both is not expressible without reopening Task 6. `logout.service.ts` faced
+ * both is not expressible without reopening Task 6 — a claim corrected in
+ * `session-management.service.ts`'s equivalent docblock, where the Redis half
+ * and the Postgres half are separated: only the first is impossible, and what
+ * stops the second is a repository signature that takes no `tx` handle.
+ * `logout.service.ts` faced
  * exactly this and chose **act, then audit**, for a reason that applies
  * unchanged here: auditing first would leave an append-only row asserting a
  * switch that did not happen, and this codebase treats a false statement in a

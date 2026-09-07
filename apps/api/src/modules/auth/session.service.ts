@@ -770,6 +770,21 @@ export class SessionService {
    * base32 they either hold or do not — and the database round trip that
    * precedes this line dominates any timing signal the comparison could carry.
    *
+   * **That argument is about the comparison, and it does not cover the two
+   * lines above it.** Review finding C-3: the two `'NOT_FOUND'` returns do
+   * different amounts of work. An id naming no row is an index probe that
+   * returns nothing; an id naming another user's row returns a full
+   * `SessionRow` over the wire protocol, deserialised by Prisma, and then runs
+   * a `userIdSchema.parse`. So the *body* discloses nothing — the two refusals
+   * are byte-identical — while the *clock* discloses a little, and this
+   * docblock previously implied otherwise.
+   *
+   * Left as it is, deliberately. `ses_` ids are ULIDs, so the signal cannot be
+   * used to find an id, only to confirm one obtained elsewhere; equalising the
+   * work would mean fetching a row that will not be used, or a fixed-cost
+   * delay, on a defensive route where added latency is its own cost. Recorded
+   * as a residual rather than described away.
+   *
    * # `'NOTHING_TO_REVOKE'` is success, not failure
    *
    * The row is the caller's and is already revoked or already expired. The end
