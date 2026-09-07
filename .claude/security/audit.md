@@ -11,10 +11,14 @@
 > and carries the same two tamper-resistance controls, reusing the same trigger function. §2 and
 > §4 below say which is which.
 >
-> **Four actions in §4 are written by running code**; every other name in that section is still
-> Designed only. `USER_REGISTERED`, `REGISTRATION_BLOCKED_EXISTING_EMAIL`,
-> `EMAIL_VERIFICATION_RESENT` and `EMAIL_VERIFIED` are written by
-> `apps/api/src/modules/auth/`'s registration and verification endpoints, into
+> **Thirty actions in §4 are written by running code as of Task 17**, measured with
+> `grep -rhoE "action: '[A-Z_]+'" apps/api/src --include=*.ts | grep -v spec | sort -u` rather
+> than counted by hand. **This banner said "four" from Task 8 until Task 17** — naming
+> `USER_REGISTERED`, `REGISTRATION_BLOCKED_EXISTING_EMAIL`, `EMAIL_VERIFICATION_RESENT` and
+> `EMAIL_VERIFIED` — while Tasks 9, 11, 13, 14, 15 and 17 added twenty-six more without touching
+> it. It was found by Task 17's review noticing only that `SESSION_REVOKED` had gained its first
+> writer; the larger staleness was found by re-running the count instead of patching the one name.
+> **Re-run the command rather than trusting this figure.** They are written into
 > `PlatformAuditEvent`. Nothing writes an `AuditEvent` row yet, because nothing in the product
 > has an organisation to write one for: `Organization` creation is Task 13.
 

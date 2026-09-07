@@ -12,14 +12,30 @@
 > envelope's `details.fields` mapped to field-level errors. **§4 (forms) is now Implemented for
 > these screens**, and **§6's four applicable states** — loading, empty, error, success — are
 > built on each of them; permission and partial do not apply to an unauthenticated form.
-> **§5 (permissions) and §7 (performance budgets) remain Not Implemented**, and §8's component
+> **§5 (permissions) is Implemented as of Task 17** — the `(app)` shell provides the permission
+> set through context and gates affordances with `usePermission` / `<Can>`, both of which carry a
+> docstring saying in those words that they are UX only. **§7 (performance budgets) remains Not
+> Implemented**, and §8's component
 > tree is only partly populated: these screens live under `apps/web/src/auth/` rather than the
 > `components/` layout §8 describes, because `vitest.workspace.ts`'s specs globs reach
 > `apps/*/src` and not `apps/*/app`.
 >
-> **No form here has yet talked to a running API.** Neither test suite has one behind it; the
-> live round trip is Task 18's. **§3 is still unexercised** — TanStack Query is wired and these
-> screens issue no query, because an unauthenticated form posts rather than reads.
+> **Task 17 added the authenticated half** — the `(app)` shell and session context,
+> the organisation switcher, `/settings/security` (active sessions, MFA enrolment and disablement,
+> password change) and `/settings/members` — plus three new API routes for session management,
+> taking the OpenAPI document to 29 paths. **§3 is now exercised**: TanStack Query holds the
+> session document and the switcher resets every other query on an organisation change.
+>
+> **That reset is worth reading before writing another mutation.** Task 17's review found the
+> switcher calling `queryClient.clear()`, which empties the store but notifies **no mounted
+> observer** — measured at zero notifications against `query-core@5.101.4` — so the shell went on
+> rendering the previous organisation's name and permission set until a reload. That is the
+> stale cross-tenant render §3 calls security-visible, produced by the call meant to prevent it.
+> `resetQueries()` is the primitive that does both halves.
+>
+> **No screen has yet talked to a running API under test.** Neither suite has one behind it; the
+> live round trip is Task 18's. The operator drove the *unauthenticated* journey through a browser
+> on 2026-09-07; nothing built in Task 17 has been seen by a person.
 >
 > **§2 is not yet honoured, deliberately — see the note at the end of §2.** Every route,
 > including the six new ones, is `force-dynamic`.
@@ -54,7 +70,7 @@ loading and error boundaries. Full inventory: [`../ui-ux/page-map.md`](../ui-ux/
 |---|---|---|
 | Marketing | Static, ISR for changelog and status | SEO and speed |
 | Auth | Server components, dynamic | No caching of anything auth-adjacent |
-| App shell, navigation | Server component | Permissions resolved server-side; no flash of forbidden UI |
+| App shell, navigation | **Client component** — see ADR-0025 | Skeleton until the session resolves; no affordance renders before the permission set is known |
 | Lists and detail pages | Server component shell + client data | Fast first paint, interactive filtering |
 | Realtime views (scan progress) | Client, SSE subscription | Live by definition |
 | Charts | Client, lazy loaded | Heavy; not needed on first paint |

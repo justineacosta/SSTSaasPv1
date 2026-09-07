@@ -11,10 +11,17 @@
 > `POST /api/v1/auth/verify-email`, and `emailVerificationResend` on
 > `POST /api/v1/auth/resend-verification`. All three are per-IP-resolvable on an unauthenticated
 > request, and `emailVerificationResend`'s per-account half resolves from the body's `email`
-> field. **`generalSession` governs eight routes**, each carrying `@RateLimit('generalSession')`
-> explicitly rather than by default: the five organisation routes, `POST /api/v1/auth/switch-org`,
-> `POST /api/v1/auth/logout` and `GET /api/v1/auth/session`. Six of the eight arrived with Task 13;
-> the logout and session routes predate it. Counted from
+> field. **`generalSession` governs eighteen routes as of Task 17**, each carrying
+> `@RateLimit('generalSession')` explicitly rather than by default. It was **eight** when this
+> sentence was written at Task 13 — the five organisation routes, `POST /api/v1/auth/switch-org`,
+> `POST /api/v1/auth/logout` and `GET /api/v1/auth/session` — and Tasks 14, 15 and 17 added ten
+> more without anyone updating the number, which is exactly the rot the pinned grep below exists
+> to catch and did not. **Re-run the grep rather than trusting this figure**; note it returns
+> **19**, one of which is a spec file, so eighteen is the route count. Task 17's three are the
+> session-management routes, and the argument for putting a *credential-revoking* route on a
+> fail-open class is in `ADR-0025`'s neighbourhood rather than here: `perIp` is the only
+> resolvable scope, every `perIp` class in the config is fail-closed, and failing closed on a
+> defensive action during an incident is the wrong direction. Counted from
 > `grep -rn "@RateLimit('generalSession')" apps/api/src --include=*.ts`, because the first version
 > of this sentence said "seven" and then listed six — carry-forward ruling 108, on the same day it
 > was written. Every other class in the table below still governs nothing, because the endpoints
