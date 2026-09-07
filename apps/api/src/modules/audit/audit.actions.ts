@@ -147,14 +147,41 @@ export const AUDIT_ACTIONS = [
    */
   'MEMBER_INVITED',
   /**
-   * A person revoked a pending invitation. The `resourceId` is the
-   * `Invitation` row; `metadata` carries the invited `email` and the `roleKey`
-   * that is no longer on offer.
+   * A pending invitation stopped being offered, with a person behind it. The
+   * `resourceId` is the `Invitation` row; `metadata` carries the invited
+   * `email` and the `roleKey` that is no longer on offer.
    *
-   * **Written only for a deliberate revocation through
-   * `DELETE /organizations/:id/invitations/:invitationId`.** Supersession by a
-   * newer invitation to the same address sets the same column and does not
-   * write this event — see `MEMBER_INVITED` above for why.
+   * # IT HAS TWO PRODUCERS, AND ADR-0026 ADDED THE SECOND
+   *
+   * This docblock said "written only for a deliberate revocation through
+   * `DELETE /organizations/:id/invitations/:invitationId`" until ADR-0026, and
+   * that sentence is now false rather than merely incomplete — which is the
+   * class of stale comment this ledger keeps recording, so it is corrected in
+   * the change that made it false.
+   *
+   * 1. **A person revoked it**, through
+   *    `DELETE /organizations/:id/invitations/:invitationId`. `metadata` is the
+   *    two keys above and no more.
+   * 2. **Its issuer lost the authority that created it** — they were removed
+   *    from the organisation, or demoted to a role that could not offer it —
+   *    and `MembershipService.remove` or `updateRole` revoked it in the same
+   *    transaction as that change. `metadata` carries two further keys:
+   *    `reason` (`ISSUER_REMOVED` or `ISSUER_DEMOTED`) and `issuerUserId`.
+   *
+   * **The two stay one action rather than becoming two**, because the property
+   * that matters to a reader holds for both: there is a person in `actorId` who
+   * caused it, and following the `resourceId` gives the invitation's whole life
+   * on one id. In the cascade's case that person is the one who removed or
+   * demoted the issuer, not the issuer. A removal may therefore write several
+   * of these in one transaction, so audit volume for a removal is no longer
+   * constant — the shape ADR-0026 intends, since a reader following one
+   * invitation needs the event on that invitation's id.
+   *
+   * **Supersession still writes no event.** A newer invitation to the same
+   * address sets the same column and records the fact as
+   * `MEMBER_INVITED.supersededInvitationId` instead — see `MEMBER_INVITED`
+   * above for why: that is the case with no actor, and it is the presence of an
+   * actor that keeps the two producers above one action.
    */
   'INVITATION_REVOKED',
   /**

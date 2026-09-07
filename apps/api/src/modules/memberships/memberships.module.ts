@@ -1,11 +1,20 @@
 import { Module } from '@nestjs/common';
 import { PrismaModule } from '../../infrastructure/prisma/prisma.module.js';
 import { AuditModule } from '../audit/audit.module.js';
+import { AuditService } from '../audit/audit.service.js';
 import { AuthModule } from '../auth/auth.module.js';
 import { SessionService } from '../auth/session.service.js';
+import {
+  invitationRevocationCascade,
+  type InvitationRevocationCascade,
+} from '../invitations/invitation-revocation.cascade.js';
 import { MembershipService } from './membership.service.js';
 import { MembershipsController } from './memberships.controller.js';
-import { MEMBER_SESSION_REVOKER, type MemberSessionRevoker } from './memberships.tokens.js';
+import {
+  INVITATION_REVOCATION_CASCADE,
+  MEMBER_SESSION_REVOKER,
+  type MemberSessionRevoker,
+} from './memberships.tokens.js';
 
 /**
  * The three membership endpoints.
@@ -45,6 +54,25 @@ import { MEMBER_SESSION_REVOKER, type MemberSessionRevoker } from './memberships
         return (userId, organizationId) =>
           sessions.revokeAllForUserInOrganization(userId, organizationId);
       },
+    },
+    {
+      // ADR-0026. THE SECOND NARROW PORT, ON THE SAME RULE AS THE FIRST.
+      //
+      // `MembershipService` must revoke the invitations a removed or demoted
+      // member issued, in the same transaction as the change — so it needs to
+      // write to `Invitation`, a table the invitations module owns. It is
+      // handed one function taking the transaction handle rather than
+      // `InvitationService`, which could invite, list, revoke by id or accept.
+      //
+      // The factory imports from `invitations/` and that direction is the safe
+      // one: `invitation-revocation.cascade.ts` imports nothing from
+      // `memberships/`, so there is no ES module cycle. A cascade written into
+      // `invitation.service.ts` instead would have made one, because that file
+      // already imports `membership.service.ts` for `assertActorMayGrant`.
+      provide: INVITATION_REVOCATION_CASCADE,
+      inject: [AuditService],
+      useFactory: (audit: AuditService): InvitationRevocationCascade =>
+        invitationRevocationCascade(audit),
     },
     MembershipService,
   ],

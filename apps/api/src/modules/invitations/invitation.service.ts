@@ -3,13 +3,16 @@ import {
   emailSchema,
   ERROR_CODES,
   LIST_LIMIT_MAX,
+  PERMISSIONS,
   type InvitationCollection,
   type InvitationResponse,
   type MembershipResponse,
+  type Permission,
   type SystemRole,
   type TenantContext,
 } from '@sentinel/contracts';
 import { newId, withTenantTransaction } from '@sentinel/db';
+import { permissionDenied } from '../../common/guards/authorization.guard.js';
 import { DomainError } from '../../common/errors/domain-error.js';
 import { PRISMA } from '../../infrastructure/tokens.js';
 import { AuditService } from '../audit/audit.service.js';
@@ -26,6 +29,7 @@ import {
 import { encodeListCursor, type ListCursor } from '../organizations/list-cursor.js';
 import { assertPathIsActiveTenant, notFound } from '../organizations/organization.service.js';
 import type { InvitationOrganizationLookup } from './invitation-organization.store.js';
+import { LIVE_INVITATION } from './invitation-revocation.cascade.js';
 import {
   INVITATION_MAILER,
   INVITATION_ORGANIZATION_LOOKUP,
@@ -169,6 +173,61 @@ async function lockInvitationSlot(
 }
 
 /**
+ * ADR-0026 §3 — THE ACTOR'S AUTHORITY AS THE DATABASE HOLDS IT *NOW*, NOT AS
+ * THE GUARD FOUND IT.
+ *
+ * `TenantContextGuard` builds `ctx` before the handler runs. Between that read
+ * and this transaction the actor may have been removed or demoted by a request
+ * that has since committed — and `MembershipService`'s cascade cannot revoke an
+ * invitation that did not exist when its `updateMany` ran, so a `create` racing
+ * a removal would insert a fresh invitation from a member who no longer exists.
+ * Rulings 82 and 122: *"the endpoint checks first" is necessary and not
+ * sufficient*.
+ *
+ * The returned context is `ctx` with `roleKey` and `permissions` replaced. The
+ * rest of it — `organizationId`, `membershipId` — is the same tenant either
+ * way, and `permissionDenied` reads `roleKey` for its `yourRole` detail, which
+ * must therefore be the role the row holds rather than the one the guard saw.
+ *
+ * **The membership is resolved by `ctx.membershipId`, and both other predicates
+ * are stated.** `deletedAt: null` is carry-forward ruling 99 and is what makes
+ * a removal visible here at all: `(organizationId, userId)` is unique only
+ * among live rows, so a member who was removed and re-added has several rows
+ * and only one is live. A caller whose membership row has been soft-deleted
+ * resolves nothing and is refused.
+ *
+ * **The permission keys are filtered against `PERMISSIONS` rather than cast.**
+ * `assertActorMayGrant` compares two sets of `Permission`; a seeded row naming
+ * something the contract does not know is not a permission this process can
+ * reason about, and an `as` here would have made it one silently.
+ */
+async function actorAuthority(tx: TenantTransaction, ctx: TenantContext): Promise<TenantContext> {
+  const actor = await tx.membership.findFirst({
+    where: { id: ctx.membershipId, organizationId: ctx.organizationId, deletedAt: null },
+    select: {
+      role: {
+        select: { key: true, permissions: { select: { permission: { select: { key: true } } } } },
+      },
+    },
+  });
+  // The route already declares `organization.manage_members`, so this names the
+  // permission the caller has just stopped holding rather than inventing a
+  // second refusal shape. Same `PERMISSION_DENIED` envelope
+  // `AuthorizationGuard` and `assertActorMayGrant` produce.
+  if (actor === null) throw permissionDenied('organization.manage_members', ctx);
+
+  return {
+    ...ctx,
+    roleKey: actor.role.key,
+    permissions: new Set<Permission>(
+      actor.role.permissions
+        .map((grant) => grant.permission.key)
+        .filter((key): key is Permission => (PERMISSIONS as readonly string[]).includes(key)),
+    ),
+  };
+}
+
+/**
  * INVITATIONS: CREATE, LIST, REVOKE, ACCEPT.
  *
  * # Every write is one transaction and the audit row is inside it
@@ -231,12 +290,31 @@ export class InvitationService {
    * 3. the already-a-member check (409 — about the organisation's roster, which
    *    a holder of `organization.manage_members` may already read).
    *
-   * **D5 is checked before the transaction opens**, unlike `MembershipService`'s
-   * two writes, which check it inside their organisation lock. The difference is
-   * that the role's permissions are seeded reference data with no RLS and
-   * nothing in this transaction can change them, so reading them outside buys a
-   * refusal that costs no lock. `assertActorMayGrant` is imported rather than
-   * re-implemented — see D5 below.
+   * # ADR-0026 §3 — THE ACTOR'S OWN AUTHORITY IS RE-READ INSIDE THE
+   * TRANSACTION, AND `ctx.permissions` IS NOT WHAT DECIDES
+   *
+   * An earlier version of this docblock argued that D5 could be checked before
+   * the transaction opened, because the role's permissions are seeded reference
+   * data nothing in the transaction can change. That was true of the *granted*
+   * role and false of the actor: `TenantContextGuard` resolves the caller's
+   * membership **before** this handler runs, so a `create` already in flight
+   * when a removal or demotion commits holds a `TenantContext` describing
+   * authority the database no longer agrees with — and the cascade in
+   * `MembershipService.remove` cannot revoke a row that did not exist when it
+   * ran.
+   *
+   * **This is carry-forward rulings 82 and 122 for the third time**: *"the
+   * endpoint checks first" is necessary and not sufficient*, and the ledger has
+   * struck that reasoning down twice already — once on the password-reset path
+   * and once on the organisation switch. So the actor's live membership and its
+   * seeded `RolePermission` rows are re-read here, inside the transaction, and
+   * `assertActorMayGrant` is given **that** set. The cost is one query against a
+   * row the transaction has already contended for, and it makes the check that
+   * refuses and the fact it is checking come from the same snapshot.
+   *
+   * An actor whose membership has gone by then receives the same 403 as any
+   * other principal who cannot grant the role. `assertActorMayGrant` is
+   * imported rather than re-implemented — see D5 below.
    */
   async create(
     ctx: TenantContext,
@@ -270,7 +348,7 @@ export class InvitationService {
         },
       });
       assertActorMayGrant(
-        ctx,
+        await actorAuthority(tx, ctx),
         granted.permissions.map((grant) => grant.permission.key),
       );
 
@@ -646,23 +724,24 @@ export class InvitationService {
    *    `Session.activeOrganizationId`. The acceptor must still call
    *    `POST /auth/switch-org`, which carries ruling 82's re-read after
    *    `rotate` in `organization-switch.service.ts`.
-   * 3. **The inviter's authority — OPEN, and recorded rather than claimed
-   *    closed.** D5's no-minting check runs in `create` and nowhere else, so an
-   *    invitation offering `OWNER` survives its issuer being demoted or
-   *    removed, and accepting it still mints an `OWNER`. Measured, and pinned
-   *    by `D9 — RECORDS AN OPEN WINDOW: an invitation outlives its issuer's
-   *    authority` in `invitations.integration.spec.ts` — cited by its exact
-   *    name, because the first version of this line paraphrased it and a grep
-   *    for the citation found nothing.
-   *    The remedy ruling 122 actually prescribes is on the *other* side — the
-   *    moment the fact moves, which is `MembershipService.remove` and
-   *    `updateRole`, where the invitations that member issued and could no
-   *    longer issue would be revoked in the same transaction as the demotion.
-   *    That is a change to Task 14's writes, not to this one, and it is handed
-   *    up rather than taken here. Re-running `assertActorMayGrant` at this
-   *    point instead would refuse every invitation from a colleague who has
-   *    since legitimately left, which is a lock-out with no recovery path for
-   *    the invitee.
+   * 3. **The inviter's authority — CLOSED by ADR-0026, and closed on the other
+   *    side of this handler.** D5's no-minting check still runs in `create` and
+   *    not here. What changed is that the moment the fact moves —
+   *    `MembershipService.remove` and `updateRole` — now revokes the live
+   *    invitations that member issued and could no longer issue, in the same
+   *    transaction as the removal or demotion, so an invitation offering
+   *    `OWNER` does not survive its issuer's authority. Pinned by
+   *    `D9 — CLOSED BY ADR-0026: an invitation does NOT outlive its issuer's
+   *    authority` in `invitations.integration.spec.ts` and by
+   *    `the invitation cascade on a membership write (ADR-0026)` in
+   *    `memberships.integration.spec.ts` — cited by their exact names, because
+   *    the first version of this line paraphrased its test and a grep for the
+   *    citation found nothing (ruling 129).
+   *    **Re-running `assertActorMayGrant` at this point is still refused**, and
+   *    ADR-0026 rejects it twice over: it would refuse every invitation from a
+   *    colleague who has since legitimately left, at the worst possible moment,
+   *    with the invitation still listed as live to the organisation's admins
+   *    and nobody notified — a lock-out with no recovery path for the invitee.
    *
    * # No `@RequireVerifiedEmail()`, and no D5 check
    *
@@ -806,24 +885,6 @@ export class InvitationService {
     });
   }
 }
-
-/**
- * "Live" for an invitation: neither accepted nor revoked.
- *
- * **It matches the partial unique index's predicate exactly**, and that is the
- * whole reason it is a shared constant rather than three inline object
- * literals. `Invitation_organizationId_email_live_key` is
- * `WHERE "acceptedAt" IS NULL AND "revokedAt" IS NULL`; a query that used a
- * different definition of live would disagree with the constraint that enforces
- * uniqueness over it, and the disagreement would show up as a P2002 on a path
- * that had just checked there was nothing to collide with.
- *
- * **Expiry is deliberately not part of it**, for the same reason it is not part
- * of the index: a predicate mentioning `now()` is not IMMUTABLE and Postgres
- * refuses it. An expired row is still "live" by this definition and still holds
- * the slot, and `create`'s supersession is what frees it.
- */
-const LIVE_INVITATION = { acceptedAt: null, revokedAt: null } as const;
 
 /**
  * D7 / RULING 99 — "IS THIS ADDRESS ALREADY A MEMBER?" EXCLUDES THE
