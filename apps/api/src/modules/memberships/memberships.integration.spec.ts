@@ -1210,6 +1210,99 @@ describe('the invitation cascade on a membership write (ADR-0026)', () => {
     }
   });
 
+  it('revokes on a LATERAL role change that a ranking would keep — the set test, measured', async () => {
+    // THE ONE CASE THAT SEPARATES A SET COMPARISON FROM A RANKING.
+    //
+    // ADR-0026 states the rule three times, `invitation-revocation.cascade.ts`
+    // gives it its own heading, `membership.service.ts` repeats it, and until
+    // this case existed **no test could tell the two apart**. The D9 review
+    // replaced the subset filter with a ranking by permission count and ran both
+    // integration specs: 78 passed, 78. Every role change the suite exercised —
+    // `OWNER`→`MEMBER`, `MEMBER`→`ADMIN`, `ADMIN`→`ADMIN` — lies on a totally
+    // ordered chain, and on a chain a ranking and a subset test agree on every
+    // row. Ruling 128's shape: the claim was asserted in four places and
+    // measured in none.
+    //
+    // The seeded lattice is only PARTIALLY ordered, and `AUDITOR` is where it
+    // forks. `AUDITOR` carries `audit.read` and `billing.read`, which
+    // `SECURITY_LEAD` does not, while `SECURITY_LEAD` carries far more besides.
+    // So an `ADMIN` who issued an `AUDITOR` invitation (permitted — `AUDITOR` is
+    // a subset of `ADMIN`) and is then moved to `SECURITY_LEAD` can no longer
+    // issue it: the set test revokes. A ranking by permission count asks whether
+    // 15 > 33, answers no, and leaves a live invitation offering two permissions
+    // the issuer no longer holds — which is the thing ADR-0026 exists to stop.
+    //
+    // The `MEMBER` invitation is the control. `MEMBER` IS a subset of
+    // `SECURITY_LEAD`, so it survives under both readings, and its survival is
+    // what stops this case passing because the cascade revoked everything.
+    await clearRateLimits(harness.redis);
+    const { actor, organizationId } = await acting('OWNER');
+    const moved = await user();
+    const movedMembership = await membership({
+      organizationId,
+      userId: moved.id,
+      role: 'ADMIN',
+    });
+
+    // THE DISCRIMINATING PROPERTY, COMPUTED FROM THE SEEDED ROLES RATHER THAN
+    // ASSUMED (ruling 108). If a later reseeding makes `AUDITOR` a subset of
+    // `SECURITY_LEAD`, or makes it the larger of the two, this case stops
+    // separating the two rules and says so here instead of passing quietly.
+    const securityLead = new Set<string>(ROLE_PERMISSIONS.SECURITY_LEAD);
+    expect(
+      ROLE_PERMISSIONS.AUDITOR.filter((permission) => !securityLead.has(permission)),
+      'AUDITOR is now a subset of SECURITY_LEAD, so the set test and a ranking agree on this ' +
+        'case and it no longer measures the difference. Find another incomparable pair.',
+    ).not.toHaveLength(0);
+    expect(
+      ROLE_PERMISSIONS.AUDITOR.length,
+      'AUDITOR no longer holds FEWER permissions than SECURITY_LEAD, so a ranking by count ' +
+        'would revoke here too and this case no longer separates the two rules.',
+    ).toBeLessThan(ROLE_PERMISSIONS.SECURITY_LEAD.length);
+    expect(
+      ROLE_PERMISSIONS.MEMBER.every((permission) => securityLead.has(permission)),
+      'MEMBER is no longer a subset of SECURITY_LEAD, so the control below would be revoked ' +
+        'by the set test and proves nothing about over-revocation.',
+    ).toBe(true);
+
+    const asAuditor = await invitation({
+      organizationId,
+      invitedByUserId: moved.id,
+      role: 'AUDITOR',
+    });
+    const asMember = await invitation({
+      organizationId,
+      invitedByUserId: moved.id,
+      role: 'MEMBER',
+    });
+
+    const response = await request(server)
+      .patch(`${membersPath(organizationId)}/${movedMembership}`)
+      .set(csrf(actor))
+      .send({ roleKey: 'SECURITY_LEAD' });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+
+    // The set test revokes; a ranking by permission count would not.
+    expect(
+      await revokedAtOf(asAuditor),
+      'The AUDITOR invitation survived a move to SECURITY_LEAD. The cascade is comparing ' +
+        'something other than the permission SETS — a ranking keeps this row, and the row ' +
+        'offers `audit.read` and `billing.read`, which the issuer no longer holds.',
+    ).not.toBeNull();
+    expect(await revokedAtOf(asMember)).toBeNull();
+
+    const events = await revocationEvents(organizationId);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.resourceId).toBe(asAuditor);
+    // The reason constant is `ISSUER_DEMOTED` and this move is NOT a demotion —
+    // `SECURITY_LEAD` is not below `ADMIN` in any order this codebase defines.
+    // That is Finding 10, fixed in the commit after this one.
+    expect(events[0]?.metadata).toMatchObject({
+      reason: 'ISSUER_DEMOTED',
+      issuerUserId: moved.id,
+    });
+  });
+
   it('revokes nothing on a promotion', async () => {
     await clearRateLimits(harness.redis);
     const { actor, organizationId } = await acting('OWNER');

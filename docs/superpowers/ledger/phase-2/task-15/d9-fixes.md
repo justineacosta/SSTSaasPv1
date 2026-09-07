@@ -196,3 +196,49 @@ EXIT=0   Test Files 1 passed (1)   Tests 38 passed (38)
   nothing in the codebase writes `'INVITED'` — and adding the predicate would pin a claim about
   the data in a place that does not own it. The claim is now written into `actorAuthority`'s
   docblock instead (ruling 128), which is where the predicate that depends on it lives.
+
+### Entry 4 — Finding 9: the test that can tell a set comparison from a ranking
+
+"A set comparison, never a ranking" is asserted in ADR-0026, in the cascade's docblock under
+its own heading, in `membership.service.ts` and in the demotion test's own comment. The review
+replaced the subset filter with a ranking by permission count and measured **78 passed (78)**
+across both integration specs. Four assertions, zero measurements — ruling 128's shape.
+
+**Why the suite could not tell.** Every role change it exercised lay on a totally ordered
+chain: `OWNER`→`MEMBER`, `MEMBER`→`ADMIN`, `ADMIN`→`ADMIN`. On a chain a ranking and a subset
+test agree on every row.
+
+**The counterexample, from the seeded lattice.** `AUDITOR` (15 permissions) carries `audit.read`
+and `billing.read`, which `SECURITY_LEAD` (33) does not. So an `ADMIN` who issued an `AUDITOR`
+invitation — permitted, `AUDITOR` ⊆ `ADMIN` — and is then moved to `SECURITY_LEAD` can no longer
+issue it. The set test revokes; a count ranking asks whether 15 > 33, answers no, and leaves a
+live invitation offering two permissions the issuer no longer holds.
+
+**The test.** `revokes on a LATERAL role change that a ranking would keep — the set test,
+measured`, in `memberships.integration.spec.ts`, through the real `PATCH .../members/:id`. A
+`MEMBER` invitation is the control — `MEMBER` ⊆ `SECURITY_LEAD`, so it survives under both
+readings, which is what stops the case passing because the cascade revoked everything. Three
+preconditions are computed from `ROLE_PERMISSIONS` rather than assumed (ruling 108): that
+`AUDITOR` is not a subset of `SECURITY_LEAD`, that it is the *smaller* of the two, and that
+`MEMBER` is a subset. If a reseeding breaks any of them the case says so instead of passing
+quietly.
+
+**GREEN against the real filter:**
+```
+$ npx vitest run --project integration --no-file-parallelism \
+    -t "LATERAL role change" memberships.integration.spec.ts
+EXIT=0   Tests 1 passed | 42 skipped (43)
+```
+
+**RED under the exact mutation the review measured as green.** Subset filter replaced with
+`candidates.filter((candidate) => candidate.role.permissions.length > retained.size)`:
+```
+$ npx vitest run --project integration --no-file-parallelism \
+    memberships.integration.spec.ts invitations.integration.spec.ts
+MUT5 EXIT=1
+  × the invitation cascade on a membership write (ADR-0026)
+    > revokes on a LATERAL role change that a ranking would keep — the set test, measured
+  Test Files 1 failed | 1 passed (2)   Tests 1 failed | 80 passed (81)
+```
+The review's 78/78 is now 80 passed and **one** failure, and the failure is this case. The file
+was restored from a backup taken before the mutation and `git diff --stat` on it is empty.
