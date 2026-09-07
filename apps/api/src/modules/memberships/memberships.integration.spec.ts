@@ -1124,6 +1124,64 @@ describe('the invitation cascade on a membership write (ADR-0026)', () => {
     }
   });
 
+  it('takes the invitations of a member who removes THEMSELVES, and names them as the actor', async () => {
+    // ADR-0026'S PRINCIPAL STATED COST, WHICH NOTHING EXERCISED.
+    //
+    // The ADR's "Negative — and this is a real cost, not a rounding error"
+    // paragraph is entirely about the member who leaves benignly taking their
+    // outstanding invitations with them, and `remove`'s own docblock says
+    // "**Self-removal is supported**, and it is supported rather than
+    // tolerated". Every other case in this block has the actor act on somebody
+    // else, so the one consequence users will actually notice was reasoned about
+    // and never measured — the D9 review's Finding 8.
+    //
+    // **The actor and the issuer are the same person here**, which is the half
+    // that matters beyond coverage. `audit.actions.ts` used to tell the two
+    // producers of `INVITATION_REVOKED` apart by saying the cascade's `actorId`
+    // is "the one who removed or demoted the issuer, not the issuer" — a rule
+    // that is wrong for exactly the case ADR-0026 says will be the common one.
+    // What actually distinguishes them is `reason`, and this case pins both ids
+    // being equal so that sentence cannot come back.
+    await clearRateLimits(harness.redis);
+    const { actor, organizationId, membershipId } = await acting('OWNER');
+    // A second owner, so the last-owner invariant does not refuse the departure
+    // at 422 before the cascade runs. That refusal is D1's and has its own tests.
+    const stayer = await user();
+    await membership({ organizationId, userId: stayer.id, role: 'OWNER' });
+
+    const theirs = await invitation({
+      organizationId,
+      invitedByUserId: actor.userId,
+      role: 'ADMIN',
+    });
+    const colleagues = await invitation({
+      organizationId,
+      invitedByUserId: stayer.id,
+      role: 'ADMIN',
+    });
+
+    // Their own membership id, through the real endpoint, with their own
+    // session. Leaving is a legitimate action and the authority check never
+    // refuses it — an actor's own role is always an equal set to itself.
+    const response = await request(server)
+      .delete(`${membersPath(organizationId)}/${membershipId}`)
+      .set(csrf(actor));
+    expect(response.status, JSON.stringify(response.body)).toBe(204);
+
+    expect(await revokedAtOf(theirs)).not.toBeNull();
+    expect(await revokedAtOf(colleagues)).toBeNull();
+
+    const events = await revocationEvents(organizationId);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.resourceId).toBe(theirs);
+    // THE ACTOR IS THE LEAVER, AND SO IS THE ISSUER.
+    expect(events[0]?.actorId).toBe(actor.userId);
+    expect(events[0]?.metadata).toMatchObject({
+      reason: 'ISSUER_REMOVED',
+      issuerUserId: actor.userId,
+    });
+  });
+
   it('leaves invitations issued by anybody else alone', async () => {
     await clearRateLimits(harness.redis);
     const { actor, organizationId } = await acting('OWNER');

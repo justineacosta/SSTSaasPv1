@@ -234,6 +234,42 @@ nothing to a reader six months later and a member who has been removed and re-ad
 `Membership` rows for one person. `MEMBER_REMOVED` writes `after: null` — the member holds no
 role here any more — so one reader can read both events with the same two keys.
 
+**`INVITATION_REVOKED` gained a second producer in Phase 2 Task 15's ADR-0026 round**, in the
+same change as the cascade that writes it. It previously meant one thing: a person pressed
+revoke on `DELETE /api/v1/organizations/{id}/invitations/{invitationId}`. It now also means
+**the issuer lost the authority that created the invitation** — `MembershipService.remove` and
+`updateRole` call `invitationRevocationCascade`
+(`apps/api/src/modules/invitations/invitation-revocation.cascade.ts`), which revokes the live
+invitations that member issued and could no longer issue, inside the same transaction as the
+membership write. The `resourceId` is the `Invitation` in both cases, which is what lets a
+reader follow one invitation from one end of its life to the other on a single id.
+
+The cascade's rows carry **two metadata keys the deliberate revocation does not**, alongside the
+`email` and `roleKey` both producers write:
+
+- **`reason`** — `ISSUER_REMOVED` or `ISSUER_ROLE_CHANGED`. It is the only field that tells the
+  two producers apart, and `actorId` is not: `actorId` is the person who moved the membership,
+  who on a **self-removal is the issuer themselves**. ADR-0026 expects self-removal to be the
+  common case, so "the actor differs from the issuer" is exactly the wrong test.
+  `ISSUER_ROLE_CHANGED` is deliberately not called a demotion — the rule is a set comparison
+  over seeded `RolePermission` rows and those roles are only partially ordered, so a lateral
+  move that drops a permission revokes as well.
+- **`issuerUserId`** — the user id, not the membership id. A membership id means nothing to a
+  reader six months later and a member removed and re-added has several `Membership` rows, which
+  is the same reasoning `MEMBER_REMOVED` gives for `memberUserId`.
+
+**A removal no longer writes a constant number of audit rows.** It writes its one
+`MEMBER_REMOVED` plus one `INVITATION_REVOKED` per invitation revoked, all in one transaction.
+ADR-0026 records this as intended rather than incidental: a summary row on the `Membership`
+would not be findable from the invitation's id. Anything downstream that sizes a removal's audit
+volume — an alert threshold, an export estimate — must not assume one row.
+
+**Supersession still writes no `INVITATION_REVOKED`.** A newer invitation to the same address
+sets the same column and records the fact as `MEMBER_INVITED.supersededInvitationId` instead;
+that is the case with no actor, and the presence of an actor is what keeps the two producers
+above one action rather than two. Nothing about §5 changes: the cascade's `select` never loads
+`tokenHash`, so no token can reach an event.
+
 The five names an `AuditEvent` row may carry today are `ORGANIZATION_CREATED`,
 `ORGANIZATION_UPDATED`, `ORGANIZATION_SWITCHED`, `ROLE_CHANGED` and `MEMBER_REMOVED`, and the two
 `resourceType` values are `Organization` and `Membership`
