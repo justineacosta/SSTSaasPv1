@@ -1271,6 +1271,21 @@ on the query engine, kill the dev server first.**
    only task that can close the phase's "full authentication journey passes E2E" exit criterion,
    which needs an automated suite with a live API behind it — a manual pass does not satisfy it.
 
+   **TASK 18 MUST BUILD `/accept-invitation` FIRST, AND THIS IS A SCOPE ADDITION THE PLAN DOES NOT
+   CARRY.** The operator decided on 2026-09-07 to defer the missing screen to Task 18 rather than
+   fold it into Task 17. That decision is only safe if written down, because ruling 143 is exactly
+   the failure of assuming a later task will pick something up: Task 18's **Files** line is
+   `apps/web/e2e/*`, `.github/workflows/ci.yml`, `.claude/**` and the build manifest — no
+   application route — and its own text says "this task does not update documentation, it audits
+   it". It is scoped as a gate, not as a build.
+
+   It is nevertheless **structurally blocked without the screen**: its first checklist item spells
+   the exit criterion out verbatim and includes "invite a second user → **accept as that user**".
+   There is no UI to accept through, so that spec cannot be written. Build the screen against the
+   existing `POST /api/v1/invitations/accept`, at **`/accept-invitation?token=`** — the path in
+   `TOKEN_LINK_PATHS`, not `page-map.md`'s old `/invitations/[token]`, because the template's URLs
+   are already in inboxes.
+
 **A LIVE INVITATION EMAIL 404s, AND TASK 18 SHOULD NOT BE THE FIRST TO NOTICE.** Found on
 2026-09-07 by the operator clicking the link in a real invitation, which is the only way it could
 have been found — no test in this repository follows a link out of an inbox. `TOKEN_LINK_PATHS`
