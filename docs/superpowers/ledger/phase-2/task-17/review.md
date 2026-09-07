@@ -378,3 +378,108 @@ survives it (router cache, in-flight requests, an unmounted component's stale cl
 | Next's router cache | **Empty of tenant data, so nothing to clear.** Every page under `(app)` renders its data from client queries; `app/(app)/layout.tsx`, `dashboard/page.tsx`, `settings/*/page.tsx` fetch nothing server-side (ADR-0025), and every route is `ƒ (Dynamic)` | read all four files; `grep` for a server-side fetch returns nothing |
 | In-flight requests | **Fine.** `clear()` cancels each retryer, and a request that resolves anyway writes into a Query object already removed from the map — probe P3 ended with `cache['findings']: undefined` and neither tenant's row on screen | probe P3, passed |
 | A stale closure / stale render | **BROKEN — this finding.** Not a closure: an orphaned `QueryObserver` | probes P1, P2, A, B |
+
+## C-5 (Low) — `/settings/members` tells a member without `organization.manage_members` that they "can see who belongs to this organisation". They cannot: both list routes answer 403, and the screen renders that sentence underneath its own error alert.
+
+**Citation.** `apps/web/src/settings/MembersScreen.tsx:189-199`:
+
+```
+{canManageRoles && canManageMembers ? null : (
+  <p …>
+    {canManageMembers
+      ? 'You can invite and remove members. Changing a role needs organization.manage_roles, …'
+      : 'You can see who belongs to this organisation. Inviting, removing and changing roles need
+         organization.manage_members, …'}
+  </p>
+)}
+```
+
+against `apps/api/src/modules/memberships/memberships.controller.ts:84`
+(`@RequirePermission('organization.manage_members')` on the `@Get()` list) and
+`apps/api/src/modules/invitations/invitations.controller.ts:211` (the same permission on *its*
+`@Get()`). The API's own `ApiDoc` at `memberships.controller.ts:89` says it in words: "Requires
+`organization.manage_members`."
+
+**Measurement.** Probe `apps/web/src/settings/reviewer-members.spec.tsx` (deleted before this
+review's final commit) renders `<MembersScreen>` for a session with `permissions: []` against a
+client that answers **403 `PERMISSION_DENIED`** to every call — which is exactly what those two
+handlers do for that session — and prints `document.body.textContent`:
+
+```
+---- WHAT THE USER SEES ----
+Members
+Who belongs to this organisation, what they may do, and who has been invited.
+Members
+The member list could not be loaded. Try reloading the page.
+You can see who belongs to this organisation. Inviting, removing and changing roles need
+organization.manage_members, which an owner or admin can grant.
+Invitations
+Inviting somebody needs organization.manage_members. An owner or admin can grant it.
+Outstanding invitations could not be loaded.
+----------------------------
+```
+
+Three things are wrong in six lines:
+
+1. **"You can see who belongs to this organisation" is false** — the list it refers to is the one
+   that just 403'd, two lines above.
+2. **A 403 is reported as a transient failure with the wrong remedy.** "Try reloading the page"
+   will fail identically forever. `MembersScreen.tsx:149-153` renders one `members.isError` branch
+   with no discrimination on `ApiError.status`, and the same at `:410-414` for invitations.
+3. `architecture/frontend.md` §6 asks for a permission state that *"explains the missing permission
+   rather than showing a blank page"*. The screen has such a state — the paragraph at `:191` — and
+   it is the sentence that is wrong, while the error alert that dominates the page has no idea a
+   permission is involved.
+
+The dashboard repeats the claim to everyone: `app/(app)/dashboard/page.tsx:60-70` — "Invite
+people, change their roles and remove them on Members" — with no gate.
+
+**Severity: Low.** Nothing is exposed and nothing is authorised that should not be; the server
+refuses correctly and the refusal is what the user hits. It is a false sentence in shipped UI,
+which in this repository is the recurring defect class rather than a cosmetic one, and it is
+reachable by any member whose role is not owner/admin — i.e. by the common case.
+
+**Not a defect, checked and rejected:** the role `<select>` is gated on `canManageRoles`
+(`MembersScreen.tsx:240-248`) while removal is gated on `canManageMembers` (`:253`), and the API
+splits them exactly the same way — `manage_roles` on `@Patch(':membershipId')`
+(`memberships.controller.ts:135`), `manage_members` on `@Delete(':membershipId')` (`:221`). The two
+gates match their two routes. The `canManageMembers ? …` branch of the paragraph is correct.
+
+---
+
+## C-6 — `usePermission` and `<Can>`: the brief's §4 question answered, and the answer is FINE
+
+The brief required "a docstring saying so in those words". It is there, twice, verbatim:
+
+- `apps/web/src/app/session-context.tsx:53` — `WHETHER THE UI SHOULD OFFER AN ACTION. **THIS IS UX
+  ONLY, NOT SECURITY.**`
+- `:70` — `**UX only, not security** — the same sentence as usePermission above, and for the same
+  reason. A <Can> that wraps a button hides the button; the server is what refuses the request the
+  button would have made.`
+
+**No code path treats either as a control.** `grep -rn "usePermission\|<Can" apps/web/src apps/web/app`
+outside `session-context.tsx` returns six lines, all in `MembersScreen.tsx` and one comment in
+`SecurityScreen.tsx`. Every one wraps a rendered affordance. Neither is used in a `queryFn`, a
+`mutationFn`, an endpoint module, a route file, or a `middleware.ts`; neither gates a request being
+*sent*, only a control being *drawn*.
+
+**Every gated affordance is still refused server-side**, checked route by route against
+`apps/api/openapi.json` and the decorators:
+
+| UI affordance | Gate in the browser | Route | Server decorator |
+|---|---|---|---|
+| Change a member's role | `canManageRoles` (`MembersScreen.tsx:246`) | `PATCH /organizations/{id}/members/{membershipId}` | `@RequirePermission('organization.manage_roles')` — `memberships.controller.ts:135` |
+| Remove a member | `canManageMembers` (`:253`) | `DELETE /organizations/{id}/members/{membershipId}` | `@RequirePermission('organization.manage_members')` — `:221` |
+| The invite form | `<Can permission="organization.manage_members">` (`:314`) | `POST /organizations/{id}/invitations` | `@RequirePermission('organization.manage_members')` — `invitations.controller.ts:133` |
+| Revoke an invitation | `<Can permission="organization.manage_members">` (`:378`) | `DELETE /organizations/{id}/invitations/{invitationId}` | `@RequirePermission('organization.manage_members')` — `:262` |
+
+`MembersScreen.tsx:44-47` also names the two refusals *no* permission set predicts — granting a
+role whose permissions the caller lacks, and a write that would leave the organisation ownerless —
+and renders them where the user can read them (`:167`, `refusal`). That is the right shape: the
+gate is a hint, the server is the answer, and a refusal the hint did not anticipate is displayed
+rather than swallowed.
+
+The one thing C-4 does to this: after an organisation switch the `permissions` array these gates
+read is the previous organisation's, so they are computed from the wrong tenant's rights until the
+next navigation. Because they are UX only, that misinforms the user; it does not authorise
+anything.
