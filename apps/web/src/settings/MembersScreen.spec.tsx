@@ -1,8 +1,9 @@
-import type { Permission } from '@sentinel/contracts';
+import { ERROR_CODES, type Permission } from '@sentinel/contracts';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
+import { ApiError } from '../api/errors';
 import { renderApp, stubClient, type RecordedRequest } from '../app/render-helpers';
 import { SessionContextProvider } from '../app/session-context';
 import { MembersScreen } from './MembersScreen';
@@ -219,5 +220,78 @@ describe('MembersScreen — with no active organisation', () => {
 
     expect(screen.getByText(/not acting in an organisation yet/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Send invitation' })).not.toBeInTheDocument();
+  });
+});
+
+describe('MembersScreen — a 403 is a PERMISSION state, not an error state (review C-5)', () => {
+  // REVIEW FINDING C-5. Both list routes carry
+  // `@RequirePermission('organization.manage_members')` — `memberships.controller.ts:84`
+  // and `invitations.controller.ts:211` — so a member without it gets 403 on
+  // both. The screen used to render that as "The member list could not be
+  // loaded. Try reloading the page." — advice that will fail identically
+  // forever — underneath the sentence "You can see who belongs to this
+  // organisation", which is false: the list it names is the one that just 403'd.
+  //
+  // `architecture/frontend.md` §6 requires a permission state that "explains the
+  // missing permission rather than showing a blank page", and §5 requires the UI
+  // to say why an action is unavailable and who can grant it.
+
+  const forbidden = () => {
+    throw new ApiError({
+      kind: 'api',
+      status: 403,
+      code: ERROR_CODES.PERMISSION_DENIED,
+      message: 'You do not have permission to perform this action.',
+      requestId: 'req_c5',
+    });
+  };
+
+  it('names the missing permission and who can grant it, for BOTH lists', async () => {
+    const { client } = stubClient(forbidden);
+    renderApp(tree([]), client);
+
+    const members = await screen.findByTestId('members-permission-state');
+    expect(members).toHaveTextContent(/organization\.manage_members/);
+    expect(members).toHaveTextContent(/owner or admin can grant/);
+
+    const invitations = await screen.findByTestId('invitations-permission-state');
+    expect(invitations).toHaveTextContent(/organization\.manage_members/);
+    expect(invitations).toHaveTextContent(/owner or admin can grant/);
+  });
+
+  it('does NOT tell the user to reload, because reloading will 403 forever', async () => {
+    const { client } = stubClient(forbidden);
+    renderApp(tree([]), client);
+
+    await screen.findByTestId('members-permission-state');
+    await screen.findByTestId('invitations-permission-state');
+    expect(screen.queryByText(/Try reloading the page/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/could not be loaded/)).not.toBeInTheDocument();
+  });
+
+  it('does NOT claim the user can see who belongs to this organisation', async () => {
+    // The false sentence, asserted as absent. It was rendered two lines under
+    // the alert reporting the 403 on the very list it referred to.
+    const { client } = stubClient(forbidden);
+    renderApp(tree([]), client);
+
+    await screen.findByTestId('members-permission-state');
+    expect(
+      screen.queryByText(/You can see who belongs to this organisation/),
+    ).not.toBeInTheDocument();
+  });
+
+  it('still renders an ERROR state for a failure that is NOT a 403', async () => {
+    // The discrimination has to keep both branches. A transient failure is
+    // exactly where "try again" is the right advice, and a permission state
+    // there would be a different false sentence.
+    const { client } = stubClient(() => {
+      throw new ApiError({ kind: 'network', message: 'Could not reach the Sentinel API.' });
+    });
+    renderApp(tree(['organization.manage_members', 'organization.manage_roles']), client);
+
+    expect(await screen.findByText(/member list could not be loaded/)).toBeInTheDocument();
+    expect(screen.queryByTestId('members-permission-state')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('invitations-permission-state')).not.toBeInTheDocument();
   });
 });
