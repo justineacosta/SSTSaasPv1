@@ -19,6 +19,7 @@ import { MfaEnrolmentService } from './mfa-enrolment.service.js';
 import { MfaVerificationService } from './mfa-verification.service.js';
 import { LogoutService } from './logout.service.js';
 import { OrganizationSwitchService } from './organization-switch.service.js';
+import { SessionManagementService } from './session-management.service.js';
 import { PasswordChangeService } from './password-change.service.js';
 import { PasswordResetService } from './password-reset.service.js';
 import { RecoveryCodesService } from './recovery-codes.service.js';
@@ -199,6 +200,7 @@ import { type SecretTokenTtlSeconds, TokenService } from './token.service.js';
     MfaEnrolmentService,
     MfaVerificationService,
     OrganizationSwitchService,
+    SessionManagementService,
   ],
   // `SessionRepository` is deliberately NOT exported. It is `SessionService`'s
   // Postgres access, and a consumer holding it could revoke a row without

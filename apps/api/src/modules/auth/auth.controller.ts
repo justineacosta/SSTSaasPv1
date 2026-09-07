@@ -1,4 +1,16 @@
-import { Body, Controller, Get, HttpCode, Inject, Post, Req, Res } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Inject,
+  Param,
+  Post,
+  Query,
+  Req,
+  Res,
+} from '@nestjs/common';
 import {
   type ChangePasswordRequest,
   type ChangePasswordResponse,
@@ -30,6 +42,8 @@ import {
   type MfaVerifyResponse,
   mfaVerifyRequestSchema,
   mfaVerifyResponseSchema,
+  type ListSessionsQuery,
+  listSessionsQuerySchema,
   type LogoutRequest,
   logoutRequestSchema,
   type RegisterRequest,
@@ -44,6 +58,13 @@ import {
   type ResetPasswordResponse,
   resetPasswordRequestSchema,
   resetPasswordResponseSchema,
+  type RevokeOtherSessionsResponse,
+  revokeOtherSessionsResponseSchema,
+  type RevokeSessionResponse,
+  revokeSessionResponseSchema,
+  type SessionCollection,
+  sessionCollectionSchema,
+  sessionIdSchema,
   type SessionResponse,
   sessionResponseSchema,
   type SwitchOrganizationRequest,
@@ -81,6 +102,8 @@ import { PasswordChangeService } from './password-change.service.js';
 import { PasswordResetService } from './password-reset.service.js';
 import { RegistrationService } from './registration.service.js';
 import { principalOf, requestContextOf } from './request-context.js';
+import { decodeListCursor, encodeListCursor } from '../organizations/list-cursor.js';
+import { SessionManagementService } from './session-management.service.js';
 import { SessionDocumentService } from './session-document.service.js';
 
 /**
@@ -176,6 +199,8 @@ export class AuthController {
     @Inject(MfaVerificationService) private readonly mfaVerification: MfaVerificationService,
     @Inject(OrganizationSwitchService)
     private readonly organizationSwitch: OrganizationSwitchService,
+    @Inject(SessionManagementService)
+    private readonly sessionManagement: SessionManagementService,
   ) {}
 
   /**
@@ -528,6 +553,243 @@ export class AuthController {
     // here: this route is `@AuthenticatedOnly()` and its whole job is to answer
     // a caller who may have no organisation at all.
     return this.sessionDocument.forPrincipal(principalOf(request), request.tenant);
+  }
+
+  /**
+   * The caller's own live sessions — `/settings/security`'s device list.
+   *
+   * # `@AuthenticatedOnly()`, not `@RequirePermission()`
+   *
+   * `GET /auth/session` above is the precedent and the reasoning is identical:
+   * a permission is always (user, organisation, permission), and a session has
+   * no organisation. `Session` is **user**-owned rather than tenant-owned
+   * (`session.repository.ts`, `schema.prisma`), so there is no tenant for a
+   * permission to be held in and `@RequirePermission()` would deny by
+   * construction for a caller who has chosen no organisation — which is every
+   * caller this route is built for. Self-service, like `change-password` and
+   * the four MFA routes beside it.
+   *
+   * # The rate-limit class is `generalSession`, and the brief's premise for a
+   * tighter one was measurably wrong
+   *
+   * The task brief argued that these routes are authenticated so `perPrincipal`
+   * resolves. It does not. `rate-limit.config.ts`'s `RATE_LIMIT_SCOPE_PHASES`
+   * puts `perPrincipal` in the `'edge'` phase, which `architecture/backend.md`
+   * §3 runs **before** `AuthenticationGuard`, and the comment above that table
+   * says so in terms: "`perPrincipal` with `principalSource: 'authenticated'`
+   * stays in `'edge'`, where it still resolves nothing". So `generalSession`
+   * here is honest bookkeeping (carry-forward ruling 55) rather than a control,
+   * exactly as it is on `logout` and `session`.
+   *
+   * **A tighter class was considered and rejected**, and this is the argument
+   * the brief asked to be made explicitly rather than inherited. The only scope
+   * that would resolve here is `perIp`, and every `perIp` class in this file is
+   * `failMode: 'closed'`. That would put a whole corporate egress address on
+   * one budget for a **defensive** action — signing a stolen device out — and
+   * would fail closed during exactly the outage in which a user needs it.
+   * There is also no oracle here to protect: unlike `change-password`, nothing
+   * on these routes verifies a secret, a session id is 26 characters of
+   * unguessable base32, and every refusal for one that is not the caller's is
+   * the same 404.
+   */
+  @AuthenticatedOnly()
+  @RateLimit('generalSession')
+  @ApiDoc({
+    summary: "List the caller's own live sessions.",
+    description:
+      'One page of the sessions this user currently holds, most recently seen first. Revoked, ' +
+      'expired and `PENDING_MFA` sessions are absent: this list answers "where am I signed in", ' +
+      'and a row that cannot authenticate a request would be a false statement the user might ' +
+      'act on. `current` marks the session the request was made with — the session identifier ' +
+      'is otherwise not readable by page script, and `GET /auth/session` still withholds it. ' +
+      'The response carries **no `tokenHash` and nothing derived from one**. ' +
+      '`pagination.nextCursor` is opaque and its encoding is not part of this contract; a ' +
+      'cursor this endpoint did not issue is a 400.',
+    responses: [
+      { status: 200, description: 'One page of live sessions.', schema: sessionCollectionSchema },
+      { status: 400, description: 'The query did not validate, or the cursor was malformed.' },
+      { status: 401, description: 'No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`).' },
+    ],
+  })
+  @Get('sessions')
+  async listSessions(
+    @Req() request: Request,
+    @Query(new ZodValidationPipe(listSessionsQuerySchema)) query: ListSessionsQuery,
+  ): Promise<SessionCollection> {
+    const principal = principalOf(request);
+    // The shared keyset cursor. Its `createdAt` field carries this endpoint's
+    // sort key, which is `lastSeenAt` — the encoding is opaque to clients by
+    // contract, and one shared, reviewed encoder is preferred to a second copy
+    // of `list-cursor.ts`'s validation for the sake of a field name.
+    const decoded = query.cursor === undefined ? null : decodeListCursor(query.cursor);
+
+    const page = await this.sessionManagement.list({
+      userId: principal.userId,
+      currentSessionId: principal.sessionId,
+      limit: query.limit,
+      cursor: decoded === null ? null : { lastSeenAt: new Date(decoded.createdAt), id: decoded.id },
+    });
+
+    const last = page.sessions.at(-1);
+    return {
+      data: page.sessions.map((session) => ({
+        id: session.id,
+        ip: session.ip,
+        userAgent: session.userAgent,
+        createdAt: session.createdAt.toISOString(),
+        lastSeenAt: session.lastSeenAt.toISOString(),
+        current: session.current,
+      })),
+      pagination: {
+        nextCursor:
+          page.hasMore && last !== undefined
+            ? encodeListCursor({ createdAt: last.lastSeenAt.toISOString(), id: last.id })
+            : null,
+        hasMore: page.hasMore,
+        limit: query.limit,
+      },
+    };
+  }
+
+  /**
+   * Revokes every session except the one that asked.
+   *
+   * # It is `DELETE /auth/sessions`, and the exception is not a parameter
+   *
+   * There is no request body and no "except" field. The session that survives
+   * is the one `AuthenticationGuard` resolved, so there is no shape in which a
+   * caller can name a different one — and therefore no shape in which this can
+   * be aimed at another user, or made to revoke the caller's own session by
+   * omission.
+   *
+   * `generalSession`, for the reasons on `listSessions` above. Requires
+   * `X-CSRF-Token`, like every cookie-authenticated unsafe method.
+   *
+   * **The cookies are deliberately NOT cleared.** The caller's own session is
+   * exactly what this route preserves; clearing them would sign out the one
+   * device the user chose to keep.
+   */
+  @AuthenticatedOnly()
+  @RateLimit('generalSession')
+  @ApiDoc({
+    summary: 'Sign out every other session.',
+    description:
+      'Revokes every live session belonging to the caller **except the one this request was ' +
+      'made with**, which is the session the authentication guard resolved rather than anything ' +
+      'the caller can name. Revocation is immediate: each cache entry is tombstoned before the ' +
+      'rows are written. `revoked` is how many sessions moved, and it is 0 rather than an error ' +
+      'when there were none. One `SESSION_REVOKED` audit row is written for the whole call, and ' +
+      'none at all when nothing moved. Requires `X-CSRF-Token`.',
+    responses: [
+      {
+        status: 200,
+        description: 'How many other sessions were revoked.',
+        schema: revokeOtherSessionsResponseSchema,
+      },
+      { status: 401, description: 'No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`).' },
+      { status: 403, description: 'Missing or mismatched `X-CSRF-Token` (`CSRF_TOKEN_INVALID`).' },
+    ],
+  })
+  @HttpCode(200)
+  @Delete('sessions')
+  async revokeOtherSessions(@Req() request: Request): Promise<RevokeOtherSessionsResponse> {
+    const principal = principalOf(request);
+    const { revoked } = await this.sessionManagement.revokeOthers({
+      userId: principal.userId,
+      currentSessionId: principal.sessionId,
+      ...requestContextOf(request),
+    });
+    return { status: 'SESSIONS_REVOKED', revoked };
+  }
+
+  /**
+   * Revokes one of the caller's own sessions.
+   *
+   * # A session id that is not the caller's answers 404, never 403
+   *
+   * `api/authorization.md` §3's rule for another tenant's resource, applied to
+   * the ownership axis this resource actually has. A 403 would confirm the id
+   * names a live session, which would make this route an oracle against every
+   * account in the product rather than only the caller's. The refusal is
+   * byte-identical to the one for an id that has never existed, and
+   * `auth.sessions.integration.spec.ts` asserts that as an identity rather than
+   * as two expectations that could drift.
+   *
+   * # REVOKING THE CURRENT SESSION IS ALLOWED, AND THAT IS A DECISION
+   *
+   * The alternatives were to refuse it (422 `INVALID_STATE_TRANSITION`) or to
+   * allow it. It is allowed, and it clears both cookies, because:
+   *
+   * - the list marks the current session, so a user pressing "sign out" on the
+   *   row they are sitting in has said exactly what they mean, and a refusal
+   *   would be a screen telling them they may not do the thing it just offered;
+   * - the end state is one this API already produces — it is `POST /auth/logout`
+   *   by another route — so refusing buys no safety, only a second story about
+   *   what a revocation does;
+   * - and the cookies **must** be cleared, or the browser is left holding a
+   *   `__Host-session` / `__Host-csrf` pair that cannot authenticate anything,
+   *   which presents to the user as a signed-in application that 401s.
+   *
+   * The audit row differs from `logout`'s: this writes `SESSION_REVOKED`, which
+   * is the true statement about what happened, rather than borrowing `LOGOUT`.
+   *
+   * `generalSession`, for the reasons on `listSessions` above. Requires
+   * `X-CSRF-Token`.
+   */
+  @AuthenticatedOnly()
+  @RateLimit('generalSession')
+  @ApiDoc({
+    summary: "Revoke one of the caller's own sessions.",
+    description:
+      'Revokes the named session, which must belong to the caller. A session id belonging to ' +
+      'anybody else answers **404 `RESOURCE_NOT_FOUND`**, byte-identical to the answer for an ' +
+      'id that has never existed — a 403 would confirm the id names a live session. Revocation ' +
+      'is immediate: the cache entry is tombstoned before the row is written. Revoking the ' +
+      'session the request was made with is allowed and clears both cookies, which is ' +
+      '`POST /auth/logout` reached by another route. A session that was already revoked or ' +
+      'expired still answers 200 — the end state asked for is the end state held — and writes ' +
+      'no second audit row. Requires `X-CSRF-Token`.',
+    responses: [
+      {
+        status: 200,
+        description: 'Revoked, or already gone.',
+        schema: revokeSessionResponseSchema,
+      },
+      { status: 400, description: 'The path id is not a session id (`VALIDATION_ERROR`).' },
+      { status: 401, description: 'No usable session (`UNAUTHENTICATED` or `SESSION_EXPIRED`).' },
+      { status: 403, description: 'Missing or mismatched `X-CSRF-Token` (`CSRF_TOKEN_INVALID`).' },
+      {
+        status: 404,
+        description:
+          "The id is not one of the caller's sessions, or names no session at all — one answer " +
+          'for both (`RESOURCE_NOT_FOUND`).',
+      },
+    ],
+  })
+  @HttpCode(200)
+  @Delete('sessions/:sessionId')
+  async revokeSession(
+    @Param('sessionId', new ZodValidationPipe(sessionIdSchema)) sessionId: string,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<RevokeSessionResponse> {
+    const principal = principalOf(request);
+    const { wasCurrent } = await this.sessionManagement.revokeOne({
+      userId: principal.userId,
+      currentSessionId: principal.sessionId,
+      targetSessionId: sessionId,
+      ...requestContextOf(request),
+    });
+
+    // Both, with the attributes they were set with — a browser matches a
+    // replacement cookie on name, domain and path together. Same reasoning as
+    // `logout` above, and `cookies.ts` repeats the list rather than deriving it
+    // for exactly this.
+    if (wasCurrent) {
+      response.setHeader('Set-Cookie', [clearedSessionCookie(), clearedCsrfCookie()]);
+    }
+
+    return { status: 'SESSION_REVOKED' };
   }
 
   /**

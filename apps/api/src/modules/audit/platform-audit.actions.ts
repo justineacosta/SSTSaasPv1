@@ -274,6 +274,38 @@ export const PLATFORM_AUDIT_ACTIONS = [
    * row in this list. The account is named by `resourceId`.
    */
   'MFA_MANAGEMENT_DENIED',
+
+  // --- Task 17: the session list and its two revocations --------------------
+  //
+  // A `PlatformAuditEvent` row for the same reason `LOGOUT` is one: a session
+  // may name no organisation at all, and `AuditEvent.organizationId` is NOT
+  // NULL behind an RLS policy that refuses the insert rather than merely
+  // rejecting the column.
+
+  /**
+   * A user revoked one of their **own** sessions from `/settings/security`, or
+   * revoked every session but the one they were sitting in.
+   *
+   * **Already in `security/audit.md` §4 before this task** — it is the one Auth
+   * name that list carried and no code wrote — so nothing is added to that
+   * document here, unlike Tasks 8, 9, 10 and 11.
+   *
+   * `resourceType` is `Session`, following `LOGOUT`: the user is unchanged and
+   * the session row is what moved. For the single revocation the `resourceId`
+   * is the session that was revoked. For the bulk one it is the session that
+   * **survived** — the caller's own — because the rows that were revoked are
+   * many and an append-only row per revoked session would let a caller size the
+   * table (the same reasoning `PASSWORD_RESET_COMPLETED` records for its
+   * `liveSessionsAtWrite`); `metadata.revoked` carries how many there were and
+   * `metadata.scope` distinguishes the two callers.
+   *
+   * `actorType` is `USER`, unlike every failure row above: reaching this
+   * requires a live session cookie and the CSRF token derived from it, and the
+   * action is the account owner protecting their own account. It is written
+   * **only when a row actually moved**, so a replayed request against an
+   * already-revoked session adds nothing.
+   */
+  'SESSION_REVOKED',
 ] as const;
 
 export type PlatformAuditAction = (typeof PLATFORM_AUDIT_ACTIONS)[number];

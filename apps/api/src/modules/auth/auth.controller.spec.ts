@@ -273,6 +273,38 @@ const ROUTES: readonly RouteExpectation[] = [
     access: { kind: 'authenticated' },
     refusesCrossSite: false,
   },
+  {
+    // Task 17's three. All `generalSession`, and the argument for NOT giving
+    // them a tighter class is on the handlers: the only scope that would
+    // resolve is `perIp`, every `perIp` class here is fail-closed, and putting
+    // one corporate egress address on a shared budget for a DEFENSIVE action —
+    // signing a stolen device out — fails closed in exactly the incident where
+    // the user needs it. `perPrincipal` does not resolve on any of them:
+    // `RATE_LIMIT_SCOPE_PHASES` puts it in the pre-authentication `'edge'`
+    // pass (ruling 55, ruling 90).
+    handler: 'listSessions',
+    path: 'sessions',
+    method: RequestMethod.GET,
+    rateLimit: 'generalSession',
+    access: { kind: 'authenticated' },
+    refusesCrossSite: false,
+  },
+  {
+    handler: 'revokeOtherSessions',
+    path: 'sessions',
+    method: RequestMethod.DELETE,
+    rateLimit: 'generalSession',
+    access: { kind: 'authenticated' },
+    refusesCrossSite: false,
+  },
+  {
+    handler: 'revokeSession',
+    path: 'sessions/:sessionId',
+    method: RequestMethod.DELETE,
+    rateLimit: 'generalSession',
+    access: { kind: 'authenticated' },
+    refusesCrossSite: false,
+  },
 ];
 
 /**

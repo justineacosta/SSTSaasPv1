@@ -593,3 +593,135 @@ describe('bulk revocation', () => {
     ).rejects.toThrow();
   });
 });
+
+describe('listOwnedPage', () => {
+  it('projects away tokenHash rather than leaving it on the object', () => {
+    // The control this method carries. A row that reached the controller with
+    // its hashed credential still attached would be shipped by any handler
+    // that spread it, and no response schema would notice a property Zod
+    // strips silently.
+    const h = harness([row(), row()]);
+    return h.service
+      .listOwnedPage({ userId: newId('usr'), limit: 10, cursor: null })
+      .then((page) => {
+        expect(page.sessions).toHaveLength(2);
+        for (const session of page.sessions) {
+          expect(Object.keys(session).sort()).toEqual([
+            'createdAt',
+            'id',
+            'ip',
+            'lastSeenAt',
+            'userAgent',
+          ]);
+          expect(JSON.stringify(session)).not.toContain('tokenHash');
+        }
+      });
+  });
+
+  it('asks for one row more than the limit, and does not return it', async () => {
+    // `hasMore` without a second `count` — the extra row is the answer, and it
+    // must not leak into the page.
+    const h = harness([row(), row(), row()]);
+    const page = await h.service.listOwnedPage({ userId: newId('usr'), limit: 2, cursor: null });
+
+    const findMany = h.calls.find((call) => call.method === 'findMany');
+    expect(findMany?.args).toMatchObject({ take: 3 });
+    expect(page.sessions).toHaveLength(2);
+    expect(page.hasMore).toBe(true);
+  });
+
+  it('reports hasMore false when the page is not full', async () => {
+    const h = harness([row()]);
+    const page = await h.service.listOwnedPage({ userId: newId('usr'), limit: 5, cursor: null });
+    expect(page.hasMore).toBe(false);
+    expect(page.sessions).toHaveLength(1);
+  });
+
+  it('scopes every read to the named user, orders by lastSeenAt desc, and excludes the dead', async () => {
+    const h = harness([]);
+    const userId = newId('usr');
+    await h.service.listOwnedPage({ userId, limit: 10, cursor: null });
+
+    const findMany = h.calls.find((call) => call.method === 'findMany');
+    expect(findMany?.args).toMatchObject({
+      where: { userId, revokedAt: null, status: 'ACTIVE' },
+      orderBy: [{ lastSeenAt: 'desc' }, { id: 'desc' }],
+    });
+    // Both clocks, so a session past either one is never listed as live.
+    const where = (findMany?.args as { where: Record<string, unknown> }).where;
+    expect(where['idleExpiresAt']).toHaveProperty('gt');
+    expect(where['absoluteExpiresAt']).toHaveProperty('gt');
+  });
+
+  it('adds the keyset predicate only when a cursor is supplied', async () => {
+    const h = harness([]);
+    const userId = newId('usr');
+    const lastSeenAt = new Date('2026-09-07T10:00:00.000Z');
+
+    await h.service.listOwnedPage({ userId, limit: 10, cursor: null });
+    expect((h.calls.at(-1)?.args as { where: Record<string, unknown> }).where).not.toHaveProperty(
+      'OR',
+    );
+
+    await h.service.listOwnedPage({ userId, limit: 10, cursor: { lastSeenAt, id: 'ses_x' } });
+    // The id tie-breaker is the half that stops rows sharing a timestamp being
+    // skipped or repeated, so it is asserted rather than implied.
+    expect((h.calls.at(-1)?.args as { where: Record<string, unknown> }).where).toMatchObject({
+      OR: [{ lastSeenAt: { lt: lastSeenAt } }, { lastSeenAt, id: { lt: 'ses_x' } }],
+    });
+  });
+
+  it('refuses a userId that is not a user id', async () => {
+    const h = harness([]);
+    await expect(
+      h.service.listOwnedPage({
+        userId: 'ses_01M0T74WZZFY9T2QS56RGF3GQ7',
+        limit: 10,
+        cursor: null,
+      }),
+    ).rejects.toThrow();
+  });
+});
+
+describe('revokeOwned', () => {
+  it("answers NOT_FOUND for another user's session, having written nothing", async () => {
+    // THE MOST IMPORTANT ASSERTION IN THIS FILE. The unit lane can prove the
+    // decision; `auth.sessions.integration.spec.ts` proves the 404 it becomes.
+    const target = row();
+    const h = harness([target]);
+
+    const outcome = await h.service.revokeOwned(newId('usr'), target.id);
+
+    expect(outcome).toBe('NOT_FOUND');
+    expect(h.calls.filter((call) => call.method === 'updateMany')).toHaveLength(0);
+    expect(h.calls.filter((call) => call.method === 'writeTombstone')).toHaveLength(0);
+  });
+
+  it('answers NOT_FOUND for an id that names no row', async () => {
+    const h = harness([]);
+    expect(await h.service.revokeOwned(newId('usr'), newId('ses'))).toBe('NOT_FOUND');
+  });
+
+  it("revokes the caller's own session, poisoning the cache BEFORE the write", async () => {
+    const userId = newId('usr');
+    const target = row({ userId });
+    const h = harness([target]);
+
+    expect(await h.service.revokeOwned(userId, target.id)).toBe('REVOKED');
+
+    const poisoned = h.calls.findIndex((call) => call.method === 'writeTombstone');
+    const written = h.calls.findIndex((call) => call.method === 'updateMany');
+    expect(poisoned).toBeGreaterThanOrEqual(0);
+    // The ordering is what makes revocation immediate rather than eventual: a
+    // warm entry written between the two would be refused by the tombstone.
+    expect(poisoned).toBeLessThan(written);
+    expect(h.store.get(sessionCacheKey(target.tokenHash))).toBe(SESSION_TOMBSTONE);
+  });
+
+  it('refuses a sessionId that is not a session id', async () => {
+    const h = harness([]);
+    await expect(
+      h.service.revokeOwned(newId('usr'), 'usr_01M0T74WZZFY9T2QS56RGF3GQ7'),
+    ).rejects.toThrow();
+  });
+});

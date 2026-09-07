@@ -331,7 +331,9 @@ describe('the two revocation responses', () => {
   });
 
   it('carries how many other sessions were revoked', () => {
-    expect(revokeOtherSessionsResponseSchema.parse({ status: 'SESSIONS_REVOKED', revoked: 3 }).revoked).toBe(3);
+    expect(
+      revokeOtherSessionsResponseSchema.parse({ status: 'SESSIONS_REVOKED', revoked: 3 }).revoked,
+    ).toBe(3);
   });
 
   it('refuses a negative or fractional count', () => {
