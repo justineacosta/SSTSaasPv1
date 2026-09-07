@@ -72,6 +72,7 @@ export {
   resetPasswordResponseSchema,
   revokeOtherSessionsResponseSchema,
   revokeSessionResponseSchema,
+  sessionCollectionResponseSchema,
   sessionCollectionSchema,
   sessionOrganizationSchema,
   sessionResponseSchema,
