@@ -344,8 +344,9 @@ export class InvitationService {
    * 3. the already-a-member check (409 — about the organisation's roster, which
    *    a holder of `organization.manage_members` may already read).
    *
-   * # ADR-0026 §3 — THE ACTOR'S OWN AUTHORITY IS RE-READ INSIDE THE
-   * TRANSACTION, AND `ctx.permissions` IS NOT WHAT DECIDES
+   * # ADR-0026 §3 — THE ORGANISATION LOCK, THEN THE ACTOR'S OWN AUTHORITY
+   * RE-READ INSIDE THE TRANSACTION. `ctx.permissions` IS NOT WHAT DECIDES, AND
+   * THE RE-READ ON ITS OWN WAS NOT ENOUGH EITHER
    *
    * An earlier version of this docblock argued that D5 could be checked before
    * the transaction opened, because the role's permissions are seeded reference
@@ -369,6 +370,30 @@ export class InvitationService {
    * An actor whose membership has gone by then receives the same 403 as any
    * other principal who cannot grant the role. `assertActorMayGrant` is
    * imported rather than re-implemented — see D5 below.
+   *
+   * **AND THE RE-READ ALONE DID NOT CLOSE THE WINDOW. A RE-READ IS NOT A
+   * LOCK.** The first version of this method stopped at the paragraph above and
+   * claimed the race shut. The D9 adversarial review reproduced the original
+   * escalation on that code, through these routes, to a `201` minting an
+   * `OWNER` membership for a user whose row said `REMOVED`: under READ
+   * COMMITTED — `withTenantTransaction` passes no `isolationLevel` — the
+   * re-read's non-locking `findFirst` neither waits for nor sees an uncommitted
+   * removal, so a `create` whose re-read runs first is allowed and inserts its
+   * row after the cascade's `findMany` has already looked. Rulings 82 and 122
+   * were cited in the docblock that made that claim, which is the part worth
+   * remembering: naming the rulings is not obeying them.
+   *
+   * What closes it is `lockOrganization`, taken as the **first** statement in
+   * the transaction below — see the comment there for the lock order and its
+   * cost. The re-read stays, because it is what makes the refusal decide on the
+   * database rather than on the guard, and because the lock alone would
+   * serialise the requests without changing which facts they read.
+   *
+   * The detector is
+   * `a create racing its own issuer's removal (ADR-0026 §3)` in
+   * `invitations.integration.spec.ts`, which holds `FOR NO KEY UPDATE` on the
+   * organisation row, writes the removal, and fails if this request answers
+   * before that transaction commits.
    */
   async create(
     ctx: TenantContext,
