@@ -271,12 +271,37 @@ export const sessionResponseSchema = z.object({
 /**
  * ONE LIVE SESSION AS `/settings/security` SEES IT.
  *
- * **`tokenHash` and everything derived from it are absent, and that is the
- * point of this schema existing at all.** A `SessionRow` in `apps/api` carries
- * the hashed credential; a handler that built this shape by hand could ship it
- * by adding one field, and nothing would fail. Here the shape is closed, so the
- * hash is not merely omitted — it is unrepresentable on the wire, and
- * `check:openapi` pins that.
+ * **`tokenHash` and everything derived from it are absent**, and this schema is
+ * where that absence is written down. A `SessionRow` in `apps/api` carries the
+ * hashed credential; this shape does not.
+ *
+ * # WHAT THIS SCHEMA DOES AND DOES NOT ENFORCE — corrected, review finding C-1
+ *
+ * An earlier version of this docblock said the hash was "unrepresentable on the
+ * wire, and `check:openapi` pins that". **Both halves were false**, and the
+ * correction is kept here rather than deleted because the false version is the
+ * kind a maintainer acts on. A schema is a value; it enforces nothing until
+ * something parses through it. At the time that sentence was written nothing in
+ * `apps/api` parsed any response against a contract schema, and
+ * `check:openapi` compares a committed *document* against a generated one — it
+ * cannot observe a response body. So the real defence was two hand-written
+ * projections, and replacing them both with a spread typechecks cleanly,
+ * because TypeScript does not excess-property-check a spread.
+ *
+ * What is true now:
+ *
+ * - This schema is a **non-strict** `z.object`, so parsing through it *strips*
+ *   an unknown key rather than refusing it. That is the right behaviour where
+ *   it is used — `apps/web`'s client (`api/client.ts`) `safeParse`s every
+ *   response through it, and there an unknown key means the API is newer than
+ *   the tab, not that something leaked.
+ * - {@link sessionCollectionResponseSchema} below is the **closed** version,
+ *   and `AuthController.listSessions` parses its response through it before
+ *   returning. That is the runtime enforcer, on the side that could actually
+ *   leak, and it refuses rather than strips.
+ *
+ * The projection in `SessionService.listOwnedPage` remains the first line: by
+ * the time a row leaves that service the hash is already gone.
  *
  * `ip` and `userAgent` are nullable because the columns are: a session issued
  * by a caller that sent no `User-Agent` records none, and `conventions.md` §4
@@ -302,6 +327,42 @@ export const sessionSummarySchema = z.object({
 /** `GET /api/v1/auth/sessions` — one page of the caller's own live sessions. */
 export const listSessionsQuerySchema = listQuerySchema;
 export const sessionCollectionSchema = collectionEnvelopeSchema(sessionSummarySchema);
+
+/**
+ * THE SAME PAGE, CLOSED, FOR THE SIDE THAT COULD LEAK IT.
+ *
+ * `AuthController.listSessions` parses its response through this before
+ * returning it, which is what makes {@link sessionSummarySchema}'s absence of
+ * `tokenHash` a runtime property of `apps/api` rather than a statement in a
+ * docblock. Review finding C-1: it was the second of those until this schema
+ * existed.
+ *
+ * # WHY `.strict()` HERE AND NOT ON THE SHARED SCHEMA
+ *
+ * Strictness is asymmetric on purpose, and the asymmetry is the whole design:
+ *
+ * - **Outbound, in the API:** an unknown key means a handler widened a
+ *   projection it should not have — the reviewer's mutation, a spread of
+ *   `SessionRow` — and the unknown key is a hashed credential. Silent stripping
+ *   would make that mutation pass every test in the repository. Refusing turns
+ *   it into a 500 the moment it is exercised, which is a defect that stops the
+ *   response instead of one that ships it. A `ZodError` escaping the handler is
+ *   mapped by `AllExceptionsFilter` to a generic 500 `INTERNAL_ERROR`, so the
+ *   refusal itself discloses nothing.
+ * - **Inbound, in the browser:** {@link sessionCollectionSchema} stays
+ *   non-strict, because there an unknown key means the API is newer than the
+ *   open tab. A strict client would turn every additive, backwards-compatible
+ *   API change into a broken page for the duration of a rolling deploy.
+ *
+ * It is not registered in the OpenAPI document — `ApiDoc` still names
+ * {@link sessionCollectionSchema} — because the two describe the same wire
+ * shape and the document should carry the one a client is written against.
+ * `check:openapi` is therefore unmoved by this schema, which is the honest
+ * statement of what that check covers.
+ */
+export const sessionCollectionResponseSchema = collectionEnvelopeSchema(
+  sessionSummarySchema.strict(),
+).strict();
 
 /**
  * `DELETE /api/v1/auth/sessions/:sessionId`.

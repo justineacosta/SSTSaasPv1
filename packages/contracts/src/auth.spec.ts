@@ -17,6 +17,7 @@ import {
   resetPasswordRequestSchema,
   revokeOtherSessionsResponseSchema,
   revokeSessionResponseSchema,
+  sessionCollectionResponseSchema,
   sessionCollectionSchema,
   sessionResponseSchema,
   sessionSummarySchema,
@@ -309,6 +310,57 @@ describe('sessionCollectionSchema', () => {
 
   it('refuses a page with no pagination block', () => {
     expect(sessionCollectionSchema.safeParse({ data: [] }).success).toBe(false);
+  });
+});
+
+describe('sessionCollectionResponseSchema — the closed shape the API answers through', () => {
+  // REVIEW FINDING C-1. `sessionSummarySchema`'s docblock used to claim the
+  // hash was "unrepresentable on the wire". It was not: nothing in `apps/api`
+  // parsed a response against a contract schema, and a non-strict `z.object`
+  // strips silently rather than refusing. This schema is the enforcer that
+  // sentence described, and these are its tests.
+  const row = {
+    id: SESSION_ID,
+    ip: '203.0.113.9',
+    userAgent: 'Mozilla/5.0',
+    createdAt: '2026-09-07T10:00:00Z',
+    lastSeenAt: '2026-09-07T11:00:00Z',
+    current: true,
+  };
+  const page = { data: [row], pagination: { nextCursor: null, hasMore: false, limit: 50 } };
+
+  it('accepts exactly the documented page', () => {
+    expect(sessionCollectionResponseSchema.parse(page).data[0]?.id).toBe(SESSION_ID);
+  });
+
+  it('REFUSES a row carrying a tokenHash, where the client-facing schema strips it', () => {
+    // The asymmetry is deliberate and it is the whole fix. On the API side an
+    // unknown key means a handler widened a projection, which is a programming
+    // error that must stop the response rather than be quietly tidied away —
+    // silent stripping would let the reviewer's spread mutation pass every
+    // test in the repository. On the browser side (`sessionCollectionSchema`,
+    // used by `apps/web`'s client) stripping is right, because there an
+    // unknown key means the API is newer than the tab.
+    const leaked = { ...page, data: [{ ...row, tokenHash: 'a'.repeat(64) }] };
+
+    const refused = sessionCollectionResponseSchema.safeParse(leaked);
+    expect(refused.success).toBe(false);
+    expect(JSON.stringify(refused.error?.issues)).toContain('tokenHash');
+
+    const stripped = sessionCollectionSchema.parse(leaked);
+    expect(Object.keys(stripped.data[0] ?? {})).not.toContain('tokenHash');
+  });
+
+  it('refuses an unknown key on the envelope as well as on a row', () => {
+    expect(
+      sessionCollectionResponseSchema.safeParse({ ...page, tokenHash: 'a'.repeat(64) }).success,
+    ).toBe(false);
+  });
+
+  it('parses to the same type the client schema does, so no second wire shape exists', () => {
+    expect(sessionCollectionResponseSchema.parse(page)).toEqual(
+      sessionCollectionSchema.parse(page),
+    );
   });
 });
 

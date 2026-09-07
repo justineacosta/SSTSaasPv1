@@ -63,6 +63,7 @@ import {
   type RevokeSessionResponse,
   revokeSessionResponseSchema,
   type SessionCollection,
+  sessionCollectionResponseSchema,
   sessionCollectionSchema,
   sessionIdSchema,
   type SessionResponse,
@@ -631,7 +632,16 @@ export class AuthController {
     });
 
     const last = page.sessions.at(-1);
-    return {
+    // PARSED, NOT JUST TYPED — review finding C-1. The hand-written projection
+    // below is the second line of the defence and `SessionService.listOwnedPage`
+    // is the first; neither is checked by the compiler in the shape that
+    // matters, because TypeScript does not excess-property-check a spread.
+    // `sessionCollectionResponseSchema` is `.strict()`, so a widened projection
+    // that reintroduced `tokenHash` is refused here rather than serialised, and
+    // the refusal becomes a generic 500 through `AllExceptionsFilter` rather
+    // than a response body carrying a hashed credential. The contract's
+    // docblock says what this does and does not cover.
+    return sessionCollectionResponseSchema.parse({
       data: page.sessions.map((session) => ({
         id: session.id,
         ip: session.ip,
@@ -648,7 +658,7 @@ export class AuthController {
         hasMore: page.hasMore,
         limit: query.limit,
       },
-    };
+    });
   }
 
   /**
