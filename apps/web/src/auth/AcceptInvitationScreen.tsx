@@ -17,9 +17,15 @@ import { toFormFailure, type FormFailure } from './server-errors';
  *
  * It must stay equal to `TOKEN_LINK_PATHS.invitation` in
  * `apps/api/src/modules/auth/emails/links.ts`, which is the path already
- * printed in every invitation email that has been sent. `ui-ux/page-map.md`
- * still names an older `/invitations/[token]`; that path was never built and is
- * not what the mail carries, so it is not what this app serves.
+ * printed in every invitation email that has been sent. The mail template is
+ * the authority over any document, because its URLs are in people's inboxes and
+ * cannot be changed retroactively.
+ *
+ * An older `/invitations/[token]` spelling was documented for a while and never
+ * built. `ui-ux/page-map.md` was corrected in Task 17, before this screen
+ * existed; `architecture/frontend.md` §2's route table and
+ * `security/transport-and-headers.md` still carried it and are corrected in
+ * Task 18, the change that ships this screen.
  */
 export const ACCEPT_INVITATION_PATH = '/accept-invitation';
 
@@ -168,7 +174,15 @@ export function AcceptInvitationScreen({ token }: { token: string | null }): Rea
     );
   }
 
-  if (status === 'accepted' && membership !== null) {
+  // `status` alone decides this branch, and the membership only decides how
+  // much detail it can show. The review's L1: the condition used to be
+  // `status === 'accepted' && membership !== null`, so an acceptance that
+  // somehow arrived without a body fell through to "We could not accept that
+  // invitation" — telling the invitee their acceptance failed when it had
+  // succeeded, which is precisely the failure the StrictMode ref guard exists
+  // to prevent. Unreachable today, because both setters batch into one render;
+  // reachable the moment someone reorders them.
+  if (status === 'accepted') {
     return (
       <AuthCard
         title="Invitation accepted"
@@ -177,17 +191,25 @@ export function AcceptInvitationScreen({ token }: { token: string | null }): Rea
         <Alert variant="success">
           <div className="flex flex-col gap-1">
             <span>
-              You have joined with the role <strong>{membership.roleKey}</strong>. Your active
-              organisation has not changed — use the organisation switcher at the top of the app to
-              start working in the one you just joined.
+              You have joined
+              {membership === null ? null : (
+                <>
+                  {' '}
+                  with the role <strong>{membership.roleKey}</strong>
+                </>
+              )}
+              . Your active organisation has not changed — use the organisation switcher at the top
+              of the app to start working in the one you just joined.
             </span>
             {/* The API returns a membership, and a membership carries an
                 organisation identifier and not an organisation name. Rendering
                 the identifier is honest; inventing a name, or spending a second
                 request on a terminal confirmation to look one up, is not. */}
-            <span className="text-[length:var(--text-caption)] leading-[var(--leading-caption)] text-[var(--color-text-muted)]">
-              Organisation <code>{membership.organizationId}</code>
-            </span>
+            {membership === null ? null : (
+              <span className="text-[length:var(--text-caption)] leading-[var(--leading-caption)] text-[var(--color-text-muted)]">
+                Organisation <code>{membership.organizationId}</code>
+              </span>
+            )}
           </div>
         </Alert>
       </AuthCard>
@@ -216,7 +238,13 @@ export function AcceptInvitationScreen({ token }: { token: string | null }): Rea
       // the endpoint is not an oracle for whether a given token exists. Copy
       // that named a cause would rebuild that oracle in the browser. The
       // server's own message is rendered, and nothing is added to it.
-      lead="Ask whoever invited you to send a new invitation."
+      // The review's M3. The old lead was "Ask whoever invited you to send a new
+      // invitation." — advice that is actively wrong for the two likeliest
+      // causes in practice, both of which are "you are signed in as the wrong
+      // account". This wording covers every one of the six states equally and
+      // therefore names none of them, so it is not the oracle the comment above
+      // forbids: it is the same guidance the signed-out branch already gives.
+      lead="Invitations are single-use, they expire, and they only work for the address they were sent to. Check you are signed in as the invited address, or ask whoever invited you to send a new invitation."
       footer={<Link href="/login">Back to sign in</Link>}
     >
       {failure === null ? null : <FormErrorRegion failure={failure} />}

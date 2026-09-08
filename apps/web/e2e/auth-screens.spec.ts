@@ -23,6 +23,11 @@ const AUTH_ROUTES = [
   { path: '/forgot-password', heading: 'Reset your password' },
   { path: '/verify-email', heading: 'This link is incomplete' },
   { path: '/reset-password', heading: 'This link is incomplete' },
+  // Added in Task 18 with the screen itself. The review's M2: this route's
+  // whole reason for existing is that it 404'd because nothing had ever loaded
+  // it in a browser, so shipping it outside the table that loads all six of its
+  // siblings would have repeated the defect in a smaller way.
+  { path: '/accept-invitation', heading: 'This link is incomplete' },
 ] as const;
 
 for (const route of AUTH_ROUTES) {

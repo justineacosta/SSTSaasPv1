@@ -10,8 +10,9 @@ import { MfaChallengeProvider } from '../../src/auth/MfaChallengeProvider';
  * `/accept-invitation`. The rest of `(auth)` — `/mfa/enroll` — is still to come
  * (`ui-ux/page-map.md`).
  *
- * The invitation screen is at `/accept-invitation`, **not** at
- * `page-map.md`'s `/invitations/[token]`: the path is fixed by
+ * The invitation screen is at `/accept-invitation`, and not at the older
+ * `/invitations/[token]` spelling that was documented for a while and never
+ * built: the path is fixed by
  * `TOKEN_LINK_PATHS.invitation` in
  * `apps/api/src/modules/auth/emails/links.ts`, which is what every invitation
  * email already sent points at, and by `links.ts`'s own rule that the secret
