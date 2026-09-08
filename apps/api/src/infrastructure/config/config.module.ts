@@ -31,7 +31,13 @@ import { CSP_ENFORCE, ENV, LOGGER } from '../tokens.js';
           // only: staging and production ship JSON, and the test environment is
           // silent unless a test asks for a stream. environments.md §1.
           pretty: env.APP_ENV === 'development',
-          silent: env.APP_ENV === 'test',
+          // `LOG_SILENT` wins when it is set, and nothing sets it except the
+          // E2E launcher. APP_ENV=test silences the logger because a test
+          // constructing one in-process does not want a thousand JSON lines —
+          // but the E2E harness runs APP_ENV=test for an unrelated reason (it
+          // is what makes the CSP enforcing), and silencing a long-running
+          // server it needs to debug was an accident of that overlap.
+          silent: env.LOG_SILENT ?? env.APP_ENV === 'test',
         }),
     },
     {

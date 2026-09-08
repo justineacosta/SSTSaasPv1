@@ -181,6 +181,15 @@ jobs:
       # A failing E2E stage with no artefact is a stage people disable. The
       # trace is written on first retry (`trace: 'on-first-retry'`), and CI runs
       # with `retries: 2`, so a genuine failure always leaves one behind.
+      # The E2E API's own log. Playwright stops relaying a webServer's output
+      # once its readiness URL answers, so a server that boots cleanly and then
+      # answers 500 leaves nothing in the job output — four consecutive runs
+      # failed at POST /auth/register with no server-side reason anywhere.
+      # `apps/api/scripts/start-e2e.ts` tees to this file for exactly this step.
+      - name: E2E API log on failure
+        if: failure()
+        run: cat apps/api/e2e-api.log || echo "no e2e-api.log written"
+
       - name: Upload Playwright artefacts on failure
         if: failure()
         uses: actions/upload-artifact@v7

@@ -79,3 +79,4 @@ scan-output/
 
 # Subagent-driven development scratch (ledger, briefs, review packages)
 .superpowers/
+apps/api/e2e-api.log

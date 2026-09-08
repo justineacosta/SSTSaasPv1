@@ -95,6 +95,23 @@ export const sharedEnvSchema = z.object({
   // See .claude/operations/environments.md §3.
   APP_ENV: z.enum(['development', 'test', 'staging', 'production']),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error', 'fatal']).default('info'),
+  /**
+   * Overrides the logger's silence, which is otherwise derived from `APP_ENV`.
+   *
+   * `APP_ENV=test` silences the logger (`config.module.ts`), which is right for
+   * a logger constructed inside a unit or integration test — nobody wants a
+   * suite that prints a thousand JSON lines. It is wrong for the **E2E
+   * harness**, which runs `APP_ENV=test` for a different reason entirely: it is
+   * what makes the CSP enforcing rather than report-only, and it happened to
+   * silence a long-running server process at the same time.
+   *
+   * The cost of that coincidence was four consecutive CI failures at
+   * `POST /auth/register` — a 500 with a request ID in the browser and not one
+   * line of server log anywhere, because the API had been told to say nothing.
+   * Optional and undefined by default, so every existing environment behaves
+   * exactly as before and only the E2E launcher sets it.
+   */
+  LOG_SILENT: booleanFromString.optional(),
 });
 
 const apiEnvObject = sharedEnvSchema.extend({

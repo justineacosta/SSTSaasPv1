@@ -57,6 +57,15 @@ the CSP mode in §4 below is derived from `APP_ENV` once, in `infrastructure/con
 policy deliberately: a policy that is only ever report-only where it is asserted is a policy
 no test has seen block anything.
 
+**`APP_ENV=test` also silences the logger, and those two effects had to be separated.** The
+silence is right for a logger constructed inside a unit or integration suite, and wrong for the
+**E2E harness**, which sets `APP_ENV=test` only to get the enforcing CSP and inherited the
+silence by accident. The cost was four consecutive CI failures at `POST /auth/register` showing a
+500 with a request ID in the browser and no server log anywhere, because the API had been told to
+say nothing. `LOG_SILENT` now overrides the derivation; it is unset in every environment except
+`apps/api/scripts/start-e2e.ts`, which sets it to `false`. **Two behaviours derived from one
+variable are one variable too few** whenever a caller wants one of them and not the other.
+
 ## 4. Production configuration that differs from development
 
 Development defaults are not production defaults, and assuming otherwise is a common way to

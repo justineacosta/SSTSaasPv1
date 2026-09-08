@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createWriteStream } from 'node:fs';
 import { e2eEnvSchema, loadEnv } from '@sentinel/config';
 
 /**
@@ -63,14 +64,41 @@ const { E2E_PORT, E2E_API_PORT } = loadEnv(e2eEnvSchema);
 /* eslint-disable-next-line no-restricted-properties -- see the comment above. */
 const childEnv = { ...process.env };
 childEnv.APP_ENV = 'test';
+// APP_ENV=test is set for the CSP, and it silences the logger as a side effect
+// (`config.module.ts`). Undo exactly that side effect: this is a server whose
+// 500s somebody has to be able to read.
+childEnv.LOG_SILENT = 'false';
 childEnv.API_PORT = String(E2E_API_PORT);
 childEnv.API_BASE_URL = `http://localhost:${String(E2E_API_PORT)}`;
 childEnv.WEB_BASE_URL = `http://localhost:${String(E2E_PORT)}`;
 
+/**
+ * THE API'S OUTPUT GOES TO A FILE AS WELL AS TO THE TERMINAL, AND THE FILE IS
+ * THE POINT.
+ *
+ * Playwright relays a `webServer`'s output only while it is starting; once the
+ * readiness URL answers, the process keeps logging and nobody is listening. So
+ * an API that boots cleanly and then answers 500 to a request is invisible —
+ * which is exactly what CI runs 34191547593, 34192382594, 34193150653 and
+ * 34193910811 were: four failures at `POST /auth/register`, a 500 with a request
+ * ID in the browser, and not one line of server log in the job output. Setting
+ * `stdout: 'pipe'` on the webServer did not fix it, because the relay is not
+ * where the output was being lost.
+ *
+ * `.github/workflows/ci.yml` prints this file when the E2E step fails, so the
+ * reason for a 500 survives the run that produced it.
+ */
+const log = createWriteStream('e2e-api.log', { flags: 'w' });
+
 const child = spawn(process.execPath, ['dist/main.js'], {
-  stdio: 'inherit',
+  stdio: ['inherit', 'pipe', 'pipe'],
   env: childEnv,
 });
+
+child.stdout?.pipe(process.stdout);
+child.stdout?.pipe(log);
+child.stderr?.pipe(process.stderr);
+child.stderr?.pipe(log);
 
 // Forward the child's fate rather than swallowing it, so Playwright sees a
 // server that failed to boot as a failure instead of waiting out its timeout.
