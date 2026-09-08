@@ -14,7 +14,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Partially Implemented — all 18 tasks are done and all three exit criteria are met on this machine; nothing has run on a Linux runner.** Tasks 1–17 are merged into `main`; Task 18 is verified on `feat/phase-2-task-18-e2e-journey-gate` and unpushed. The phase's last unmet criterion closed on 2026-09-08: **the full authentication journey now passes automatically** — `apps/web/e2e/authentication-journey.spec.ts`, 10/10 against a live API, real Postgres, real Redis and real Mailpit, reading verification and invitation links out of the inbox rather than stubbing them. `pnpm test:e2e` is **50 tests, up from 5**. The gap Task 17 found is closed with it: `/accept-invitation` is built, so a live invitation email no longer 404s. **The status is not Implemented for one reason, and it is a real one**: this task adds the first CI stage that boots an API, reads a mailbox over HTTP and talks to Redis from a Playwright `globalSetup`, and every command was run on Windows. Task 3's `@node-rs/argon2` is this repository's own precedent for a dependency that resolves on one platform and not another. **A separate finding, and a product hole rather than a testing one: there is no create-organisation screen** — `createOrganization` exists nowhere in `apps/web`, so a newly registered user cannot enter the product from a cold start through its own UI, and the journey creates its organisations by calling the API. Evidence tables under Phase 2 and Task 18 below |
+| 2 | Identity | **Implemented.** All 18 tasks done; all three exit criteria met and **proven green on a Linux runner — CI run 34201298731**. Tasks 1–17 are on `main`; Task 18 is on `feat/phase-2-task-18-e2e-journey-gate`, green, awaiting merge. The last unmet criterion closed on 2026-09-08: **the full authentication journey passes automatically** — register → verify → sign in → enrol MFA → sign out → sign in with a second factor → switch organisation → invite → accept → revoke a session and watch it die on its next request, with verification and invitation links **read out of Mailpit** rather than stubbed. `pnpm test:e2e` is **50 tests, up from 5**. Task 17's live-invitation 404 is closed: `/accept-invitation` is built. **The phase is complete; the product is not enterable.** There is no create-organisation screen — `createOrganization` exists nowhere in `apps/web` — so a newly registered user belongs to no organisation and cannot create one, while the switcher tells them to wait for an invitation nobody can send. That is a product hole, not a test gap, and it is Phase 3's first problem or a Task 19. Getting CI green took **seven runs, five of them spent making the failure legible rather than fixing it**: `APP_ENV=test` had silenced the API's logger, and CI had never migrated or seeded the compose database because nothing before the E2E stage had needed it to. Evidence tables under Phase 2 and Task 18 below |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -2984,8 +2984,7 @@ is recorded because this file relies on the same device in several places.
 
 ## Task 18 — the phase gate: an automated journey, and the document nobody owned
 
-**Status: Implemented, and Phase 2's three exit criteria are met — but read the CI row before
-treating that as settled.** Everything on the plan's checklist is built, every command below was
+**Status: Implemented. Phase 2's three exit criteria are met and proven on a Linux runner.** Everything on the plan's checklist is built, every command below was
 run on this tree with its exit code captured outside a pipe (`out=$(pnpm <cmd> 2>&1); code=$?`),
 and the phase's last unmet criterion now passes automatically rather than by hand.
 
@@ -3007,18 +3006,32 @@ and the phase's last unmet criterion now passes automatically rather than by han
 | `pnpm test:e2e` | 0 | **50 tests, up from 5 at Task 17.** The journey, the failure paths, and the per-route properties. |
 | `prisma migrate deploy` against a **fresh empty database** | 0 | All migrations replay from empty into a scratch database created for the purpose and dropped afterwards. Not a warm tree. |
 | `docker compose ps` | — | postgres, redis, minio, mailpit all `running`. |
-| CI run **34191547593** | **FAILED** | The first Linux run. 21 of 22 steps green — including the new **Authorization matrix** step — and **`End-to-end tests` failed: 36 passed, 2 failed**, both at their registration step. Not a platform difference: a race this suite always had and local scheduling had been hiding. See the row below. |
+| CI run **34201298731** | **0 — GREEN** | **The phase gate, on a Linux runner.** Every step passes, including `Authorization matrix`, `Apply migrations to the local stack`, `Seed reference data`, and **`End-to-end tests`: 50 passed in 1.9m**. This is the row that was NOT RUN, and it took **seven runs** to get here. |
 
-**What run 34191547593 proved, and it is the reason the row above is kept rather than deleted.**
-Every worker in the E2E suite shares one IP, so `registration`'s 3-per-hour budget is **global
-mutable state that parallel workers race on**. The journey registers two accounts and
-`failure-paths` four; clearing the counters once per run and again per test in one file is not a
-fix, only a narrower race. Locally the two files happened to interleave in an order that fitted
-the budget, six runs in a row. CI interleaved them differently and both registration steps
-failed while 36 tests passed around them. `playwright.config.ts` now pins `workers: 1` and the
-reset moved to immediately before each registration, which is race-free only because of that
-pin. **A green local E2E run says nothing about a suite whose tests contend for one global
-counter** — that is ruling 155.
+**Six runs failed before that one, and what they cost is the finding.** The table below is the
+honest record, because "CI is green" written without it would hide the most useful thing this
+task learned.
+
+| Run | Failed at | Actual cause |
+|---|---|---|
+| 34191547593 | `POST /auth/register` → 500 | Unknown at the time. 36 passed, 2 failed. |
+| 34192382594 | same | Same. My first fix guessed at the rate limiter and **the guess was wrong** — the log printed "cleared 1 rate-limit counters" before each registration, so the budget was never the constraint. |
+| 34193150653 | same | `stdout: 'pipe'` on the webServer changed nothing, because the relay was not where the output was lost. The SMTP probe ruled mail out. |
+| 34193910811 | same | The test now reported `500 http://localhost:3101/api/v1/auth/register` instead of "an element was not visible" — the symptom named at last, the cause still not. |
+| 34194898706 | same | **`LOG_SILENT` separated from `APP_ENV`.** `config.module.ts` derived `silent` from `APP_ENV === 'test'`, and the E2E launcher sets `APP_ENV=test` **for the CSP** — so the harness had been silencing the very server it needed to read. |
+| 34195584871 | `POST /organizations` → 500 | With the API finally speaking: Prisma **P2021**, `public.User` does not exist. **CI had never migrated the compose database** — the integration suite brings its own up through Testcontainers, so nothing had ever needed it to. Then Prisma **P2025**, no `Role`: nothing had ever seeded it either. |
+| **34201298731** | — | **Green.** 50 E2E tests on Linux. |
+
+**Five of the seven runs were spent making the failure legible; one was spent fixing it.** The
+500 was visible from run one; its cause was not. That is ruling 156, and it is worth more than
+the bug: *a harness that cannot say why it failed costs more than the defect it is hiding.*
+
+**Ruling 155 stands on its own** and was found on the way. Every worker in the E2E suite shares
+one IP, so `registration`'s 3-per-hour budget is global mutable state that parallel workers race
+on. `workers: 1` plus a reset immediately before each registration removes it — the pin is what
+makes the reset race-free, so the two are one change. It was not the cause of these failures, and
+fixing it anyway was correct: **a race that local scheduling has been hiding for six green runs
+is not less real for having been mis-blamed once.**
 
 ### The three exit criteria
 
@@ -3132,12 +3145,11 @@ every limit at its real value *during* the run — the opposite of loosening lim
 
 ### Still owed after Task 18
 
-- **NO CI RUN, ON ANY LINUX RUNNER.** The branch is unpushed and every command above was run on
-  Windows. This is not a formality here: Task 3's `@node-rs/argon2` is the precedent for a
-  dependency that resolves on one platform and not another, and **this task adds the first CI
-  stage that boots an API**, reads a mailbox over HTTP, and talks to Redis from a Playwright
-  `globalSetup`. Any of those can behave differently on a Linux runner. Until a run ID is cited
-  here, "the journey passes E2E" is a claim about one machine.
+- ~~**NO CI RUN, ON ANY LINUX RUNNER.**~~ **Discharged: run 34201298731 is green**, 50 E2E tests
+  on Linux. The concern was justified rather than ceremonial — it took seven runs, and the two
+  real defects (an unmigrated and unseeded CI database) existed only there. What is still owed is
+  narrower: **nothing has run on a Linux runner from a genuinely cold Docker cache**, and the
+  suite's timings are from a warm one.
 - **THERE IS NO CREATE-ORGANISATION SCREEN, AND THIS IS A PRODUCT HOLE, NOT A TESTING ONE.**
   `createOrganization` exists nowhere in `apps/web`. A newly registered user belongs to no
   organisation and cannot create one; the switcher's own empty state tells them "An invitation

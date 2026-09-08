@@ -1455,6 +1455,32 @@ recorded as one.
      the temptation in that moment is to call it a flake and retry. It was not a flake; it was
      the first honest scheduler.
 
+156. **A harness that cannot say why it failed costs more than the defect it is hiding.** Getting
+     CI green took seven runs. **Five were spent making the failure legible; one was spent fixing
+     it.** The 500 at `POST /auth/register` was visible from run one; its cause was not, because
+     `config.module.ts` derives the logger's silence from `APP_ENV === 'test'` and the E2E
+     launcher sets `APP_ENV=test` **to make the CSP enforcing** — so the harness had been
+     silencing the very server it needed to read. Two behaviours derived from one variable are
+     one variable too few as soon as a caller wants one and not the other. **Cost when it
+     happened: five CI cycles and one wrong guess** — the first fix blamed the rate limiter, and
+     the log printed "cleared 1 rate-limit counters" before every registration, which would have
+     falsified the guess before it was made if anyone could have read it. Build the diagnostics
+     before the third guess, not after the fifth.
+
+157. **CI had never migrated or seeded the compose database, and nothing had ever needed it to.**
+     The integration suite brings its own database up through Testcontainers and migrates it, so
+     it passed for the whole phase against a schemaless compose Postgres. The E2E stage is the
+     first thing in CI to drive a real API against that stack — so it is the first thing to need
+     it to be a working installation rather than four running containers. Prisma P2021 (`public.
+     User` does not exist), then P2025 (no `Role`). **Cost if ignored: every future stage that
+     uses the compose stack inherits the same trap.** `db:deploy` and `db:seed` are now CI steps.
+
+     A local reproduction against a hand-made scratch database was **abandoned as invalid rather
+     than trusted**: it failed with 42501 "permission denied for table User", because the compose
+     init script's grants apply to the `sentinel` database and not to one created by hand. *A
+     repro that fails differently from the thing it reproduces is not a repro*, and reading CI's
+     own log was the shorter path.
+
 ### What the fresh reviewer found, and what happened to it
 
 Eight findings against the `/accept-invitation` commit. Fixed: the two false `page-map.md`
@@ -1478,11 +1504,10 @@ need restarting.**
 
 ### Next action
 
-1. **Push, and get a green CI run on a Linux runner.** This is the only item on Task 18's verify
-   line with no evidence, and it is not a formality: this task adds the first CI stage that boots
-   an API, reads a mailbox over HTTP and talks to Redis from a Playwright `globalSetup`. Cite the
-   run ID in the roadmap's Task 18 evidence table when it is green, and only then is Phase 2
-   **Implemented** rather than Partially Implemented.
+1. ~~**Push, and get a green CI run on a Linux runner.**~~ **Done — run 34201298731 is green**,
+   50 E2E tests on Linux, cited in the roadmap's Task 18 evidence table. Phase 2 is
+   **Implemented**. It took seven runs and turned up two defects that existed only in CI; the
+   caution was justified rather than ceremonial.
 2. **Merge, and delete the four stale remote branches** — `feat/phase-2-task-17-app-shell`,
    `feat/phase-2-task-15-d9-invitation-revocation`, `docs/task-16-browser-pass` and
    `docs/task-15-d9-merge` are all landed on `main` already.
