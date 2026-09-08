@@ -5,10 +5,18 @@ import { MfaChallengeProvider } from '../../src/auth/MfaChallengeProvider';
  * The authentication shell — a single centred column, no navigation, nothing
  * to click away to.
  *
- * Six routes render through it as of Task 16: `/register`, `/verify-email`,
- * `/login`, `/login/mfa`, `/forgot-password` and `/reset-password`. The rest of
- * `(auth)` — `/mfa/enroll` and `/invitations/[token]` — is still to come
- * (`ui-ux/page-map.md`). `(auth)` responses are dynamic and never cached
+ * Seven routes render through it: `/register`, `/verify-email`, `/login`,
+ * `/login/mfa`, `/forgot-password` and `/reset-password` from Task 16, and
+ * `/accept-invitation`. The rest of `(auth)` — `/mfa/enroll` — is still to come
+ * (`ui-ux/page-map.md`).
+ *
+ * The invitation screen is at `/accept-invitation`, **not** at
+ * `page-map.md`'s `/invitations/[token]`: the path is fixed by
+ * `TOKEN_LINK_PATHS.invitation` in
+ * `apps/api/src/modules/auth/emails/links.ts`, which is what every invitation
+ * email already sent points at, and by `links.ts`'s own rule that the secret
+ * travels as `?token=` rather than as a path segment. `(auth)` responses are
+ * dynamic and never cached
  * (`architecture/frontend.md` §2); that is a property of the group, set once in
  * the root layout's `force-dynamic`, not of each page below it.
  *
