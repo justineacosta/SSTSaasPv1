@@ -114,6 +114,15 @@ export default defineConfig({
       url: `${apiURL}/health/ready`,
       reuseExistingServer: false,
       timeout: 180_000,
+      // The API's own logs, surfaced. Playwright swallows a webServer's output
+      // once it has started successfully, so an API that boots fine and then
+      // answers 500 to a request is completely silent — which is exactly what
+      // happened on CI runs 34191547593 and 34192382594: registration failed
+      // with "Something went wrong on our side" and the reason existed only
+      // inside a process whose stdout went nowhere. A harness whose failures
+      // are invisible costs more than the noise of piping them.
+      stdout: 'pipe',
+      stderr: 'pipe',
     },
     {
       // `start:e2e` pins APP_ENV=test, which makes the CSP **enforcing** rather

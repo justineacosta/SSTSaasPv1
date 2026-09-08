@@ -1,3 +1,4 @@
+import { connect } from 'node:net';
 import { apiEnvSchema, loadEnv } from '@sentinel/config';
 import Redis from 'ioredis';
 
@@ -66,6 +67,56 @@ export async function resetRateLimits(): Promise<void> {
  * {@link resetRateLimits} again themselves; `failure-paths.spec.ts` needs four
  * registrations against a limit of three and is serial for that reason.
  */
+/**
+ * Fails the run immediately if the SMTP port is not reachable.
+ *
+ * **Registration sends its verification email inside the request and does not
+ * catch a failure** (`registration.service.ts` — the send is after the commit,
+ * ruling 44, and is not wrapped). So an unreachable Mailpit surfaces as a 500
+ * on `/register` and reaches the browser as "Something went wrong on our
+ * side" — a message that says nothing about mail, on a screen the test then
+ * reports as "expected 'Check your email' to be visible". Three layers away
+ * from the cause.
+ *
+ * The suite already depends on Mailpit for its HTTP API; this probes the SMTP
+ * port instead, because they are different ports and the HTTP one being up
+ * proves nothing about the other. A named prerequisite failure at second zero
+ * beats an opaque 500 six minutes in.
+ */
+async function assertSmtpReachable(): Promise<void> {
+  const { MAIL_HOST, MAIL_PORT } = loadEnv(apiEnvSchema);
+
+  await new Promise<void>((resolve, reject) => {
+    const socket = connect({ host: MAIL_HOST, port: MAIL_PORT });
+    const fail = (reason: string): void => {
+      socket.destroy();
+      reject(
+        new Error(
+          `[e2e] SMTP at ${MAIL_HOST}:${String(MAIL_PORT)} is not reachable (${reason}). ` +
+            `Registration sends mail inside the request and does not catch a failure, so every ` +
+            `journey would fail at its first step with an opaque 500. Is the Compose stack up?`,
+        ),
+      );
+    };
+
+    socket.setTimeout(10_000);
+    socket.once('connect', () => {
+      socket.end();
+      resolve();
+    });
+    socket.once('timeout', () => {
+      fail('timed out');
+    });
+    socket.once('error', (error) => {
+      fail(error.message);
+    });
+  });
+
+  process.stdout.write(`[e2e] SMTP reachable at ${MAIL_HOST}:${String(MAIL_PORT)}
+`);
+}
+
 export default async function globalSetup(): Promise<void> {
+  await assertSmtpReachable();
   await resetRateLimits();
 }
