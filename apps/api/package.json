@@ -10,7 +10,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src scripts",
     "openapi:generate": "tsc -p tsconfig.build.json && dotenv -e ../../.env -- node dist/openapi/cli.js",
-    "start": "node dist/main.js"
+    "start": "node dist/main.js",
+    "start:e2e": "dotenv -e ../../.env -- node scripts/start-e2e.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.2.1",

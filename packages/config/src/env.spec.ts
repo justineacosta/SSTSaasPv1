@@ -204,16 +204,22 @@ describe('loadEnv', () => {
 });
 
 /**
- * `E2E_PORT` is a Playwright-only variable. It lives on `e2eEnvSchema` and must
- * never migrate onto `webEnvSchema`, because `apps/web/src/env.ts` parses
+ * The Playwright-only variables. They live on `e2eEnvSchema` and must never
+ * migrate onto `webEnvSchema`, because `apps/web/src/env.ts` parses
  * `webEnvSchema` at module load in *every* environment — so a test port on that
  * schema is a test port that a production deploy must define in order to boot.
  *
  * This is asserted here because **no gate would otherwise catch the
  * regression.** CI copies `.env.example` to `.env`, and `.env.example` defines
- * `E2E_PORT`, so the variable is always present in CI; fold it onto
- * `webEnvSchema` and every check stays green while production breaks on boot.
- * The separation is a property of the source, and this is what holds it there.
+ * all three, so they are always present in CI; fold one onto `webEnvSchema` and
+ * every check stays green while production breaks on boot. The separation is a
+ * property of the source, and this is what holds it there.
+ *
+ * `E2E_API_PORT` and `E2E_MAILPIT_URL` joined `E2E_PORT` in Task 18, when the
+ * journey suite gained its own API process and started reading real mail out of
+ * Mailpit. The list below is deliberately exhaustive rather than a `startsWith`
+ * check: a new `E2E_`-prefixed variable should have to be added here
+ * consciously, which is the moment to ask whether it belongs on this schema.
  */
 describe('e2eEnvSchema / webEnvSchema separation', () => {
   const validWeb = {
@@ -223,35 +229,54 @@ describe('e2eEnvSchema / webEnvSchema separation', () => {
     API_BASE_URL: 'http://localhost:3001',
   };
 
-  it('does not put E2E_PORT on the schema the web app boots with', () => {
-    expect(Object.keys(webEnvSchema.shape)).not.toContain('E2E_PORT');
+  const E2E_ONLY = ['E2E_PORT', 'E2E_API_PORT', 'E2E_MAILPIT_URL'] as const;
+
+  const validE2e = {
+    ...validWeb,
+    E2E_PORT: '3100',
+    E2E_API_PORT: '3101',
+    E2E_MAILPIT_URL: 'http://localhost:8025',
+  };
+
+  it.each(E2E_ONLY)('does not put %s on the schema the web app boots with', (variable) => {
+    expect(Object.keys(webEnvSchema.shape)).not.toContain(variable);
   });
 
-  it('loads the web app config with no E2E_PORT present at all', () => {
+  it('loads the web app config with none of the e2e variables present at all', () => {
     expect(() => loadEnv(webEnvSchema, validWeb)).not.toThrow();
   });
 
-  it('refuses the e2e config when E2E_PORT is missing, naming it', () => {
+  it.each(E2E_ONLY)('refuses the e2e config when %s is missing, naming it', (variable) => {
+    const { [variable]: _omitted, ...withoutOne } = validE2e;
+
     let error: EnvValidationError | undefined;
     try {
-      loadEnv(e2eEnvSchema, validWeb);
+      loadEnv(e2eEnvSchema, withoutOne);
     } catch (caught) {
       error = caught as EnvValidationError;
     }
 
     expect(error).toBeInstanceOf(EnvValidationError);
-    expect(error?.variables).toContain('E2E_PORT');
+    expect(error?.variables).toContain(variable);
   });
 
-  it('accepts the e2e config when E2E_PORT is supplied', () => {
-    const parsed = loadEnv(e2eEnvSchema, { ...validWeb, E2E_PORT: '3100' });
+  it('accepts the e2e config when all three are supplied', () => {
+    const parsed = loadEnv(e2eEnvSchema, validE2e);
     expect(parsed.E2E_PORT).toBe(3100);
+    expect(parsed.E2E_API_PORT).toBe(3101);
+    expect(parsed.E2E_MAILPIT_URL).toBe('http://localhost:8025');
   });
 
-  it('keeps E2E_PORT the only difference between the two schemas', () => {
+  it('refuses a non-http E2E_MAILPIT_URL, like every other URL on these schemas', () => {
+    expect(() =>
+      loadEnv(e2eEnvSchema, { ...validE2e, E2E_MAILPIT_URL: 'javascript:alert(1)' }),
+    ).toThrow(EnvValidationError);
+  });
+
+  it('keeps those three the only difference between the two schemas', () => {
     const web = new Set(Object.keys(webEnvSchema.shape));
     const e2e = Object.keys(e2eEnvSchema.shape);
-    expect(e2e.filter((key) => !web.has(key))).toEqual(['E2E_PORT']);
+    expect(e2e.filter((key) => !web.has(key))).toEqual([...E2E_ONLY]);
   });
 });
 

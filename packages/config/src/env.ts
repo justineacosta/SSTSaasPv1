@@ -429,27 +429,43 @@ export const webEnvSchema = sharedEnvSchema.extend({
 });
 
 /**
- * The web schema plus the one variable only the end-to-end harness needs.
+ * The web schema plus the two variables only the end-to-end harness needs.
  *
- * `E2E_PORT` is the port the Playwright suite's own server binds, deliberately
- * not `WEB_PORT`. `playwright.config.ts` keeps `reuseExistingServer` locally so
- * consecutive runs stay fast, which means it attaches to whatever is already
- * listening — and a `next dev` left on `WEB_PORT` runs `APP_ENV=development`,
- * making the suite test a different application than CI does. That happened,
- * and it produced both a confusing false failure and (worse) a false pass. A
- * separate port makes the collision structurally impossible rather than a
- * habit.
+ * `E2E_PORT` is the port the Playwright suite's own web server binds,
+ * deliberately not `WEB_PORT`. A `next dev` left listening on `WEB_PORT` runs
+ * `APP_ENV=development` — report-only CSP, a different application from the one
+ * CI runs — and a suite that adopted it would be testing that instead. That
+ * happened, and it produced both a confusing false failure and (worse) a false
+ * pass. `playwright.config.ts` now also sets `reuseExistingServer: false` in
+ * every environment, so nothing can be adopted at all; the separate port makes
+ * the collision impossible rather than merely unlikely, and the two together
+ * are belt and braces on the failure mode that actually bit.
  *
- * **It is a separate schema rather than a field on `webEnvSchema` because the
- * running web app must never need it.** `apps/web/src/env.ts` parses
+ * `E2E_API_PORT` is the same argument applied to the API, and Task 18 is what
+ * needed it. The journey suite drives a real API, and it cannot drive the
+ * developer's: `WEB_BASE_URL` is read **once at boot** as the single CORS
+ * origin (`app-setup.ts`) and as the base of every link the mailer puts in an
+ * email (`emails/links.ts`). An API booted for `http://localhost:3000` refuses
+ * the browser on `E2E_PORT` at the CORS pass and mails links pointing at a
+ * server the suite is not running. So the harness boots its **own** API with
+ * `WEB_BASE_URL` pointing at `E2E_PORT`, on a port of its own so it never
+ * collides with a `pnpm dev:api` — and the web server it starts is pointed at
+ * that API through `API_BASE_URL`, which ADR-0024 keeps a server-side runtime
+ * read rather than a `NEXT_PUBLIC_` value baked into the bundle. That is
+ * precisely what makes retargeting the API possible without a rebuild.
+ *
+ * **They are a separate schema rather than fields on `webEnvSchema` because the
+ * running web app must never need them.** `apps/web/src/env.ts` parses
  * `webEnvSchema` at module load in every environment, so a test-only variable
  * added there becomes a variable every production deploy has to define in order
  * to boot — a Playwright port gating a customer-facing server. Only
  * `playwright.config.ts` and the launcher's `--e2e-port` path parse this, which
- * is precisely where a missing `E2E_PORT` should fail loudly.
+ * is precisely where a missing one should fail loudly.
  */
 export const e2eEnvSchema = webEnvSchema.extend({
   E2E_PORT: port,
+  E2E_API_PORT: port,
+  E2E_MAILPIT_URL: httpUrl,
 });
 
 export type SharedEnv = z.infer<typeof sharedEnvSchema>;

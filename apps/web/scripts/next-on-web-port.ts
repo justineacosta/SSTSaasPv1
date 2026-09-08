@@ -40,6 +40,18 @@ import { e2eEnvSchema, loadEnv, webEnvSchema } from '@sentinel/config';
  * arrives the same way it always did, through `@sentinel/config` in Node, so
  * the property this file exists to protect is untouched: no shell-variable
  * expansion in package.json.
+ *
+ * **It also retargets `API_BASE_URL` at `E2E_API_PORT`**, because the suite
+ * runs its own API (`apps/api/scripts/start-e2e.ts` says why) and the web
+ * server has to be told where it is. Overridden here rather than as a
+ * `dotenv -v` in package.json so that the port is written down once, in `.env`,
+ * instead of a second literal drifting out of step with the first.
+ *
+ * This works at all only because of ADR-0024: the API origin is a server-side
+ * runtime read handed to the provider tree as a prop, never a `NEXT_PUBLIC_`
+ * value inlined into the bundle at build time. A baked-in origin would need a
+ * rebuild per target, and `playwright.config.ts` would be building the app
+ * twice.
  */
 const command = process.argv[2];
 if (command !== 'dev' && command !== 'start') {
@@ -55,12 +67,28 @@ const useE2ePort = forwarded.length !== process.argv.length - 3;
 // Two schemas rather than one, so that `dev`, `build` and `start` never
 // require a variable that exists only for Playwright: `E2E_PORT` is demanded
 // exactly when `--e2e-port` asks for it, and is invisible otherwise.
-const port = useE2ePort ? loadEnv(e2eEnvSchema).E2E_PORT : loadEnv(webEnvSchema).WEB_PORT;
+const e2eEnv = useE2ePort ? loadEnv(e2eEnvSchema) : null;
+const port = e2eEnv !== null ? e2eEnv.E2E_PORT : loadEnv(webEnvSchema).WEB_PORT;
 
 const nextCli = createRequire(import.meta.url).resolve('next/dist/bin/next');
 
+/*
+ * **The one `process.env` read outside `packages/config`, and it is a forward
+ * rather than a read.** The rule exists so that configuration enters the
+ * application through `@sentinel/config` and nowhere else, which is exactly
+ * what happens above: `API_BASE_URL`'s value is derived from `E2E_API_PORT`,
+ * which `loadEnv` produced. What is happening here is passing the *parent's*
+ * environment on to a child process while overriding that one key — no setting
+ * is being sourced from `process.env`, and dropping the spread would start the
+ * server with no DATABASE_URL, no PATH and no home directory.
+ */
+/* eslint-disable-next-line no-restricted-properties -- see the comment above. */
+const childEnv = { ...process.env };
+if (e2eEnv !== null) childEnv.API_BASE_URL = `http://localhost:${String(e2eEnv.E2E_API_PORT)}`;
+
 const child = spawn(process.execPath, [nextCli, command, '--port', String(port), ...forwarded], {
   stdio: 'inherit',
+  env: childEnv,
 });
 
 // Forward the child's fate rather than swallowing it: a `next build` that
