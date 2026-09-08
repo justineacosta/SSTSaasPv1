@@ -35,7 +35,7 @@ import Redis from 'ioredis';
  * the blast radius being small is the point — the cost of this reset to a
  * developer is that their own rate-limit counters restart, which is not a cost.
  */
-export default async function globalSetup(): Promise<void> {
+export async function resetRateLimits(): Promise<void> {
   // The API's schema rather than the e2e one: `REDIS_URL` is an API setting,
   // and this is reaching the API's own store.
   const { REDIS_URL } = loadEnv(apiEnvSchema);
@@ -57,4 +57,15 @@ export default async function globalSetup(): Promise<void> {
   } finally {
     await redis.quit();
   }
+}
+
+/**
+ * Playwright's `globalSetup` hook — once per run, before any spec.
+ *
+ * Specs that register more accounts than the per-IP budget allows call
+ * {@link resetRateLimits} again themselves; `failure-paths.spec.ts` needs four
+ * registrations against a limit of three and is serial for that reason.
+ */
+export default async function globalSetup(): Promise<void> {
+  await resetRateLimits();
 }
