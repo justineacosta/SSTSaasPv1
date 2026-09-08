@@ -120,12 +120,49 @@ export async function registerAndVerify(
   // 34191547593, which is what proved a per-test reset was not enough.
   await resetRateLimits();
 
-  await page.goto('/register');
-  await page.getByLabel('Work email').fill(email);
-  await page.getByLabel('Password', { exact: true }).fill(JOURNEY_PASSWORD);
-  await page.getByRole('button', { name: 'Create account' }).click();
+  // EVERY FAILED API RESPONSE DURING REGISTRATION, CAPTURED FOR THE ASSERTION
+  // MESSAGE.
+  //
+  // Three CI runs failed here with "expected 'Check your email' to be visible"
+  // — a message that names the symptom and nothing else. The API had answered
+  // 500 with an error envelope carrying a code and a request ID, and none of it
+  // reached the report: the browser rendered a generic apology, and the API's
+  // own stdout turned out to be silent even with `stdout: 'pipe'` set on the
+  // webServer. A test that can see a 500 and reports "an element was not
+  // visible" is withholding the evidence it already has.
+  const failures: string[] = [];
+  const capture = (response: { status: () => number; url: () => string }): void => {
+    if (response.status() >= 400) failures.push(`${String(response.status())} ${response.url()}`);
+  };
+  page.on('response', capture);
 
-  await expect(page.getByText('Check your email')).toBeVisible();
+  try {
+    await page.goto('/register');
+    await page.getByLabel('Work email').fill(email);
+    await page.getByLabel('Password', { exact: true }).fill(JOURNEY_PASSWORD);
+    await page.getByRole('button', { name: 'Create account' }).click();
+
+    // The visible refusal, if there is one, is more informative than the
+    // absence of the success card — so it goes in the message too. Gathered in
+    // a catch rather than passed as an expect message, because Playwright's
+    // message parameter is a string and this needs an await to build.
+    try {
+      await expect(page.getByText('Check your email')).toBeVisible();
+    } catch (error) {
+      const alerts = await page.getByRole('alert').allInnerTexts();
+      throw new Error(
+        `Registration did not reach "Check your email".
+` +
+          `Failed responses: ${failures.length === 0 ? '(none)' : failures.join(', ')}
+` +
+          `On-screen alerts: ${alerts.length === 0 ? '(none)' : alerts.join(' | ')}
+` +
+          `Original: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  } finally {
+    page.off('response', capture);
+  }
 
   await page.goto(await waitForVerificationLink());
   await expect(page.getByText('Email verified')).toBeVisible();
