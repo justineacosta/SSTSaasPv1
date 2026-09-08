@@ -55,7 +55,7 @@ with Zod.
 ```
 app/
   (marketing)/     public site — /, features, pricing, security, docs, legal
-  (auth)/          login, register, forgot/reset, verify, mfa, recovery, invitations/[token]
+  (auth)/          login, register, forgot/reset, verify, mfa, recovery, accept-invitation
   (onboarding)/    the wizard
   (app)/           authenticated product, wrapped in the app shell
   api/             BFF routes only — session cookie relay, CSP report, health

@@ -99,6 +99,24 @@ jobs:
           docker compose up -d --wait postgres redis minio mailpit
           docker compose run --rm minio-init
 
+      # ITS OWN NAMED STEP, ON PURPOSE, AND IT RUNS TWICE.
+      #
+      # The plan's Task 18: "CI runs the authorization matrix test as its own
+      # named step so a failure reads as 'authorization matrix failed' rather
+      # than as a generic test failure." That matters more here than the seconds
+      # it costs. This one spec asserts that every route in the API denies the
+      # principal it should deny — it is the executable form of
+      # security/authorization.md — and a red X labelled "Integration tests" on
+      # a 29-route API tells a reviewer to go looking, while a red X labelled
+      # "Authorization matrix" tells them what broke and how much it matters.
+      #
+      # It is not excluded from the run below. Excluding it would make the two
+      # steps able to disagree about which spec is the matrix, and a filter that
+      # silently matches nothing is the failure mode that turns a security gate
+      # into a no-op. Running it twice cannot do that.
+      - name: Authorization matrix
+        run: pnpm test:authz-matrix
+
       - name: Integration tests
         run: pnpm test:integration
 
@@ -133,16 +151,30 @@ jobs:
       - name: Install Playwright chromium
         run: pnpm --filter @sentinel/web exec playwright install --with-deps chromium
 
-      # `playwright.config.ts` owns the server: its `webServer.command` is
-      # `pnpm build && pnpm start:e2e`, so the app is rebuilt and started by
-      # Playwright rather than here. `start:e2e` pins `APP_ENV=test`, which is
-      # what makes the CSP enforcing rather than report-only, and both it and
-      # the config read `E2E_PORT` from the `.env` copied out of `.env.example`
-      # in the stack step above — so that file has to exist before this runs,
-      # which is why the E2E stage sits after it and not next to the unit tests.
-      # `E2E_PORT` is deliberately not `WEB_PORT`: `reuseExistingServer` is on
-      # locally, so a shared port would let a developer's stray `pnpm dev` be
-      # what the suite tests. CI sets `CI`, so it never reuses anything.
+      # `playwright.config.ts` owns the servers — plural since Task 18. It starts
+      # BOTH the web app and an API of its own, because the phase's exit
+      # criterion is an authenticated journey and there is no such thing against
+      # a web server alone. The API is booted with `WEB_BASE_URL` pointing at
+      # `E2E_PORT`: that value is read once at boot as the single CORS origin
+      # and as the base of every emailed link, so an API that thinks the browser
+      # is on `WEB_PORT` refuses the suite at the CORS pass and mails links into
+      # a server nobody started.
+      #
+      # Both read `E2E_PORT`, `E2E_API_PORT` and `E2E_MAILPIT_URL` from the
+      # `.env` copied out of `.env.example` in the stack step above, so that file
+      # has to exist before this runs — which is why the E2E stage sits after it
+      # and not next to the unit tests. The suite also READS MAIL from the
+      # Mailpit container started there, so this stage genuinely depends on the
+      # stack rather than merely following it.
+      #
+      # `start:e2e` pins `APP_ENV=test` on both halves, which is what makes the
+      # CSP enforcing rather than report-only.
+      #
+      # The ports are deliberately not `WEB_PORT`/`API_PORT`, and
+      # `reuseExistingServer` is `false` everywhere — locally too, since the
+      # measurement in `playwright.config.ts` showed reuse never saved the
+      # rebuild it was supposed to save. So neither a developer's stray
+      # `pnpm dev` nor a leftover `start:e2e` can be what the suite tests.
       - name: End-to-end tests
         run: pnpm test:e2e
 

@@ -72,6 +72,44 @@ ignored, entitlement projection per lifecycle event, over-limit downgrade preser
 every route; keyboard-only traversal of primary journeys; no horizontal page overflow at any
 breakpoint; a finding whose title contains `<script>` renders as text.
 
+**End-to-end journeys (Phase 2 onwards).** Written in Task 18, when the first of them existed
+— before that this section described intent. `apps/web/e2e/` holds three kinds, and the
+distinction matters more than the count:
+
+- **`authentication-journey.spec.ts` is the phase's exit criterion made executable**, and it
+  is serial because each step's precondition is the previous step's postcondition. Register →
+  verify → sign in → enrol MFA → sign out → sign in with a second factor → switch organisation
+  → invite → accept as the invitee → revoke a session and watch it die on its next request.
+- **`failure-paths.spec.ts` covers `user-flows.md` §8**, which calls these "failure paths that
+  must be designed, not discovered". A designed state nothing exercises is a design document.
+- **`auth-screens.spec.ts` and `smoke.spec.ts` are per-route properties**, not journeys: every
+  `(auth)` route renders its heading with no console error under an *enforcing* CSP, carries
+  the `transport-and-headers.md` §2 header table, and does not scroll horizontally at 375px.
+
+Three rules these suites establish, each of which was learned by getting it wrong first:
+
+1. **Read real mail, do not stub a link.** Verification and invitation links come out of
+   Mailpit's HTTP API. The defect that shipped in this phase was `TOKEN_LINK_PATHS` naming a
+   path no screen served, and nothing could see it because no test followed a link out of an
+   inbox (ruling 143).
+2. **Do not verify a thing with its own implementation.** The suite's TOTP generator is RFC
+   6238 written from the specification rather than an import of `totp.ts`. A shared error in
+   byte order or step length would cancel out and the test would pass while claiming a
+   third-party authenticator can sign in.
+3. **An assertion that a broken product also satisfies is worse than no assertion.** Matching
+   the word "recovery" anywhere passed against an enrolment that never completed, and the run
+   then sailed through a sign-in that should have been challenged. Anchor to something that
+   cannot be true unless the behaviour is — a testid rendered only after the API confirms, a
+   URL rather than a heading that appears on two screens, an element whose existence is
+   derived from the session document rather than from the user's own click.
+
+**The E2E suite is bounded by the product's own abuse controls**, and this is a property to
+design around rather than to switch off. `registration` allows 3 per IP per hour; the journey
+registers two. `apps/web/e2e/global-setup.ts` clears `ratelimit:*` before a run so every limit
+is at its real value *during* the run, which is the opposite of loosening the limits under
+`APP_ENV=test`. The MFA replay defence likewise forces a real ~30-second wait before a second
+sign-in, because an accepted code's step is recorded and everything at or below it refused.
+
 ## 4. Fixtures
 
 E2E and integration fixtures are created **through the real API**, not by direct database

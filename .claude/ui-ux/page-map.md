@@ -46,7 +46,7 @@ SEO: per-route metadata, OpenGraph and Twitter cards, JSON-LD (`Organization`,
 | `/verify-email` | 2 |
 | `/login/mfa` — challenge against the pending session, **and recovery-code entry** | 2 |
 | `/mfa/enroll` — QR, verify, recovery codes shown once | 2 |
-| `/accept-invitation?token=` — accept, sign in or register as the invited address | 2 — **NOT BUILT; live invitations 404 today** |
+| `/accept-invitation?token=` — accept, sign in or register as the invited address | 2 — **built in Task 18**; a live invitation is followed end to end by `authentication-journey.spec.ts` |
 | `/sso/[slug]` — SSO initiation | 11 |
 
 **Two rows in this table were wrong until Task 16 built them, and the corrections are recorded

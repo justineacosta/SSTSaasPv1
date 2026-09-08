@@ -1,7 +1,14 @@
 # Security overview
 
-> **Status: Designed. Not Implemented.** Controls land per phase; the table in §5 tracks
-> which are real. Nothing here should be read as a claim that a control currently exists.
+> **Status: Partially Implemented.** Controls land per phase; the table in §5 tracks which
+> are real, and it is the only sentence in this document that should be read as a claim
+> about what exists today. Everything else here is design.
+>
+> **§5 was frozen at Phase 2 Task 3 until Task 18 re-ran it on 2026-09-08.** It had said
+> "Not Implemented" for sessions, MFA, RBAC, tenant scoping, rate limiting and security
+> headers long after every one of them was built and shipping — in the table that calls
+> itself "the honest answer to *is it secure yet?*". No task owned this document, which is
+> how it happened; Task 18's doc audit is what found it.
 
 ## 1. Why this platform is a high-value target
 
@@ -67,14 +74,18 @@ Each links to its detailed document.
 
 Updated as each control ships. **This table is the honest answer to "is it secure yet?"**
 
+**Re-verified 2026-09-08 by Task 18**, by opening the caller rather than by recalling the
+plan. Rows still reading Not Implemented for a later phase were not re-checked and are the
+phase plan's claim, not a measurement.
+
 | Control | Status | Phase |
 |---|---|---|
-| Password hashing (Argon2id) | Partially Implemented — the service hashes, verifies and reports `needsRehash`, proven by tests; **no caller exists**, so no password is hashed by the running system | 2 |
-| Password breach check (HIBP k-anonymity) | Partially Implemented — the client works and fails open per [ADR-0015](../decisions/ADR-0015-password-breach-check-fails-open.md); **off by default and called by nothing** | 2 |
-| Session management | Not Implemented | 2 |
-| MFA (TOTP + recovery) | Not Implemented | 2 |
-| RBAC + permission guards | Not Implemented | 2 |
-| Tenant scoping (client extension) | Not Implemented | 1 |
+| Password hashing (Argon2id) | **Implemented** — hashing, verification and transparent rehash-on-raise, called by `registration.service.ts`, `login.service.ts` and `mfa-enrolment.service.ts`. The "no caller exists" this row carried was true at Task 3 and false from Task 8 | 2 |
+| Password breach check (HIBP k-anonymity) | **Implemented, and off by default** — `registration.service.ts:90` calls `isBreached`; `PASSWORD_BREACH_CHECK_ENABLED` defaults to `false` so no suite depends on a third party, and the check fails open per [ADR-0015](../decisions/ADR-0015-password-breach-check-fails-open.md). "Called by nothing" was false from Task 8 | 2 |
+| Session management | **Implemented** — opaque server-side sessions, rotation, revocation and a Redis read-through cache; `AuthenticationGuard` resolves every authenticated request through it. Revocation is proven immediate by an E2E step, not only by a unit test | 2 |
+| MFA (TOTP + recovery) | **Implemented** — enrol, confirm, verify, disable and recovery codes, with a replay defence that records the accepted step. An independent RFC 6238 implementation signs in through the product in `apps/web/e2e/authentication-journey.spec.ts` | 2 |
+| RBAC + permission guards | **Implemented** — seven modules declare `@RequirePermission()`, and `authorization-matrix.integration.spec.ts` asserts the denial for every route. CI runs it as its own named step | 2 |
+| Tenant scoping (client extension) | **Implemented** — `packages/db/src/tenant-client.ts`, with `pnpm check:registry` gating registry rot in CI. **Row-level security is the separate Phase 3 line below and is still Not Implemented** | 1 |
 | Tenant isolation (RLS) | Not Implemented | 3 |
 | Cross-tenant test suite | Not Implemented | 3 |
 | Asset ownership verification | Not Implemented | 3 |
@@ -85,9 +96,9 @@ Updated as each control ships. **This table is the honest answer to "is it secur
 | Container isolation for engines | Not Implemented | 4 |
 | Audit log (append-only) | Not Implemented | 3 |
 | Evidence access authorization | Not Implemented | 5 |
-| Rate limiting | Not Implemented | 1 |
-| Security headers + CSP | Not Implemented | 1 |
-| Secrets management | Not Implemented | 1 |
+| Rate limiting | **Implemented** — the mechanism in Phase 1, applied in Phase 2: eight route groups declare a class. **With a named residual**: `generalSession`'s only scope resolves nothing before authentication, so `logout`, `session`, `switch-org`, the three session routes and `invitations/accept` ship effectively unlimited (carry-forward rulings 55 and 90) | 1 |
+| Security headers + CSP | **Implemented** — enforcing in test, staging and production, report-only in development only. Asserted on a real response by the Playwright suite rather than in a unit test | 1 |
+| Secrets management | Partially Implemented — every secret is validated at boot by `packages/config`, nothing is stored in plaintext, and `pnpm check:secrets` fails CI on a credential-shaped literal. **There is no vault and no rotation**: `MFA_SECRET_ENCRYPTION_KEY` is a single process-held key and its incremental rotation is explicitly not built | 1 |
 | SSO / SCIM | Not Implemented | 11 |
 
 ## 6. Non-negotiables

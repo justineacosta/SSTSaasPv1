@@ -187,8 +187,11 @@ they are readable by any successful XSS, and the session cookie is not.
   internal identifiers never reach the browser.
 - Source maps are not published for production application bundles.
 - **A CSP violation report is redacted before it is logged.** `document-uri` and `referrer`
-  are URLs of *our own* pages, and `ui-ux/page-map.md` commits `(auth)` to
-  `/invitations/[token]`, `/reset-password` and `/verify-email`. Browsers strip the fragment
+  are URLs of *our own* pages, and `TOKEN_LINK_PATHS`
+  (`apps/api/src/modules/auth/emails/links.ts`) commits `(auth)` to
+  `/accept-invitation`, `/reset-password` and `/verify-email`. (This paragraph said
+  `/invitations/[token]` until Task 18. That path was documented for a while and never
+  built; the mail template is the authority, because its URLs are already in inboxes.) Browsers strip the fragment
   from `document-uri` but keep the path and the query, so an ordinary violation on an
   invitation page would write a live token into the log — CLAUDE.md rule 6. The collector
   (`apps/web/src/csp-report.ts`) therefore drops the query and fragment outright and masks any
