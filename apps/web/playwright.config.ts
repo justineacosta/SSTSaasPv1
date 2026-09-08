@@ -51,6 +51,22 @@ export const E2E_MAILPIT_ORIGIN = E2E_MAILPIT_URL;
  */
 export default defineConfig({
   testDir: './e2e',
+  // ONE WORKER, AND IT IS THE RATE LIMITER THAT DECIDES THIS, NOT SPEED.
+  //
+  // `registration` is 3 per IP per hour, and every worker in this suite shares
+  // one IP — so the budget is global mutable state that parallel workers race
+  // on. The journey registers two accounts and `failure-paths` four; clearing
+  // the counters per test in one file while another file registers
+  // concurrently is not a fix, it is a narrower race. CI proved it: run
+  // 34191547593 failed both registration steps with 36 passing around them,
+  // while the identical code passed locally, because local scheduling happened
+  // to interleave the two files differently.
+  //
+  // Serialising costs about a minute of wall clock and buys determinism in the
+  // one suite whose failures are most expensive to diagnose. The alternative —
+  // raising the limit under APP_ENV=test — is rejected for the reason
+  // `global-setup.ts` gives.
+  workers: 1,
   // Clears the rate limiter before the run. `e2e/global-setup.ts` explains why
   // the suite cannot run twice in an hour without it, and why raising the
   // limits under APP_ENV=test was the wrong answer.

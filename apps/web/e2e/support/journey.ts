@@ -1,5 +1,6 @@
 import { expect, type Page } from '@playwright/test';
 import { E2E_API_ORIGIN } from '../../playwright.config';
+import { resetRateLimits } from '../global-setup';
 
 /**
  * Fixtures and the one API call the journey cannot make through the product.
@@ -111,6 +112,14 @@ export async function registerAndVerify(
   email: string,
   waitForVerificationLink: () => Promise<string>,
 ): Promise<void> {
+  // Immediately before the registration, not once per run and not once per
+  // test. `registration` allows 3 per IP per hour and this suite registers six
+  // accounts across two files; a reset anywhere further away leaves a window in
+  // which some other spec has spent the budget. Race-free only because
+  // `playwright.config.ts` pins `workers: 1` — see the comment there, and CI run
+  // 34191547593, which is what proved a per-test reset was not enough.
+  await resetRateLimits();
+
   await page.goto('/register');
   await page.getByLabel('Work email').fill(email);
   await page.getByLabel('Password', { exact: true }).fill(JOURNEY_PASSWORD);

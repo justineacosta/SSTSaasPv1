@@ -1444,6 +1444,17 @@ recorded as one.
      happened: a false claim shipped in a commit message and had to be corrected in a later
      one**, which is the exact pattern Phase 1's retro named.
 
+155. **A green local E2E run says nothing about a suite whose tests contend for one global
+     counter.** Every worker shares one IP, so `registration`'s 3-per-hour budget is global
+     mutable state. The journey registers two accounts and `failure-paths` four; a reset per run
+     plus a reset per test in one of the two files left a race that local scheduling hid across
+     six consecutive green runs and CI lost on its first attempt (run 34191547593: 36 passed, 2
+     failed, both at registration). The fix is `workers: 1` plus a reset immediately before each
+     registration — the pin is what makes the reset race-free, so the two are one change, not
+     two. **Cost when it happened: a red CI run on a branch whose local suite was green**, and
+     the temptation in that moment is to call it a flake and retry. It was not a flake; it was
+     the first honest scheduler.
+
 ### What the fresh reviewer found, and what happened to it
 
 Eight findings against the `/accept-invitation` commit. Fixed: the two false `page-map.md`

@@ -3007,7 +3007,18 @@ and the phase's last unmet criterion now passes automatically rather than by han
 | `pnpm test:e2e` | 0 | **50 tests, up from 5 at Task 17.** The journey, the failure paths, and the per-route properties. |
 | `prisma migrate deploy` against a **fresh empty database** | 0 | All migrations replay from empty into a scratch database created for the purpose and dropped afterwards. Not a warm tree. |
 | `docker compose ps` | — | postgres, redis, minio, mailpit all `running`. |
-| **A green CI run on a Linux runner** | **NOT RUN** | **The one item on this task's verify line with no evidence.** Nothing here has run on Linux, and the branch is unpushed. |
+| CI run **34191547593** | **FAILED** | The first Linux run. 21 of 22 steps green — including the new **Authorization matrix** step — and **`End-to-end tests` failed: 36 passed, 2 failed**, both at their registration step. Not a platform difference: a race this suite always had and local scheduling had been hiding. See the row below. |
+
+**What run 34191547593 proved, and it is the reason the row above is kept rather than deleted.**
+Every worker in the E2E suite shares one IP, so `registration`'s 3-per-hour budget is **global
+mutable state that parallel workers race on**. The journey registers two accounts and
+`failure-paths` four; clearing the counters once per run and again per test in one file is not a
+fix, only a narrower race. Locally the two files happened to interleave in an order that fitted
+the budget, six runs in a row. CI interleaved them differently and both registration steps
+failed while 36 tests passed around them. `playwright.config.ts` now pins `workers: 1` and the
+reset moved to immediately before each registration, which is race-free only because of that
+pin. **A green local E2E run says nothing about a suite whose tests contend for one global
+counter** — that is ruling 155.
 
 ### The three exit criteria
 
