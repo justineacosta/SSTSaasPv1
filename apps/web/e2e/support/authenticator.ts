@@ -95,6 +95,49 @@ export function totpCodeAt(secret: string, atMs: number = Date.now()): string {
 }
 
 /**
+ * A code for the *next* step, which the ±1 drift window accepts.
+ *
+ * This exists to dodge the replay defence without waiting. A code the API has
+ * accepted is recorded by its step, and `mfa-verification.service.ts` refuses
+ * anything at or below that step — so a second verification inside the same
+ * 30-second window using the current code is refused, correctly, and a test
+ * that did it would be asserting the replay defence by accident while claiming
+ * to assert sign-in. Sleeping to the next boundary would also work and costs up
+ * to 30 seconds of wall clock per use.
+ */
+export function nextStepTotpCode(secret: string, atMs: number = Date.now()): string {
+  return totpCodeAt(secret, atMs + STEP_SECONDS * 1000);
+}
+
+/** The TOTP step number `atMs` falls in. RFC 6238's `T`. */
+export function totpStepAt(atMs: number = Date.now()): number {
+  return Math.floor(atMs / 1000 / STEP_SECONDS);
+}
+
+/**
+ * Sleeps until the current step is strictly later than `step`.
+ *
+ * **The replay defence is why this exists and why it cannot be optimised away.**
+ * `mfa-verification.service.ts` records the step of every accepted code and
+ * refuses anything at or below it, so a second sign-in inside the same window
+ * cannot reuse the accepted step *or* any earlier one — and `nextStepTotpCode`
+ * only helps once, because the code it produced is then itself the accepted
+ * step. A journey that signs in twice in quick succession has no option but to
+ * wait, and 30 seconds of wall clock is the honest price of a control that
+ * works.
+ *
+ * A second is added past the boundary so the code is generated comfortably
+ * inside the new step rather than on its edge, where a slow round trip could
+ * land the verification back in the old one.
+ */
+export async function waitForStepAfter(step: number): Promise<void> {
+  while (totpStepAt() <= step) {
+    const msIntoStep = Date.now() % (STEP_SECONDS * 1000);
+    await new Promise((resolve) => setTimeout(resolve, STEP_SECONDS * 1000 - msIntoStep + 1000));
+  }
+}
+
+/**
  * A code that is validly formed but certainly wrong: one from far outside the
  * ±1 drift window.
  *

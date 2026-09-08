@@ -51,6 +51,10 @@ export const E2E_MAILPIT_ORIGIN = E2E_MAILPIT_URL;
  */
 export default defineConfig({
   testDir: './e2e',
+  // Clears the rate limiter before the run. `e2e/global-setup.ts` explains why
+  // the suite cannot run twice in an hour without it, and why raising the
+  // limits under APP_ENV=test was the wrong answer.
+  globalSetup: './e2e/global-setup.ts',
   fullyParallel: true,
   forbidOnly: Boolean(process.env['CI']),
   retries: process.env['CI'] !== undefined ? 2 : 0,
