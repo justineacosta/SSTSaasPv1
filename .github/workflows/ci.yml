@@ -134,6 +134,16 @@ jobs:
       - name: Apply migrations to the local stack
         run: pnpm db:deploy
 
+      # Reference data, and the E2E stage is the first thing in CI to need it.
+      # `POST /api/v1/organizations` does `role.findUniqueOrThrow()` to grant the
+      # creator OWNER, so an unseeded database answers 500 with Prisma P2025 —
+      # which is what run 34195584871 did, once the missing tables were fixed.
+      # Reference data only: system roles, permissions and the grants between
+      # them. It never writes tenant data, which is why running it on a shared
+      # runner database is safe.
+      - name: Seed reference data
+        run: pnpm db:seed
+
       - name: Integration tests
         run: pnpm test:integration
 
