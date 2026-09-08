@@ -14,7 +14,7 @@ Status vocabulary (specification §79): **Implemented** / **Partially Implemente
 |---|---|---|
 | **0** | Repository audit, architecture, documentation foundation | **Implemented** |
 | 1 | Production foundation | **Implemented** — all four exit criteria proven 2026-08-22, re-proven 2026-08-24 |
-| 2 | Identity | **Partially Implemented** — **Tasks 1–17 of 18 done and Implemented**; 1–16 are merged into `main` and Task 17 is verified on `feat/phase-2-task-17-app-shell`, awaiting merge. The identity API is enforced end to end and the product has both halves of its UI: Task 16's six authentication screens and Task 17's authenticated shell, organisation switcher, `/settings/security` and `/settings/members`, plus three session-management routes taking the OpenAPI document to **29 paths**. **The operator has now driven both halves through a browser** — the unauthenticated journey on 2026-09-07 and the authenticated screens the same day, including the organisation switch, which is where Task 17's review found a tenant-isolation defect a green suite could not see: `queryClient.clear()` empties the cache and notifies no mounted observer, so the shell kept rendering the previous organisation until a reload. **Two gaps remain and neither is closed by a green suite.** The phase's E2E criterion demands an *automated* journey against a live API — Task 18's, and a manual pass does not satisfy it. **A live invitation email 404s**: `/accept-invitation` was named in Task 5's `TOKEN_LINK_PATHS` as the contract with Task 16's screens and appeared on no task's checklist, so Task 18 must build it before it can write the journey spec its own criterion demands. A third gap, Task 15's `OWNER`-invitation window, **was closed on 2026-09-08** under ADR-0026, in its own round on `feat/phase-2-task-15-d9-invitation-revocation`, after the adversarial review reproduced the escalation against the first attempt that claimed to have closed it. Evidence table under Phase 2 below |
+| 2 | Identity | **Partially Implemented — all 18 tasks are done and all three exit criteria are met on this machine; nothing has run on a Linux runner.** Tasks 1–17 are merged into `main`; Task 18 is verified on `feat/phase-2-task-18-e2e-journey-gate` and unpushed. The phase's last unmet criterion closed on 2026-09-08: **the full authentication journey now passes automatically** — `apps/web/e2e/authentication-journey.spec.ts`, 10/10 against a live API, real Postgres, real Redis and real Mailpit, reading verification and invitation links out of the inbox rather than stubbing them. `pnpm test:e2e` is **50 tests, up from 5**. The gap Task 17 found is closed with it: `/accept-invitation` is built, so a live invitation email no longer 404s. **The status is not Implemented for one reason, and it is a real one**: this task adds the first CI stage that boots an API, reads a mailbox over HTTP and talks to Redis from a Playwright `globalSetup`, and every command was run on Windows. Task 3's `@node-rs/argon2` is this repository's own precedent for a dependency that resolves on one platform and not another. **A separate finding, and a product hole rather than a testing one: there is no create-organisation screen** — `createOrganization` exists nowhere in `apps/web`, so a newly registered user cannot enter the product from a cold start through its own UI, and the journey creates its organisations by calling the API. Evidence tables under Phase 2 and Task 18 below |
 | 3 | SaaS core | **Not Implemented** |
 | 4 | Execution platform | **Not Implemented** |
 | 5 | Web security engine | **Not Implemented** |
@@ -1729,7 +1729,7 @@ Stated as their real state rather than implied, per the plan's Checkpoint A inst
 |---|---|
 | Sessions revoke immediately | **Met and proven** (Task 6). Tombstone plus a Lua compare-and-set, covered by integration tests against real Redis and Postgres. The residual is recorded and unchanged: Redis unreachable *at the moment of revocation* leaves a warm entry serving until `SESSION_CACHE_TTL_SECONDS`. |
 | The authorization matrix passes for every existing endpoint | **Met, and "every existing endpoint" is a much smaller set than it sounds.** The generated matrix runs over the live route inventory and fails on any route it did not exercise. But **no existing endpoint declares a permission**, so what it proves about the shipped API is that every non-public route refuses an unauthenticated caller and that no route escapes classification. The 403 and cross-tenant-404 arms run over fixture routes and real seeded rows, not over production endpoints. |
-| The full authentication journey passes E2E | **Unmet.** There is no authentication UI — `apps/web`'s `(auth)` route group still holds a layout with no routes under it. Cannot be met before Task 18. |
+| The full authentication journey passes E2E | **Unmet at Checkpoint A**, when this table was written: there was no authentication UI at all — `apps/web`'s `(auth)` route group held a layout with no routes under it. **Closed on 2026-09-08 by Task 18**, whose section below carries the evidence. This row is left as it read so the checkpoint stays a dated record rather than being rewritten by hindsight. |
 
 ### What Task 12 built
 
@@ -2981,6 +2981,183 @@ is recorded because this file relies on the same device in several places.
 - ~~Carried forward untouched: **Task 15's `OWNER`-invitation window**, now three tasks old.~~
   **Closed 2026-09-08**, in its own round immediately after this task. See the Task 15 section
   above.
+
+## Task 18 — the phase gate: an automated journey, and the document nobody owned
+
+**Status: Implemented, and Phase 2's three exit criteria are met — but read the CI row before
+treating that as settled.** Everything on the plan's checklist is built, every command below was
+run on this tree with its exit code captured outside a pipe (`out=$(pnpm <cmd> 2>&1); code=$?`),
+and the phase's last unmet criterion now passes automatically rather than by hand.
+
+*Verified 2026-09-08 by the orchestrator.*
+
+| Command | Exit | What it proves |
+|---|---|---|
+| `pnpm format:check` | 0 | Prettier style across the workspace, `.claude/` included. |
+| `pnpm lint` | 0 | 14 tasks. Includes the `no-restricted-properties` rule the two E2E launchers needed a written exception to. |
+| `pnpm typecheck` | 0 | The types compile. Nothing about behaviour. |
+| `pnpm test` | 0 | **116 files / 2000 tests**, up from 115 / 1983 at Task 17. |
+| `pnpm check:specs` | 0 | Every `*.spec.*` claimed by exactly one Vitest project. |
+| `pnpm check:secrets` | 0 | No credential-shaped literal committed. |
+| `pnpm test:integration` | 0 | **29 files / 558 tests**, unchanged from Task 17 — this task adds no integration test. |
+| `pnpm test:authz-matrix` | 0 | **1 file / 13 tests.** The new CI step, run here as CI will run it. |
+| `pnpm build` | 0 | Every package and both apps build. |
+| `pnpm check:openapi` | 0 | The committed document matches what the contracts generate. **29 routes** — unchanged, because this task adds no endpoint. |
+| `pnpm check:registry` | 0 | 15 models, 3 tenant-owned, 1 tenant root, 11 deliberately global. |
+| `pnpm test:e2e` | 0 | **50 tests, up from 5 at Task 17.** The journey, the failure paths, and the per-route properties. |
+| `prisma migrate deploy` against a **fresh empty database** | 0 | All migrations replay from empty into a scratch database created for the purpose and dropped afterwards. Not a warm tree. |
+| `docker compose ps` | — | postgres, redis, minio, mailpit all `running`. |
+| **A green CI run on a Linux runner** | **NOT RUN** | **The one item on this task's verify line with no evidence.** Nothing here has run on Linux, and the branch is unpushed. |
+
+### The three exit criteria
+
+| Exit criterion | State |
+|---|---|
+| The full authentication journey passes E2E | **Met.** `apps/web/e2e/authentication-journey.spec.ts`, 10/10 against a live API, real Postgres, real Redis and real Mailpit. Register → verify from a link read out of the inbox → sign in → enrol MFA → sign out → sign in with a second factor → switch organisation → invite → **accept as the invitee** → revoke a session and watch it die on its next request. |
+| The authorization matrix passes for every existing endpoint | **Met, and "every existing endpoint" now means something.** At Checkpoint A no endpoint declared a permission, so the 403 and cross-tenant arms ran over fixture routes. Seven modules declare `@RequirePermission()` today. The matrix is generated from the live Nest route inventory (`describeRoutes(harness.app)`) and fails the build on a route it cannot describe, so it cannot silently skip one. |
+| Sessions revoke immediately | **Met, and now proven through the product** rather than only against the repository. Task 6's integration tests stand; the journey's last step signs a second device in, revokes it from `/settings/security`, and asserts that device is refused on its *next request* rather than merely absent from a list the revoker is looking at. The Redis residual is unchanged. |
+
+### What Task 18 built
+
+**`/accept-invitation`, which was not this task's to build.** The plan's Files line for Task 18
+is `apps/web/e2e/*`, `.github/workflows/ci.yml`, `.claude/**` and the build manifest — no
+application route — and its own text says it audits documentation rather than writing it. The
+operator decided on 2026-09-07 to fold the missing screen in here anyway, because the task is
+structurally blocked without it: its first checklist item includes "invite a second user →
+**accept as that user**", and there was no UI to accept through. The scope addition is recorded
+rather than absorbed silently, which is what ruling 143 exists to enforce.
+
+**A harness that can host a journey at all.** Before this task `webServer` started the web app
+alone, so there was nothing behind it to authenticate against. The obstacle was not the missing
+process but `WEB_BASE_URL`: the API reads it **once at boot** and uses it both as the single
+allowed CORS origin and as the base of every link the mailer puts in an email. An API booted for
+`:3000` refuses the browser on `E2E_PORT` at the CORS pass and mails links into a server the
+suite never started. Measured: a preflight from `:3100` is allowed, and one from `:3000` comes
+back with no allow-origin header at all. So the suite boots its own API, on its own port, told
+where the browser is. Retargeting the web app at it needs no rebuild, and **only because of
+ADR-0024** — the API origin is a server-side runtime read handed to the provider tree as a prop,
+not a `NEXT_PUBLIC_` value baked into the bundle.
+
+**Two support modules that deliberately share no code with what they test.** `mailpit.ts` reads
+the inbox over Mailpit's HTTP API, because the criterion says to and because reading the inbox
+is the only thing that would have caught ruling 143's missing screen. `authenticator.ts` is RFC
+6238 written from the specification rather than an import of `totp.ts`: importing it would make
+the second-factor step tautological, since a shared error in byte order or step length would
+cancel out and the test would pass while claiming a third-party authenticator can sign in.
+Cross-checked against the API's own generator over **200 random secrets and times: 200
+agreements, 0 disagreements** — as a sanity check, never as the test's oracle.
+
+**The failure paths of `user-flows.md` §8**, four of the five the plan names, with the fifth
+recorded below rather than dropped. **The authorization matrix as its own named CI step**, so a
+failure reads as "Authorization matrix failed" rather than as a generic red on a 29-route API.
+
+### What the doc audit found
+
+The plan defines the sweep as "walk the **Doc ownership** line of Tasks 1–17". **That sweep
+could not have worked as written: nine of the seventeen tasks carry no Doc ownership line at
+all** — Tasks 2, 3, 4, 5, 13, 14, 15, 16 and 17. Eight do, and every document those eight name
+was in fact changed inside its owning task's range (`git log -- <path>` for each). Every finding
+below is in the half the plan left unowned, which is the point: **a document nobody owned is the
+finding.**
+
+**`security/overview.md` §5 — the largest, and the worst-placed.** The table that calls itself
+"the honest answer to *is it secure yet?*" was frozen at Phase 2 Task 3. It read **Not
+Implemented** for session management, MFA, RBAC and permission guards, tenant scoping, rate
+limiting and security headers — every one of them built and shipping for weeks. It also said
+Argon2 hashing had "no caller" and the breach check was "called by nothing"; both went false at
+Task 8, and `registration.service.ts:90` is the caller. Rewritten by opening the callers rather
+than by recalling the plan, with the residuals named rather than smoothed over: rulings 55 and
+90 leave seven routes effectively unlimited, and secrets management has no vault and no key
+rotation.
+
+**Two documents still carried `/invitations/[token]`** — a path documented for a while and never
+built. `architecture/frontend.md` §1's route inventory, and
+`security/transport-and-headers.md`'s CSP-redaction paragraph, which cited the old path as the
+*reason* the collector drops query strings. `ui-ux/page-map.md` had already been corrected in
+Task 17, and its row now records the screen as built.
+
+**`development/testing.md` §3 gains the E2E journeys**, which is genuinely this task's to write,
+because only the finished phase makes that section false.
+
+**The ADR sweep is clean.** 26 ADR files, 26 rows in `.claude/decisions/README.md`, ADR-0001
+through ADR-0026 present in both, and every relative link in that README resolves to a file that
+exists.
+
+### What this task learned, and had to be told by a machine
+
+**Two of my own assertions were weak enough to produce a false green.** Matching the word
+"recovery" anywhere on the page passed against an MFA enrolment that had never completed, and
+the next step then sailed through a sign-in that should have been challenged — the suite was
+green and the product was not being tested. Anchoring instead to the recovery-code list, which
+renders only after the API confirms, and to the URL `/login/mfa` rather than a heading that also
+appears on `/settings/security`, is what made the run mean anything. **An assertion a broken
+product also satisfies is worse than no assertion**, because it is counted as coverage.
+
+**The switcher needed an assertion the user's own click cannot fake.** Selecting an option sets
+the DOM value by itself, so `toHaveValue` passes even if React never re-renders — which is
+exactly Task 17's defect. The "Choose an organisation" placeholder exists only while
+`activeOrganization` is null, so its *disappearance* proves a re-render from a new session
+document. Asserting without a reload is the whole point: a reload would hide the defect the step
+exists to catch.
+
+**A false claim in a commit message, mine, caught by the reviewer's citation pass.** The
+`/accept-invitation` commit said "12 tests, each proven able to fail". Four were. The reviewer
+showed a fifth that **neither** stated mutation kills, because its dependency array is stable
+across a rerender so the effect never re-runs. Generalising evidence for four into a claim about
+twelve is precisely the defect this phase has been fighting since Phase 1's retro, and the
+protocol's "the reviewer's first pass is citation, not code" is what caught it.
+
+**The implementer wrote two false sentences into source docblocks**, both saying
+`ui-ux/page-map.md` names `/invitations/[token]`. It did not, and had not at that commit's own
+parent — Task 17 had already fixed it. The argument was correct; the document it argued against
+had been corrected a task earlier.
+
+**The suite is bounded by the product's own abuse controls, and that had to be measured.**
+`registration` allows 3 per IP per hour and the journey registers two, so the second run of an
+hour failed at step 1 with "Too many requests". CI is worse, because `retries: 2` replays a
+serial block whole. The answer is `globalSetup` clearing `ratelimit:*` before a run, which keeps
+every limit at its real value *during* the run — the opposite of loosening limits under
+`APP_ENV=test`, in the environment that is meant to resemble production most closely.
+
+### Still owed after Task 18
+
+- **NO CI RUN, ON ANY LINUX RUNNER.** The branch is unpushed and every command above was run on
+  Windows. This is not a formality here: Task 3's `@node-rs/argon2` is the precedent for a
+  dependency that resolves on one platform and not another, and **this task adds the first CI
+  stage that boots an API**, reads a mailbox over HTTP, and talks to Redis from a Playwright
+  `globalSetup`. Any of those can behave differently on a Linux runner. Until a run ID is cited
+  here, "the journey passes E2E" is a claim about one machine.
+- **THERE IS NO CREATE-ORGANISATION SCREEN, AND THIS IS A PRODUCT HOLE, NOT A TESTING ONE.**
+  `createOrganization` exists nowhere in `apps/web`. A newly registered user belongs to no
+  organisation and cannot create one; the switcher's own empty state tells them "An invitation
+  from an existing member is how you join one", which cannot happen, because no member exists
+  until somebody already has an organisation. **The product cannot be entered from a cold start
+  through its own UI.** Task 13 built `POST /api/v1/organizations` and no task was ever assigned
+  the screen — the same shape of gap as ruling 143, found the same way. The journey creates its
+  organisations by calling the API from inside the page, marked in the step title so no reader
+  mistakes it for a covered path. **This is the first thing Phase 3 should build, or a Task 19.**
+- **The expired reset link is untested end to end.** `TOKEN_TTL_PASSWORD_RESET_SECONDS` is 3600
+  and read at API boot, so the test would either sleep for an hour or need a third API booted
+  with a one-second TTL. The reused link covers the same single-use branch and the same rendered
+  state. Named rather than quietly dropped from the plan's list of five.
+- **The invitation token now also travels inside a `next=` parameter**, a URL shape ruling 41's
+  redaction does not reach: the inner `token=` is percent-encoded, so the literal the redactor
+  matches never appears. No in-repo path logs this URL, and `Referrer-Policy:
+  strict-origin-when-cross-origin` blocks cross-origin leakage, so the exposure is browser
+  history, the address bar, and same-origin access logs. Recorded as a decision, not fixed.
+- **Accepting fires a POST on navigation with no confirmation**, as `/verify-email` already
+  does. A signed-in user who clicks an invitation link joins the organisation with no
+  intervening button. The bound is that an attacker must already have invited that address.
+- **The MFA QR has still never been scanned by a phone.** The journey types the secret instead,
+  which is the path a user takes when they *cannot* scan. Unchanged from Task 17.
+- **No accessibility tooling and no bundle budget.** `axe-core` is still not a workspace
+  dependency and `architecture/frontend.md` §7 remains Not Implemented. The E2E suite asserts no
+  horizontal overflow at 375px and keyboard reachability on the login form; that is not an
+  accessibility audit.
+- Carried forward unchanged: the Postgres half of the rule-10 transaction on
+  `SessionRepository.revokeById`; the session-id timing oracle; rulings 55 and 90; the absent
+  `MembershipStatus.INVITED` producer; no email telling an invitee their link was revoked under
+  ADR-0026; and `/settings/security` still cannot say whether MFA is currently on.
 
 ### Phase 3 — SaaS core
 Projects, assets, **asset ownership verification**, scope and scope rules with the

@@ -29,7 +29,7 @@ Branch: `feat/phase-2-identity`
 | 15·D9 | The D9 window — an invitation outliving its issuer's authority | orchestrator ADR + implementer + fresh reviewer + fixer, 2026-09-08 | **Done** — [brief](task-15/d9-brief.md) · [report](task-15/d9-report.md) · [review-brief](task-15/d9-review-brief.md) · [review](task-15/d9-review.md) · [dispositions](task-15/d9-fix-brief.md) · [fixes](task-15/d9-fixes.md) |
 | 16 | Web — authentication screens | subagent + fresh reviewer + fix round | **Done** — [brief](task-16/brief.md) · [report](task-16/report.md) · [review-brief](task-16/review-brief.md) · [review](task-16/review.md) · [dispositions](task-16/fix-brief.md) · [fixes](task-16/fixes.md) |
 | 17 | Web — app shell, org switcher, `/settings/security` | subagent + 2 reviewers + fix round | **Done** — [brief](task-17/brief.md) · [report](task-17/report.md) · [review-brief](task-17/review-brief.md) · [review](task-17/review.md) · [dispositions](task-17/fix-brief.md) · [fixes](task-17/fixes.md) |
-| 18 | E2E journey, doc audit, ADR sweep, roadmap | orchestrator | Not started |
+| 18 | E2E journey, doc audit, ADR sweep, roadmap | orchestrator (+ implementer & fresh reviewer for the one screen) | **Done** — 2026-09-08. Section at the end of this file. |
 
 ## Carry-forward rulings
 
@@ -1322,7 +1322,10 @@ on the query engine, kill the dev server first.**
 
 *No commit count is written here, deliberately* — ruling 108. Run `git rev-list --count main..HEAD`.
 
-**Next action, in this order.**
+**Next action, in this order.** *(Superseded on 2026-09-08 — all three of these are done. Items
+1 and 2 happened before Task 18 started; item 3 IS Task 18, and it is complete. The live list is
+the "Next action" at the end of this file. Left here because this block is a dated record of what
+was true at the Task 17 pause, not a to-do list.)*
 
 1. **A human loads the Task 17 screens in a browser** — the shell, the organisation switcher
    (switch, and confirm the header and permissions actually change), `/settings/security` and
@@ -1370,3 +1373,108 @@ lock and re-resolves the actor's authority inside its own. **The first attempt d
 said it had** — the review reproduced the escalation against the branch that claimed the fix, which
 is rulings 144 and 145. Read the roadmap's Task 15 section for the current state; read
 [`task-15/d9-review.md`](task-15/d9-review.md) for how it was caught.
+
+## Task 18 — the phase gate (2026-09-08)
+
+*A dated record of what was decided. `roadmap.md` is the only authority on status; its Task 18
+section carries the evidence table.*
+
+**Mode: orchestrator, per Execution protocol §2** — Task 18 is a Gate. The one build inside it
+(`/accept-invitation`) went to a fresh implementer with a fresh adversarial reviewer, because
+that piece is self-contained and the protocol's "the adversarial reviewer is always fresh, for
+every task, in every mode" applies regardless of the gate.
+
+**The scope addition was carried, and it is the reason this task could start at all.** The
+operator decided on 2026-09-07 to build `/accept-invitation` here rather than fold it into Task
+17. Task 18's Files line names no application route, so this is a deliberate widening and is
+recorded as one.
+
+### Rulings 148–154
+
+148. **A document nobody owns is the document that goes stale, and the mechanism meant to
+     prevent it covered barely half the tasks.** The plan's doc-audit step is "walk the Doc
+     ownership line of Tasks 1–17"; nine of seventeen tasks have no such line. Every finding the
+     audit produced was in the unowned half — including `security/overview.md` §5, the table
+     that calls itself "the honest answer to *is it secure yet?*", frozen at Task 3 and still
+     reading Not Implemented for six controls that had been shipping for weeks. **Cost if
+     ignored: the document a reader trusts most is the one with no owner.** A future phase plan
+     should give every task a Doc ownership line or state explicitly that it owns none.
+
+149. **An assertion a broken product also satisfies is worse than no assertion, because it is
+     counted as coverage.** Two of the orchestrator's own journey assertions produced a false
+     green: matching `/recovery/i` anywhere passed against an MFA enrolment that never
+     completed, and the following step then sailed through a sign-in that should have been
+     challenged. **Cost when it happened: one full debugging cycle spent suspecting the TOTP
+     implementation** — which turned out to agree with the API's on 200/200 random inputs.
+     Anchor to something that cannot be true unless the behaviour is.
+
+150. **Do not verify a thing with its own implementation.** The suite's TOTP generator is RFC
+     6238 written from the specification rather than an import of `totp.ts`. A shared error in
+     byte order, secret decoding or step length would cancel out and the test would pass while
+     claiming a third-party authenticator can sign in. The same argument forbids seeding the
+     database directly for a journey whose point is that the product's own paths work.
+
+151. **The E2E suite is bounded by the product's own abuse controls, and the answer is to reset
+     the counters, not to loosen the limits.** `registration` is 3 per IP per hour; the journey
+     registers two, so the second run of an hour failed at step 1 on the limiter. Raising limits
+     under `APP_ENV=test` was considered and rejected — that is the environment meant to
+     resemble production most closely, and a limit loosened exactly where it is exercised is a
+     limit no test has watched refuse anything. `globalSetup` clears `ratelimit:*` before a run,
+     so every limit is at its real value *during* the run.
+
+152. **A security control that works will make an honest test wait.** The MFA replay defence
+     records the accepted step and refuses everything at or below it, so a second sign-in inside
+     the same window cannot reuse that code *or* the next-step trick once that has been spent.
+     ~30 seconds of real wall clock is the price. A test that engineered its way around this
+     would be asserting the defence's absence.
+
+153. **Ruling 143 has a second instance, and it is worse than the first.** `POST
+     /api/v1/organizations` has existed since Task 13 with no screen, and no task was ever
+     assigned one. The consequence is not a testing inconvenience: **a newly registered user
+     cannot create an organisation, and the switcher's empty state tells them to wait for an
+     invitation that nobody can send.** The product cannot be entered from a cold start through
+     its own UI. **Cost if ignored: the same class of gap found the same way, twice in one
+     phase** — an endpoint whose screen belongs to no checklist. The general rule: *an endpoint
+     with no screen is not a feature, and "some later task will pick it up" names no task.*
+
+154. **A correcting sentence is a claim, and generalising evidence is how a true claim becomes
+     false.** The orchestrator's `/accept-invitation` commit said "12 tests, each proven able to
+     fail"; four were, and the reviewer found a fifth that neither stated mutation kills. The
+     citation-first review pass is what caught it — no command would have. **Cost when it
+     happened: a false claim shipped in a commit message and had to be corrected in a later
+     one**, which is the exact pattern Phase 1's retro named.
+
+### What the fresh reviewer found, and what happened to it
+
+Eight findings against the `/accept-invitation` commit. Fixed: the two false `page-map.md`
+docblock sentences, the missing `AUTH_ROUTES` row (M2), the acceptance-with-no-membership
+fall-through (L1), and the 422 lead that gave wrong advice for the two likeliest causes (M3's
+second half). Recorded as decisions rather than changed: the token travelling inside a `next=`
+parameter that ruling 41's redaction does not reach (M1), and the acceptance POST firing on
+navigation with no confirmation, as `/verify-email` already does. H1 — no `.claude/` update in
+that commit — is discharged by this task's doc pass, which is where it belonged.
+
+The reviewer also attacked the open-redirect surface directly and could not break it: 25 hostile
+token values through the full round trip, all landing same-origin with the token byte-exact. The
+binding control is `URLSearchParams` encoding, not `safeRedirectPath`'s output re-check.
+
+### An operational note, and an apology to whoever is at the keyboard
+
+The implementer subagent found a `pnpm dev` tree holding
+`packages/db/generated/client/query_engine-windows.dll.node` open — the EPERM the Task 17 ledger
+warned about — and killed it (root PID 20544). **The operator's dev server is stopped and will
+need restarting.**
+
+### Next action
+
+1. **Push, and get a green CI run on a Linux runner.** This is the only item on Task 18's verify
+   line with no evidence, and it is not a formality: this task adds the first CI stage that boots
+   an API, reads a mailbox over HTTP and talks to Redis from a Playwright `globalSetup`. Cite the
+   run ID in the roadmap's Task 18 evidence table when it is green, and only then is Phase 2
+   **Implemented** rather than Partially Implemented.
+2. **Merge, and delete the four stale remote branches** — `feat/phase-2-task-17-app-shell`,
+   `feat/phase-2-task-15-d9-invitation-revocation`, `docs/task-16-browser-pass` and
+   `docs/task-15-d9-merge` are all landed on `main` already.
+3. **Decide what happens about the create-organisation screen (ruling 153).** It is a product
+   hole, not a test gap, and Phase 3 opens with projects and assets that all hang off an
+   organisation the user cannot create. Either a Task 19 before Phase 3, or Phase 3's first task.
