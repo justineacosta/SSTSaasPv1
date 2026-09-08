@@ -117,6 +117,23 @@ jobs:
       - name: Authorization matrix
         run: pnpm test:authz-matrix
 
+      # THE COMPOSE DATABASE IS EMPTY UNTIL SOMETHING MIGRATES IT, AND UNTIL
+      # TASK 18 NOTHING IN CI NEEDED IT TO BE OTHERWISE.
+      #
+      # The integration suite brings its own database up through Testcontainers
+      # and migrates that, so it passed on a schemaless compose Postgres without
+      # ever noticing. The E2E stage is the first thing in CI to drive a real
+      # API against the compose stack, and it failed with Prisma P2021 — "the
+      # table public.User does not exist" — four runs in a row, behind a generic
+      # 500 that reached the browser as "Something went wrong on our side".
+      #
+      # `migrate deploy` rather than `migrate dev`: deploy replays committed
+      # migrations and never generates one, which is the only correct verb on a
+      # runner. It sits here rather than next to the E2E stage because a
+      # migrated database is a property of the started stack, not of Playwright.
+      - name: Apply migrations to the local stack
+        run: pnpm db:deploy
+
       - name: Integration tests
         run: pnpm test:integration
 

@@ -27,6 +27,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "db:migrate": "dotenv -e .env -- pnpm --filter @sentinel/db exec prisma migrate dev",
+    "db:deploy": "dotenv -e .env -- pnpm --filter @sentinel/db exec prisma migrate deploy",
     "db:migrate:create": "dotenv -e .env -- pnpm --filter @sentinel/db exec prisma migrate dev --create-only",
     "db:reset": "dotenv -e .env -- pnpm --filter @sentinel/db exec prisma migrate reset --force",
     "db:studio": "dotenv -e .env -- pnpm --filter @sentinel/db exec prisma studio",
